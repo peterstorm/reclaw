@@ -89,13 +89,12 @@ function makeMockSpawn(options: {
       Promise.resolve().then(() => resolveExited!(options.exitCode));
     }
 
-    const writer = {
-      write: vi.fn().mockResolvedValue(undefined),
-      close: vi.fn().mockResolvedValue(undefined),
-    };
-
     return {
-      stdin: { getWriter: () => writer },
+      stdin: {
+        write: vi.fn().mockReturnValue(0),
+        end: vi.fn(),
+        flush: vi.fn(),
+      },
       stdout: new ReadableStream({
         start(controller) {
           controller.enqueue(stdoutBytes);
@@ -190,19 +189,15 @@ describe('runClaude', () => {
     expect(spawnOptions.env.MY_VAR).toBe('my_value');
   });
 
-  it('writes prompt to stdin and closes writer', async () => {
+  it('writes prompt to stdin and closes it', async () => {
     const resultLine = JSON.stringify({ type: 'result', result: 'ok' });
-    let capturedWriter: { write: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> } | null = null;
+    let capturedStdin: { write: ReturnType<typeof vi.fn>; end: ReturnType<typeof vi.fn> } | null = null;
 
     const spawnWithCapture: SpawnFn = (args, opts) => {
       const { spawn } = makeMockSpawn({ stdout: resultLine, exitCode: 0 });
       const proc = spawn(args, opts);
-      capturedWriter = proc.stdin.getWriter() as unknown as typeof capturedWriter;
-      // Re-wrap stdin to return captured writer
-      return {
-        ...proc,
-        stdin: { getWriter: () => capturedWriter! },
-      };
+      capturedStdin = proc.stdin as unknown as typeof capturedStdin;
+      return proc;
     };
 
     await runClaude({
@@ -213,10 +208,10 @@ describe('runClaude', () => {
       _spawn: spawnWithCapture,
     });
 
-    expect(capturedWriter).not.toBeNull();
-    expect(capturedWriter!.write).toHaveBeenCalled();
-    expect(capturedWriter!.close).toHaveBeenCalled();
-    const writtenBytes = capturedWriter!.write.mock.calls[0][0];
+    expect(capturedStdin).not.toBeNull();
+    expect(capturedStdin!.write).toHaveBeenCalled();
+    expect(capturedStdin!.end).toHaveBeenCalled();
+    const writtenBytes = capturedStdin!.write.mock.calls[0][0];
     const decoded = new TextDecoder().decode(writtenBytes);
     expect(decoded).toBe('my prompt text');
   });

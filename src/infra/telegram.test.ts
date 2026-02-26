@@ -23,6 +23,7 @@ const mockBot = {
   on: vi.fn((_event: string, handler: MessageHandler) => {
     capturedMessageHandler = handler;
   }),
+  catch: vi.fn(),
   start: mockBotStart,
   stop: mockBotStop,
   api: {

@@ -54,9 +54,14 @@ export function createTelegramAdapter(config: {
     | ((msg: { userId: number; chatId: number; text: string }) => void)
     | null = null;
 
+  bot.catch((err) => {
+    console.error('[telegram] Bot error:', err);
+  });
+
   // FR-001 / FR-003: Filter and route text messages from authorized user only.
   // NFR-013: We log job metadata but NOT message content.
   bot.on('message:text', (ctx) => {
+    console.info(`[telegram] Received message from userId=${ctx.from?.id} chatId=${ctx.chat.id}`);
     const userId = ctx.from?.id;
     const chatId = ctx.chat.id;
 
@@ -102,7 +107,7 @@ export function createTelegramAdapter(config: {
   };
 
   const start = async (): Promise<void> => {
-    await bot.start();
+    bot.start();
   };
 
   const stop = async (): Promise<void> => {

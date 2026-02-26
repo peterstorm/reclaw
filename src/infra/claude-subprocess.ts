@@ -11,7 +11,7 @@ export type SpawnFn = (
     env: Record<string, string | undefined>;
   },
 ) => {
-  stdin: { getWriter(): { write(data: Uint8Array): Promise<void>; close(): Promise<void> } };
+  stdin: { write(data: Uint8Array): number; end(): void; flush(): void | Promise<void> };
   stdout: ReadableStream;
   stderr: ReadableStream;
   exited: Promise<number>;
@@ -127,9 +127,8 @@ export async function runClaude(options: ClaudeOptions): Promise<ClaudeResult> {
   // Write prompt to stdin and close it
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   try {
-    const writer = proc.stdin.getWriter();
-    await writer.write(new TextEncoder().encode(prompt));
-    await writer.close();
+    proc.stdin.write(new TextEncoder().encode(prompt));
+    proc.stdin.end();
   } catch (stdinErr) {
     proc.kill();
     return {
