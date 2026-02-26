@@ -1,0 +1,18 @@
+id: morning-briefing
+name: Morning Briefing
+schedule: "0 7 * * *"
+permissionProfile: scheduled
+validityWindowMinutes: 60
+timeout: 300
+promptTemplate: |
+  {{personality}}
+
+  Today is {{dayOfWeek}}, {{date}}.
+
+  Please provide a personalized morning briefing. Include:
+  - A brief weather summary if you can determine the location from memory
+  - Any calendar events or reminders for today from the Obsidian vault
+  - Key priorities or tasks for the day
+  - A short motivational note to start the day well
+
+  Lead with the most important information. Be concise and actionable.
