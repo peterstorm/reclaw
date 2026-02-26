@@ -69,8 +69,8 @@ describe('createQueues', () => {
     expect(MockQueue).toHaveBeenCalledTimes(2);
     const calls = MockQueue.mock.calls;
     const names = calls.map((c) => c[0]);
-    expect(names).toContain('reclaw:chat');
-    expect(names).toContain('reclaw:scheduled');
+    expect(names).toContain('reclaw-chat');
+    expect(names).toContain('reclaw-scheduled');
   });
 
   it('passes redis connection to both queues', () => {

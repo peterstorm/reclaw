@@ -90,7 +90,7 @@ export function createWorkers(deps: WorkerDeps): Workers {
   // ── Chat worker (FR-015: concurrency=1) ──────────────────────────────────
 
   const chatWorker = workerFactory(
-    'reclaw:chat',
+    'reclaw-chat',
     async (job) => {
       const data = job.data;
       if (typeof data !== 'object' || data === null || (data as Record<string, unknown>).kind !== 'chat') {
@@ -131,7 +131,7 @@ export function createWorkers(deps: WorkerDeps): Workers {
   // ── Scheduled worker (FR-015: concurrency=1) ─────────────────────────────
 
   const scheduledWorker = workerFactory(
-    'reclaw:scheduled',
+    'reclaw-scheduled',
     async (job) => {
       const data = job.data;
       if (typeof data !== 'object' || data === null || (data as Record<string, unknown>).kind !== 'scheduled') {

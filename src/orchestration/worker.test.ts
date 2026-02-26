@@ -142,8 +142,8 @@ describe('createWorkers', () => {
   it('creates workers for correct queue names', () => {
     makeWorkers();
     const queueNames = fakeFactory.createdWorkers.map((w) => w.queueName);
-    expect(queueNames).toContain('reclaw:chat');
-    expect(queueNames).toContain('reclaw:scheduled');
+    expect(queueNames).toContain('reclaw-chat');
+    expect(queueNames).toContain('reclaw-scheduled');
   });
 
   it('sets concurrency=1 for both workers (AD-4, FR-015)', () => {
@@ -171,7 +171,7 @@ describe('createWorkers', () => {
   it('chat worker processes ChatJob via chatHandler', async () => {
     makeWorkers();
 
-    const chatWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw:chat');
+    const chatWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-chat');
     expect(chatWorker).toBeDefined();
 
     const bullJob: FakeBullJob = {
@@ -189,7 +189,7 @@ describe('createWorkers', () => {
   it('scheduled worker processes ScheduledJob via scheduledHandler', async () => {
     makeWorkers();
 
-    const scheduledWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw:scheduled');
+    const scheduledWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-scheduled');
     expect(scheduledWorker).toBeDefined();
 
     const bullJob: FakeBullJob = {
@@ -216,7 +216,7 @@ describe('createWorkers', () => {
       workerFactory: fakeFactory.factory,
     });
 
-    const chatWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw:chat');
+    const chatWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-chat');
     const bullJob: FakeBullJob = {
       data: chatJob,
       id: chatJob.id,
@@ -239,7 +239,7 @@ describe('createWorkers', () => {
       workerFactory: fakeFactory.factory,
     });
 
-    const scheduledWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw:scheduled');
+    const scheduledWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-scheduled');
     const bullJob: FakeBullJob = {
       data: scheduledJob,
       id: scheduledJob.id,
@@ -253,7 +253,7 @@ describe('createWorkers', () => {
   it('dead letter: sends telegram notification on final chat job failure', async () => {
     makeWorkers();
 
-    const chatWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw:chat');
+    const chatWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-chat');
     const failedHandler = chatWorker!.eventHandlers.get('failed');
     expect(failedHandler).toBeDefined();
 
@@ -271,7 +271,7 @@ describe('createWorkers', () => {
   it('dead letter: sends telegram notification on final scheduled job failure to all users', async () => {
     makeWorkers();
 
-    const scheduledWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw:scheduled');
+    const scheduledWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-scheduled');
     const failedHandler = scheduledWorker!.eventHandlers.get('failed');
     expect(failedHandler).toBeDefined();
 
@@ -289,7 +289,7 @@ describe('createWorkers', () => {
   it('dead letter: does NOT send notification if retries not exhausted', async () => {
     makeWorkers();
 
-    const chatWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw:chat');
+    const chatWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-chat');
     const failedHandler = chatWorker!.eventHandlers.get('failed');
 
     // attemptsMade=2, maxAttempts=3 → NOT final failure
@@ -325,7 +325,7 @@ describe('createWorkers', () => {
   it('dead letter message includes job kind, id, and error', async () => {
     makeWorkers();
 
-    const chatWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw:chat');
+    const chatWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-chat');
     const failedHandler = chatWorker!.eventHandlers.get('failed');
 
     await failedHandler!(

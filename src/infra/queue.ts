@@ -40,7 +40,7 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
     port: redisConnection.port,
   };
 
-  const chat = new Queue('reclaw:chat', {
+  const chat = new Queue('reclaw-chat', {
     connection,
     defaultJobOptions: retryOptions,
   });
@@ -48,7 +48,7 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
     console.error('[queue:chat] error', err);
   });
 
-  const scheduled = new Queue('reclaw:scheduled', {
+  const scheduled = new Queue('reclaw-scheduled', {
     connection,
     defaultJobOptions: retryOptions,
   });
