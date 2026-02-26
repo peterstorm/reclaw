@@ -21,6 +21,7 @@ const mockConfig: AppConfig = {
   claudeBinaryPath: 'claude',
   chatTimeoutMs: 120_000,
   scheduledTimeoutMs: 300_000,
+  sessionIdleTimeoutMs: 1_800_000,
 };
 
 // ─── Fake component builders ──────────────────────────────────────────────────
@@ -78,6 +79,14 @@ function makeMockWorkers() {
   };
 }
 
+function makeMockSessionStore() {
+  return {
+    getSession: vi.fn().mockResolvedValue(null),
+    saveSession: vi.fn().mockResolvedValue(undefined),
+    deleteSession: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe('bootstrap', () => {
@@ -86,12 +95,15 @@ describe('bootstrap', () => {
   let mockSkillWatcher: ReturnType<typeof makeMockSkillWatcher>;
   let mockScheduler: ReturnType<typeof makeMockScheduler>;
   let mockWorkers: ReturnType<typeof makeMockWorkers>;
+  let mockSessionStore: ReturnType<typeof makeMockSessionStore>;
+  let mockDisconnectRedis: ReturnType<typeof vi.fn>;
   let loadConfigMock: ReturnType<typeof vi.fn>;
   let createTelegramMock: ReturnType<typeof vi.fn>;
   let createQueuesMock: ReturnType<typeof vi.fn>;
   let createSkillWatcherMock: ReturnType<typeof vi.fn>;
   let createSchedulerMock: ReturnType<typeof vi.fn>;
   let createWorkersMock: ReturnType<typeof vi.fn>;
+  let createSessionStoreMock: ReturnType<typeof vi.fn>;
   let processExitSpy: ReturnType<typeof vi.spyOn>;
   let processOnceSpy: ReturnType<typeof vi.spyOn>;
   const signalHandlers = new Map<string, () => void>();
@@ -105,6 +117,8 @@ describe('bootstrap', () => {
     mockSkillWatcher = makeMockSkillWatcher();
     mockScheduler = makeMockScheduler();
     mockWorkers = makeMockWorkers();
+    mockSessionStore = makeMockSessionStore();
+    mockDisconnectRedis = vi.fn().mockResolvedValue(undefined);
 
     loadConfigMock = vi.fn().mockReturnValue({ ok: true, value: mockConfig });
     createTelegramMock = vi.fn().mockReturnValue(mockTelegram);
@@ -112,6 +126,10 @@ describe('bootstrap', () => {
     createSkillWatcherMock = vi.fn().mockReturnValue(mockSkillWatcher);
     createSchedulerMock = vi.fn().mockReturnValue(mockScheduler);
     createWorkersMock = vi.fn().mockReturnValue(mockWorkers);
+    createSessionStoreMock = vi.fn().mockReturnValue({
+      sessionStore: mockSessionStore,
+      disconnect: mockDisconnectRedis,
+    });
 
     processExitSpy = vi.spyOn(process, 'exit').mockImplementation((_code?: number | string) => {
       throw new Error(`process.exit(${_code})`);
@@ -141,6 +159,7 @@ describe('bootstrap', () => {
       runClaudeFn: vi.fn(),
       handleChatJobFn: vi.fn().mockResolvedValue({ ok: true, response: '' }),
       handleScheduledJobFn: vi.fn().mockResolvedValue({ ok: true, response: '' }),
+      createSessionStoreFn: createSessionStoreMock,
     };
   }
 
@@ -159,6 +178,14 @@ describe('bootstrap', () => {
   it('creates queues with redis config', async () => {
     await bootstrap(makeDeps());
     expect(createQueuesMock).toHaveBeenCalledWith({
+      host: mockConfig.redisHost,
+      port: mockConfig.redisPort,
+    });
+  });
+
+  it('creates session store with redis config', async () => {
+    await bootstrap(makeDeps());
+    expect(createSessionStoreMock).toHaveBeenCalledWith({
       host: mockConfig.redisHost,
       port: mockConfig.redisPort,
     });
@@ -260,6 +287,25 @@ describe('bootstrap', () => {
     });
   });
 
+  describe('/new command', () => {
+    it('clears session and sends confirmation', async () => {
+      await bootstrap(makeDeps());
+      mockTelegram._triggerMessage({
+        userId: mockConfig.authorizedUserIds[0],
+        chatId: 99988877,
+        text: '/new',
+      });
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(mockSessionStore.deleteSession).toHaveBeenCalledWith(99988877);
+      expect(mockTelegram.sendMessage).toHaveBeenCalledWith(
+        99988877,
+        'Session cleared. Next message starts a fresh conversation.',
+      );
+      expect(mockQueues.enqueueChat).not.toHaveBeenCalled();
+    });
+  });
+
   describe('graceful shutdown', () => {
     it('returns a shutdown function', async () => {
       const shutdown = await bootstrap(makeDeps());
@@ -280,6 +326,12 @@ describe('bootstrap', () => {
       await shutdown();
       expect(mockQueues.chat.close).toHaveBeenCalledOnce();
       expect(mockQueues.scheduled.close).toHaveBeenCalledOnce();
+    });
+
+    it('shutdown disconnects Redis session client', async () => {
+      const shutdown = await bootstrap(makeDeps());
+      await shutdown();
+      expect(mockDisconnectRedis).toHaveBeenCalledOnce();
     });
 
     it('SIGTERM triggers shutdown', async () => {

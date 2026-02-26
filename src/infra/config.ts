@@ -16,6 +16,7 @@ export const AppConfigSchema = z.object({
   chatTimeoutMs: z.number().int().positive().default(120_000),
   scheduledTimeoutMs: z.number().int().positive().default(300_000),
   geminiApiKey: z.string().optional(),
+  sessionIdleTimeoutMs: z.number().int().positive().default(1_800_000), // 30min
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;
@@ -84,6 +85,11 @@ export function parseEnvToRaw(
       errors,
     ),
     geminiApiKey: env['GEMINI_API_KEY'],
+    sessionIdleTimeoutMs: parseNumericEnv(
+      'SESSION_IDLE_TIMEOUT_MS',
+      env['SESSION_IDLE_TIMEOUT_MS'],
+      errors,
+    ),
   };
   return { raw, errors };
 }

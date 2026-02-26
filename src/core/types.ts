@@ -9,6 +9,9 @@ export type JobId = string & { readonly __brand: 'JobId' };
 /** Skill identifier derived from YAML filename. Use `makeSkillId` to construct. */
 export type SkillId = string & { readonly __brand: 'SkillId' };
 
+/** Claude CLI session ID for multi-turn conversations. Use `makeClaudeSessionId` to construct. */
+export type ClaudeSessionId = string & { readonly __brand: 'ClaudeSessionId' };
+
 // ─── Brand Constructors ────────────────────────────────────────────────────────
 
 /**
@@ -45,6 +48,17 @@ export function makeSkillId(raw: string): Result<SkillId, string> {
     return { ok: false, error: `SkillId must not contain path separators: ${raw}` };
   }
   return { ok: true, value: raw as SkillId };
+}
+
+/**
+ * Construct a ClaudeSessionId from a raw string.
+ * Validates: non-empty string.
+ */
+export function makeClaudeSessionId(raw: string): Result<ClaudeSessionId, string> {
+  if (raw.trim().length === 0) {
+    return { ok: false, error: 'ClaudeSessionId must not be empty.' };
+  }
+  return { ok: true, value: raw as ClaudeSessionId };
 }
 
 // ─── Result Type ──────────────────────────────────────────────────────────────

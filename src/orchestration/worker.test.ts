@@ -17,6 +17,7 @@ const mockConfig: AppConfig = {
   claudeBinaryPath: 'claude',
   chatTimeoutMs: 120_000,
   scheduledTimeoutMs: 300_000,
+  sessionIdleTimeoutMs: 1_800_000,
 };
 
 const chatJob: ChatJob = {

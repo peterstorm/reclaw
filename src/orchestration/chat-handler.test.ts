@@ -12,6 +12,9 @@ import type { ChatJob } from '../core/types.js';
 import type { AppConfig } from '../infra/config.js';
 import type { TelegramAdapter } from '../infra/telegram.js';
 import type { ClaudeResult } from '../infra/claude-subprocess.js';
+import type { SessionStore } from '../infra/session-store.js';
+import type { SessionRecord } from '../core/session.js';
+import type { ClaudeSessionId } from '../core/types.js';
 import { getPermissionFlags } from '../core/permissions.js';
 import fs from 'node:fs/promises';
 
@@ -31,7 +34,7 @@ const makeChatJob = (overrides: Partial<ChatJob> = {}): ChatJob => ({
 
 const makeConfig = (overrides: Partial<AppConfig> = {}): AppConfig => ({
   telegramToken: 'tok',
-  authorizedUserId: 123,
+  authorizedUserIds: [123],
   redisHost: 'localhost',
   redisPort: 6379,
   workspacePath: '/workspace',
@@ -40,6 +43,7 @@ const makeConfig = (overrides: Partial<AppConfig> = {}): AppConfig => ({
   claudeBinaryPath: 'claude',
   chatTimeoutMs: 120_000,
   scheduledTimeoutMs: 300_000,
+  sessionIdleTimeoutMs: 1_800_000,
   ...overrides,
 });
 
@@ -51,6 +55,16 @@ const makeTelegram = (): TelegramAdapter => ({
   onMessage: vi.fn(),
 });
 
+const makeSessionStore = (): SessionStore & {
+  getSession: ReturnType<typeof vi.fn>;
+  saveSession: ReturnType<typeof vi.fn>;
+  deleteSession: ReturnType<typeof vi.fn>;
+} => ({
+  getSession: vi.fn().mockResolvedValue(null),
+  saveSession: vi.fn().mockResolvedValue(undefined),
+  deleteSession: vi.fn().mockResolvedValue(undefined),
+});
+
 const makeRunClaude = (result: ClaudeResult) => vi.fn().mockResolvedValue(result);
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -58,19 +72,20 @@ const makeRunClaude = (result: ClaudeResult) => vi.fn().mockResolvedValue(result
 describe('handleChatJob', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // Default: personality file resolves to empty string
     mockReadFile.mockResolvedValue('' as unknown as ArrayBuffer);
   });
 
   it('returns ok result on successful claude execution', async () => {
     const job = makeChatJob();
     const telegram = makeTelegram();
-    const runClaude = makeRunClaude({ ok: true, output: 'Hello from claude!', durationMs: 500 });
+    const sessionStore = makeSessionStore();
+    const runClaude = makeRunClaude({ ok: true, output: 'Hello from claude!', sessionId: 'sess-1', durationMs: 500 });
 
     const result = await handleChatJob(job, {
       runClaude: runClaude as unknown as ChatDeps['runClaude'],
       telegram,
       config: makeConfig(),
+      sessionStore,
     });
 
     expect(result.ok).toBe(true);
@@ -82,12 +97,14 @@ describe('handleChatJob', () => {
   it('calls runClaude with chat permission flags (FR-011)', async () => {
     const job = makeChatJob();
     const telegram = makeTelegram();
-    const runClaude = makeRunClaude({ ok: true, output: 'response', durationMs: 100 });
+    const sessionStore = makeSessionStore();
+    const runClaude = makeRunClaude({ ok: true, output: 'response', sessionId: null, durationMs: 100 });
 
     await handleChatJob(job, {
       runClaude: runClaude as unknown as ChatDeps['runClaude'],
       telegram,
       config: makeConfig(),
+      sessionStore,
     });
 
     expect(runClaude).toHaveBeenCalledOnce();
@@ -98,12 +115,14 @@ describe('handleChatJob', () => {
   it('calls runClaude with workspace cwd and chat timeout (FR-016)', async () => {
     const job = makeChatJob();
     const telegram = makeTelegram();
-    const runClaude = makeRunClaude({ ok: true, output: 'response', durationMs: 100 });
+    const sessionStore = makeSessionStore();
+    const runClaude = makeRunClaude({ ok: true, output: 'response', sessionId: null, durationMs: 100 });
 
     await handleChatJob(job, {
       runClaude: runClaude as unknown as ChatDeps['runClaude'],
       telegram,
       config: makeConfig({ workspacePath: '/my/workspace', chatTimeoutMs: 60_000 }),
+      sessionStore,
     });
 
     const callArgs = runClaude.mock.calls[0][0];
@@ -116,12 +135,14 @@ describe('handleChatJob', () => {
 
     const job = makeChatJob({ text: 'What is the capital of France?' });
     const telegram = makeTelegram();
-    const runClaude = makeRunClaude({ ok: true, output: 'Paris', durationMs: 100 });
+    const sessionStore = makeSessionStore();
+    const runClaude = makeRunClaude({ ok: true, output: 'Paris', sessionId: null, durationMs: 100 });
 
     await handleChatJob(job, {
       runClaude: runClaude as unknown as ChatDeps['runClaude'],
       telegram,
       config: makeConfig(),
+      sessionStore,
     });
 
     const callArgs = runClaude.mock.calls[0][0];
@@ -134,17 +155,17 @@ describe('handleChatJob', () => {
 
     const job = makeChatJob({ text: 'Hello!' });
     const telegram = makeTelegram();
-    const runClaude = makeRunClaude({ ok: true, output: 'Hi!', durationMs: 100 });
+    const sessionStore = makeSessionStore();
+    const runClaude = makeRunClaude({ ok: true, output: 'Hi!', sessionId: null, durationMs: 100 });
 
     const result = await handleChatJob(job, {
       runClaude: runClaude as unknown as ChatDeps['runClaude'],
       telegram,
       config: makeConfig(),
+      sessionStore,
     });
 
-    // Should still succeed despite personality file error
     expect(result.ok).toBe(true);
-    // Prompt should just be the user message (no personality)
     const callArgs = runClaude.mock.calls[0][0];
     expect(callArgs.prompt).toBe('Hello!');
   });
@@ -152,12 +173,14 @@ describe('handleChatJob', () => {
   it('sends response chunks to telegram on success', async () => {
     const job = makeChatJob({ chatId: 789 });
     const telegram = makeTelegram();
-    const runClaude = makeRunClaude({ ok: true, output: 'Chunked response', durationMs: 200 });
+    const sessionStore = makeSessionStore();
+    const runClaude = makeRunClaude({ ok: true, output: 'Chunked response', sessionId: null, durationMs: 200 });
 
     await handleChatJob(job, {
       runClaude: runClaude as unknown as ChatDeps['runClaude'],
       telegram,
       config: makeConfig(),
+      sessionStore,
     });
 
     expect(telegram.sendChunkedMessage).toHaveBeenCalledOnce();
@@ -169,21 +192,21 @@ describe('handleChatJob', () => {
   it('notifies user via telegram on claude failure (FR-012)', async () => {
     const job = makeChatJob({ chatId: 999 });
     const telegram = makeTelegram();
+    const sessionStore = makeSessionStore();
     const runClaude = makeRunClaude({ ok: false, error: 'claude exited with code 1', timedOut: false });
 
     const result = await handleChatJob(job, {
       runClaude: runClaude as unknown as ChatDeps['runClaude'],
       telegram,
       config: makeConfig(),
+      sessionStore,
     });
 
-    // Should return error result
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error).toBe('claude exited with code 1');
     }
 
-    // Should notify user with friendly message (not raw error)
     expect(telegram.sendMessage).toHaveBeenCalledOnce();
     const [chatId, msg] = (telegram.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(chatId).toBe(999);
@@ -195,12 +218,14 @@ describe('handleChatJob', () => {
   it('does not send chunked message on claude failure', async () => {
     const job = makeChatJob();
     const telegram = makeTelegram();
+    const sessionStore = makeSessionStore();
     const runClaude = makeRunClaude({ ok: false, error: 'timeout', timedOut: true });
 
     await handleChatJob(job, {
       runClaude: runClaude as unknown as ChatDeps['runClaude'],
       telegram,
       config: makeConfig(),
+      sessionStore,
     });
 
     expect(telegram.sendChunkedMessage).not.toHaveBeenCalled();
@@ -210,17 +235,141 @@ describe('handleChatJob', () => {
     const claudeOutput = 'The answer is 42.';
     const job = makeChatJob({ text: 'What is the answer?' });
     const telegram = makeTelegram();
-    const runClaude = makeRunClaude({ ok: true, output: claudeOutput, durationMs: 300 });
+    const sessionStore = makeSessionStore();
+    const runClaude = makeRunClaude({ ok: true, output: claudeOutput, sessionId: null, durationMs: 300 });
 
     const result = await handleChatJob(job, {
       runClaude: runClaude as unknown as ChatDeps['runClaude'],
       telegram,
       config: makeConfig(),
+      sessionStore,
     });
 
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.response).toBe(claudeOutput);
     }
+  });
+
+  // ─── Session tests ──────────────────────────────────────────────────────────
+
+  it('saves session on success when sessionId returned', async () => {
+    const job = makeChatJob({ chatId: 456 });
+    const telegram = makeTelegram();
+    const sessionStore = makeSessionStore();
+    const runClaude = makeRunClaude({ ok: true, output: 'hi', sessionId: 'sess-new', durationMs: 100 });
+
+    await handleChatJob(job, {
+      runClaude: runClaude as unknown as ChatDeps['runClaude'],
+      telegram,
+      config: makeConfig(),
+      sessionStore,
+    });
+
+    expect(sessionStore.saveSession).toHaveBeenCalledOnce();
+    const [chatId, record, ttl] = sessionStore.saveSession.mock.calls[0];
+    expect(chatId).toBe(456);
+    expect(record.sessionId).toBe('sess-new');
+    expect(ttl).toBe(1_800_000);
+  });
+
+  it('does not save session when sessionId is null', async () => {
+    const job = makeChatJob();
+    const telegram = makeTelegram();
+    const sessionStore = makeSessionStore();
+    const runClaude = makeRunClaude({ ok: true, output: 'hi', sessionId: null, durationMs: 100 });
+
+    await handleChatJob(job, {
+      runClaude: runClaude as unknown as ChatDeps['runClaude'],
+      telegram,
+      config: makeConfig(),
+      sessionStore,
+    });
+
+    expect(sessionStore.saveSession).not.toHaveBeenCalled();
+  });
+
+  it('resumes existing valid session — sends message-only prompt', async () => {
+    const job = makeChatJob({ text: 'follow up question' });
+    const telegram = makeTelegram();
+    const sessionStore = makeSessionStore();
+    sessionStore.getSession.mockResolvedValue({
+      sessionId: 'sess-existing' as ClaudeSessionId,
+      lastActivityAt: new Date().toISOString(), // fresh
+    } satisfies SessionRecord);
+    const runClaude = makeRunClaude({ ok: true, output: 'answer', sessionId: 'sess-existing', durationMs: 100 });
+
+    await handleChatJob(job, {
+      runClaude: runClaude as unknown as ChatDeps['runClaude'],
+      telegram,
+      config: makeConfig(),
+      sessionStore,
+    });
+
+    const callArgs = runClaude.mock.calls[0][0];
+    // Should send just the user message, not personality+message
+    expect(callArgs.prompt).toBe('follow up question');
+    expect(callArgs.resumeSessionId).toBe('sess-existing');
+  });
+
+  it('treats expired session as new — sends full prompt, no resume', async () => {
+    mockReadFile.mockResolvedValue('Be helpful.' as unknown as ArrayBuffer);
+    const job = makeChatJob({ text: 'new question' });
+    const telegram = makeTelegram();
+    const sessionStore = makeSessionStore();
+    // Session from 2 hours ago with 30min timeout
+    sessionStore.getSession.mockResolvedValue({
+      sessionId: 'sess-old' as ClaudeSessionId,
+      lastActivityAt: new Date(Date.now() - 7_200_000).toISOString(),
+    } satisfies SessionRecord);
+    const runClaude = makeRunClaude({ ok: true, output: 'fresh answer', sessionId: 'sess-new', durationMs: 100 });
+
+    await handleChatJob(job, {
+      runClaude: runClaude as unknown as ChatDeps['runClaude'],
+      telegram,
+      config: makeConfig(),
+      sessionStore,
+    });
+
+    const callArgs = runClaude.mock.calls[0][0];
+    expect(callArgs.prompt).toContain('Be helpful.');
+    expect(callArgs.prompt).toContain('new question');
+    expect(callArgs.resumeSessionId).toBeUndefined();
+  });
+
+  it('falls back to fresh session on resume failure', async () => {
+    const job = makeChatJob({ text: 'try again' });
+    const telegram = makeTelegram();
+    const sessionStore = makeSessionStore();
+    sessionStore.getSession.mockResolvedValue({
+      sessionId: 'sess-stale' as ClaudeSessionId,
+      lastActivityAt: new Date().toISOString(),
+    } satisfies SessionRecord);
+
+    // First call (resume) fails, second call (fresh) succeeds
+    const runClaude = vi.fn()
+      .mockResolvedValueOnce({ ok: false, error: 'session not found', timedOut: false })
+      .mockResolvedValueOnce({ ok: true, output: 'recovered', sessionId: 'sess-fresh', durationMs: 100 });
+
+    const result = await handleChatJob(job, {
+      runClaude: runClaude as unknown as ChatDeps['runClaude'],
+      telegram,
+      config: makeConfig(),
+      sessionStore,
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.response).toBe('recovered');
+    }
+    // Should have called runClaude twice
+    expect(runClaude).toHaveBeenCalledTimes(2);
+    // First with resume, second without
+    expect(runClaude.mock.calls[0][0].resumeSessionId).toBe('sess-stale');
+    expect(runClaude.mock.calls[1][0].resumeSessionId).toBeUndefined();
+    // Should have deleted stale session
+    expect(sessionStore.deleteSession).toHaveBeenCalledWith(job.chatId);
+    // Should have saved new session
+    expect(sessionStore.saveSession).toHaveBeenCalledOnce();
   });
 });

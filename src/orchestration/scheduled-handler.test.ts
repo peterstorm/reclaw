@@ -57,6 +57,7 @@ const makeConfig = (overrides: Partial<AppConfig> = {}): AppConfig => ({
   claudeBinaryPath: 'claude',
   chatTimeoutMs: 120_000,
   scheduledTimeoutMs: 300_000,
+  sessionIdleTimeoutMs: 1_800_000,
   ...overrides,
 });
 
@@ -82,7 +83,7 @@ describe('handleScheduledJob', () => {
   it('returns ok result on successful execution', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runClaude = makeRunClaude({ ok: true, output: 'Morning briefing content', durationMs: 1000 });
+    const runClaude = makeRunClaude({ ok: true, output: 'Morning briefing content', sessionId: null, durationMs: 1000 });
 
     const result = await handleScheduledJob(job, {
       runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
@@ -104,7 +105,7 @@ describe('handleScheduledJob', () => {
       validUntil: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
     });
     const telegram = makeTelegram();
-    const runClaude = makeRunClaude({ ok: true, output: 'Should not run', durationMs: 0 });
+    const runClaude = makeRunClaude({ ok: true, output: 'Should not run', sessionId: null, durationMs: 0 });
 
     const result = await handleScheduledJob(job, {
       runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
@@ -126,7 +127,7 @@ describe('handleScheduledJob', () => {
   it('returns error when skill not found in registry', async () => {
     const job = makeScheduledJob({ skillId: makeSkillId('nonexistent-skill') });
     const telegram = makeTelegram();
-    const runClaude = makeRunClaude({ ok: true, output: 'Should not run', durationMs: 0 });
+    const runClaude = makeRunClaude({ ok: true, output: 'Should not run', sessionId: null, durationMs: 0 });
 
     const result = await handleScheduledJob(job, {
       runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
@@ -147,7 +148,7 @@ describe('handleScheduledJob', () => {
 
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runClaude = makeRunClaude({ ok: true, output: 'Briefing without personality', durationMs: 500 });
+    const runClaude = makeRunClaude({ ok: true, output: 'Briefing without personality', sessionId: null, durationMs: 500 });
 
     const result = await handleScheduledJob(job, {
       runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
@@ -167,7 +168,7 @@ describe('handleScheduledJob', () => {
 
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runClaude = makeRunClaude({ ok: true, output: 'Done', durationMs: 100 });
+    const runClaude = makeRunClaude({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
 
     await handleScheduledJob(job, {
       runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
@@ -188,7 +189,7 @@ describe('handleScheduledJob', () => {
   it('uses scheduled permission flags (FR-011)', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runClaude = makeRunClaude({ ok: true, output: 'Done', durationMs: 100 });
+    const runClaude = makeRunClaude({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
 
     await handleScheduledJob(job, {
       runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
@@ -204,7 +205,7 @@ describe('handleScheduledJob', () => {
   it('uses scheduled timeout and workspace cwd (FR-016)', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runClaude = makeRunClaude({ ok: true, output: 'Done', durationMs: 100 });
+    const runClaude = makeRunClaude({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
 
     await handleScheduledJob(job, {
       runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
@@ -221,7 +222,7 @@ describe('handleScheduledJob', () => {
   it('sends result chunks to all authorized users', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runClaude = makeRunClaude({ ok: true, output: 'Briefing result', durationMs: 500 });
+    const runClaude = makeRunClaude({ ok: true, output: 'Briefing result', sessionId: null, durationMs: 500 });
 
     await handleScheduledJob(job, {
       runClaude: runClaude as unknown as ScheduledDeps['runClaude'],

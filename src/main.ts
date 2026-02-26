@@ -4,6 +4,7 @@ import type { TelegramAdapter } from './infra/telegram.js';
 import type { createTelegramAdapter } from './infra/telegram.js';
 import type { Queues } from './infra/queue.js';
 import type { SkillWatcher } from './infra/skill-watcher.js';
+import type { SessionStore } from './infra/session-store.js';
 import type { CronScheduler } from './orchestration/scheduler.js';
 import type { Workers } from './orchestration/worker.js';
 import type { Result, ScheduledJob, ChatJob, JobResult } from './core/types.js';
@@ -29,6 +30,10 @@ export type BootstrapDeps = {
   readonly runClaudeFn?: typeof runClaude;
   readonly handleChatJobFn?: typeof handleChatJob;
   readonly handleScheduledJobFn?: typeof handleScheduledJob;
+  readonly createSessionStoreFn?: (redis: { host: string; port: number }) => {
+    sessionStore: SessionStore;
+    disconnect: () => Promise<void>;
+  };
 };
 
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
@@ -118,13 +123,40 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
     port: config.redisPort,
   });
 
-  // ── 4. Create skill watcher ────────────────────────────────────────────────
+  // ── 4. Create session store ────────────────────────────────────────────────
+  const createSessionStoreFn = injected.createSessionStoreFn ?? (async (redis: { host: string; port: number }) => {
+    const { default: Redis } = await import('ioredis');
+    const ioredis = new Redis({ host: redis.host, port: redis.port, maxRetriesPerRequest: null });
+    const { createSessionStore } = await import('./infra/session-store.js');
+    // Adapt ioredis to our minimal RedisClient interface
+    const client: import('./infra/session-store.js').RedisClient = {
+      get: (key) => ioredis.get(key),
+      set: (key, value, options) => {
+        if (options?.PX) return ioredis.set(key, value, 'PX', options.PX);
+        return ioredis.set(key, value);
+      },
+      del: (key) => ioredis.del(key),
+    };
+    return {
+      sessionStore: createSessionStore(client),
+      disconnect: () => ioredis.quit().then(() => {}),
+    };
+  });
+
+  const { sessionStore, disconnect: disconnectRedis } = await createSessionStoreFn({
+    host: config.redisHost,
+    port: config.redisPort,
+  });
+
+  console.info('[main] Session store created');
+
+  // ── 5. Create skill watcher ────────────────────────────────────────────────
   const skillWatcher: SkillWatcher = createSkillWatcherFn(config.skillsDir);
 
-  // ── 5. Create scheduler ────────────────────────────────────────────────────
+  // ── 6. Create scheduler ────────────────────────────────────────────────────
   const scheduler: CronScheduler = createSchedulerFn(queues.enqueueScheduled);
 
-  // ── 6. Wire skill watcher onChange to scheduler.reconcile ─────────────────
+  // ── 7. Wire skill watcher onChange to scheduler.reconcile ─────────────────
   skillWatcher.onRegistryChange((registry) => {
     try {
       scheduler.reconcile(registry);
@@ -133,10 +165,10 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
     }
   });
 
-  // ── 7. Create workers ──────────────────────────────────────────────────────
+  // ── 8. Create workers ──────────────────────────────────────────────────────
   const workers: Workers = createWorkersFn({
     redisConnection: { host: config.redisHost, port: config.redisPort },
-    chatHandler: (job) => handleChatJobFn(job, { runClaude: runClaudeFn, telegram, config }),
+    chatHandler: (job) => handleChatJobFn(job, { runClaude: runClaudeFn, telegram, config, sessionStore }),
     scheduledHandler: (job) =>
       handleScheduledJobFn(job, {
         runClaude: runClaudeFn,
@@ -148,11 +180,21 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
     config,
   });
 
-  // ── 8. Wire Telegram onMessage → enqueue chat job ─────────────────────────
+  // ── 9. Wire Telegram onMessage → enqueue chat job or handle /new ──────────
   telegram.onMessage((msg) => {
     const userIdResult = makeTelegramUserId(msg.userId);
     if (!userIdResult.ok) {
       console.error(`[main] Invalid userId from Telegram: ${userIdResult.error}`);
+      return;
+    }
+
+    // Handle /new command — clear session
+    if (msg.text.trim() === '/new') {
+      sessionStore.deleteSession(msg.chatId).then(() => {
+        return telegram.sendMessage(msg.chatId, 'Session cleared. Next message starts a fresh conversation.');
+      }).catch((err: unknown) => {
+        console.error('[main] Failed to handle /new command:', err);
+      });
       return;
     }
 
@@ -181,13 +223,13 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
     });
   });
 
-  // ── 9. Start workers ───────────────────────────────────────────────────────
+  // ── 10. Start workers ──────────────────────────────────────────────────────
   workers.start();
 
-  // ── 10. Start skill watcher — triggers initial load + reconcile ────────────
+  // ── 11. Start skill watcher — triggers initial load + reconcile ────────────
   skillWatcher.start();
 
-  // ── 11. Start Telegram bot ─────────────────────────────────────────────────
+  // ── 12. Start Telegram bot ─────────────────────────────────────────────────
   await telegram.start();
 
   console.info('[main] Agent started');
@@ -207,6 +249,7 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
       telegram.stop(),
     ]);
     await Promise.all([queues.chat.close(), queues.scheduled.close()]);
+    await disconnectRedis();
     console.info('[main] Shutdown complete');
   };
 

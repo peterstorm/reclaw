@@ -6,7 +6,7 @@ import { parseStreamJsonOutput, runClaude, type SpawnFn } from './claude-subproc
 describe('parseStreamJsonOutput (pure)', () => {
   it('extracts result from a single result message', () => {
     const line = JSON.stringify({ type: 'result', result: 'Hello from Claude' });
-    expect(parseStreamJsonOutput(line)).toBe('Hello from Claude');
+    expect(parseStreamJsonOutput(line)).toEqual({ text: 'Hello from Claude', sessionId: null });
   });
 
   it('returns the last result message when multiple result messages exist', () => {
@@ -15,7 +15,7 @@ describe('parseStreamJsonOutput (pure)', () => {
       JSON.stringify({ type: 'result', result: 'first result' }),
       JSON.stringify({ type: 'result', result: 'final result' }),
     ].join('\n');
-    expect(parseStreamJsonOutput(lines)).toBe('final result');
+    expect(parseStreamJsonOutput(lines).text).toBe('final result');
   });
 
   it('ignores non-result message types', () => {
@@ -23,28 +23,28 @@ describe('parseStreamJsonOutput (pure)', () => {
       JSON.stringify({ type: 'assistant', content: 'some content' }),
       JSON.stringify({ type: 'tool_use', name: 'bash', input: {} }),
     ].join('\n');
-    expect(parseStreamJsonOutput(lines)).toBeNull();
+    expect(parseStreamJsonOutput(lines).text).toBeNull();
   });
 
   it('skips non-JSON lines without throwing', () => {
     const lines = ['not json at all', JSON.stringify({ type: 'result', result: 'ok' })].join('\n');
-    expect(parseStreamJsonOutput(lines)).toBe('ok');
+    expect(parseStreamJsonOutput(lines).text).toBe('ok');
   });
 
-  it('returns null for empty output', () => {
-    expect(parseStreamJsonOutput('')).toBeNull();
+  it('returns null text for empty output', () => {
+    expect(parseStreamJsonOutput('').text).toBeNull();
   });
 
-  it('returns null for output with no result type', () => {
+  it('returns null text for output with no result type', () => {
     const lines = [
       JSON.stringify({ type: 'system', content: 'starting' }),
     ].join('\n');
-    expect(parseStreamJsonOutput(lines)).toBeNull();
+    expect(parseStreamJsonOutput(lines).text).toBeNull();
   });
 
   it('handles result message with non-string result field', () => {
     const line = JSON.stringify({ type: 'result', result: 42 });
-    expect(parseStreamJsonOutput(line)).toBeNull();
+    expect(parseStreamJsonOutput(line).text).toBeNull();
   });
 
   it('handles blank lines between JSON objects', () => {
@@ -53,13 +53,25 @@ describe('parseStreamJsonOutput (pure)', () => {
       JSON.stringify({ type: 'result', result: 'answer' }),
       '',
     ].join('\n');
-    expect(parseStreamJsonOutput(lines)).toBe('answer');
+    expect(parseStreamJsonOutput(lines).text).toBe('answer');
   });
 
   it('handles multi-line result text', () => {
     const result = 'Line one\nLine two\nLine three';
     const line = JSON.stringify({ type: 'result', result });
-    expect(parseStreamJsonOutput(line)).toBe(result);
+    expect(parseStreamJsonOutput(line).text).toBe(result);
+  });
+
+  it('extracts session_id from result message', () => {
+    const line = JSON.stringify({ type: 'result', result: 'hello', session_id: 'sess-abc-123' });
+    const parsed = parseStreamJsonOutput(line);
+    expect(parsed.text).toBe('hello');
+    expect(parsed.sessionId).toBe('sess-abc-123');
+  });
+
+  it('returns null sessionId when not present', () => {
+    const line = JSON.stringify({ type: 'result', result: 'hello' });
+    expect(parseStreamJsonOutput(line).sessionId).toBeNull();
   });
 });
 
@@ -119,7 +131,7 @@ function makeMockSpawn(options: {
 
 describe('runClaude', () => {
   it('returns ok result on successful exit with stream-json output', async () => {
-    const resultLine = JSON.stringify({ type: 'result', result: 'Hello world' });
+    const resultLine = JSON.stringify({ type: 'result', result: 'Hello world', session_id: 'sess-1' });
     const { spawn } = makeMockSpawn({ stdout: resultLine, exitCode: 0 });
 
     const result = await runClaude({
@@ -133,6 +145,7 @@ describe('runClaude', () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.output).toBe('Hello world');
+      expect(result.sessionId).toBe('sess-1');
       expect(result.durationMs).toBeGreaterThanOrEqual(0);
     }
   });
@@ -323,5 +336,57 @@ describe('runClaude', () => {
     expect(args).toContain('Read,Write,Bash,recall,remember');
     expect(args).toContain('--disallowedTools');
     expect(args).toContain('WebSearch');
+  });
+
+  it('passes --resume flag when resumeSessionId is set', async () => {
+    const resultLine = JSON.stringify({ type: 'result', result: 'continued', session_id: 'sess-1' });
+    const spawnMock = vi.fn().mockImplementation(makeMockSpawn({ stdout: resultLine, exitCode: 0 }).spawn);
+
+    await runClaude({
+      prompt: 'follow up',
+      cwd: '/workspace',
+      permissionFlags: [],
+      timeoutMs: 5000,
+      resumeSessionId: 'sess-1',
+      _spawn: spawnMock,
+    });
+
+    const [args] = spawnMock.mock.calls[0];
+    expect(args).toContain('--resume');
+    expect(args).toContain('sess-1');
+  });
+
+  it('does not pass --resume when resumeSessionId is not set', async () => {
+    const resultLine = JSON.stringify({ type: 'result', result: 'ok' });
+    const spawnMock = vi.fn().mockImplementation(makeMockSpawn({ stdout: resultLine, exitCode: 0 }).spawn);
+
+    await runClaude({
+      prompt: 'fresh',
+      cwd: '/workspace',
+      permissionFlags: [],
+      timeoutMs: 5000,
+      _spawn: spawnMock,
+    });
+
+    const [args] = spawnMock.mock.calls[0];
+    expect(args).not.toContain('--resume');
+  });
+
+  it('returns null sessionId when result has no session_id', async () => {
+    const resultLine = JSON.stringify({ type: 'result', result: 'ok' });
+    const { spawn } = makeMockSpawn({ stdout: resultLine, exitCode: 0 });
+
+    const result = await runClaude({
+      prompt: 'test',
+      cwd: '/workspace',
+      permissionFlags: [],
+      timeoutMs: 5000,
+      _spawn: spawn,
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.sessionId).toBeNull();
+    }
   });
 });

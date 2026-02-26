@@ -1,0 +1,76 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { createSessionStore, type RedisClient } from './session-store.js';
+import { serializeSessionRecord, type SessionRecord } from '../core/session.js';
+import type { ClaudeSessionId } from '../core/types.js';
+
+const SESSION_ID = 'sess-abc-123' as ClaudeSessionId;
+const CHAT_ID = 456;
+const TTL_MS = 1_800_000;
+
+function makeMockRedis(): RedisClient & {
+  get: ReturnType<typeof vi.fn>;
+  set: ReturnType<typeof vi.fn>;
+  del: ReturnType<typeof vi.fn>;
+} {
+  return {
+    get: vi.fn().mockResolvedValue(null),
+    set: vi.fn().mockResolvedValue('OK'),
+    del: vi.fn().mockResolvedValue(1),
+  };
+}
+
+describe('createSessionStore', () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+
+  beforeEach(() => {
+    redis = makeMockRedis();
+  });
+
+  describe('getSession', () => {
+    it('returns null when no session exists', async () => {
+      const store = createSessionStore(redis);
+      const result = await store.getSession(CHAT_ID);
+      expect(result).toBeNull();
+      expect(redis.get).toHaveBeenCalledWith('reclaw-session-456');
+    });
+
+    it('returns parsed session record when exists', async () => {
+      const record: SessionRecord = { sessionId: SESSION_ID, lastActivityAt: '2026-02-26T10:00:00Z' };
+      redis.get.mockResolvedValue(serializeSessionRecord(record));
+      const store = createSessionStore(redis);
+      const result = await store.getSession(CHAT_ID);
+      expect(result).not.toBeNull();
+      expect(result!.sessionId).toBe(SESSION_ID);
+    });
+
+    it('deletes corrupted record and returns null', async () => {
+      redis.get.mockResolvedValue('not valid json{{{');
+      const store = createSessionStore(redis);
+      const result = await store.getSession(CHAT_ID);
+      expect(result).toBeNull();
+      expect(redis.del).toHaveBeenCalledWith('reclaw-session-456');
+    });
+  });
+
+  describe('saveSession', () => {
+    it('saves serialized record with TTL', async () => {
+      const record: SessionRecord = { sessionId: SESSION_ID, lastActivityAt: '2026-02-26T10:00:00Z' };
+      const store = createSessionStore(redis);
+      await store.saveSession(CHAT_ID, record, TTL_MS);
+
+      expect(redis.set).toHaveBeenCalledWith(
+        'reclaw-session-456',
+        serializeSessionRecord(record),
+        { PX: TTL_MS },
+      );
+    });
+  });
+
+  describe('deleteSession', () => {
+    it('deletes the session key', async () => {
+      const store = createSessionStore(redis);
+      await store.deleteSession(CHAT_ID);
+      expect(redis.del).toHaveBeenCalledWith('reclaw-session-456');
+    });
+  });
+});

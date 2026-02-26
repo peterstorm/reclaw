@@ -24,27 +24,34 @@ export type ClaudeOptions = {
   readonly permissionFlags: readonly string[];
   readonly timeoutMs: number;
   readonly env?: Record<string, string>;
+  /** Resume an existing Claude CLI session instead of starting fresh. */
+  readonly resumeSessionId?: string;
   /** Override the spawn implementation (for testing). Defaults to Bun.spawn. */
   readonly _spawn?: SpawnFn;
 };
 
 export type ClaudeResult =
-  | { readonly ok: true; readonly output: string; readonly durationMs: number }
+  | { readonly ok: true; readonly output: string; readonly sessionId: string | null; readonly durationMs: number }
   | { readonly ok: false; readonly error: string; readonly timedOut: boolean };
 
 // ─── Stream-JSON parsing (pure) ───────────────────────────────────────────────
+
+export type ParsedClaudeOutput = {
+  readonly text: string | null;
+  readonly sessionId: string | null;
+};
 
 /**
  * Parse Claude's stream-json output.
  *
  * Each line is a JSON object. We look for objects with type === 'result'
- * and extract their content as the final assistant response.
- *
- * Returns the extracted text, or null if no result message found.
+ * and extract their content as the final assistant response, plus the
+ * session_id for multi-turn conversation support.
  */
-export function parseStreamJsonOutput(rawOutput: string): string | null {
+export function parseStreamJsonOutput(rawOutput: string): ParsedClaudeOutput {
   const lines = rawOutput.split('\n');
   let resultText: string | null = null;
+  let sessionId: string | null = null;
 
   for (const line of lines) {
     const trimmed = line.trim();
@@ -65,14 +72,16 @@ export function parseStreamJsonOutput(rawOutput: string): string | null {
       (parsed as Record<string, unknown>)['type'] === 'result'
     ) {
       const record = parsed as Record<string, unknown>;
-      // result message has a top-level "result" field with the text
       if (typeof record['result'] === 'string') {
         resultText = record['result'];
+      }
+      if (typeof record['session_id'] === 'string') {
+        sessionId = record['session_id'];
       }
     }
   }
 
-  return resultText;
+  return { text: resultText, sessionId };
 }
 
 // ─── Subprocess runner (imperative shell) ────────────────────────────────────
@@ -88,7 +97,7 @@ export function parseStreamJsonOutput(rawOutput: string): string | null {
  * Prompt is sent via stdin. stdout is collected and stream-json parsed.
  */
 export async function runClaude(options: ClaudeOptions): Promise<ClaudeResult> {
-  const { prompt, cwd, permissionFlags, timeoutMs, env, _spawn } = options;
+  const { prompt, cwd, permissionFlags, timeoutMs, env, resumeSessionId, _spawn } = options;
 
   // Allow injecting a spawn function for tests; default to Bun.spawn at runtime.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -99,6 +108,7 @@ export async function runClaude(options: ClaudeOptions): Promise<ClaudeResult> {
     '-p',
     '--output-format',
     'stream-json',
+    ...(resumeSessionId ? ['--resume', resumeSessionId] : []),
     ...permissionFlags,
   ];
 
@@ -186,7 +196,8 @@ export async function runClaude(options: ClaudeOptions): Promise<ClaudeResult> {
     };
   }
 
-  const output = parseStreamJsonOutput(rawOutput) ?? rawOutput.trim();
+  const parsed = parseStreamJsonOutput(rawOutput);
+  const output = parsed.text ?? rawOutput.trim();
 
-  return { ok: true, output, durationMs };
+  return { ok: true, output, sessionId: parsed.sessionId, durationMs };
 }
