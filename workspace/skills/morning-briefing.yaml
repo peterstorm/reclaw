@@ -31,9 +31,9 @@ promptTemplate: |
   - Wind speed and gusts
   - Clear recommendation: what to wear, whether to bring rain gear
 
-  **Step 2 — Calendar:** Read today's events from local iCloud calendar files:
-  - Calendar directory: ~/.local/share/calendars/icloud/
-  - Each subdirectory is a calendar, each .ics file is an event
+  **Step 2 — Calendar:** Read today's events from the shared "J & P" iCloud calendar:
+  - Calendar directory: ~/.local/share/calendars/icloud/D8C2180E-3AD0-406E-9B55-23DA5F2CC674/
+  - Each .ics file is an event
   - Parse the VEVENT blocks: look for DTSTART/DTEND matching today ({{date}})
   - For recurring events (RRULE), check if today matches the recurrence pattern
   - List each event with: time, title (SUMMARY), location (LOCATION if present)
