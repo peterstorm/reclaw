@@ -13,7 +13,7 @@ export const AppConfigSchema = z.object({
   personalityPath: z.string().default('/workspace/personality.md'),
   obsidianVaultPath: z.string().optional(),
   claudeBinaryPath: z.string().default('claude'),
-  chatTimeoutMs: z.number().int().positive().default(120_000),
+  chatTimeoutMs: z.number().int().positive().default(3_600_000), // 1hr
   scheduledTimeoutMs: z.number().int().positive().default(300_000),
   geminiApiKey: z.string().optional(),
   sessionIdleTimeoutMs: z.number().int().positive().default(1_800_000), // 30min

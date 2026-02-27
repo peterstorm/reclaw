@@ -1,6 +1,7 @@
 import { Bot } from 'grammy';
 import type { TelegramUserId } from '../core/types.js';
 import { splitMessage } from '../core/message-splitter.js';
+import { markdownToTelegramHtml } from '../core/markdown-to-telegram.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -8,6 +9,7 @@ export type TelegramAdapter = {
   readonly start: () => Promise<void>;
   readonly stop: () => Promise<void>;
   readonly sendMessage: (chatId: number, text: string) => Promise<void>;
+  readonly sendMarkdown: (chatId: number, markdown: string) => Promise<void>;
   readonly sendChunkedMessage: (chatId: number, chunks: readonly string[]) => Promise<void>;
   readonly onMessage: (
     handler: (msg: { userId: number; chatId: number; text: string }) => void,
@@ -81,7 +83,13 @@ export function createTelegramAdapter(config: {
   });
 
   const sendMessage = async (chatId: number, text: string): Promise<void> => {
-    await bot.api.sendMessage(chatId, text);
+    try {
+      const html = markdownToTelegramHtml(text);
+      await bot.api.sendMessage(chatId, html, { parse_mode: 'HTML' });
+    } catch {
+      // Fallback to plain text if HTML conversion/sending fails
+      await bot.api.sendMessage(chatId, text);
+    }
   };
 
   /**

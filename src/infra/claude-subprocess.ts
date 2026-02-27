@@ -114,6 +114,10 @@ export async function runClaude(options: ClaudeOptions): Promise<ClaudeResult> {
 
   const startMs = Date.now();
 
+  // Remove Claude Code env vars that block nested sessions.
+  // Setting CLAUDECODE='' is insufficient — Claude Code checks existence, not value.
+  const { CLAUDECODE: _cc, CLAUDE_CODE_ENTRYPOINT: _cce, ...cleanEnv } = process.env;
+
   let proc: ReturnType<SpawnFn>;
   try {
     proc = spawnFn(args, {
@@ -122,7 +126,7 @@ export async function runClaude(options: ClaudeOptions): Promise<ClaudeResult> {
       stdout: 'pipe',
       stderr: 'pipe',
       env: {
-        ...process.env,
+        ...cleanEnv,
         ...(env ?? {}),
       },
     });

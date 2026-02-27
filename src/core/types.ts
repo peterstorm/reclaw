@@ -111,8 +111,18 @@ export type ScheduledJob = {
   readonly validUntil: string; // ISO 8601 — if processed after this, discard
 };
 
+/** A reminder job: one-off delayed message, fires once. */
+export type ReminderJob = {
+  readonly kind: 'reminder';
+  readonly id: JobId;
+  readonly chatId: number;
+  readonly text: string;
+  readonly createdAt: string; // ISO 8601
+  readonly delayMs: number; // BullMQ delay in milliseconds
+};
+
 /** All job variants. */
-export type Job = ChatJob | ScheduledJob;
+export type Job = ChatJob | ScheduledJob | ReminderJob;
 
 // ─── Job Type Guards ───────────────────────────────────────────────────────────
 
@@ -122,6 +132,10 @@ export function isChatJob(job: Job): job is ChatJob {
 
 export function isScheduledJob(job: Job): job is ScheduledJob {
   return job.kind === 'scheduled';
+}
+
+export function isReminderJob(job: Job): job is ReminderJob {
+  return job.kind === 'reminder';
 }
 
 // ─── Job Factory Functions ─────────────────────────────────────────────────────
@@ -175,6 +189,35 @@ export function makeScheduledJob(params: {
     skillId: params.skillId,
     triggeredAt: params.triggeredAt,
     validUntil: params.validUntil,
+  });
+}
+
+export function makeReminderJob(params: {
+  id: JobId;
+  chatId: number;
+  text: string;
+  createdAt: string;
+  delayMs: number;
+}): Result<ReminderJob, string> {
+  if (params.text.trim().length === 0) {
+    return err('Reminder text must not be empty.');
+  }
+  if (!Number.isInteger(params.chatId)) {
+    return err(`chatId must be an integer, got: ${params.chatId}`);
+  }
+  if (!isIso8601(params.createdAt)) {
+    return err(`createdAt must be ISO 8601, got: ${params.createdAt}`);
+  }
+  if (!Number.isInteger(params.delayMs) || params.delayMs <= 0) {
+    return err(`delayMs must be a positive integer, got: ${params.delayMs}`);
+  }
+  return ok({
+    kind: 'reminder',
+    id: params.id,
+    chatId: params.chatId,
+    text: params.text,
+    createdAt: params.createdAt,
+    delayMs: params.delayMs,
   });
 }
 

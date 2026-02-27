@@ -31,7 +31,8 @@ type CronEntry = {
  * Pure: takes skillId + triggeredAt ISO string, returns a deterministic ID.
  */
 function makeScheduledJobId(skillId: SkillId, triggeredAt: string): JobId {
-  const raw = `scheduled:${skillId}:${triggeredAt}`;
+  const sanitized = triggeredAt.replaceAll(':', '-');
+  const raw = `scheduled:${skillId}:${sanitized}`;
   const result = makeJobId(raw);
   // raw is never empty, so this always succeeds
   if (!result.ok) throw new Error(`Unexpected JobId error: ${result.error}`);

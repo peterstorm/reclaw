@@ -254,10 +254,12 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
   };
 
   const handleSignal = (): void => {
-    shutdown().catch((err: unknown) => {
-      console.error('[main] Shutdown error:', err);
-      process.exit(1);
-    });
+    shutdown()
+      .then(() => process.exit(0))
+      .catch((err: unknown) => {
+        console.error('[main] Shutdown error:', err);
+        process.exit(1);
+      });
   };
 
   process.once('SIGTERM', handleSignal);

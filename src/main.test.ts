@@ -341,6 +341,7 @@ describe('bootstrap', () => {
       sigtermHandler?.();
       await new Promise((r) => setTimeout(r, 10));
       expect(mockWorkers.stop).toHaveBeenCalledOnce();
+      expect(processExitSpy).toHaveBeenCalledWith(0);
     });
 
     it('SIGINT triggers shutdown', async () => {
@@ -350,6 +351,7 @@ describe('bootstrap', () => {
       sigintHandler?.();
       await new Promise((r) => setTimeout(r, 10));
       expect(mockWorkers.stop).toHaveBeenCalledOnce();
+      expect(processExitSpy).toHaveBeenCalledWith(0);
     });
   });
 

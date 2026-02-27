@@ -1,13 +1,15 @@
 import { Queue } from 'bullmq';
-import type { ChatJob, Job, ScheduledJob } from '../core/types.js';
+import type { ChatJob, Job, ReminderJob, ScheduledJob } from '../core/types.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type Queues = {
   readonly chat: Queue;
   readonly scheduled: Queue;
+  readonly reminder: Queue;
   readonly enqueueChat: (job: Extract<Job, { kind: 'chat' }>) => Promise<void>;
   readonly enqueueScheduled: (job: Extract<Job, { kind: 'scheduled' }>) => Promise<void>;
+  readonly enqueueReminder: (job: ReminderJob) => Promise<void>;
 };
 
 // ─── Retry configuration (FR-014) ────────────────────────────────────────────
@@ -64,7 +66,19 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
     await scheduled.add(job.id, job, { jobId: job.id });
   };
 
-  return { chat, scheduled, enqueueChat, enqueueScheduled } as const;
+  const reminder = new Queue('reclaw-reminder', {
+    connection,
+    defaultJobOptions: retryOptions,
+  });
+  reminder.on('error', (err) => {
+    console.error('[queue:reminder] error', err);
+  });
+
+  const enqueueReminder = async (job: ReminderJob): Promise<void> => {
+    await reminder.add(job.id, job, { jobId: job.id, delay: job.delayMs });
+  };
+
+  return { chat, scheduled, reminder, enqueueChat, enqueueScheduled, enqueueReminder } as const;
 }
 
 export { retryOptions };
