@@ -1,5 +1,5 @@
 import { makeChatJob, makeJobId, makeReminderJob, makeTelegramUserId } from './core/types.js';
-import { parseRemindCommand, formatDuration } from './core/reminder.js';
+import { parseRemindCommand, formatDuration, formatAbsoluteTime } from './core/reminder.js';
 import type { AppConfig } from './infra/config.js';
 import type { TelegramAdapter } from './infra/telegram.js';
 import type { createTelegramAdapter } from './infra/telegram.js';
@@ -251,8 +251,10 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
 
       queues.enqueueReminder(reminderResult.value)
         .then(() => {
-          const duration = formatDuration(parseResult.value.delayMs);
-          return telegram.sendMessage(msg.chatId, `Got it — I'll remind you in ${duration}.`);
+          const confirmMsg = parseResult.value.isAbsoluteTime
+            ? `Got it — I'll remind you at ${formatAbsoluteTime(parseResult.value.delayMs)}.`
+            : `Got it — I'll remind you in ${formatDuration(parseResult.value.delayMs)}.`;
+          return telegram.sendMessage(msg.chatId, confirmMsg);
         })
         .catch((err: unknown) => {
           console.error('[main] Failed to enqueue reminder job:', err);
