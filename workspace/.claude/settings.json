@@ -7,7 +7,11 @@
       "Read(path:/home/peterstorm/.dotfiles/**)",
       "Grep(path:/home/peterstorm/.dotfiles/**)",
       "Glob(path:/home/peterstorm/.dotfiles/**)",
-      "Edit(path:/home/peterstorm/.dotfiles/**)"
+      "Edit(path:/home/peterstorm/.dotfiles/**)",
+      "Read(path:/home/peterstorm/dev/notes/remotevault/**)",
+      "Grep(path:/home/peterstorm/dev/notes/remotevault/**)",
+      "Glob(path:/home/peterstorm/dev/notes/remotevault/**)",
+      "Edit(path:/home/peterstorm/dev/notes/remotevault/**)"
     ]
   }
 }

@@ -16,8 +16,15 @@ Persistent memory across sessions. Use `/recall` before tasks to check for prior
 ## Obsidian Vault (plugin)
 Access to the user's Obsidian knowledge base. Use `/obsidian-vault` and related skills (`/add-note`, `/find-links`, `/organize-vault`, etc.) for note management.
 
+## Obsidian Reclaw Docs
+Project documentation in the Obsidian vault at `/home/peterstorm/dev/notes/remotevault/reclaw/`. Includes architecture, decisions log, runbook, todo, bugs, ideas, changelog, and skill registry. Use `/obsidian-vault` skills to maintain these notes. Keep them updated when making significant changes to reclaw.
+
 ## Personality
 Defined in `personality.md`. Edit it if the user asks to change assistant behavior.
+
+# Conventions
+
+- **"Push" always means the parent reclaw repo** at `/home/peterstorm/dev/claude-plugins/reclaw/`, not the workspace sub-repo. Stage, commit, and `git push` from there.
 
 # Startup Checklist
 1. Cortex memory surface is injected via hooks — check it for recent context.

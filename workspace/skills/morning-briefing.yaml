@@ -1,6 +1,6 @@
 id: morning-briefing
 name: Morning Briefing
-schedule: "0 7 * * *"
+schedule: "30 6 * * 1-5"
 permissionProfile: scheduled
 validityWindowMinutes: 60
 timeout: 300
@@ -9,10 +9,40 @@ promptTemplate: |
 
   Today is {{dayOfWeek}}, {{date}}.
 
-  Please provide a personalized morning briefing. Include:
-  - A brief weather summary if you can determine the location from memory
-  - Any calendar events or reminders for today from the Obsidian vault
-  - Key priorities or tasks for the day
-  - A short motivational note to start the day well
+  Please provide a personalized morning briefing. The user bikes to work at 07:30 from Mjøsensgade 13, 2300 København to Fadet 4, Carlsbergbyen (~4km).
 
-  Lead with the most important information. Be concise and actionable.
+  **Step 0 — Personal context:** Before anything else, check cortex memory for recent context:
+  1. Run `/recall` with a broad query like "yesterday" or "recent conversations" to surface what the user talked about in the last day or two.
+  2. Look for: ongoing projects, things they were stuck on, personal plans they mentioned, decisions they made, or anything emotionally relevant (excitement about something, frustrations, etc).
+  3. Use this to craft a **warm, personal opening** — not a generic greeting. Reference something specific. Examples:
+     - "Morning — you were deep in that multi-user isolation design yesterday, hope it clicked overnight."
+     - "Happy Friday — you mentioned wanting to try that new restaurant this weekend, enjoy it if you do."
+     - "Good morning — the calendar sync was giving you grief last time, looks like it's working now though."
+  4. If cortex has nothing recent or relevant, fall back to a simple day-aware greeting that matches the energy of the day (Monday = fresh start, Wednesday = midweek, Friday = home stretch, etc).
+  5. Keep it to 1-2 sentences max. Casual, not cheesy.
+
+  **Step 1 — Commute weather:** Run this curl command to get hourly weather for the route:
+  ```
+  curl -s "https://api.open-meteo.com/v1/forecast?latitude=55.665&longitude=12.57&hourly=temperature_2m,apparent_temperature,precipitation_probability,precipitation,wind_speed_10m,wind_gusts_10m,weather_code&timezone=Europe/Copenhagen&forecast_days=1"
+  ```
+  From the JSON response, extract the 07:00 and 08:00 hours and summarize:
+  - Temperature and feels-like
+  - Rain probability and expected mm
+  - Wind speed and gusts
+  - Clear recommendation: what to wear, whether to bring rain gear
+
+  **Step 2 — Calendar:** Read today's events from local iCloud calendar files:
+  - Calendar directory: ~/.local/share/calendars/icloud/
+  - Each subdirectory is a calendar, each .ics file is an event
+  - Parse the VEVENT blocks: look for DTSTART/DTEND matching today ({{date}})
+  - For recurring events (RRULE), check if today matches the recurrence pattern
+  - List each event with: time, title (SUMMARY), location (LOCATION if present)
+  - Flag any early morning meetings that would affect the 07:30 commute
+  - If no calendar files exist yet, just note that calendar sync is pending
+
+  **Step 3 — Day overview:** Include:
+  - The calendar events from step 2
+  - Key priorities or tasks from the Obsidian vault
+  - Any open items from the reclaw todo at ~/dev/notes/remotevault/reclaw/todo.md
+
+  Lead with the commute weather. Be concise and actionable.
