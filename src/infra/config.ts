@@ -13,7 +13,6 @@ export const AppConfigSchema = z.object({
   personalityPath: z.string().default('/workspace/personality.md'),
   obsidianVaultPath: z.string().optional(),
   claudeBinaryPath: z.string().default('claude'),
-  chatTimeoutMs: z.number().int().positive().default(3_600_000), // 1hr
   scheduledTimeoutMs: z.number().int().positive().default(300_000),
   geminiApiKey: z.string().optional(),
   sessionIdleTimeoutMs: z.number().int().positive().default(1_800_000), // 30min
@@ -78,7 +77,6 @@ export function parseEnvToRaw(
     personalityPath: env['PERSONALITY_PATH'],
     obsidianVaultPath: env['OBSIDIAN_VAULT_PATH'],
     claudeBinaryPath: env['CLAUDE_BINARY_PATH'],
-    chatTimeoutMs: parseNumericEnv('CHAT_TIMEOUT_MS', env['CHAT_TIMEOUT_MS'], errors),
     scheduledTimeoutMs: parseNumericEnv(
       'SCHEDULED_TIMEOUT_MS',
       env['SCHEDULED_TIMEOUT_MS'],

@@ -12,7 +12,6 @@ describe('parseEnvToRaw', () => {
       ...VALID_ENV,
       REDIS_HOST: 'redis.local',
       REDIS_PORT: '6380',
-      CHAT_TIMEOUT_MS: '60000',
       SCHEDULED_TIMEOUT_MS: '180000',
     });
     expect(errors).toHaveLength(0);
@@ -20,7 +19,6 @@ describe('parseEnvToRaw', () => {
     expect(raw['authorizedUserIds']).toEqual([42]);
     expect(raw['redisHost']).toBe('redis.local');
     expect(raw['redisPort']).toBe(6380);
-    expect(raw['chatTimeoutMs']).toBe(60000);
     expect(raw['scheduledTimeoutMs']).toBe(180000);
   });
 
@@ -28,7 +26,6 @@ describe('parseEnvToRaw', () => {
     const { raw, errors } = parseEnvToRaw(VALID_ENV);
     expect(errors).toHaveLength(0);
     expect(raw['redisPort']).toBeUndefined();
-    expect(raw['chatTimeoutMs']).toBeUndefined();
   });
 
   it('collects error for non-integer REDIS_PORT', () => {
@@ -66,7 +63,6 @@ describe('loadConfig', () => {
       expect(result.value.skillsDir).toBe('/workspace/skills');
       expect(result.value.personalityPath).toBe('/workspace/personality.md');
       expect(result.value.claudeBinaryPath).toBe('claude');
-      expect(result.value.chatTimeoutMs).toBe(120_000);
       expect(result.value.scheduledTimeoutMs).toBe(300_000);
       expect(result.value.sessionIdleTimeoutMs).toBe(1_800_000);
     }
@@ -162,7 +158,6 @@ describe('loadConfig', () => {
       SKILLS_DIR: '/custom/skills',
       PERSONALITY_PATH: '/custom/personality.md',
       CLAUDE_BINARY_PATH: '/usr/bin/claude',
-      CHAT_TIMEOUT_MS: '60000',
       SCHEDULED_TIMEOUT_MS: '180000',
       SESSION_IDLE_TIMEOUT_MS: '900000',
     });
@@ -174,7 +169,6 @@ describe('loadConfig', () => {
       expect(result.value.skillsDir).toBe('/custom/skills');
       expect(result.value.personalityPath).toBe('/custom/personality.md');
       expect(result.value.claudeBinaryPath).toBe('/usr/bin/claude');
-      expect(result.value.chatTimeoutMs).toBe(60000);
       expect(result.value.scheduledTimeoutMs).toBe(180000);
       expect(result.value.sessionIdleTimeoutMs).toBe(900000);
     }

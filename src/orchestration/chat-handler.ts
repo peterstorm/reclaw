@@ -58,7 +58,7 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
     prompt,
     cwd: deps.config.workspacePath,
     permissionFlags,
-    timeoutMs: deps.config.chatTimeoutMs,
+    timeoutMs: 600_000, // 10 min
     resumeSessionId,
   });
 
@@ -70,7 +70,7 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
       prompt: freshPrompt,
       cwd: deps.config.workspacePath,
       permissionFlags,
-      timeoutMs: deps.config.chatTimeoutMs,
+      timeoutMs: 600_000, // 10 min
     });
   }
 

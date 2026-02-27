@@ -41,7 +41,6 @@ const makeConfig = (overrides: Partial<AppConfig> = {}): AppConfig => ({
   skillsDir: '/workspace/skills',
   personalityPath: '/workspace/personality.md',
   claudeBinaryPath: 'claude',
-  chatTimeoutMs: 120_000,
   scheduledTimeoutMs: 300_000,
   sessionIdleTimeoutMs: 1_800_000,
   ...overrides,
@@ -121,13 +120,13 @@ describe('handleChatJob', () => {
     await handleChatJob(job, {
       runClaude: runClaude as unknown as ChatDeps['runClaude'],
       telegram,
-      config: makeConfig({ workspacePath: '/my/workspace', chatTimeoutMs: 60_000 }),
+      config: makeConfig({ workspacePath: '/my/workspace' }),
       sessionStore,
     });
 
     const callArgs = runClaude.mock.calls[0][0];
     expect(callArgs.cwd).toBe('/my/workspace');
-    expect(callArgs.timeoutMs).toBe(60_000);
+    expect(callArgs.timeoutMs).toBe(600_000);
   });
 
   it('builds prompt from personality + user message (FR-009)', async () => {
