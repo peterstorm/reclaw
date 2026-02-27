@@ -91,12 +91,14 @@ function makeFakeWorkerFactory(): {
 describe('createWorkers', () => {
   let chatHandler: ReturnType<typeof vi.fn>;
   let scheduledHandler: ReturnType<typeof vi.fn>;
+  let reminderHandler: ReturnType<typeof vi.fn>;
   let mockTelegram: TelegramAdapter;
   let fakeFactory: ReturnType<typeof makeFakeWorkerFactory>;
 
   beforeEach(() => {
     chatHandler = vi.fn().mockResolvedValue({ ok: true, response: 'chat response' } as JobResult);
     scheduledHandler = vi.fn().mockResolvedValue({ ok: true, response: 'scheduled response' } as JobResult);
+    reminderHandler = vi.fn().mockResolvedValue({ ok: true, response: 'reminder response' } as JobResult);
     mockTelegram = {
       start: vi.fn().mockResolvedValue(undefined),
       stop: vi.fn().mockResolvedValue(undefined),
@@ -116,6 +118,7 @@ describe('createWorkers', () => {
       redisConnection: { host: 'localhost', port: 6379 },
       chatHandler,
       scheduledHandler,
+      reminderHandler,
       telegram: mockTelegram,
       config: mockConfig,
       workerFactory: fakeFactory.factory,
@@ -134,9 +137,9 @@ describe('createWorkers', () => {
     expect(typeof workers.stop).toBe('function');
   });
 
-  it('creates two workers', () => {
+  it('creates three workers', () => {
     makeWorkers();
-    expect(fakeFactory.createdWorkers).toHaveLength(2);
+    expect(fakeFactory.createdWorkers).toHaveLength(3);
   });
 
   it('creates workers for correct queue names', () => {
@@ -144,6 +147,7 @@ describe('createWorkers', () => {
     const queueNames = fakeFactory.createdWorkers.map((w) => w.queueName);
     expect(queueNames).toContain('reclaw-chat');
     expect(queueNames).toContain('reclaw-scheduled');
+    expect(queueNames).toContain('reclaw-reminder');
   });
 
   it('sets concurrency=1 for both workers (AD-4, FR-015)', () => {
@@ -158,6 +162,7 @@ describe('createWorkers', () => {
       redisConnection: { host: 'redis-host', port: 6380 },
       chatHandler,
       scheduledHandler,
+      reminderHandler,
       telegram: mockTelegram,
       config: mockConfig,
       workerFactory: fakeFactory.factory,
@@ -211,6 +216,7 @@ describe('createWorkers', () => {
       redisConnection: { host: 'localhost', port: 6379 },
       chatHandler,
       scheduledHandler,
+      reminderHandler,
       telegram: mockTelegram,
       config: mockConfig,
       workerFactory: fakeFactory.factory,
@@ -234,6 +240,7 @@ describe('createWorkers', () => {
       redisConnection: { host: 'localhost', port: 6379 },
       chatHandler,
       scheduledHandler,
+      reminderHandler,
       telegram: mockTelegram,
       config: mockConfig,
       workerFactory: fakeFactory.factory,

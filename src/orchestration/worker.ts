@@ -1,6 +1,6 @@
 import type { AppConfig } from '../infra/config.js';
 import type { TelegramAdapter } from '../infra/telegram.js';
-import type { ChatJob, JobResult, ScheduledJob } from '../core/types.js';
+import type { ChatJob, JobResult, ReminderJob, ScheduledJob } from '../core/types.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -26,6 +26,7 @@ type WorkerDeps = {
   readonly redisConnection: { host: string; port: number };
   readonly chatHandler: (job: ChatJob) => Promise<JobResult>;
   readonly scheduledHandler: (job: ScheduledJob) => Promise<JobResult>;
+  readonly reminderHandler: (job: ReminderJob) => Promise<JobResult>;
   readonly telegram: TelegramAdapter;
   readonly config: AppConfig;
   /** Injected for testing. Defaults to BullMQ Worker constructor. */
@@ -77,6 +78,7 @@ export function createWorkers(deps: WorkerDeps): Workers {
     redisConnection,
     chatHandler,
     scheduledHandler,
+    reminderHandler,
     telegram,
     config,
     workerFactory = defaultWorkerFactory,
@@ -175,6 +177,46 @@ export function createWorkers(deps: WorkerDeps): Workers {
     console.error('[worker:scheduled] Worker error:', args[0]);
   });
 
+  // ── Reminder worker (concurrency=1, lightweight — no AI subprocess) ─────
+
+  const reminderWorker = workerFactory(
+    'reclaw-reminder',
+    async (job) => {
+      const data = job.data;
+      if (typeof data !== 'object' || data === null || (data as Record<string, unknown>).kind !== 'reminder') {
+        throw new Error(`Invalid reminder job data: missing or wrong kind field`);
+      }
+      const reminderJob = data as ReminderJob;
+      const result = await reminderHandler(reminderJob);
+      if (!result.ok) {
+        throw new Error(result.error);
+      }
+      return result;
+    },
+    { connection, concurrency: 1 },
+  );
+
+  reminderWorker.on('failed', async (...args: unknown[]) => {
+    const job = args[0] as { data: ReminderJob; id?: string; opts?: { attempts?: number }; attemptsMade: number } | undefined;
+    const err = args[1] as Error | undefined;
+
+    if (job === undefined) return;
+    const maxAttempts = job.opts?.attempts ?? 3;
+    if (job.attemptsMade >= maxAttempts) {
+      const msg = formatDeadLetterMessage('reminder', job.id ?? 'unknown', err?.message ?? String(err));
+      const chatId = (job.data as ReminderJob).chatId;
+      try {
+        await telegram.sendMessage(chatId, msg);
+      } catch (sendErr) {
+        console.error('[worker:reminder] Failed to send dead-letter notification:', sendErr);
+      }
+    }
+  });
+
+  reminderWorker.on('error', (...args: unknown[]) => {
+    console.error('[worker:reminder] Worker error:', args[0]);
+  });
+
   // ─── Public API ───────────────────────────────────────────────────────────
 
   /**
@@ -189,7 +231,7 @@ export function createWorkers(deps: WorkerDeps): Workers {
    * Gracefully close both workers, draining any in-progress jobs.
    */
   const stop = async (): Promise<void> => {
-    await Promise.all([chatWorker.close(), scheduledWorker.close()]);
+    await Promise.all([chatWorker.close(), scheduledWorker.close(), reminderWorker.close()]);
   };
 
   return { start, stop } as const;

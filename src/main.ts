@@ -1,4 +1,5 @@
-import { makeChatJob, makeJobId, makeTelegramUserId } from './core/types.js';
+import { makeChatJob, makeJobId, makeReminderJob, makeTelegramUserId } from './core/types.js';
+import { parseRemindCommand, formatDuration } from './core/reminder.js';
 import type { AppConfig } from './infra/config.js';
 import type { TelegramAdapter } from './infra/telegram.js';
 import type { createTelegramAdapter } from './infra/telegram.js';
@@ -11,6 +12,7 @@ import type { Result, ScheduledJob, ChatJob, JobResult } from './core/types.js';
 import type { runClaude } from './infra/claude-subprocess.js';
 import type { handleChatJob } from './orchestration/chat-handler.js';
 import type { handleScheduledJob } from './orchestration/scheduled-handler.js';
+import type { handleReminderJob } from './orchestration/reminder-handler.js';
 
 // ─── Injectable deps (for testability) ───────────────────────────────────────
 
@@ -30,6 +32,7 @@ export type BootstrapDeps = {
   readonly runClaudeFn?: typeof runClaude;
   readonly handleChatJobFn?: typeof handleChatJob;
   readonly handleScheduledJobFn?: typeof handleScheduledJob;
+  readonly handleReminderJobFn?: typeof handleReminderJob;
   readonly createSessionStoreFn?: (redis: { host: string; port: number }) => {
     sessionStore: SessionStore;
     disconnect: () => Promise<void>;
@@ -90,6 +93,10 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
   const handleScheduledJobFn: typeof handleScheduledJob =
     injected.handleScheduledJobFn ??
     (await import('./orchestration/scheduled-handler.js').then((m) => m.handleScheduledJob));
+
+  const handleReminderJobFn: typeof handleReminderJob =
+    injected.handleReminderJobFn ??
+    (await import('./orchestration/reminder-handler.js').then((m) => m.handleReminderJob));
 
   // ── 1. Load config — exit on failure ─────────────────────────────────────
   const configResult = loadConfigFn();
@@ -176,6 +183,7 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
         skillRegistry: skillWatcher.getRegistry(),
         config,
       }),
+    reminderHandler: (job) => handleReminderJobFn(job, { telegram }),
     telegram,
     config,
   });
@@ -195,6 +203,47 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
       }).catch((err: unknown) => {
         console.error('[main] Failed to handle /new command:', err);
       });
+      return;
+    }
+
+    // Handle /remind command — schedule a one-off delayed reminder
+    if (msg.text.trim().startsWith('/remind')) {
+      const parseResult = parseRemindCommand(msg.text);
+      if (!parseResult.ok) {
+        telegram.sendMessage(msg.chatId, parseResult.error).catch((err: unknown) => {
+          console.error('[main] Failed to send /remind usage error:', err);
+        });
+        return;
+      }
+
+      const jobIdRaw = `reminder:${msg.userId}:${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+      const jobIdResult = makeJobId(jobIdRaw);
+      if (!jobIdResult.ok) {
+        console.error(`[main] Failed to create reminder jobId: ${jobIdResult.error}`);
+        return;
+      }
+
+      const reminderResult = makeReminderJob({
+        id: jobIdResult.value,
+        chatId: msg.chatId,
+        text: parseResult.value.text,
+        createdAt: new Date().toISOString(),
+        delayMs: parseResult.value.delayMs,
+      });
+
+      if (!reminderResult.ok) {
+        console.error(`[main] Failed to create ReminderJob: ${reminderResult.error}`);
+        return;
+      }
+
+      queues.enqueueReminder(reminderResult.value)
+        .then(() => {
+          const duration = formatDuration(parseResult.value.delayMs);
+          return telegram.sendMessage(msg.chatId, `Got it — I'll remind you in ${duration}.`);
+        })
+        .catch((err: unknown) => {
+          console.error('[main] Failed to enqueue reminder job:', err);
+        });
       return;
     }
 
