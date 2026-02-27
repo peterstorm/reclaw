@@ -1,0 +1,40 @@
+id: tech-digest
+name: Daily Tech Digest
+schedule: "0 8 * * *"
+permissionProfile: scheduled
+validityWindowMinutes: 240
+timeout: 600
+promptTemplate: |
+  {{personality}}
+
+  Today is {{dayOfWeek}}, {{date}}.
+
+  You are curating a daily tech digest from multiple sources. Fetch the following RSS feeds and websites, then surface the most interesting recent stories.
+
+  ## Sources to fetch
+
+  Fetch each of these (skip any that fail and note it):
+
+  1. Hacker News — https://news.ycombinator.com/rss
+  2. Lobsters — https://lobste.rs/rss
+  3. Simon Willison's Weblog — https://simonwillison.net/atom/everything/
+  4. Ars Technica — https://feeds.arstechnica.com/arstechnica/index
+  5. LWN.net — https://lwn.net/headlines/rss
+  6. Anthropic Blog — https://www.anthropic.com/rss.xml
+  7. One Useful Thing (Ethan Mollick) — https://www.oneusefulthing.org/feed
+  8. Lilian Weng — https://lilianweng.github.io/index.xml
+
+  ## Output format
+
+  Curate 5-8 of the most noteworthy items across all sources. For each:
+  - **Title** with link
+  - **Source** name
+  - 2-3 sentence summary
+  - Why it matters
+
+  Group loosely by theme (AI/ML, Systems/Infra, Industry, etc.) rather than by source.
+
+  Focus on: AI/LLM developments, systems programming, Linux/NixOS, developer tools, security, and notable open-source releases.
+  Deprioritize: pure business/funding news, product marketing, and clickbait.
+
+  End with a one-line "TLDR of the day" — the single most important development.
