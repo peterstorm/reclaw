@@ -1,5 +1,6 @@
 import { makeChatJob, makeJobId, makeReminderJob, makeTelegramUserId } from './core/types.js';
 import { parseRemindCommand, formatDuration, formatAbsoluteTime } from './core/reminder.js';
+import { createAsyncMutex } from './core/async-mutex.js';
 import type { AppConfig } from './infra/config.js';
 import type { TelegramAdapter } from './infra/telegram.js';
 import type { createTelegramAdapter } from './infra/telegram.js';
@@ -120,6 +121,17 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
     console.warn('[main] Cortex extraction disabled: script not found');
   }
 
+  // ── 1c. Guard runClaude with mutex (prevent concurrent workspace access) ──
+  const claudeMutex = createAsyncMutex();
+  const guardedRunClaude: typeof runClaudeFn = async (options) => {
+    const release = await claudeMutex.acquire();
+    try {
+      return await runClaudeFn(options);
+    } finally {
+      release();
+    }
+  };
+
   // ── 2. Create Telegram adapter ────────────────────────────────────────────
   const userIds: import('./core/types.js').TelegramUserId[] = [];
   for (const rawId of config.authorizedUserIds) {
@@ -187,10 +199,10 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
   // ── 8. Create workers ──────────────────────────────────────────────────────
   const workers: Workers = createWorkersFn({
     redisConnection: { host: config.redisHost, port: config.redisPort },
-    chatHandler: (job) => handleChatJobFn(job, { runClaude: runClaudeFn, telegram, config, sessionStore, ...(triggerCortexExtraction ? { triggerCortexExtraction } : {}) }),
+    chatHandler: (job) => handleChatJobFn(job, { runClaude: guardedRunClaude, telegram, config, sessionStore, ...(triggerCortexExtraction ? { triggerCortexExtraction } : {}) }),
     scheduledHandler: (job) =>
       handleScheduledJobFn(job, {
-        runClaude: runClaudeFn,
+        runClaude: guardedRunClaude,
         telegram,
         skillRegistry: skillWatcher.getRegistry(),
         config,
