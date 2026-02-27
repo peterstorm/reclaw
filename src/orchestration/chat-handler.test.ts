@@ -371,4 +371,78 @@ describe('handleChatJob', () => {
     // Should have saved new session
     expect(sessionStore.saveSession).toHaveBeenCalledOnce();
   });
+
+  // ─── Cortex extraction tests ────────────────────────────────────────────────
+
+  it('triggers cortex extraction with sessionId and cwd on success', async () => {
+    const job = makeChatJob();
+    const telegram = makeTelegram();
+    const sessionStore = makeSessionStore();
+    const triggerCortexExtraction = vi.fn();
+    const runClaude = makeRunClaude({ ok: true, output: 'hi', sessionId: 'sess-abc', durationMs: 100 });
+
+    await handleChatJob(job, {
+      runClaude: runClaude as unknown as ChatDeps['runClaude'],
+      telegram,
+      config: makeConfig({ workspacePath: '/my/workspace' }),
+      sessionStore,
+      triggerCortexExtraction,
+    });
+
+    expect(triggerCortexExtraction).toHaveBeenCalledOnce();
+    expect(triggerCortexExtraction).toHaveBeenCalledWith('sess-abc', '/my/workspace');
+  });
+
+  it('does not trigger cortex extraction when sessionId is null', async () => {
+    const job = makeChatJob();
+    const telegram = makeTelegram();
+    const sessionStore = makeSessionStore();
+    const triggerCortexExtraction = vi.fn();
+    const runClaude = makeRunClaude({ ok: true, output: 'hi', sessionId: null, durationMs: 100 });
+
+    await handleChatJob(job, {
+      runClaude: runClaude as unknown as ChatDeps['runClaude'],
+      telegram,
+      config: makeConfig(),
+      sessionStore,
+      triggerCortexExtraction,
+    });
+
+    expect(triggerCortexExtraction).not.toHaveBeenCalled();
+  });
+
+  it('does not trigger cortex extraction on claude failure', async () => {
+    const job = makeChatJob();
+    const telegram = makeTelegram();
+    const sessionStore = makeSessionStore();
+    const triggerCortexExtraction = vi.fn();
+    const runClaude = makeRunClaude({ ok: false, error: 'timeout', timedOut: true });
+
+    await handleChatJob(job, {
+      runClaude: runClaude as unknown as ChatDeps['runClaude'],
+      telegram,
+      config: makeConfig(),
+      sessionStore,
+      triggerCortexExtraction,
+    });
+
+    expect(triggerCortexExtraction).not.toHaveBeenCalled();
+  });
+
+  it('works without triggerCortexExtraction (optional dep)', async () => {
+    const job = makeChatJob();
+    const telegram = makeTelegram();
+    const sessionStore = makeSessionStore();
+    const runClaude = makeRunClaude({ ok: true, output: 'hi', sessionId: 'sess-1', durationMs: 100 });
+
+    // No triggerCortexExtraction in deps — should not throw
+    const result = await handleChatJob(job, {
+      runClaude: runClaude as unknown as ChatDeps['runClaude'],
+      telegram,
+      config: makeConfig(),
+      sessionStore,
+    });
+
+    expect(result.ok).toBe(true);
+  });
 });

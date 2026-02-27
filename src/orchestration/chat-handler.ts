@@ -16,6 +16,8 @@ export type ChatDeps = {
   readonly telegram: TelegramAdapter;
   readonly config: AppConfig;
   readonly sessionStore: SessionStore;
+  /** Fire-and-forget cortex memory extraction. Called after successful Claude runs. */
+  readonly triggerCortexExtraction?: (sessionId: string, cwd: string) => void;
 };
 
 // ─── Handler (imperative shell) ───────────────────────────────────────────────
@@ -101,6 +103,11 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
   // 10. Send chunks via Telegram
   await deps.telegram.sendChunkedMessage(job.chatId, chunks);
 
-  // 11. Return success
+  // 11. Trigger cortex memory extraction (fire-and-forget, non-blocking)
+  if (result.sessionId) {
+    deps.triggerCortexExtraction?.(result.sessionId, deps.config.workspacePath);
+  }
+
+  // 12. Return success
   return jobResultOk(result.output);
 }

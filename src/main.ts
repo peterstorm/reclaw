@@ -108,6 +108,18 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
 
   console.info('[main] Config loaded');
 
+  // ── 1b. Resolve cortex extraction (always-on, no config needed) ──────────
+  const { resolveCortexExtractScript, createCortexExtractor } = await import('./infra/cortex-extract.js');
+  const cortexScriptPath = resolveCortexExtractScript();
+  const triggerCortexExtraction = cortexScriptPath
+    ? createCortexExtractor(cortexScriptPath)
+    : undefined;
+  if (cortexScriptPath) {
+    console.info(`[main] Cortex extraction enabled: ${cortexScriptPath}`);
+  } else {
+    console.warn('[main] Cortex extraction disabled: script not found');
+  }
+
   // ── 2. Create Telegram adapter ────────────────────────────────────────────
   const userIds: import('./core/types.js').TelegramUserId[] = [];
   for (const rawId of config.authorizedUserIds) {
@@ -175,13 +187,14 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
   // ── 8. Create workers ──────────────────────────────────────────────────────
   const workers: Workers = createWorkersFn({
     redisConnection: { host: config.redisHost, port: config.redisPort },
-    chatHandler: (job) => handleChatJobFn(job, { runClaude: runClaudeFn, telegram, config, sessionStore }),
+    chatHandler: (job) => handleChatJobFn(job, { runClaude: runClaudeFn, telegram, config, sessionStore, ...(triggerCortexExtraction ? { triggerCortexExtraction } : {}) }),
     scheduledHandler: (job) =>
       handleScheduledJobFn(job, {
         runClaude: runClaudeFn,
         telegram,
         skillRegistry: skillWatcher.getRegistry(),
         config,
+        ...(triggerCortexExtraction ? { triggerCortexExtraction } : {}),
       }),
     reminderHandler: (job) => handleReminderJobFn(job, { telegram }),
     telegram,
@@ -280,6 +293,13 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
 
   // ── 12. Start Telegram bot ─────────────────────────────────────────────────
   await telegram.start();
+
+  // ── 13. Send startup notification to authorized users ─────────────────────
+  for (const userId of config.authorizedUserIds) {
+    telegram.sendMessage(userId, 'Reclaw restarted and ready.').catch((err: unknown) => {
+      console.error('[main] Failed to send startup notification:', err);
+    });
+  }
 
   console.info('[main] Agent started');
 

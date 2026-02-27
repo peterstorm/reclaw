@@ -15,6 +15,8 @@ export type ScheduledDeps = {
   readonly telegram: TelegramAdapter;
   readonly skillRegistry: SkillRegistry;
   readonly config: AppConfig;
+  /** Fire-and-forget cortex memory extraction. Called after successful Claude runs. */
+  readonly triggerCortexExtraction?: (sessionId: string, cwd: string) => void;
 };
 
 // ─── Day-of-week helper (pure) ────────────────────────────────────────────────
@@ -91,6 +93,11 @@ export async function handleScheduledJob(job: ScheduledJob, deps: ScheduledDeps)
     await deps.telegram.sendChunkedMessage(userId, chunks);
   }
 
-  // 9. Return success
+  // 9. Trigger cortex memory extraction (fire-and-forget, non-blocking)
+  if (result.sessionId) {
+    deps.triggerCortexExtraction?.(result.sessionId, deps.config.workspacePath);
+  }
+
+  // 10. Return success
   return jobResultOk(result.output);
 }

@@ -279,4 +279,74 @@ describe('handleScheduledJob', () => {
     expect(telegram.sendMessage).not.toHaveBeenCalled();
     expect(telegram.sendChunkedMessage).not.toHaveBeenCalled();
   });
+
+  // ─── Cortex extraction tests ────────────────────────────────────────────────
+
+  it('triggers cortex extraction with sessionId and cwd on success', async () => {
+    const job = makeScheduledJob();
+    const telegram = makeTelegram();
+    const triggerCortexExtraction = vi.fn();
+    const runClaude = makeRunClaude({ ok: true, output: 'Briefing', sessionId: 'sess-sched-1', durationMs: 500 });
+
+    await handleScheduledJob(job, {
+      runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
+      telegram,
+      skillRegistry: makeRegistry(),
+      config: makeConfig({ workspacePath: '/my/workspace' }),
+      triggerCortexExtraction,
+    });
+
+    expect(triggerCortexExtraction).toHaveBeenCalledOnce();
+    expect(triggerCortexExtraction).toHaveBeenCalledWith('sess-sched-1', '/my/workspace');
+  });
+
+  it('does not trigger cortex extraction when sessionId is null', async () => {
+    const job = makeScheduledJob();
+    const telegram = makeTelegram();
+    const triggerCortexExtraction = vi.fn();
+    const runClaude = makeRunClaude({ ok: true, output: 'Briefing', sessionId: null, durationMs: 500 });
+
+    await handleScheduledJob(job, {
+      runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
+      telegram,
+      skillRegistry: makeRegistry(),
+      config: makeConfig(),
+      triggerCortexExtraction,
+    });
+
+    expect(triggerCortexExtraction).not.toHaveBeenCalled();
+  });
+
+  it('does not trigger cortex extraction on claude failure', async () => {
+    const job = makeScheduledJob();
+    const telegram = makeTelegram();
+    const triggerCortexExtraction = vi.fn();
+    const runClaude = makeRunClaude({ ok: false, error: 'timeout', timedOut: true });
+
+    await handleScheduledJob(job, {
+      runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
+      telegram,
+      skillRegistry: makeRegistry(),
+      config: makeConfig(),
+      triggerCortexExtraction,
+    });
+
+    expect(triggerCortexExtraction).not.toHaveBeenCalled();
+  });
+
+  it('works without triggerCortexExtraction (optional dep)', async () => {
+    const job = makeScheduledJob();
+    const telegram = makeTelegram();
+    const runClaude = makeRunClaude({ ok: true, output: 'Briefing', sessionId: 'sess-1', durationMs: 500 });
+
+    // No triggerCortexExtraction in deps — should not throw
+    const result = await handleScheduledJob(job, {
+      runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
+      telegram,
+      skillRegistry: makeRegistry(),
+      config: makeConfig(),
+    });
+
+    expect(result.ok).toBe(true);
+  });
 });
