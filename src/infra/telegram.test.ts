@@ -94,10 +94,19 @@ describe('createTelegramAdapter', () => {
     expect(mockBotStop).toHaveBeenCalledOnce();
   });
 
-  it('sendMessage calls bot.api.sendMessage with chatId and text', async () => {
+  it('sendMessage calls bot.api.sendMessage with HTML parse_mode', async () => {
     const adapter = makeAdapter();
     await adapter.sendMessage(999, 'hello');
-    expect(mockSendMessage).toHaveBeenCalledWith(999, 'hello');
+    expect(mockSendMessage).toHaveBeenCalledWith(999, 'hello', { parse_mode: 'HTML' });
+  });
+
+  it('sendMessage falls back to plain text when HTML send fails', async () => {
+    const adapter = makeAdapter();
+    mockSendMessage.mockRejectedValueOnce(new Error('Bad Request: can\'t parse entities'));
+    await adapter.sendMessage(999, 'hello **world**');
+    // First call: HTML attempt (failed), second call: plain text fallback
+    expect(mockSendMessage).toHaveBeenCalledTimes(2);
+    expect(mockSendMessage).toHaveBeenNthCalledWith(2, 999, 'hello **world**');
   });
 });
 
@@ -164,9 +173,9 @@ describe('sendChunkedMessage (FR-013)', () => {
     await adapter.sendChunkedMessage(42, chunks);
 
     expect(mockSendMessage).toHaveBeenCalledTimes(3);
-    expect(mockSendMessage).toHaveBeenNthCalledWith(1, 42, 'chunk1');
-    expect(mockSendMessage).toHaveBeenNthCalledWith(2, 42, 'chunk2');
-    expect(mockSendMessage).toHaveBeenNthCalledWith(3, 42, 'chunk3');
+    expect(mockSendMessage).toHaveBeenNthCalledWith(1, 42, 'chunk1', { parse_mode: 'HTML' });
+    expect(mockSendMessage).toHaveBeenNthCalledWith(2, 42, 'chunk2', { parse_mode: 'HTML' });
+    expect(mockSendMessage).toHaveBeenNthCalledWith(3, 42, 'chunk3', { parse_mode: 'HTML' });
   }, 3000);
 
   it('does nothing for empty chunks array', async () => {
@@ -179,7 +188,7 @@ describe('sendChunkedMessage (FR-013)', () => {
     const adapter = makeAdapter();
     await adapter.sendChunkedMessage(42, ['only chunk']);
     expect(mockSendMessage).toHaveBeenCalledOnce();
-    expect(mockSendMessage).toHaveBeenCalledWith(42, 'only chunk');
+    expect(mockSendMessage).toHaveBeenCalledWith(42, 'only chunk', { parse_mode: 'HTML' });
   });
 });
 

@@ -54,23 +54,26 @@ describe('createQueues', () => {
     vi.clearAllMocks();
   });
 
-  it('returns an object with chat and scheduled queue instances', () => {
+  it('returns an object with chat, scheduled, and reminder queue instances', () => {
     const queues = createQueues(redisConnection);
 
     expect(queues.chat).toBeDefined();
     expect(queues.scheduled).toBeDefined();
+    expect(queues.reminder).toBeDefined();
     expect(queues.enqueueChat).toBeTypeOf('function');
     expect(queues.enqueueScheduled).toBeTypeOf('function');
+    expect(queues.enqueueReminder).toBeTypeOf('function');
   });
 
-  it('creates two queues with correct names', () => {
+  it('creates three queues with correct names', () => {
     createQueues(redisConnection);
 
-    expect(MockQueue).toHaveBeenCalledTimes(2);
+    expect(MockQueue).toHaveBeenCalledTimes(3);
     const calls = MockQueue.mock.calls;
     const names = calls.map((c) => c[0]);
     expect(names).toContain('reclaw-chat');
     expect(names).toContain('reclaw-scheduled');
+    expect(names).toContain('reclaw-reminder');
   });
 
   it('passes redis connection to both queues', () => {

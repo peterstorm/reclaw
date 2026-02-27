@@ -76,14 +76,15 @@ describe('getNextRun', () => {
     }
   });
 
-  it('next run for daily 08:00 cron after 08:00 is next day', () => {
-    const after = new Date('2026-02-26T09:00:00.000Z'); // past 08:00
+  it('next run for daily 08:00 cron after the reference date fires at local 08:00', () => {
+    const after = new Date('2026-02-26T09:00:00.000Z');
     const result = getNextRun('0 8 * * *', after);
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value.toISOString().startsWith('2026-02-27')).toBe(true);
-      expect(result.value.getUTCHours()).toBe(8);
-      expect(result.value.getUTCMinutes()).toBe(0);
+      // cron-parser uses local timezone, so assert on local hours
+      expect(result.value.getHours()).toBe(8);
+      expect(result.value.getMinutes()).toBe(0);
+      expect(result.value.getTime()).toBeGreaterThan(after.getTime());
     }
   });
 

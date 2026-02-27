@@ -45,8 +45,10 @@ function makeMockQueues() {
   return {
     chat: { close: vi.fn().mockResolvedValue(undefined), on: vi.fn() },
     scheduled: { close: vi.fn().mockResolvedValue(undefined), on: vi.fn() },
+    reminder: { close: vi.fn().mockResolvedValue(undefined), on: vi.fn() },
     enqueueChat: vi.fn().mockResolvedValue(undefined),
     enqueueScheduled: vi.fn().mockResolvedValue(undefined),
+    enqueueReminder: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -325,6 +327,7 @@ describe('bootstrap', () => {
       await shutdown();
       expect(mockQueues.chat.close).toHaveBeenCalledOnce();
       expect(mockQueues.scheduled.close).toHaveBeenCalledOnce();
+      expect(mockQueues.reminder.close).toHaveBeenCalledOnce();
     });
 
     it('shutdown disconnects Redis session client', async () => {
@@ -335,20 +338,24 @@ describe('bootstrap', () => {
 
     it('SIGTERM triggers shutdown', async () => {
       await bootstrap(makeDeps());
+      // Use non-throwing mock so .catch doesn't re-trigger process.exit
+      processExitSpy.mockImplementation((() => {}) as unknown as typeof process.exit);
       const sigtermHandler = signalHandlers.get('SIGTERM');
       expect(sigtermHandler).toBeDefined();
       sigtermHandler?.();
-      await new Promise((r) => setTimeout(r, 10));
+      await new Promise((r) => setTimeout(r, 50));
       expect(mockWorkers.stop).toHaveBeenCalledOnce();
       expect(processExitSpy).toHaveBeenCalledWith(0);
     });
 
     it('SIGINT triggers shutdown', async () => {
       await bootstrap(makeDeps());
+      // Use non-throwing mock so .catch doesn't re-trigger process.exit
+      processExitSpy.mockImplementation((() => {}) as unknown as typeof process.exit);
       const sigintHandler = signalHandlers.get('SIGINT');
       expect(sigintHandler).toBeDefined();
       sigintHandler?.();
-      await new Promise((r) => setTimeout(r, 10));
+      await new Promise((r) => setTimeout(r, 50));
       expect(mockWorkers.stop).toHaveBeenCalledOnce();
       expect(processExitSpy).toHaveBeenCalledWith(0);
     });

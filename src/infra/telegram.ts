@@ -18,6 +18,9 @@ export type TelegramAdapter = {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
+/** Telegram's maximum message length. */
+const TELEGRAM_MAX_LENGTH = 4096;
+
 /** Delay between consecutive chunked messages to avoid rate limits. */
 const CHUNK_DELAY_MS = 200;
 
@@ -85,9 +88,15 @@ export function createTelegramAdapter(config: {
   const sendMessage = async (chatId: number, text: string): Promise<void> => {
     try {
       const html = markdownToTelegramHtml(text);
+      if (html.length > TELEGRAM_MAX_LENGTH) {
+        // HTML expansion exceeded Telegram's limit — send plain text
+        console.warn(`[telegram] HTML too long (${html.length} chars), sending plain text`);
+        await bot.api.sendMessage(chatId, text);
+        return;
+      }
       await bot.api.sendMessage(chatId, html, { parse_mode: 'HTML' });
-    } catch {
-      // Fallback to plain text if HTML conversion/sending fails
+    } catch (err) {
+      console.warn('[telegram] HTML send failed, falling back to plain text:', err instanceof Error ? err.message : err);
       await bot.api.sendMessage(chatId, text);
     }
   };
