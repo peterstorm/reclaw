@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(path:/home/peterstorm/dev/claude-plugins/reclaw/**)",
+      "Grep(path:/home/peterstorm/dev/claude-plugins/reclaw/**)",
+      "Glob(path:/home/peterstorm/dev/claude-plugins/reclaw/**)",
+      "Read(path:/home/peterstorm/.dotfiles/**)",
+      "Grep(path:/home/peterstorm/.dotfiles/**)",
+      "Glob(path:/home/peterstorm/.dotfiles/**)",
+      "Edit(path:/home/peterstorm/.dotfiles/**)"
+    ]
+  }
+}
