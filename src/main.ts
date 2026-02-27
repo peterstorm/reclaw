@@ -248,12 +248,19 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
       skillWatcher.stop(),
       telegram.stop(),
     ]);
-    await Promise.all([queues.chat.close(), queues.scheduled.close()]);
+    await Promise.all([queues.chat.close(), queues.scheduled.close(), queues.reminder.close()]);
     await disconnectRedis();
     console.info('[main] Shutdown complete');
   };
 
   const handleSignal = (): void => {
+    // Force-exit after 15s if graceful shutdown hangs (e.g. BullMQ/Redis handles keeping event loop alive)
+    const forceExitTimer = setTimeout(() => {
+      console.error('[main] Force-exiting after shutdown timeout');
+      process.exit(1);
+    }, 15_000);
+    forceExitTimer.unref();
+
     shutdown()
       .then(() => process.exit(0))
       .catch((err: unknown) => {
