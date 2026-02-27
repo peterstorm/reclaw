@@ -177,12 +177,10 @@ describe('loadConfig', () => {
   it('handles optional fields', () => {
     const result = loadConfig({
       ...VALID_ENV,
-      OBSIDIAN_VAULT_PATH: '/vaults/main',
       GEMINI_API_KEY: 'gemini-key-abc',
     });
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value.obsidianVaultPath).toBe('/vaults/main');
       expect(result.value.geminiApiKey).toBe('gemini-key-abc');
     }
   });
@@ -191,7 +189,6 @@ describe('loadConfig', () => {
     const result = loadConfig(VALID_ENV);
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value.obsidianVaultPath).toBeUndefined();
       expect(result.value.geminiApiKey).toBeUndefined();
     }
   });

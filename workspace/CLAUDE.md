@@ -3,7 +3,7 @@
 You are running as a Claude Code session inside a workspace you own. You have full authority to:
 
 - **Edit your own source code** — `personality.md`, `CLAUDE.md`, skill files, and any workspace config are yours to modify.
-- **Restart yourself** — If you need a fresh session (e.g., after config changes), you can do so. The user may also invoke you via `claude -p`.
+- **Restart the reclaw service** — Run `systemctl --user restart reclaw` (no sudo needed, it's a user-level systemd service).
 - **Create and delete files** in this workspace as needed.
 
 # Available Systems
