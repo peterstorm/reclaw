@@ -1,3 +1,4 @@
+import * as chrono from 'chrono-node';
 import { type Result, ok, err } from './types.js';
 
 // ─── Duration Parsing ─────────────────────────────────────────────────────────
@@ -98,20 +99,75 @@ export function formatAbsoluteTime(delayMs: number, now: Date = new Date()): str
   return target.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 }
 
+// ─── Semantic Date Parsing (chrono-node) ──────────────────────────────────────
+
+/**
+ * Parse a natural language date/time string using chrono-node.
+ * Supports: "tomorrow at 3pm", "next Tuesday", "March 3rd at 14:00", etc.
+ * Returns the delay in ms and the remaining text (message) after removing the date portion.
+ */
+export function parseSemanticDate(
+  input: string,
+  now: Date = new Date(),
+): Result<{ delayMs: number; text: string }, string> {
+  const results = chrono.parse(input, now, { forwardDate: true });
+
+  if (results.length === 0) {
+    return err(`Could not find a date/time in: "${input}".`);
+  }
+
+  const parsed = results[0]!;
+  const target = parsed.start.date();
+  const delayMs = target.getTime() - now.getTime();
+
+  if (delayMs <= 0) {
+    return err('Parsed date is in the past.');
+  }
+
+  // Extract the message text by removing the matched date portion
+  const before = input.slice(0, parsed.index).trim();
+  const after = input.slice(parsed.index + parsed.text.length).trim();
+  const text = [before, after].filter(Boolean).join(' ').trim();
+
+  if (text.length === 0) {
+    return err('Reminder message must not be empty.');
+  }
+
+  return ok({ delayMs, text });
+}
+
+/**
+ * Format a ms delay as a date+time string for semantic date confirmations.
+ */
+export function formatSemanticDate(delayMs: number, now: Date = new Date()): string {
+  const target = new Date(now.getTime() + delayMs);
+  return target.toLocaleDateString('en-GB', {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 // ─── /remind Command Parsing ──────────────────────────────────────────────────
 
 export type ParsedReminder = {
   readonly delayMs: number;
   readonly text: string;
-  readonly isAbsoluteTime: boolean;
+  readonly kind: 'duration' | 'absolute' | 'semantic';
 };
 
 /**
  * Parse a /remind command string.
- * Expected format: "/remind <duration|time> <message>"
- * Examples: "/remind 30m take a break", "/remind 14:30 meeting", "/remind 3pm call"
+ * Expected format: "/remind <duration|time|natural-language-date> <message>"
+ * Examples:
+ *   "/remind 30m take a break"
+ *   "/remind 14:30 meeting"
+ *   "/remind tomorrow at 3pm call dentist"
+ *   "/remind next friday deploy release"
  */
-export function parseRemindCommand(input: string): Result<ParsedReminder, string> {
+export function parseRemindCommand(input: string, now: Date = new Date()): Result<ParsedReminder, string> {
   const trimmed = input.trim();
 
   // Strip the /remind prefix
@@ -120,32 +176,36 @@ export function parseRemindCommand(input: string): Result<ParsedReminder, string
     return err('Input must start with /remind.');
   }
 
-  // Split into time-spec and message
+  // Split into time-spec and message (for duration/absolute parsing)
   const spaceIdx = withoutPrefix.indexOf(' ');
   if (spaceIdx === -1) {
-    return err('Usage: /remind <duration|time> <message>. Examples: /remind 30m take a break, /remind 14:30 meeting');
+    return err('Usage: /remind <duration|time|date> <message>. Examples: /remind 30m take a break, /remind tomorrow at 3pm meeting');
   }
 
   const timeSpec = withoutPrefix.slice(0, spaceIdx);
   const text = withoutPrefix.slice(spaceIdx + 1).trim();
 
-  if (text.length === 0) {
-    return err('Reminder message must not be empty.');
-  }
-
   // Try duration first (30m, 2h, 1d, etc.)
-  const durationResult = parseDuration(timeSpec);
-  if (durationResult.ok) {
-    return ok({ delayMs: durationResult.value, text, isAbsoluteTime: false });
+  if (text.length > 0) {
+    const durationResult = parseDuration(timeSpec);
+    if (durationResult.ok) {
+      return ok({ delayMs: durationResult.value, text, kind: 'duration' });
+    }
+
+    // Try absolute time (14:30, 3pm, etc.)
+    const absoluteResult = parseAbsoluteTime(timeSpec, now);
+    if (absoluteResult.ok) {
+      return ok({ delayMs: absoluteResult.value, text, kind: 'absolute' });
+    }
   }
 
-  // Try absolute time (14:30, 3pm, etc.)
-  const absoluteResult = parseAbsoluteTime(timeSpec);
-  if (absoluteResult.ok) {
-    return ok({ delayMs: absoluteResult.value, text, isAbsoluteTime: true });
+  // Try semantic date parsing on the full text after /remind
+  const semanticResult = parseSemanticDate(withoutPrefix, now);
+  if (semanticResult.ok) {
+    return ok({ delayMs: semanticResult.value.delayMs, text: semanticResult.value.text, kind: 'semantic' });
   }
 
-  return err(`Could not parse "${timeSpec}" as a duration (e.g. 30m, 2h) or time (e.g. 14:30, 3pm).`);
+  return err(`Could not parse a duration, time, or date from: "${withoutPrefix}". Examples: 30m, 14:30, tomorrow at 3pm, next friday`);
 }
 
 // ─── Human-readable duration formatting ───────────────────────────────────────

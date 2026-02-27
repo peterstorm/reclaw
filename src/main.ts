@@ -1,5 +1,5 @@
 import { makeChatJob, makeJobId, makeReminderJob, makeTelegramUserId } from './core/types.js';
-import { parseRemindCommand, formatDuration, formatAbsoluteTime } from './core/reminder.js';
+import { parseRemindCommand, formatDuration, formatAbsoluteTime, formatSemanticDate } from './core/reminder.js';
 import { createAsyncMutex } from './core/async-mutex.js';
 import type { AppConfig } from './infra/config.js';
 import type { TelegramAdapter } from './infra/telegram.js';
@@ -263,9 +263,12 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
 
       queues.enqueueReminder(reminderResult.value)
         .then(() => {
-          const confirmMsg = parseResult.value.isAbsoluteTime
-            ? `Got it — I'll remind you at ${formatAbsoluteTime(parseResult.value.delayMs)}.`
-            : `Got it — I'll remind you in ${formatDuration(parseResult.value.delayMs)}.`;
+          const confirmMsg =
+            parseResult.value.kind === 'duration'
+              ? `Got it — I'll remind you in ${formatDuration(parseResult.value.delayMs)}.`
+              : parseResult.value.kind === 'absolute'
+                ? `Got it — I'll remind you at ${formatAbsoluteTime(parseResult.value.delayMs)}.`
+                : `Got it — I'll remind you on ${formatSemanticDate(parseResult.value.delayMs)}.`;
           return telegram.sendMessage(msg.chatId, confirmMsg);
         })
         .catch((err: unknown) => {
