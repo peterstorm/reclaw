@@ -73,4 +73,33 @@ describe('createSessionStore', () => {
       expect(redis.del).toHaveBeenCalledWith('reclaw-session-456');
     });
   });
+
+  describe('saveMessageSession', () => {
+    it('saves sessionId string keyed by messageId with TTL', async () => {
+      const store = createSessionStore(redis);
+      await store.saveMessageSession(100, SESSION_ID, TTL_MS);
+
+      expect(redis.set).toHaveBeenCalledWith(
+        'reclaw-msg-session-100',
+        SESSION_ID,
+        { PX: TTL_MS },
+      );
+    });
+  });
+
+  describe('getMessageSession', () => {
+    it('returns null when no mapping exists', async () => {
+      const store = createSessionStore(redis);
+      const result = await store.getMessageSession(100);
+      expect(result).toBeNull();
+      expect(redis.get).toHaveBeenCalledWith('reclaw-msg-session-100');
+    });
+
+    it('returns sessionId when mapping exists', async () => {
+      redis.get.mockResolvedValue(SESSION_ID);
+      const store = createSessionStore(redis);
+      const result = await store.getMessageSession(100);
+      expect(result).toBe(SESSION_ID);
+    });
+  });
 });

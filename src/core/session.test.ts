@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   makeSessionKey,
+  makeMessageSessionKey,
   isSessionExpired,
   parseSessionRecord,
   serializeSessionRecord,
@@ -17,6 +18,16 @@ describe('makeSessionKey', () => {
 
   it('uses no colons', () => {
     expect(makeSessionKey(789)).not.toContain(':');
+  });
+});
+
+describe('makeMessageSessionKey', () => {
+  it('builds key with messageId', () => {
+    expect(makeMessageSessionKey(789)).toBe('reclaw-msg-session-789');
+  });
+
+  it('uses no colons', () => {
+    expect(makeMessageSessionKey(123)).not.toContain(':');
   });
 });
 

@@ -206,6 +206,7 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
         telegram,
         skillRegistry: skillWatcher.getRegistry(),
         config,
+        sessionStore,
         ...(triggerCortexExtraction ? { triggerCortexExtraction } : {}),
       }),
     reminderHandler: (job) => handleReminderJobFn(job, { telegram }),
@@ -277,28 +278,49 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
       return;
     }
 
-    const jobIdRaw = `chat:${msg.userId}:${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
-    const jobIdResult = makeJobId(jobIdRaw);
-    if (!jobIdResult.ok) {
-      console.error(`[main] Failed to create jobId: ${jobIdResult.error}`);
-      return;
-    }
+    // Reply-to-message routing: look up session for the replied-to message
+    const replyRouting = msg.replyToMessageId !== undefined
+      ? sessionStore.getMessageSession(msg.replyToMessageId).then((sessionId) => {
+          if (sessionId !== null) {
+            // Pre-load the scheduled session into the chat session slot so
+            // chat-handler's normal resume path picks it up
+            return sessionStore.saveSession(
+              msg.chatId,
+              { sessionId, lastActivityAt: new Date().toISOString() },
+              config.sessionIdleTimeoutMs,
+            );
+          }
+        }).catch((err: unknown) => {
+          console.error('[main] Failed to route reply-to session:', err);
+        })
+      : Promise.resolve();
 
-    const chatJobResult = makeChatJob({
-      id: jobIdResult.value,
-      userId: userIdResult.value,
-      text: msg.text,
-      chatId: msg.chatId,
-      receivedAt: new Date().toISOString(),
-    });
+    replyRouting.then(() => {
+      const jobIdRaw = `chat:${msg.userId}:${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+      const jobIdResult = makeJobId(jobIdRaw);
+      if (!jobIdResult.ok) {
+        console.error(`[main] Failed to create jobId: ${jobIdResult.error}`);
+        return;
+      }
 
-    if (!chatJobResult.ok) {
-      console.error(`[main] Failed to create ChatJob: ${chatJobResult.error}`);
-      return;
-    }
+      const chatJobResult = makeChatJob({
+        id: jobIdResult.value,
+        userId: userIdResult.value,
+        text: msg.text,
+        chatId: msg.chatId,
+        receivedAt: new Date().toISOString(),
+      });
 
-    queues.enqueueChat(chatJobResult.value).catch((err: unknown) => {
-      console.error('[main] Failed to enqueue chat job:', err);
+      if (!chatJobResult.ok) {
+        console.error(`[main] Failed to create ChatJob: ${chatJobResult.error}`);
+        return;
+      }
+
+      queues.enqueueChat(chatJobResult.value).catch((err: unknown) => {
+        console.error('[main] Failed to enqueue chat job:', err);
+      });
+    }).catch((err: unknown) => {
+      console.error('[main] Failed to process message:', err);
     });
   });
 

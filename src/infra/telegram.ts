@@ -8,11 +8,11 @@ import { markdownToTelegramHtml } from '../core/markdown-to-telegram.js';
 export type TelegramAdapter = {
   readonly start: () => Promise<void>;
   readonly stop: () => Promise<void>;
-  readonly sendMessage: (chatId: number, text: string) => Promise<void>;
+  readonly sendMessage: (chatId: number, text: string) => Promise<number>;
   readonly sendMarkdown: (chatId: number, markdown: string) => Promise<void>;
-  readonly sendChunkedMessage: (chatId: number, chunks: readonly string[]) => Promise<void>;
+  readonly sendChunkedMessage: (chatId: number, chunks: readonly string[]) => Promise<readonly number[]>;
   readonly onMessage: (
-    handler: (msg: { userId: number; chatId: number; text: string }) => void,
+    handler: (msg: { userId: number; chatId: number; text: string; replyToMessageId?: number }) => void,
   ) => void;
 };
 
@@ -56,7 +56,7 @@ export function createTelegramAdapter(config: {
 
   // Registered message handler — set by onMessage()
   let messageHandler:
-    | ((msg: { userId: number; chatId: number; text: string }) => void)
+    | ((msg: { userId: number; chatId: number; text: string; replyToMessageId?: number }) => void)
     | null = null;
 
   bot.catch((err) => {
@@ -77,7 +77,8 @@ export function createTelegramAdapter(config: {
 
     if (messageHandler !== null) {
       try {
-        messageHandler({ userId, chatId, text: ctx.message.text });
+        const replyToMessageId = ctx.message.reply_to_message?.message_id;
+        messageHandler({ userId, chatId, text: ctx.message.text, replyToMessageId });
       } catch (err) {
         // NFR-013: log chatId only, never message text
         console.error(`[telegram] messageHandler error for chatId=${chatId}`, err);
@@ -85,19 +86,21 @@ export function createTelegramAdapter(config: {
     }
   });
 
-  const sendMessage = async (chatId: number, text: string): Promise<void> => {
+  const sendMessage = async (chatId: number, text: string): Promise<number> => {
     try {
       const html = markdownToTelegramHtml(text);
       if (html.length > TELEGRAM_MAX_LENGTH) {
         // HTML expansion exceeded Telegram's limit — send plain text
         console.warn(`[telegram] HTML too long (${html.length} chars), sending plain text`);
-        await bot.api.sendMessage(chatId, text);
-        return;
+        const sent = await bot.api.sendMessage(chatId, text);
+        return sent.message_id;
       }
-      await bot.api.sendMessage(chatId, html, { parse_mode: 'HTML' });
+      const sent = await bot.api.sendMessage(chatId, html, { parse_mode: 'HTML' });
+      return sent.message_id;
     } catch (err) {
       console.warn('[telegram] HTML send failed, falling back to plain text:', err instanceof Error ? err.message : err);
-      await bot.api.sendMessage(chatId, text);
+      const sent = await bot.api.sendMessage(chatId, text);
+      return sent.message_id;
     }
   };
 
@@ -108,17 +111,20 @@ export function createTelegramAdapter(config: {
   const sendChunkedMessage = async (
     chatId: number,
     chunks: readonly string[],
-  ): Promise<void> => {
+  ): Promise<readonly number[]> => {
+    const messageIds: number[] = [];
     for (let i = 0; i < chunks.length; i++) {
-      await sendMessage(chatId, chunks[i]);
+      const msgId = await sendMessage(chatId, chunks[i]);
+      messageIds.push(msgId);
       if (i < chunks.length - 1) {
         await sleep(CHUNK_DELAY_MS);
       }
     }
+    return messageIds;
   };
 
   const onMessage = (
-    handler: (msg: { userId: number; chatId: number; text: string }) => void,
+    handler: (msg: { userId: number; chatId: number; text: string; replyToMessageId?: number }) => void,
   ): void => {
     messageHandler = handler;
   };

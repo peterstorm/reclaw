@@ -1,9 +1,11 @@
 import {
   makeSessionKey,
+  makeMessageSessionKey,
   parseSessionRecord,
   serializeSessionRecord,
   type SessionRecord,
 } from '../core/session.js';
+import type { ClaudeSessionId } from '../core/types.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -18,6 +20,8 @@ export type SessionStore = {
   readonly getSession: (chatId: number) => Promise<SessionRecord | null>;
   readonly saveSession: (chatId: number, record: SessionRecord, ttlMs: number) => Promise<void>;
   readonly deleteSession: (chatId: number) => Promise<void>;
+  readonly saveMessageSession: (messageId: number, sessionId: ClaudeSessionId, ttlMs: number) => Promise<void>;
+  readonly getMessageSession: (messageId: number) => Promise<ClaudeSessionId | null>;
 };
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
@@ -48,5 +52,16 @@ export function createSessionStore(redis: RedisClient): SessionStore {
     await redis.del(key);
   };
 
-  return { getSession, saveSession, deleteSession };
+  const saveMessageSession = async (messageId: number, sessionId: ClaudeSessionId, ttlMs: number): Promise<void> => {
+    const key = makeMessageSessionKey(messageId);
+    await redis.set(key, sessionId, { PX: ttlMs });
+  };
+
+  const getMessageSession = async (messageId: number): Promise<ClaudeSessionId | null> => {
+    const key = makeMessageSessionKey(messageId);
+    const raw = await redis.get(key);
+    return raw as ClaudeSessionId | null;
+  };
+
+  return { getSession, saveSession, deleteSession, saveMessageSession, getMessageSession };
 }

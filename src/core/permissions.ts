@@ -15,10 +15,14 @@ const SCHEDULED_ALLOWED_TOOLS = ['Read', 'Write', 'Bash', 'recall', 'remember'] 
 /**
  * Return the claude -p permission flags for the given profile.
  *
+ * Both profiles use --dangerously-skip-permissions because in -p mode
+ * there is no interactive user to prompt — unapproved commands silently
+ * fail. The --allowedTools flag still limits which tools are available.
+ *
  * chat:      --allowedTools Read,Bash,recall,remember
  * scheduled: --allowedTools Read,Write,Bash,recall,remember
  */
 export function getPermissionFlags(profile: 'chat' | 'scheduled'): readonly string[] {
   const tools = profile === 'chat' ? CHAT_ALLOWED_TOOLS : SCHEDULED_ALLOWED_TOOLS;
-  return ['--allowedTools', tools.join(',')];
+  return ['--dangerously-skip-permissions', '--allowedTools', tools.join(',')];
 }

@@ -26,16 +26,16 @@ const mockConfig: AppConfig = {
 // ─── Fake component builders ──────────────────────────────────────────────────
 
 function makeMockTelegram() {
-  let onMessageHandler: ((msg: { userId: number; chatId: number; text: string }) => void) | null = null;
+  let onMessageHandler: ((msg: { userId: number; chatId: number; text: string; replyToMessageId?: number }) => void) | null = null;
   return {
     start: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
-    sendMessage: vi.fn().mockResolvedValue(undefined),
-    sendChunkedMessage: vi.fn().mockResolvedValue(undefined),
-    onMessage: vi.fn((handler: (msg: { userId: number; chatId: number; text: string }) => void) => {
+    sendMessage: vi.fn().mockResolvedValue(1000),
+    sendChunkedMessage: vi.fn().mockResolvedValue([1000]),
+    onMessage: vi.fn((handler: (msg: { userId: number; chatId: number; text: string; replyToMessageId?: number }) => void) => {
       onMessageHandler = handler;
     }),
-    _triggerMessage: (msg: { userId: number; chatId: number; text: string }) => {
+    _triggerMessage: (msg: { userId: number; chatId: number; text: string; replyToMessageId?: number }) => {
       onMessageHandler?.(msg);
     },
   };
@@ -85,6 +85,8 @@ function makeMockSessionStore() {
     getSession: vi.fn().mockResolvedValue(null),
     saveSession: vi.fn().mockResolvedValue(undefined),
     deleteSession: vi.fn().mockResolvedValue(undefined),
+    saveMessageSession: vi.fn().mockResolvedValue(undefined),
+    getMessageSession: vi.fn().mockResolvedValue(null),
   };
 }
 
@@ -367,6 +369,62 @@ describe('bootstrap', () => {
       loadConfigMock.mockReturnValue({ ok: false, error: 'Missing TELEGRAM_TOKEN' });
       await expect(bootstrap(deps)).rejects.toThrow('process.exit(1)');
       expect(processExitSpy).toHaveBeenCalledWith(1);
+    });
+  });
+
+  describe('reply-to-message routing', () => {
+    it('pre-loads session when replying to a message with saved session', async () => {
+      mockSessionStore.getMessageSession.mockResolvedValue('sess-watchdog-1');
+      await bootstrap(makeDeps());
+      mockTelegram._triggerMessage({
+        userId: mockConfig.authorizedUserIds[0],
+        chatId: 99988877,
+        text: 'flush the dead-letter queue',
+        replyToMessageId: 500,
+      });
+      await new Promise((r) => setTimeout(r, 50));
+
+      // Should look up message session
+      expect(mockSessionStore.getMessageSession).toHaveBeenCalledWith(500);
+      // Should save it as the chat session for this chatId
+      expect(mockSessionStore.saveSession).toHaveBeenCalledWith(
+        99988877,
+        expect.objectContaining({ sessionId: 'sess-watchdog-1' }),
+        mockConfig.sessionIdleTimeoutMs,
+      );
+      // Should still enqueue the chat job
+      expect(mockQueues.enqueueChat).toHaveBeenCalledOnce();
+    });
+
+    it('does not pre-load session when reply-to message has no saved session', async () => {
+      mockSessionStore.getMessageSession.mockResolvedValue(null);
+      await bootstrap(makeDeps());
+      mockTelegram._triggerMessage({
+        userId: mockConfig.authorizedUserIds[0],
+        chatId: 99988877,
+        text: 'some reply',
+        replyToMessageId: 999,
+      });
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(mockSessionStore.getMessageSession).toHaveBeenCalledWith(999);
+      // Should NOT save session (no mapping found)
+      expect(mockSessionStore.saveSession).not.toHaveBeenCalled();
+      // Should still enqueue the chat job
+      expect(mockQueues.enqueueChat).toHaveBeenCalledOnce();
+    });
+
+    it('enqueues chat job normally when message is not a reply', async () => {
+      await bootstrap(makeDeps());
+      mockTelegram._triggerMessage({
+        userId: mockConfig.authorizedUserIds[0],
+        chatId: 99988877,
+        text: 'normal message',
+      });
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(mockSessionStore.getMessageSession).not.toHaveBeenCalled();
+      expect(mockQueues.enqueueChat).toHaveBeenCalledOnce();
     });
   });
 });

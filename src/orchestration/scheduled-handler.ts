@@ -7,6 +7,8 @@ import { jobResultOk, jobResultErr, type ScheduledJob, type JobResult, type Skil
 import type { runClaude } from '../infra/claude-subprocess.js';
 import type { TelegramAdapter } from '../infra/telegram.js';
 import type { AppConfig } from '../infra/config.js';
+import type { SessionStore } from '../infra/session-store.js';
+import { makeClaudeSessionId } from '../core/types.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -15,9 +17,16 @@ export type ScheduledDeps = {
   readonly telegram: TelegramAdapter;
   readonly skillRegistry: SkillRegistry;
   readonly config: AppConfig;
+  /** Session store for saving message→session mappings (reply-to routing). */
+  readonly sessionStore?: SessionStore;
   /** Fire-and-forget cortex memory extraction. Called after successful Claude runs. */
   readonly triggerCortexExtraction?: (sessionId: string, cwd: string) => void;
 };
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+/** Sentinel output that scheduled skills use to signal "nothing to report". */
+const SUPPRESS_SENTINEL = 'ALL_CLEAR';
 
 // ─── Day-of-week helper (pure) ────────────────────────────────────────────────
 
@@ -87,17 +96,36 @@ export async function handleScheduledJob(job: ScheduledJob, deps: ScheduledDeps)
     return jobResultErr(result.error);
   }
 
-  // 8. Split response and send to all authorized users
-  const chunks = splitMessage(result.output);
-  for (const userId of deps.config.authorizedUserIds) {
-    await deps.telegram.sendChunkedMessage(userId, chunks);
+  // 8. Suppress notification if output is the ALL_CLEAR sentinel (alert-only skills)
+  const isSuppressed = result.output.trim() === SUPPRESS_SENTINEL;
+
+  // 9. Split response and send to all authorized users (unless suppressed)
+  if (!isSuppressed) {
+    const chunks = splitMessage(result.output);
+    for (const userId of deps.config.authorizedUserIds) {
+      const messageIds = await deps.telegram.sendChunkedMessage(userId, chunks);
+
+      // 9b. Save message→session mappings so reply-to-message can resume the session
+      if (result.sessionId && deps.sessionStore) {
+        const sessionIdResult = makeClaudeSessionId(result.sessionId);
+        if (sessionIdResult.ok) {
+          for (const msgId of messageIds) {
+            await deps.sessionStore.saveMessageSession(
+              msgId,
+              sessionIdResult.value,
+              deps.config.sessionIdleTimeoutMs,
+            );
+          }
+        }
+      }
+    }
   }
 
-  // 9. Trigger cortex memory extraction (fire-and-forget, non-blocking)
+  // 10. Trigger cortex memory extraction (fire-and-forget, non-blocking)
   if (result.sessionId) {
     deps.triggerCortexExtraction?.(result.sessionId, deps.config.workspacePath);
   }
 
-  // 10. Return success
+  // 11. Return success
   return jobResultOk(result.output);
 }

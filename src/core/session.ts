@@ -14,6 +14,11 @@ export function makeSessionKey(chatId: number): string {
   return `reclaw-session-${chatId}`;
 }
 
+/** Build Redis key for a message→session mapping. No colons — avoids BullMQ key convention conflicts. */
+export function makeMessageSessionKey(messageId: number): string {
+  return `reclaw-msg-session-${messageId}`;
+}
+
 /** Check if a session has exceeded the idle timeout. */
 export function isSessionExpired(
   record: SessionRecord,

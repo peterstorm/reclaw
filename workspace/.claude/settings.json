@@ -1,4 +1,7 @@
 {
+  "sandbox": {
+    "enabled": false
+  },
   "permissions": {
     "allow": [
       "Read(path:/home/peterstorm/dev/claude-plugins/reclaw/**)",
@@ -11,7 +14,9 @@
       "Read(path:/home/peterstorm/dev/notes/remotevault/**)",
       "Grep(path:/home/peterstorm/dev/notes/remotevault/**)",
       "Glob(path:/home/peterstorm/dev/notes/remotevault/**)",
-      "Edit(path:/home/peterstorm/dev/notes/remotevault/**)"
+      "Edit(path:/home/peterstorm/dev/notes/remotevault/**)",
+      "Bash(systemctl:*)",
+      "Bash(nix:*)"
     ]
   }
 }
