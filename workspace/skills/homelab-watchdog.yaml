@@ -59,9 +59,9 @@ promptTemplate: |
 
   ### 6. Cloudflare Tunnel
   ```
-  systemctl is-active cloudflared 2>&1
+  systemctl list-units --type=service --no-pager 2>&1 | grep cloudflared
   ```
-  Alert if not active. The tunnel is the sole ingress — if it's down, nothing external works.
+  Alert if no cloudflared service is active/running. The unit name includes the tunnel UUID (e.g. `cloudflared-tunnel-<uuid>.service`), so match by prefix not exact name. The tunnel is the sole ingress — if it's down, nothing external works.
 
   ### 7. System resources
   ```
