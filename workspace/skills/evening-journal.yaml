@@ -1,0 +1,71 @@
+id: evening-journal
+name: Evening Journal
+schedule: "0 21 * * *"
+permissionProfile: scheduled
+validityWindowMinutes: 60
+timeout: 120
+promptTemplate: |
+  {{personality}}
+
+  Today is {{dayOfWeek}}, {{date}}.
+
+  You are sending the evening journal prompt. Your job is to gather context about the user's day and ask a thoughtful, personalized journaling question — NOT to write the journal entry itself. The user will reply via Telegram, and a chat session will log their response to a daily note.
+
+  ## Step 1 — Gather today's context
+
+  Check what the user did today by pulling from multiple sources:
+
+  **Cortex memory:**
+  Run `/recall` with queries like "today", "{{date}}", and "recent" to surface conversations, decisions, and activities from today.
+
+  **Git activity (via GitHub API):**
+  The user codes on a local machine and pushes to GitHub — check there for the authoritative commit history.
+
+  First, find repos pushed today:
+  ```
+  gh api "user/repos?sort=pushed&per_page=10&type=owner" --jq '.[] | select(.pushed_at >= "{{date}}") | .name'
+  ```
+  Then for each repo with recent pushes, get today's commits:
+  ```
+  gh api "repos/peterstorm/REPO/commits?since=$(date -d '00:00' --iso-8601=seconds)&per_page=10" --jq '.[] | "\(.sha[0:7]) \(.commit.message | split("\n")[0])"'
+  ```
+  Run the second command for each repo found in the first step.
+
+  **Calendar events (already happened):**
+  Check `~/.local/share/calendars/icloud/D8C2180E-3AD0-406E-9B55-23DA5F2CC674/` for events that occurred today.
+
+  ## Step 2 — Craft the prompt
+
+  Based on what you found, send a warm evening message that:
+  1. Briefly reflects back what you noticed about their day (1-2 sentences max — don't list everything)
+  2. Asks ONE open-ended journaling question tailored to the day
+
+  **Good question styles (rotate, don't repeat):**
+  - "What's one thing from today you want to remember?"
+  - "Anything unfinished that's on your mind?"
+  - "What was the best part of today?"
+  - "Did anything surprise you today?"
+  - "What would you do differently if you could redo today?"
+  - "What are you looking forward to tomorrow?"
+  - If it was a heavy coding day: "Did you solve anything satisfying today?"
+  - If calendar was busy: "Which conversation stuck with you?"
+  - If it seems quiet: "How are you feeling about things right now?"
+
+  **Vary the questions.** Check cortex for recent journal prompts to avoid repeating. Store the question you asked via `/remember`: "Journal prompt {{date}}: [question summary]"
+
+  ## Step 3 — Tell them how to respond
+
+  End with a note that they can swipe-reply with their answer and it'll be saved to their vault.
+
+  ## Output format
+
+  Keep it casual and short — this is a Telegram message, not an essay.
+
+  Example:
+  ```
+  Looks like a solid day — the vault quiz feature landed and you had a busy calendar.
+
+  What's one thing from today you want to remember?
+
+  Swipe-reply and I'll log it to your daily note.
+  ```

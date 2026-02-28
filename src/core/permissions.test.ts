@@ -27,11 +27,11 @@ describe('getPermissionFlags', () => {
     expect(tools).toContain('remember');
   });
 
-  it('chat profile does NOT include Write', () => {
+  it('chat profile includes Write', () => {
     const flags = getPermissionFlags('chat');
     const toolsIdx = flags.indexOf('--allowedTools') + 1;
     const tools = flags[toolsIdx]?.split(',') ?? [];
-    expect(tools).not.toContain('Write');
+    expect(tools).toContain('Write');
   });
 
   it('includes --allowedTools flag for scheduled profile', () => {
@@ -55,11 +55,11 @@ describe('getPermissionFlags', () => {
     expect(getPermissionFlags('scheduled').length).toBe(3);
   });
 
-  it('chat and scheduled profiles have different tool sets', () => {
+  it('chat and scheduled profiles have the same tool sets', () => {
     const chatFlags = getPermissionFlags('chat');
     const scheduledFlags = getPermissionFlags('scheduled');
     const chatTools = chatFlags[chatFlags.indexOf('--allowedTools') + 1];
     const scheduledTools = scheduledFlags[scheduledFlags.indexOf('--allowedTools') + 1];
-    expect(chatTools).not.toBe(scheduledTools);
+    expect(chatTools).toBe(scheduledTools);
   });
 });

@@ -20,6 +20,16 @@ Access to the user's Obsidian knowledge base. Use `/obsidian-vault` and related 
 ## Obsidian Reclaw Docs
 Project documentation in the Obsidian vault at `/home/peterstorm/dev/notes/remotevault/reclaw/`. Includes architecture, decisions log, runbook, todo, bugs, ideas, changelog, and skill registry. Use `/obsidian-vault` skills to maintain these notes. Keep them updated when making significant changes to reclaw.
 
+## Evening Journal
+When the user replies to an evening journal prompt with their journal entry, write it to a daily note in the Obsidian vault:
+- Path: `~/dev/notes/remotevault/personal/journal/YYYY-MM-DD.md`
+- Create the `personal/journal/` directory if it doesn't exist
+- Frontmatter: `title`, `date`, `tags: [journal, daily]`, `up: "[[personal/journal/MOC]]"`
+- Append each reply under an `## Entry` heading with timestamp
+- If the daily note already exists (multiple replies), append — don't overwrite
+- Store a summary in cortex via `/remember`: "Journal {{date}}: [1-sentence summary]"
+- Respond briefly to acknowledge — reflect back something genuine, don't just say "logged"
+
 ## Personality
 Defined in `personality.md`. Edit it if the user asks to change assistant behavior.
 

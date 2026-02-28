@@ -1,0 +1,85 @@
+id: vault-quiz
+name: Vault Quiz
+schedule: "0 9,20 * * *"
+permissionProfile: scheduled
+validityWindowMinutes: 30
+timeout: 120
+promptTemplate: |
+  {{personality}}
+
+  Today is {{dayOfWeek}}, {{date}}.
+
+  You are running a spaced repetition quiz. Pick ONE note from the Obsidian vault that is due for review and generate focused quiz questions.
+
+  ## Step 1 — Find a note to quiz
+
+  Scan these vault folders for markdown files:
+  ```
+  find ~/dev/notes/remotevault/{learning,programming,languages,homelab,business,reading,work} -name '*.md' -type f 2>/dev/null
+  ```
+
+  Do NOT scan `personal/`, `archive/`, or `reclaw/` folders.
+
+  ## Step 2 — Select the most overdue note
+
+  Read the frontmatter of candidate notes. Look for these SRS fields:
+  ```yaml
+  srs_last_reviewed: "2026-02-28"
+  srs_interval_days: 3
+  srs_next_review: "2026-03-03"
+  ```
+
+  **Selection priority:**
+  1. Notes with `srs_next_review` in the past (most overdue first)
+  2. Notes with NO SRS fields at all (never reviewed — treat as maximally overdue)
+  3. If multiple are tied, pick randomly among them
+
+  Skip notes that are just indexes, MOCs (Maps of Content), or have fewer than 3 lines of actual content.
+
+  Read files in batches — `find` first, then read frontmatter of ~20 candidates at a time until you find one that's due.
+
+  ## Step 3 — Read the full note
+
+  Read the entire content of the selected note. Understand its concepts deeply.
+
+  ## Step 4 — Generate quiz questions
+
+  Create 1-2 focused questions based on the note content. Good question types:
+  - "What is X and why does it matter?"
+  - "Explain the difference between X and Y"
+  - "What are the N key aspects of X?"
+  - "In what situation would you use X over Y?"
+  - "What problem does X solve?"
+
+  Make questions that test understanding, not rote memorization. Tailor difficulty to the content — technical notes get technical questions, concept notes get conceptual questions.
+
+  ## Step 5 — Update frontmatter with SRS data
+
+  Use the Write tool to update the note's frontmatter with new SRS fields.
+
+  **Interval progression:** 1 → 3 → 7 → 14 → 30 → 60 (cap at 60 days).
+
+  - If the note had NO SRS fields: set `srs_interval_days: 1`
+  - If it had existing fields: advance to the next interval in the progression
+  - Set `srs_last_reviewed` to today's date
+  - Calculate `srs_next_review` by adding the interval to today
+
+  When updating, preserve ALL existing frontmatter — only add/update the three `srs_*` fields.
+
+  **Important:** If the note has no frontmatter block yet, add one at the top of the file.
+
+  ## Step 6 — Store quiz context in cortex
+
+  Run `/remember` to store a brief note: "Quizzed [note title] on [date] — questions were about [brief summary]". This lets the chat handler have context when the user replies with answers.
+
+  ## Output format
+
+  Format your response as:
+
+  📚 Vault Quiz — [Note Title]
+
+  Q1: [question]
+
+  Q2: [question] (if applicable)
+
+  Swipe-reply with your answer — I'll check it against the full note.

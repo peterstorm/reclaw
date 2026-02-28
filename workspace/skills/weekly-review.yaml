@@ -1,0 +1,85 @@
+id: weekly-review
+name: Weekly Review
+schedule: "0 10 * * 0"
+permissionProfile: scheduled
+validityWindowMinutes: 60
+timeout: 180
+promptTemplate: |
+  {{personality}}
+
+  Today is {{dayOfWeek}}, {{date}}.
+
+  Generate a weekly review summarizing what the user did this past week (Monday–Sunday). Write it to an Obsidian note and send a Telegram summary.
+
+  ## Step 1 — Gather the week's data
+
+  **Journal entries:**
+  Read all daily journal notes from this week:
+  ```
+  find ~/dev/notes/remotevault/personal/journal -name '*.md' -newer $(date -d '7 days ago' +%Y-%m-%d) 2>/dev/null | sort
+  ```
+  If the find approach doesn't work, list all files and filter by the date in the filename (YYYY-MM-DD.md format) for the past 7 days.
+
+  **Cortex memory:**
+  Run `/recall` with queries: "this week", "decision", "shipped", "built", "fixed", "learned" to surface key events.
+
+  **Git activity (via GitHub API):**
+  The user codes on a local machine and pushes to GitHub — check there for the authoritative commit history.
+
+  Find repos pushed in the last 7 days:
+  ```
+  gh api "user/repos?sort=pushed&per_page=20&type=owner" --jq --arg cutoff "$(date -d '7 days ago' --iso-8601=seconds)" '.[] | select(.pushed_at >= $cutoff) | .name'
+  ```
+  Then for each active repo, get the week's commits:
+  ```
+  gh api "repos/peterstorm/REPO/commits?since=$(date -d '7 days ago' --iso-8601=seconds)&per_page=30" --jq '.[] | "\(.sha[0:7]) \(.commit.message | split("\n")[0])"'
+  ```
+  Run the second command for each repo found in the first step.
+
+  **Calendar events this week:**
+  Check `~/.local/share/calendars/icloud/D8C2180E-3AD0-406E-9B55-23DA5F2CC674/` for events from the past 7 days.
+
+  ## Step 2 — Write the weekly review note
+
+  Create a note at: `~/dev/notes/remotevault/personal/journal/weekly/YYYY-WNN.md` (e.g. `2026-W09.md`)
+  Create the `personal/journal/weekly/` directory if it doesn't exist.
+
+  **Frontmatter:**
+  ```yaml
+  ---
+  title: "Weekly Review — YYYY-WNN"
+  date: YYYY-MM-DD
+  tags: [journal, weekly-review]
+  up: "[[personal/journal/MOC]]"
+  ---
+  ```
+
+  **Sections:**
+  - `## Highlights` — 3-5 most notable things (shipped features, key decisions, interesting conversations)
+  - `## What I worked on` — grouped by project/area (reclaw, dotfiles, work, learning, etc.)
+  - `## Reflections` — patterns you notice: what went well, what was frustrating, any recurring themes from journal entries
+  - `## Next week` — carry-forward items, unfinished threads, upcoming calendar events
+
+  Be concrete — reference specific commits, notes, and conversations. Don't be generic.
+
+  ## Step 3 — Store in cortex
+
+  Run `/remember`: "Weekly review {{date}}: [2-sentence summary of the week's highlights]"
+
+  ## Step 4 — Send Telegram summary
+
+  Send a concise version — not the full note, just the highlights.
+
+  **Format:**
+  ```
+  📋 Weekly Review — Week NN
+
+  Highlights:
+  • [highlight 1]
+  • [highlight 2]
+  • [highlight 3]
+
+  Themes: [1-sentence reflection]
+
+  Full review saved to vault. Swipe-reply to discuss anything.
+  ```
