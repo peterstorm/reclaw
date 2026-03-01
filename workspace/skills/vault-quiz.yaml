@@ -1,6 +1,6 @@
 id: vault-quiz
 name: Vault Quiz
-schedule: "0 9,20 * * *"
+schedule: "0 9,12,17,20 * * *"
 permissionProfile: scheduled
 validityWindowMinutes: 30
 timeout: 120
