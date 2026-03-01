@@ -130,6 +130,9 @@ export function createScheduler(
 
   // ── Schedule next fire for a cron entry ──────────────────────────────────
 
+  // setTimeout max: 2^31-1 ms (~24.8 days). Delays beyond this overflow to 1ms.
+  const MAX_TIMEOUT_MS = 2_147_483_647;
+
   function scheduleNext(entry: CronEntry, skill: SkillConfig): void {
     const now = new Date();
     const nextRunResult = getNextRun(entry.cronExpression, now);
@@ -141,6 +144,16 @@ export function createScheduler(
     const scheduledFireTime = nextRunResult.value;
     const delay = scheduledFireTime.getTime() - now.getTime();
     const safeDelay = Math.max(0, delay);
+
+    // If the delay exceeds setTimeout's 32-bit max, schedule an intermediate
+    // wake-up and re-compute. Without this, the timeout overflows to 1ms and
+    // creates an infinite fire loop.
+    if (safeDelay > MAX_TIMEOUT_MS) {
+      entry.timerId = setTimeout(() => {
+        scheduleNext(entry, skill);
+      }, MAX_TIMEOUT_MS);
+      return;
+    }
 
     entry.timerId = setTimeout(() => {
       // Use the computed cron time, not new Date(), so job IDs are deterministic
