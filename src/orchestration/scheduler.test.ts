@@ -283,4 +283,52 @@ describe('createScheduler', () => {
     scheduler.stop();
     consoleSpy.mockRestore();
   });
+
+  describe('catch-up deduplication', () => {
+    it('skips catch-up when isJobKnown returns true', async () => {
+      // Use real timers for this test since we're testing async promise behavior
+      vi.useRealTimers();
+
+      const isJobKnown = vi.fn().mockResolvedValue(true);
+      const consoleSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+
+      // Skill fires every minute with 60min window — last trigger is always within window
+      const scheduler = createScheduler(enqueueScheduled, isJobKnown);
+      const skill = makeSkillConfig('dedup-test', '* * * * *', 60);
+      scheduler.reconcile(skillRegistryFromList([skill]));
+
+      // Wait for the async isJobKnown promise to resolve
+      await new Promise((r) => globalThis.setTimeout(r, 50));
+
+      expect(isJobKnown).toHaveBeenCalled();
+      expect(enqueueScheduled).not.toHaveBeenCalled();
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining('already processed'),
+      );
+
+      scheduler.stop();
+      consoleSpy.mockRestore();
+    });
+
+    it('enqueues catch-up when isJobKnown returns false', async () => {
+      vi.useRealTimers();
+
+      const isJobKnown = vi.fn().mockResolvedValue(false);
+      const consoleSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+
+      const scheduler = createScheduler(enqueueScheduled, isJobKnown);
+      const skill = makeSkillConfig('dedup-test', '* * * * *', 60);
+      scheduler.reconcile(skillRegistryFromList([skill]));
+
+      await new Promise((r) => globalThis.setTimeout(r, 50));
+
+      expect(isJobKnown).toHaveBeenCalled();
+      expect(enqueueScheduled).toHaveBeenCalledOnce();
+      const job: ScheduledJob = enqueueScheduled.mock.calls[0]?.[0];
+      expect(job.skillId).toBe('dedup-test');
+
+      scheduler.stop();
+      consoleSpy.mockRestore();
+    });
+  });
 });

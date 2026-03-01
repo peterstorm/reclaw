@@ -1,6 +1,6 @@
 import type { AppConfig } from '../infra/config.js';
 import type { TelegramAdapter } from '../infra/telegram.js';
-import type { ChatJob, JobResult, ReminderJob, ScheduledJob } from '../core/types.js';
+import type { ChatJob, JobResult, RecurringReminderJob, ReminderJob, ScheduledJob } from '../core/types.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -27,6 +27,7 @@ type WorkerDeps = {
   readonly chatHandler: (job: ChatJob) => Promise<JobResult>;
   readonly scheduledHandler: (job: ScheduledJob) => Promise<JobResult>;
   readonly reminderHandler: (job: ReminderJob) => Promise<JobResult>;
+  readonly recurringReminderHandler: (job: RecurringReminderJob) => Promise<JobResult>;
   readonly telegram: TelegramAdapter;
   readonly config: AppConfig;
   /** Injected for testing. Defaults to BullMQ Worker constructor. */
@@ -79,6 +80,7 @@ export function createWorkers(deps: WorkerDeps): Workers {
     chatHandler,
     scheduledHandler,
     reminderHandler,
+    recurringReminderHandler,
     telegram,
     config,
     workerFactory = defaultWorkerFactory,
@@ -183,15 +185,24 @@ export function createWorkers(deps: WorkerDeps): Workers {
     'reclaw-reminder',
     async (job) => {
       const data = job.data;
-      if (typeof data !== 'object' || data === null || (data as Record<string, unknown>).kind !== 'reminder') {
-        throw new Error(`Invalid reminder job data: missing or wrong kind field`);
+      if (typeof data !== 'object' || data === null) {
+        throw new Error('Invalid reminder job data: not an object');
       }
-      const reminderJob = data as ReminderJob;
-      const result = await reminderHandler(reminderJob);
-      if (!result.ok) {
-        throw new Error(result.error);
+      const kind = (data as Record<string, unknown>).kind;
+
+      if (kind === 'reminder') {
+        const result = await reminderHandler(data as ReminderJob);
+        if (!result.ok) throw new Error(result.error);
+        return result;
       }
-      return result;
+
+      if (kind === 'recurring-reminder') {
+        const result = await recurringReminderHandler(data as RecurringReminderJob);
+        if (!result.ok) throw new Error(result.error);
+        return result;
+      }
+
+      throw new Error(`Invalid reminder job data: unexpected kind "${String(kind)}"`);
     },
     { connection, concurrency: 1 },
   );

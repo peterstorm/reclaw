@@ -123,6 +123,7 @@ function diffRegistry(
  */
 export function createScheduler(
   enqueueScheduled: (job: ScheduledJob) => Promise<void>,
+  isJobKnown: (jobId: string) => Promise<boolean> = () => Promise.resolve(false),
 ): CronScheduler {
   // Mutable map of active cron entries — scheduler manages lifecycle
   const active = new Map<SkillId, CronEntry>();
@@ -137,12 +138,14 @@ export function createScheduler(
       return;
     }
 
-    const delay = nextRunResult.value.getTime() - now.getTime();
+    const scheduledFireTime = nextRunResult.value;
+    const delay = scheduledFireTime.getTime() - now.getTime();
     const safeDelay = Math.max(0, delay);
 
     entry.timerId = setTimeout(() => {
-      const firedAt = new Date();
-      const job = buildScheduledJob(skill, firedAt);
+      // Use the computed cron time, not new Date(), so job IDs are deterministic
+      // and match the catch-up lookup on restart.
+      const job = buildScheduledJob(skill, scheduledFireTime);
       if (job !== null) {
         enqueueScheduled(job).catch((e: unknown) => {
           console.error(`[scheduler] Failed to enqueue job for skill ${entry.skillId}:`, e);
@@ -184,15 +187,32 @@ export function createScheduler(
       const prev = interval.prev().toDate();
 
       if (isWithinValidityWindow(prev, skill.validityWindowMinutes, now)) {
-        console.info(
-          `[scheduler] Catch-up: skill "${skill.id}" last ran at ${prev.toISOString()}, within validity window. Enqueuing catch-up job.`,
-        );
         const job = buildScheduledJob(skill, prev);
-        if (job !== null) {
+        if (job === null) return;
+
+        // Check if this job already exists in BullMQ (completed, active, etc.)
+        // to avoid re-running skills after a restart within the validity window.
+        isJobKnown(job.id).then((known) => {
+          if (known) {
+            console.info(
+              `[scheduler] Catch-up: skill "${skill.id}" already processed for ${prev.toISOString()}, skipping.`,
+            );
+            return;
+          }
+          console.info(
+            `[scheduler] Catch-up: skill "${skill.id}" missed at ${prev.toISOString()}, within validity window. Enqueuing.`,
+          );
           enqueueScheduled(job).catch((e: unknown) => {
             console.error(`[scheduler] Failed to enqueue catch-up job for ${skill.id}:`, e);
           });
-        }
+        }).catch((e: unknown) => {
+          // If the check fails (Redis down), fall back to enqueuing — BullMQ jobId dedup
+          // will still prevent duplicates if the job is in waiting/active state.
+          console.warn(`[scheduler] isJobKnown check failed for ${skill.id}, enqueuing anyway:`, e);
+          enqueueScheduled(job).catch((e2: unknown) => {
+            console.error(`[scheduler] Failed to enqueue catch-up job for ${skill.id}:`, e2);
+          });
+        });
       }
     } catch (e) {
       console.warn(`[scheduler] tryCatchUp failed for skill "${skill.id}":`, e);

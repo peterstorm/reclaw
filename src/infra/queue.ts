@@ -1,7 +1,16 @@
 import { Queue } from 'bullmq';
-import type { ChatJob, Job, ReminderJob, ScheduledJob } from '../core/types.js';
+import type { ChatJob, Job, ReminderJob, RecurringReminderJob, ScheduledJob } from '../core/types.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+
+export type RecurringReminderInfo = {
+  readonly schedulerId: string;
+  readonly text: string;
+  readonly intervalMs: number;
+  readonly cronPattern?: string;
+  readonly cronDescription?: string;
+  readonly chatId: number;
+};
 
 export type Queues = {
   readonly chat: Queue;
@@ -9,7 +18,11 @@ export type Queues = {
   readonly reminder: Queue;
   readonly enqueueChat: (job: Extract<Job, { kind: 'chat' }>) => Promise<void>;
   readonly enqueueScheduled: (job: Extract<Job, { kind: 'scheduled' }>) => Promise<void>;
+  readonly isScheduledJobKnown: (jobId: string) => Promise<boolean>;
   readonly enqueueReminder: (job: ReminderJob) => Promise<void>;
+  readonly enqueueRecurringReminder: (job: RecurringReminderJob) => Promise<string>;
+  readonly listRecurringReminders: () => Promise<readonly RecurringReminderInfo[]>;
+  readonly cancelRecurringReminder: (schedulerId: string) => Promise<boolean>;
 };
 
 // ─── Retry configuration (FR-014) ────────────────────────────────────────────
@@ -66,6 +79,11 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
     await scheduled.add(job.id, job, { jobId: job.id });
   };
 
+  const isScheduledJobKnown = async (jobId: string): Promise<boolean> => {
+    const job = await scheduled.getJob(jobId);
+    return job !== undefined;
+  };
+
   const reminder = new Queue('reclaw-reminder', {
     connection,
     defaultJobOptions: retryOptions,
@@ -78,7 +96,44 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
     await reminder.add(job.id, job, { jobId: job.id, delay: job.delayMs });
   };
 
-  return { chat, scheduled, reminder, enqueueChat, enqueueScheduled, enqueueReminder } as const;
+  const enqueueRecurringReminder = async (job: RecurringReminderJob): Promise<string> => {
+    const repeatOpts = job.cronPattern
+      ? { pattern: job.cronPattern }
+      : { every: job.intervalMs };
+    await reminder.upsertJobScheduler(
+      job.schedulerId,
+      repeatOpts,
+      { name: job.schedulerId, data: job },
+    );
+    return job.schedulerId;
+  };
+
+  const listRecurringReminders = async (): Promise<readonly RecurringReminderInfo[]> => {
+    const schedulers = await reminder.getJobSchedulers();
+    return schedulers
+      .filter((s) => (s.every !== undefined || s.pattern !== undefined) && s.id != null)
+      .map((s) => {
+        const data = (s as unknown as { template?: { data?: RecurringReminderJob } }).template?.data;
+        return {
+          schedulerId: s.id!,
+          text: data?.text ?? '(unknown)',
+          intervalMs: s.every !== undefined ? Number(s.every) : 0,
+          cronPattern: data?.cronPattern ?? (s.pattern as string | undefined),
+          cronDescription: data?.cronDescription,
+          chatId: data?.chatId ?? 0,
+        };
+      });
+  };
+
+  const cancelRecurringReminder = async (schedulerId: string): Promise<boolean> => {
+    return reminder.removeJobScheduler(schedulerId);
+  };
+
+  return {
+    chat, scheduled, reminder,
+    enqueueChat, enqueueScheduled, isScheduledJobKnown, enqueueReminder,
+    enqueueRecurringReminder, listRecurringReminders, cancelRecurringReminder,
+  } as const;
 }
 
 export { retryOptions };

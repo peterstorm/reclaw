@@ -1,5 +1,5 @@
-import { makeChatJob, makeJobId, makeReminderJob, makeTelegramUserId } from './core/types.js';
-import { parseRemindCommand, formatDuration, formatAbsoluteTime, formatSemanticDate } from './core/reminder.js';
+import { makeChatJob, makeJobId, makeReminderJob, makeRecurringReminderJob, makeTelegramUserId } from './core/types.js';
+import { parseRemindCommand, isRemindListCommand, parseRemindCancelCommand, formatDuration, formatAbsoluteTime, formatSemanticDate } from './core/reminder.js';
 import { createAsyncMutex } from './core/async-mutex.js';
 import type { AppConfig } from './infra/config.js';
 import type { TelegramAdapter } from './infra/telegram.js';
@@ -13,7 +13,7 @@ import type { Result, ScheduledJob, ChatJob, JobResult } from './core/types.js';
 import type { runClaude } from './infra/claude-subprocess.js';
 import type { handleChatJob } from './orchestration/chat-handler.js';
 import type { handleScheduledJob } from './orchestration/scheduled-handler.js';
-import type { handleReminderJob } from './orchestration/reminder-handler.js';
+import type { handleReminderJob, handleRecurringReminderJob } from './orchestration/reminder-handler.js';
 
 // ─── Injectable deps (for testability) ───────────────────────────────────────
 
@@ -22,7 +22,7 @@ export type BootstrapDeps = {
   readonly createTelegramAdapterFn?: typeof createTelegramAdapter;
   readonly createQueuesFn?: (conn: { host: string; port: number }) => Queues;
   readonly createSkillWatcherFn?: (dir: string) => SkillWatcher;
-  readonly createSchedulerFn?: (enq: (job: ScheduledJob) => Promise<void>) => CronScheduler;
+  readonly createSchedulerFn?: (enq: (job: ScheduledJob) => Promise<void>, isJobKnown: (jobId: string) => Promise<boolean>) => CronScheduler;
   readonly createWorkersFn?: (deps: {
     redisConnection: { host: string; port: number };
     chatHandler: (job: ChatJob) => Promise<JobResult>;
@@ -34,6 +34,7 @@ export type BootstrapDeps = {
   readonly handleChatJobFn?: typeof handleChatJob;
   readonly handleScheduledJobFn?: typeof handleScheduledJob;
   readonly handleReminderJobFn?: typeof handleReminderJob;
+  readonly handleRecurringReminderJobFn?: typeof handleRecurringReminderJob;
   readonly createSessionStoreFn?: (redis: { host: string; port: number }) => {
     sessionStore: SessionStore;
     disconnect: () => Promise<void>;
@@ -75,7 +76,7 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
     injected.createSkillWatcherFn ??
     (await import('./infra/skill-watcher.js').then((m) => m.createSkillWatcher));
 
-  const createSchedulerFn: (enq: (job: ScheduledJob) => Promise<void>) => CronScheduler =
+  const createSchedulerFn: (enq: (job: ScheduledJob) => Promise<void>, isJobKnown: (jobId: string) => Promise<boolean>) => CronScheduler =
     injected.createSchedulerFn ??
     (await import('./orchestration/scheduler.js').then((m) => m.createScheduler));
 
@@ -98,6 +99,10 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
   const handleReminderJobFn: typeof handleReminderJob =
     injected.handleReminderJobFn ??
     (await import('./orchestration/reminder-handler.js').then((m) => m.handleReminderJob));
+
+  const handleRecurringReminderJobFn: typeof handleRecurringReminderJob =
+    injected.handleRecurringReminderJobFn ??
+    (await import('./orchestration/reminder-handler.js').then((m) => m.handleRecurringReminderJob));
 
   // ── 1. Load config — exit on failure ─────────────────────────────────────
   const configResult = loadConfigFn();
@@ -185,7 +190,7 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
   const skillWatcher: SkillWatcher = createSkillWatcherFn(config.skillsDir);
 
   // ── 6. Create scheduler ────────────────────────────────────────────────────
-  const scheduler: CronScheduler = createSchedulerFn(queues.enqueueScheduled);
+  const scheduler: CronScheduler = createSchedulerFn(queues.enqueueScheduled, queues.isScheduledJobKnown);
 
   // ── 7. Wire skill watcher onChange to scheduler.reconcile ─────────────────
   skillWatcher.onRegistryChange((registry) => {
@@ -210,6 +215,7 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
         ...(triggerCortexExtraction ? { triggerCortexExtraction } : {}),
       }),
     reminderHandler: (job) => handleReminderJobFn(job, { telegram }),
+    recurringReminderHandler: (job) => handleRecurringReminderJobFn(job, { telegram }),
     telegram,
     config,
   });
@@ -232,16 +238,96 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
       return;
     }
 
-    // Handle /remind command — schedule a one-off delayed reminder
+    // Handle /remind commands — one-shot, recurring, list, cancel
     if (msg.text.trim().startsWith('/remind')) {
+
+      // ── /remind list — show active recurring reminders ──
+      if (isRemindListCommand(msg.text)) {
+        queues.listRecurringReminders()
+          .then((reminders) => {
+            const mine = reminders.filter((r) => r.chatId === msg.chatId);
+            if (mine.length === 0) {
+              return telegram.sendMessage(msg.chatId, 'No active recurring reminders.');
+            }
+            const lines = mine.map((r, i) => {
+              const schedule = r.cronDescription ?? (r.cronPattern ? r.cronPattern : `every ${formatDuration(r.intervalMs)}`);
+              return `${i + 1}. \`${r.schedulerId}\` ${schedule} — ${r.text}`;
+            });
+            const listMsg = `Active recurring reminders:\n\n${lines.join('\n')}\n\nCancel with: /remind cancel <id>`;
+            return telegram.sendMessage(msg.chatId, listMsg);
+          })
+          .catch((listErr: unknown) => {
+            console.error('[main] Failed to list recurring reminders:', listErr);
+          });
+        return;
+      }
+
+      // ── /remind cancel <id> — remove a recurring reminder ──
+      const cancelId = parseRemindCancelCommand(msg.text);
+      if (cancelId !== null) {
+        queues.cancelRecurringReminder(cancelId)
+          .then((removed) => {
+            const response = removed
+              ? `Cancelled recurring reminder: ${cancelId}`
+              : `No recurring reminder found with ID: ${cancelId}`;
+            return telegram.sendMessage(msg.chatId, response);
+          })
+          .catch((cancelErr: unknown) => {
+            console.error('[main] Failed to cancel recurring reminder:', cancelErr);
+          });
+        return;
+      }
+
+      // ── Parse the remind command (one-shot or recurring) ──
       const parseResult = parseRemindCommand(msg.text);
       if (!parseResult.ok) {
-        telegram.sendMessage(msg.chatId, parseResult.error).catch((err: unknown) => {
-          console.error('[main] Failed to send /remind usage error:', err);
+        telegram.sendMessage(msg.chatId, parseResult.error).catch((parseErr: unknown) => {
+          console.error('[main] Failed to send /remind usage error:', parseErr);
         });
         return;
       }
 
+      // ── Recurring reminder: /remind every <interval|day> [at <time>] <message> ──
+      if (parseResult.value.kind === 'recurring' || parseResult.value.kind === 'cron-recurring') {
+        const recurParsed = parseResult.value;
+        const schedulerId = `recur:${msg.userId}:${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+        const jobIdResult = makeJobId(schedulerId);
+        if (!jobIdResult.ok) {
+          console.error(`[main] Failed to create recurring reminder jobId: ${jobIdResult.error}`);
+          return;
+        }
+
+        const recurringResult = makeRecurringReminderJob({
+          id: jobIdResult.value,
+          chatId: msg.chatId,
+          text: recurParsed.text,
+          createdAt: new Date().toISOString(),
+          ...(recurParsed.kind === 'cron-recurring'
+            ? { cronPattern: recurParsed.cronPattern, cronDescription: recurParsed.cronDescription }
+            : { intervalMs: recurParsed.intervalMs }),
+          schedulerId,
+        });
+
+        if (!recurringResult.ok) {
+          console.error(`[main] Failed to create RecurringReminderJob: ${recurringResult.error}`);
+          return;
+        }
+
+        queues.enqueueRecurringReminder(recurringResult.value)
+          .then(() => {
+            const confirmMsg = recurParsed.kind === 'cron-recurring'
+              ? `Got it — I'll remind you ${recurParsed.cronDescription} to: ${recurParsed.text}`
+              : `Got it — I'll remind you every ${formatDuration(recurParsed.intervalMs)} to: ${recurParsed.text}`;
+            return telegram.sendMessage(msg.chatId, confirmMsg);
+          })
+          .catch((recurErr: unknown) => {
+            console.error('[main] Failed to enqueue recurring reminder:', recurErr);
+          });
+        return;
+      }
+
+      // ── One-shot reminder (existing logic) ──
+      const parsed = parseResult.value; // Narrowed: kind is 'duration' | 'absolute' | 'semantic'
       const jobIdRaw = `reminder:${msg.userId}:${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
       const jobIdResult = makeJobId(jobIdRaw);
       if (!jobIdResult.ok) {
@@ -252,9 +338,9 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
       const reminderResult = makeReminderJob({
         id: jobIdResult.value,
         chatId: msg.chatId,
-        text: parseResult.value.text,
+        text: parsed.text,
         createdAt: new Date().toISOString(),
-        delayMs: parseResult.value.delayMs,
+        delayMs: parsed.delayMs,
       });
 
       if (!reminderResult.ok) {
@@ -265,15 +351,15 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
       queues.enqueueReminder(reminderResult.value)
         .then(() => {
           const confirmMsg =
-            parseResult.value.kind === 'duration'
-              ? `Got it — I'll remind you in ${formatDuration(parseResult.value.delayMs)}.`
-              : parseResult.value.kind === 'absolute'
-                ? `Got it — I'll remind you at ${formatAbsoluteTime(parseResult.value.delayMs)}.`
-                : `Got it — I'll remind you on ${formatSemanticDate(parseResult.value.delayMs)}.`;
+            parsed.kind === 'duration'
+              ? `Got it — I'll remind you in ${formatDuration(parsed.delayMs)}.`
+              : parsed.kind === 'absolute'
+                ? `Got it — I'll remind you at ${formatAbsoluteTime(parsed.delayMs)}.`
+                : `Got it — I'll remind you on ${formatSemanticDate(parsed.delayMs)}.`;
           return telegram.sendMessage(msg.chatId, confirmMsg);
         })
-        .catch((err: unknown) => {
-          console.error('[main] Failed to enqueue reminder job:', err);
+        .catch((enqErr: unknown) => {
+          console.error('[main] Failed to enqueue reminder job:', enqErr);
         });
       return;
     }

@@ -1,4 +1,4 @@
-import { jobResultOk, type ReminderJob, type JobResult } from '../core/types.js';
+import { jobResultOk, type ReminderJob, type RecurringReminderJob, type JobResult } from '../core/types.js';
 import type { TelegramAdapter } from '../infra/telegram.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -7,14 +7,24 @@ export type ReminderDeps = {
   readonly telegram: TelegramAdapter;
 };
 
-// ─── Handler ──────────────────────────────────────────────────────────────────
+// ─── Handlers ─────────────────────────────────────────────────────────────────
 
 /**
- * Process a reminder job: send the reminder text to the user's Telegram chat.
+ * Process a one-shot reminder job: send the reminder text to the user's Telegram chat.
  * No AI subprocess — just a direct message delivery.
  */
 export async function handleReminderJob(job: ReminderJob, deps: ReminderDeps): Promise<JobResult> {
   const message = `\u{23F0} Reminder: ${job.text}`;
+  await deps.telegram.sendMessage(job.chatId, message);
+  return jobResultOk(message);
+}
+
+/**
+ * Process a recurring reminder job. Distinct emoji so the user can
+ * visually differentiate from one-shot reminders.
+ */
+export async function handleRecurringReminderJob(job: RecurringReminderJob, deps: ReminderDeps): Promise<JobResult> {
+  const message = `\u{1F501} Recurring: ${job.text}`;
   await deps.telegram.sendMessage(job.chatId, message);
   return jobResultOk(message);
 }

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createWorkers, formatDeadLetterMessage, type BullWorkerLike, type WorkerFactory } from './worker.js';
 import type { AppConfig } from '../infra/config.js';
 import type { TelegramAdapter } from '../infra/telegram.js';
-import type { ChatJob, JobId, JobResult, ScheduledJob, SkillId, TelegramUserId } from '../core/types.js';
+import type { ChatJob, JobId, JobResult, RecurringReminderJob, ReminderJob, ScheduledJob, SkillId, TelegramUserId } from '../core/types.js';
 
 // ─── Test data ────────────────────────────────────────────────────────────────
 
@@ -92,6 +92,7 @@ describe('createWorkers', () => {
   let chatHandler: ReturnType<typeof vi.fn>;
   let scheduledHandler: ReturnType<typeof vi.fn>;
   let reminderHandler: ReturnType<typeof vi.fn>;
+  let recurringReminderHandler: ReturnType<typeof vi.fn>;
   let mockTelegram: TelegramAdapter;
   let fakeFactory: ReturnType<typeof makeFakeWorkerFactory>;
 
@@ -99,6 +100,7 @@ describe('createWorkers', () => {
     chatHandler = vi.fn().mockResolvedValue({ ok: true, response: 'chat response' } as JobResult);
     scheduledHandler = vi.fn().mockResolvedValue({ ok: true, response: 'scheduled response' } as JobResult);
     reminderHandler = vi.fn().mockResolvedValue({ ok: true, response: 'reminder response' } as JobResult);
+    recurringReminderHandler = vi.fn().mockResolvedValue({ ok: true, response: 'recurring response' } as JobResult);
     mockTelegram = {
       start: vi.fn().mockResolvedValue(undefined),
       stop: vi.fn().mockResolvedValue(undefined),
@@ -119,6 +121,7 @@ describe('createWorkers', () => {
       chatHandler,
       scheduledHandler,
       reminderHandler,
+      recurringReminderHandler,
       telegram: mockTelegram,
       config: mockConfig,
       workerFactory: fakeFactory.factory,
@@ -163,6 +166,7 @@ describe('createWorkers', () => {
       chatHandler,
       scheduledHandler,
       reminderHandler,
+      recurringReminderHandler,
       telegram: mockTelegram,
       config: mockConfig,
       workerFactory: fakeFactory.factory,
@@ -217,6 +221,7 @@ describe('createWorkers', () => {
       chatHandler,
       scheduledHandler,
       reminderHandler,
+      recurringReminderHandler,
       telegram: mockTelegram,
       config: mockConfig,
       workerFactory: fakeFactory.factory,
@@ -241,6 +246,7 @@ describe('createWorkers', () => {
       chatHandler,
       scheduledHandler,
       reminderHandler,
+      recurringReminderHandler,
       telegram: mockTelegram,
       config: mockConfig,
       workerFactory: fakeFactory.factory,
@@ -344,6 +350,76 @@ describe('createWorkers', () => {
       chatJob.chatId,
       expect.stringContaining('specific error message'),
     );
+  });
+
+  // ── Recurring reminder dispatch ─────────────────────────────────────────
+
+  it('reminder worker dispatches recurring-reminder to recurringReminderHandler', async () => {
+    makeWorkers();
+
+    const reminderWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-reminder');
+    expect(reminderWorker).toBeDefined();
+
+    const recurringJob: RecurringReminderJob = {
+      kind: 'recurring-reminder',
+      id: 'recur-001' as JobId,
+      chatId: 999888777,
+      text: 'take vitamins',
+      createdAt: '2026-03-01T10:00:00Z',
+      intervalMs: 86_400_000,
+      schedulerId: 'recur:111:abc',
+    };
+
+    const bullJob: FakeBullJob = {
+      data: recurringJob,
+      id: recurringJob.id,
+      opts: { attempts: 3 },
+      attemptsMade: 0,
+    };
+
+    const result = await reminderWorker!.processor(bullJob);
+    expect(recurringReminderHandler).toHaveBeenCalledWith(recurringJob);
+    expect(result).toEqual({ ok: true, response: 'recurring response' });
+  });
+
+  it('reminder worker still dispatches one-shot reminders correctly', async () => {
+    makeWorkers();
+
+    const reminderWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-reminder');
+
+    const oneshotJob: ReminderJob = {
+      kind: 'reminder',
+      id: 'reminder-001' as JobId,
+      chatId: 999888777,
+      text: 'take a break',
+      createdAt: '2026-03-01T10:00:00Z',
+      delayMs: 1_800_000,
+    };
+
+    const bullJob: FakeBullJob = {
+      data: oneshotJob,
+      id: oneshotJob.id,
+      opts: { attempts: 3 },
+      attemptsMade: 0,
+    };
+
+    const result = await reminderWorker!.processor(bullJob);
+    expect(reminderHandler).toHaveBeenCalledWith(oneshotJob);
+    expect(result).toEqual({ ok: true, response: 'reminder response' });
+  });
+
+  it('reminder worker throws on unknown kind', async () => {
+    makeWorkers();
+
+    const reminderWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-reminder');
+    const bullJob: FakeBullJob = {
+      data: { kind: 'unknown-type', id: 'x' },
+      id: 'x',
+      opts: { attempts: 3 },
+      attemptsMade: 0,
+    };
+
+    await expect(reminderWorker!.processor(bullJob)).rejects.toThrow('unexpected kind');
   });
 });
 

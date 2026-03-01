@@ -4,9 +4,13 @@ import {
   parseAbsoluteTime,
   parseSemanticDate,
   parseRemindCommand,
+  parseRecurringReminder,
+  isRemindListCommand,
+  parseRemindCancelCommand,
   formatDuration,
   formatAbsoluteTime,
   formatSemanticDate,
+  type RecurringParsed,
 } from './reminder.js';
 
 // ─── parseDuration ────────────────────────────────────────────────────────────
@@ -124,7 +128,7 @@ describe('parseRemindCommand', () => {
   it('parses duration (backward compat)', () => {
     const r = parseRemindCommand('/remind 30m take a break', now);
     expect(r.ok).toBe(true);
-    if (r.ok) {
+    if (r.ok && r.value.kind !== 'recurring') {
       expect(r.value.kind).toBe('duration');
       expect(r.value.text).toBe('take a break');
       expect(r.value.delayMs).toBe(30 * 60_000);
@@ -152,7 +156,7 @@ describe('parseRemindCommand', () => {
   it('parses semantic date: tomorrow at 3pm', () => {
     const r = parseRemindCommand('/remind tomorrow at 3pm call dentist', now);
     expect(r.ok).toBe(true);
-    if (r.ok) {
+    if (r.ok && r.value.kind !== 'recurring') {
       expect(r.value.kind).toBe('semantic');
       expect(r.value.text).toBe('call dentist');
       expect(r.value.delayMs).toBeGreaterThan(0);
@@ -213,5 +217,249 @@ describe('formatSemanticDate', () => {
     const result = formatSemanticDate(24 * 3_600_000, now);
     // Should contain "Monday" (March 2 is a Monday)
     expect(result).toContain('Monday');
+  });
+});
+
+// ─── parseRecurringReminder ─────────────────────────────────────────────────
+
+describe('parseRecurringReminder', () => {
+  it('parses valid interval and message', () => {
+    const r = parseRecurringReminder('1d take vitamins');
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.intervalMs).toBe(86_400_000);
+      expect(r.value.text).toBe('take vitamins');
+    }
+  });
+
+  it('parses hours', () => {
+    const r = parseRecurringReminder('2h drink water');
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.intervalMs).toBe(7_200_000);
+      expect(r.value.text).toBe('drink water');
+    }
+  });
+
+  it('rejects interval less than 1 minute', () => {
+    const r = parseRecurringReminder('30s stretch');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('at least 1 minute');
+  });
+
+  it('rejects missing message', () => {
+    const r = parseRecurringReminder('1d');
+    expect(r.ok).toBe(false);
+  });
+
+  it('rejects invalid duration', () => {
+    const r = parseRecurringReminder('abc test');
+    expect(r.ok).toBe(false);
+  });
+
+  // Cron-based recurring reminders
+  it('parses "Sunday at noon water plants" as cron', () => {
+    const r = parseRecurringReminder('Sunday at noon water plants');
+    expect(r.ok).toBe(true);
+    if (r.ok && r.value.type === 'cron') {
+      expect(r.value.cronPattern).toBe('0 12 * * 0');
+      expect(r.value.text).toBe('water plants');
+      expect(r.value.cronDescription).toContain('Sunday');
+    } else {
+      expect.unreachable('Expected cron type');
+    }
+  });
+
+  it('parses "weekday at 9am check email" as cron', () => {
+    const r = parseRecurringReminder('weekday at 9am check email');
+    expect(r.ok).toBe(true);
+    if (r.ok && r.value.type === 'cron') {
+      expect(r.value.cronPattern).toBe('0 9 * * 1-5');
+      expect(r.value.text).toBe('check email');
+    } else {
+      expect.unreachable('Expected cron type');
+    }
+  });
+
+  it('parses "Monday morning standup" as cron', () => {
+    const r = parseRecurringReminder('Monday morning standup');
+    expect(r.ok).toBe(true);
+    if (r.ok && r.value.type === 'cron') {
+      expect(r.value.cronPattern).toBe('0 9 * * 1');
+      expect(r.value.text).toBe('standup');
+    } else {
+      expect.unreachable('Expected cron type');
+    }
+  });
+
+  it('parses "daily at 8am take vitamins" as cron', () => {
+    const r = parseRecurringReminder('daily at 8am take vitamins');
+    expect(r.ok).toBe(true);
+    if (r.ok && r.value.type === 'cron') {
+      expect(r.value.cronPattern).toBe('0 8 * * *');
+      expect(r.value.text).toBe('take vitamins');
+    } else {
+      expect.unreachable('Expected cron type');
+    }
+  });
+
+  it('parses "fri at 3:30pm deploy check" as cron', () => {
+    const r = parseRecurringReminder('fri at 3:30pm deploy check');
+    expect(r.ok).toBe(true);
+    if (r.ok && r.value.type === 'cron') {
+      expect(r.value.cronPattern).toBe('30 15 * * 5');
+      expect(r.value.text).toBe('deploy check');
+    } else {
+      expect.unreachable('Expected cron type');
+    }
+  });
+
+  it('parses day name with "to" separator', () => {
+    const r = parseRecurringReminder('Sunday at noon to water plants');
+    expect(r.ok).toBe(true);
+    if (r.ok && r.value.type === 'cron') {
+      expect(r.value.cronPattern).toBe('0 12 * * 0');
+      expect(r.value.text).toBe('water plants');
+    } else {
+      expect.unreachable('Expected cron type');
+    }
+  });
+
+  it('defaults to 9am when no time given for day name', () => {
+    const r = parseRecurringReminder('Wednesday review PRs');
+    expect(r.ok).toBe(true);
+    if (r.ok && r.value.type === 'cron') {
+      expect(r.value.cronPattern).toBe('0 9 * * 3');
+      expect(r.value.text).toBe('review PRs');
+    } else {
+      expect.unreachable('Expected cron type');
+    }
+  });
+
+  it('still parses interval when valid duration given', () => {
+    const r = parseRecurringReminder('1d take vitamins');
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.type).toBe('interval');
+    }
+  });
+
+  it('rejects cron with empty message', () => {
+    const r = parseRecurringReminder('Sunday at noon');
+    expect(r.ok).toBe(false);
+  });
+});
+
+// ─── isRemindListCommand ────────────────────────────────────────────────────
+
+describe('isRemindListCommand', () => {
+  it('matches /remind list', () => {
+    expect(isRemindListCommand('/remind list')).toBe(true);
+  });
+
+  it('matches with extra whitespace', () => {
+    expect(isRemindListCommand('  /remind  list  ')).toBe(true);
+  });
+
+  it('is case insensitive', () => {
+    expect(isRemindListCommand('/Remind LIST')).toBe(true);
+  });
+
+  it('rejects /remind listing', () => {
+    expect(isRemindListCommand('/remind listing')).toBe(false);
+  });
+
+  it('rejects /remind list extra args', () => {
+    expect(isRemindListCommand('/remind list foo')).toBe(false);
+  });
+});
+
+// ─── parseRemindCancelCommand ───────────────────────────────────────────────
+
+describe('parseRemindCancelCommand', () => {
+  it('extracts scheduler ID', () => {
+    expect(parseRemindCancelCommand('/remind cancel abc123')).toBe('abc123');
+  });
+
+  it('handles complex IDs', () => {
+    expect(parseRemindCancelCommand('/remind cancel recur:123:456-abcd')).toBe('recur:123:456-abcd');
+  });
+
+  it('is case insensitive on prefix', () => {
+    expect(parseRemindCancelCommand('/Remind Cancel abc123')).toBe('abc123');
+  });
+
+  it('returns null for non-cancel', () => {
+    expect(parseRemindCancelCommand('/remind 30m test')).toBeNull();
+  });
+
+  it('returns null for cancel without ID', () => {
+    expect(parseRemindCancelCommand('/remind cancel')).toBeNull();
+  });
+});
+
+// ─── parseRemindCommand — recurring ─────────────────────────────────────────
+
+describe('parseRemindCommand recurring', () => {
+  it('parses /remind every 1d take vitamins', () => {
+    const r = parseRemindCommand('/remind every 1d take vitamins');
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.kind).toBe('recurring');
+      if (r.value.kind === 'recurring') {
+        expect(r.value.intervalMs).toBe(86_400_000);
+        expect(r.value.text).toBe('take vitamins');
+      }
+    }
+  });
+
+  it('parses /remind every 2h drink water', () => {
+    const r = parseRemindCommand('/remind every 2h drink water');
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.kind).toBe('recurring');
+      if (r.value.kind === 'recurring') {
+        expect(r.value.intervalMs).toBe(7_200_000);
+      }
+    }
+  });
+
+  it('rejects interval less than 1 minute', () => {
+    const r = parseRemindCommand('/remind every 30s stretch');
+    expect(r.ok).toBe(false);
+  });
+
+  it('rejects missing message after every', () => {
+    const r = parseRemindCommand('/remind every 1d');
+    expect(r.ok).toBe(false);
+  });
+
+  it('does not conflict with "every" in message text of duration reminders', () => {
+    const r = parseRemindCommand('/remind 30m every day check email');
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.kind).toBe('duration');
+      expect(r.value.text).toBe('every day check email');
+    }
+  });
+
+  it('parses /remind every Sunday at noon to water plants as cron-recurring', () => {
+    const r = parseRemindCommand('/remind every Sunday at noon to water plants');
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.kind).toBe('cron-recurring');
+      if (r.value.kind === 'cron-recurring') {
+        expect(r.value.cronPattern).toBe('0 12 * * 0');
+        expect(r.value.text).toBe('water plants');
+      }
+    }
+  });
+
+  it('parses /remind every weekday at 9am check email as cron-recurring', () => {
+    const r = parseRemindCommand('/remind every weekday at 9am check email');
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.kind).toBe('cron-recurring');
+    }
   });
 });

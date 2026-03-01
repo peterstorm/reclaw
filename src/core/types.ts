@@ -121,8 +121,21 @@ export type ReminderJob = {
   readonly delayMs: number; // BullMQ delay in milliseconds
 };
 
+/** A recurring reminder job: fires repeatedly via BullMQ job scheduler (interval or cron). */
+export type RecurringReminderJob = {
+  readonly kind: 'recurring-reminder';
+  readonly id: JobId;
+  readonly chatId: number;
+  readonly text: string;
+  readonly createdAt: string; // ISO 8601
+  readonly intervalMs: number; // BullMQ repeat interval in ms (0 when cron-based)
+  readonly cronPattern?: string; // cron expression (e.g. "0 12 * * 0")
+  readonly cronDescription?: string; // human-readable (e.g. "every Sunday at 12:00")
+  readonly schedulerId: string; // Job scheduler ID for cancellation
+};
+
 /** All job variants. */
-export type Job = ChatJob | ScheduledJob | ReminderJob;
+export type Job = ChatJob | ScheduledJob | ReminderJob | RecurringReminderJob;
 
 // ─── Job Type Guards ───────────────────────────────────────────────────────────
 
@@ -136,6 +149,10 @@ export function isScheduledJob(job: Job): job is ScheduledJob {
 
 export function isReminderJob(job: Job): job is ReminderJob {
   return job.kind === 'reminder';
+}
+
+export function isRecurringReminderJob(job: Job): job is RecurringReminderJob {
+  return job.kind === 'recurring-reminder';
 }
 
 // ─── Job Factory Functions ─────────────────────────────────────────────────────
@@ -218,6 +235,54 @@ export function makeReminderJob(params: {
     text: params.text,
     createdAt: params.createdAt,
     delayMs: params.delayMs,
+  });
+}
+
+export function makeRecurringReminderJob(params: {
+  id: JobId;
+  chatId: number;
+  text: string;
+  createdAt: string;
+  intervalMs?: number;
+  cronPattern?: string;
+  cronDescription?: string;
+  schedulerId: string;
+}): Result<RecurringReminderJob, string> {
+  if (params.text.trim().length === 0) {
+    return err('Recurring reminder text must not be empty.');
+  }
+  if (!Number.isInteger(params.chatId)) {
+    return err(`chatId must be an integer, got: ${params.chatId}`);
+  }
+  if (!isIso8601(params.createdAt)) {
+    return err(`createdAt must be ISO 8601, got: ${params.createdAt}`);
+  }
+  if (params.schedulerId.trim().length === 0) {
+    return err('schedulerId must not be empty.');
+  }
+
+  const hasCron = params.cronPattern !== undefined && params.cronPattern.length > 0;
+  const hasInterval = params.intervalMs !== undefined && params.intervalMs > 0;
+
+  if (!hasCron && !hasInterval) {
+    return err('Either intervalMs or cronPattern must be provided.');
+  }
+
+  if (hasInterval && !hasCron) {
+    if (!Number.isInteger(params.intervalMs!) || params.intervalMs! < 60_000) {
+      return err('Recurring reminder interval must be at least 1 minute.');
+    }
+  }
+
+  return ok({
+    kind: 'recurring-reminder',
+    id: params.id,
+    chatId: params.chatId,
+    text: params.text,
+    createdAt: params.createdAt,
+    intervalMs: params.intervalMs ?? 0,
+    ...(hasCron ? { cronPattern: params.cronPattern!, cronDescription: params.cronDescription ?? params.cronPattern! } : {}),
+    schedulerId: params.schedulerId,
   });
 }
 

@@ -48,6 +48,7 @@ function makeMockQueues() {
     reminder: { close: vi.fn().mockResolvedValue(undefined), on: vi.fn() },
     enqueueChat: vi.fn().mockResolvedValue(undefined),
     enqueueScheduled: vi.fn().mockResolvedValue(undefined),
+    isScheduledJobKnown: vi.fn().mockResolvedValue(false),
     enqueueReminder: vi.fn().mockResolvedValue(undefined),
   };
 }
@@ -201,7 +202,7 @@ describe('bootstrap', () => {
 
   it('creates scheduler with enqueueScheduled', async () => {
     await bootstrap(makeDeps());
-    expect(createSchedulerMock).toHaveBeenCalledWith(mockQueues.enqueueScheduled);
+    expect(createSchedulerMock).toHaveBeenCalledWith(mockQueues.enqueueScheduled, mockQueues.isScheduledJobKnown);
   });
 
   it('creates workers', async () => {

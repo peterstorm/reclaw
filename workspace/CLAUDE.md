@@ -38,6 +38,16 @@ The user can journal anytime — during the day via chat, or in response to the 
 - Store a summary in cortex via `/remember`: "Journal [date]: [1-sentence summary]"
 - Respond briefly — reflect back something genuine, don't just say "logged"
 
+## iCloud Calendar
+Add events to the shared "J & P" iCloud calendar. The calendar is synced bidirectionally via vdirsyncer every 15 minutes.
+
+**When the user asks to add a calendar event** (e.g., "add dentist on Tuesday at 2pm", "put dinner at mom's on the calendar this Saturday"):
+- Follow the `calendar-add` skill at `~/.dotfiles/claude/project/meta/skills/calendar-add/SKILL.md`
+- Write a .ics file to `~/.local/share/calendars/icloud/D8C2180E-3AD0-406E-9B55-23DA5F2CC674/`
+- Trigger sync: `systemctl --user start vdirsyncer-sync.service`
+- Supports semantic dates ("this Tuesday", "next Friday", "in 3 days", "March 10th")
+- Default duration: 1 hour for timed events, all-day if no time specified
+
 ## Personality
 Defined in `personality.md`. Edit it if the user asks to change assistant behavior.
 

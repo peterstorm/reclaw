@@ -150,13 +150,203 @@ export function formatSemanticDate(delayMs: number, now: Date = new Date()): str
   });
 }
 
+// ─── /remind Subcommand Detection ─────────────────────────────────────────────
+
+/** Check if the input is a /remind list command. */
+export function isRemindListCommand(input: string): boolean {
+  return /^\/remind\s+list\s*$/i.test(input.trim());
+}
+
+/** Check if the input is a /remind cancel command. Returns the scheduler ID or null. */
+export function parseRemindCancelCommand(input: string): string | null {
+  const match = /^\/remind\s+cancel\s+(\S+)\s*$/i.exec(input.trim());
+  return match ? match[1]! : null;
+}
+
+// ─── Recurring Reminder Parsing ───────────────────────────────────────────────
+
+export type RecurringParsed =
+  | { readonly type: 'interval'; readonly intervalMs: number; readonly text: string }
+  | { readonly type: 'cron'; readonly cronPattern: string; readonly cronDescription: string; readonly text: string };
+
+const DAY_MAP: Record<string, string> = {
+  sunday: '0', sun: '0',
+  monday: '1', mon: '1',
+  tuesday: '2', tue: '2', tues: '2',
+  wednesday: '3', wed: '3',
+  thursday: '4', thu: '4', thur: '4', thurs: '4',
+  friday: '5', fri: '5',
+  saturday: '6', sat: '6',
+  weekday: '1-5', weekdays: '1-5',
+  weekend: '0,6', weekends: '0,6',
+  day: '*', daily: '*',
+};
+
+const DAY_DISPLAY: Record<string, string> = {
+  '0': 'Sunday', '1': 'Monday', '2': 'Tuesday', '3': 'Wednesday',
+  '4': 'Thursday', '5': 'Friday', '6': 'Saturday',
+  '1-5': 'weekday', '0,6': 'weekend day', '*': 'day',
+};
+
+const TIME_KEYWORDS: Record<string, { hour: number; minute: number }> = {
+  noon: { hour: 12, minute: 0 },
+  midnight: { hour: 0, minute: 0 },
+  morning: { hour: 9, minute: 0 },
+  evening: { hour: 18, minute: 0 },
+  night: { hour: 21, minute: 0 },
+};
+
+/**
+ * Parse a cron-based recurring reminder: "Sunday at noon water plants"
+ * Supports: day names, weekday/weekend/daily, time as clock or keyword.
+ */
+function parseCronRecurring(input: string): Result<RecurringParsed, string> {
+  const trimmed = input.trim();
+  const words = trimmed.split(/\s+/);
+  if (words.length < 2) return err('Not a cron pattern.');
+
+  // Match day spec (first word)
+  const dayKey = words[0]!.toLowerCase();
+  const dayOfWeek = DAY_MAP[dayKey];
+  if (dayOfWeek === undefined) return err('Not a cron pattern.');
+
+  let idx = 1;
+  let hour = 9;
+  let minute = 0;
+  let hasExplicitTime = false;
+
+  // Try to match time: "at <time>" or a time keyword
+  if (idx < words.length && words[idx]!.toLowerCase() === 'at') {
+    idx++;
+    if (idx >= words.length) return err('Expected a time after "at".');
+
+    const timeStr = words[idx]!.toLowerCase();
+    const timeKw = TIME_KEYWORDS[timeStr];
+    if (timeKw) {
+      hour = timeKw.hour;
+      minute = timeKw.minute;
+      hasExplicitTime = true;
+      idx++;
+    } else {
+      // Try clock time: "9am", "14:30", "3:30pm"
+      const clockResult = parseClockTime(timeStr);
+      if (clockResult.ok) {
+        hour = clockResult.value.hour;
+        minute = clockResult.value.minute;
+        hasExplicitTime = true;
+        idx++;
+      } else {
+        return err(`Invalid time: "${words[idx]}".`);
+      }
+    }
+  } else if (idx < words.length) {
+    // Check if next word is a time keyword without "at"
+    const timeKw = TIME_KEYWORDS[words[idx]!.toLowerCase()];
+    if (timeKw) {
+      hour = timeKw.hour;
+      minute = timeKw.minute;
+      hasExplicitTime = true;
+      idx++;
+    }
+  }
+
+  // Strip optional "to" separator
+  if (idx < words.length && words[idx]!.toLowerCase() === 'to') {
+    idx++;
+  }
+
+  const text = words.slice(idx).join(' ').trim();
+  if (text.length === 0) {
+    return err('Recurring reminder message must not be empty.');
+  }
+
+  const cronPattern = `${minute} ${hour} * * ${dayOfWeek}`;
+  const dayDisplay = DAY_DISPLAY[dayOfWeek] ?? dayKey;
+  const timeDisplay = hasExplicitTime
+    ? `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
+    : '09:00';
+  const cronDescription = `every ${dayDisplay} at ${timeDisplay}`;
+
+  return ok({ type: 'cron', cronPattern, cronDescription, text });
+}
+
+/**
+ * Parse a clock time string: "9am", "14:30", "3:30pm", "noon" etc.
+ */
+function parseClockTime(input: string): Result<{ hour: number; minute: number }, string> {
+  const pattern = /^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/;
+  const match = pattern.exec(input.toLowerCase());
+  if (!match) return err('Invalid clock time.');
+
+  let hour = parseInt(match[1]!, 10);
+  const minute = parseInt(match[2] ?? '0', 10);
+  const meridiem = match[3] as 'am' | 'pm' | undefined;
+
+  if (meridiem) {
+    if (hour < 1 || hour > 12) return err('Invalid hour.');
+    if (meridiem === 'am' && hour === 12) hour = 0;
+    else if (meridiem === 'pm' && hour !== 12) hour += 12;
+  } else if (hour > 23) {
+    return err('Invalid hour.');
+  }
+
+  if (minute > 59) return err('Invalid minutes.');
+  return ok({ hour, minute });
+}
+
+/**
+ * Parse a recurring reminder: "every <interval|day> [at <time>] <message>"
+ * Tries interval-based first (1d, 2h), then cron-based (Sunday at noon).
+ */
+export function parseRecurringReminder(input: string): Result<RecurringParsed, string> {
+  const trimmed = input.trim();
+
+  // Try interval-based: first word is a duration like "1d", "2h", "30m"
+  const spaceIdx = trimmed.indexOf(' ');
+  if (spaceIdx !== -1) {
+    const durationStr = trimmed.slice(0, spaceIdx);
+    const text = trimmed.slice(spaceIdx + 1).trim();
+
+    if (text.length > 0) {
+      const durationResult = parseDuration(durationStr);
+      if (durationResult.ok) {
+        if (durationResult.value < 60_000) {
+          return err('Recurring interval must be at least 1 minute.');
+        }
+        return ok({ type: 'interval', intervalMs: durationResult.value, text });
+      }
+    }
+  }
+
+  // Try cron-based: "Sunday at noon water plants", "weekday at 9am check email"
+  const cronResult = parseCronRecurring(trimmed);
+  if (cronResult.ok) return cronResult;
+
+  return err(
+    'Usage: /remind every <interval|day> [at <time>] <message>\n' +
+    'Examples: /remind every 1d take vitamins, /remind every Sunday at noon water plants'
+  );
+}
+
 // ─── /remind Command Parsing ──────────────────────────────────────────────────
 
-export type ParsedReminder = {
-  readonly delayMs: number;
-  readonly text: string;
-  readonly kind: 'duration' | 'absolute' | 'semantic';
-};
+export type ParsedReminder =
+  | {
+      readonly delayMs: number;
+      readonly text: string;
+      readonly kind: 'duration' | 'absolute' | 'semantic';
+    }
+  | {
+      readonly intervalMs: number;
+      readonly text: string;
+      readonly kind: 'recurring';
+    }
+  | {
+      readonly cronPattern: string;
+      readonly cronDescription: string;
+      readonly text: string;
+      readonly kind: 'cron-recurring';
+    };
 
 /**
  * Parse a /remind command string.
@@ -174,6 +364,23 @@ export function parseRemindCommand(input: string, now: Date = new Date()): Resul
   const withoutPrefix = trimmed.replace(/^\/remind\s*/i, '');
   if (withoutPrefix === trimmed) {
     return err('Input must start with /remind.');
+  }
+
+  // Check for recurring: "every <duration|day> [at <time>] <message>"
+  if (withoutPrefix.toLowerCase().startsWith('every ')) {
+    const afterEvery = withoutPrefix.slice(6); // skip "every "
+    const recurResult = parseRecurringReminder(afterEvery);
+    if (!recurResult.ok) return err(recurResult.error);
+
+    if (recurResult.value.type === 'cron') {
+      return ok({
+        cronPattern: recurResult.value.cronPattern,
+        cronDescription: recurResult.value.cronDescription,
+        text: recurResult.value.text,
+        kind: 'cron-recurring',
+      });
+    }
+    return ok({ intervalMs: recurResult.value.intervalMs, text: recurResult.value.text, kind: 'recurring' });
   }
 
   // Split into time-spec and message (for duration/absolute parsing)
