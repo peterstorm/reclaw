@@ -77,9 +77,18 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
 
   const enqueueScheduled = async (job: ScheduledJob): Promise<void> => {
     await scheduled.add(job.id, job, { jobId: job.id });
+    // Set a durable marker so catch-up dedup survives BullMQ job cleanup.
+    // TTL of 7 days is well beyond any validity window.
+    const client = await scheduled.client;
+    await client.set(`reclaw:sched-fired:${job.id}`, '1', 'EX', 604800);
   };
 
   const isScheduledJobKnown = async (jobId: string): Promise<boolean> => {
+    // Check the durable marker first (reliable across BullMQ job lifecycle).
+    const client = await scheduled.client;
+    const exists = await client.exists(`reclaw:sched-fired:${jobId}`);
+    if (exists > 0) return true;
+    // Fallback: check BullMQ job store (covers jobs enqueued before marker was introduced).
     const job = await scheduled.getJob(jobId);
     return job !== undefined;
   };
