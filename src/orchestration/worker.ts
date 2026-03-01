@@ -19,7 +19,7 @@ export type BullWorkerLike = {
 export type WorkerFactory = (
   queueName: string,
   processor: (job: { data: unknown; id?: string; opts?: { attempts?: number }; attemptsMade: number }) => Promise<unknown>,
-  opts: { connection: { host: string; port: number }; concurrency: number },
+  opts: { connection: { host: string; port: number }; concurrency: number; lockDuration?: number; stalledInterval?: number },
 ) => BullWorkerLike;
 
 type WorkerDeps = {
@@ -91,6 +91,10 @@ export function createWorkers(deps: WorkerDeps): Workers {
     port: redisConnection.port,
   };
 
+  // Lock duration must exceed the longest possible job runtime, otherwise
+  // BullMQ marks the job as stalled and re-queues it mid-execution.
+  const longLockMs = 10 * 60 * 1000; // 10 minutes
+
   // ── Chat worker (FR-015: concurrency=1) ──────────────────────────────────
 
   const chatWorker = workerFactory(
@@ -107,7 +111,7 @@ export function createWorkers(deps: WorkerDeps): Workers {
       }
       return result;
     },
-    { connection, concurrency: 1 },
+    { connection, concurrency: 1, lockDuration: longLockMs, stalledInterval: longLockMs },
   );
 
   chatWorker.on('failed', async (...args: unknown[]) => {
@@ -148,7 +152,7 @@ export function createWorkers(deps: WorkerDeps): Workers {
       }
       return result;
     },
-    { connection, concurrency: 1 },
+    { connection, concurrency: 1, lockDuration: longLockMs, stalledInterval: longLockMs },
   );
 
   scheduledWorker.on('failed', async (...args: unknown[]) => {
