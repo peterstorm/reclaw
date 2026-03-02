@@ -1,6 +1,6 @@
 id: monthly-review
 name: Monthly Review
-schedule: "0 10 1 * *"
+schedule: "0 11 1 * *"
 permissionProfile: scheduled
 validityWindowMinutes: 120
 timeout: 240

@@ -1,26 +1,24 @@
 id: evening-journal
-name: Evening Journal
+name: Evening Report
 schedule: "0 21 * * *"
 permissionProfile: scheduled
 validityWindowMinutes: 60
-timeout: 120
+timeout: 300
 promptTemplate: |
   {{personality}}
 
   Today is {{dayOfWeek}}, {{date}}.
 
-  You are sending the evening journal prompt. Your job is to gather context about the user's day and ask a thoughtful, personalized journaling question — NOT to write the journal entry itself. The user will reply via Telegram, and a chat session will log their response to a daily note.
+  You are sending the evening report. This has three parts: a day recap, a tomorrow preview, and a journal prompt the user can reply to.
 
-  ## Step 1 — Gather today's context
+  ## Part 1 — Day Recap
 
-  Check what the user did today by pulling from multiple sources:
+  Gather context about what happened today, then present a concise summary.
 
   **Cortex memory:**
   Run `/recall` with queries like "today", "{{date}}", and "recent" to surface conversations, decisions, and activities from today.
 
   **Git activity (via GitHub API):**
-  The user codes on a local machine and pushes to GitHub — check there for the authoritative commit history.
-
   First, find repos pushed today:
   ```
   gh api "user/repos?sort=pushed&per_page=10&type=owner" --jq '.[] | select(.pushed_at >= "{{date}}") | .name'
@@ -29,16 +27,35 @@ promptTemplate: |
   ```
   gh api "repos/peterstorm/REPO/commits?since=$(date -d '00:00' --iso-8601=seconds)&per_page=10" --jq '.[] | "\(.sha[0:7]) \(.commit.message | split("\n")[0])"'
   ```
-  Run the second command for each repo found in the first step.
 
-  **Calendar events (already happened):**
-  Check `~/.local/share/calendars/icloud/D8C2180E-3AD0-406E-9B55-23DA5F2CC674/` for events that occurred today.
+  **Calendar events (today):**
+  Check `~/.local/share/calendars/icloud/D8C2180E-3AD0-406E-9B55-23DA5F2CC674/` for events that occurred today ({{date}}).
 
-  ## Step 2 — Craft the prompt
+  **Present the recap:**
+  Summarize the day in 3-5 bullet points covering what actually happened — coding work, meetings, decisions, anything notable. Be specific, not generic. If it was a quiet day, say so briefly.
 
-  Based on what you found, send a warm evening message that:
-  1. Briefly reflects back what you noticed about their day (1-2 sentences max — don't list everything)
-  2. Asks ONE open-ended journaling question tailored to the day
+  ## Part 2 — Tomorrow Preview
+
+  **Calculate tomorrow's date** from {{date}} and use it for all lookups below.
+
+  **Tomorrow's calendar:**
+  Check the same calendar directory for events matching tomorrow's date. List each with time and title. If nothing's on, say "Calendar is clear."
+
+  **Commute weather (weekdays only):**
+  If tomorrow is a weekday (Mon-Fri), fetch the forecast:
+  ```
+  curl -s "https://api.open-meteo.com/v1/forecast?latitude=55.665&longitude=12.57&hourly=temperature_2m,apparent_temperature,precipitation_probability,precipitation,wind_speed_10m,wind_gusts_10m,weather_code&timezone=Europe/Copenhagen&forecast_days=2"
+  ```
+  From the response, find tomorrow's 07:00 and 08:00 data and give a one-line commute forecast: temperature, rain risk, wind. Include a clothing/gear recommendation if relevant (rain gear, extra layers, etc).
+
+  Skip the commute weather on weekends — just mention the general weather if interesting (storms, heatwave, etc).
+
+  **Open tasks:**
+  Check `~/dev/notes/remotevault/reclaw/todo.md` for any outstanding items worth flagging.
+
+  ## Part 3 — Journal Prompt
+
+  After the report, ask ONE open-ended journaling question tailored to the day's context.
 
   **Good question styles (rotate, don't repeat):**
   - "What's one thing from today you want to remember?"
@@ -46,26 +63,34 @@ promptTemplate: |
   - "What was the best part of today?"
   - "Did anything surprise you today?"
   - "What would you do differently if you could redo today?"
-  - "What are you looking forward to tomorrow?"
-  - If it was a heavy coding day: "Did you solve anything satisfying today?"
+  - If heavy coding day: "Did you solve anything satisfying today?"
   - If calendar was busy: "Which conversation stuck with you?"
   - If it seems quiet: "How are you feeling about things right now?"
 
-  **Vary the questions.** Check cortex for recent journal prompts to avoid repeating. Store the question you asked via `/remember`: "Journal prompt {{date}}: [question summary]"
+  Check cortex for recent journal prompts to avoid repeating. Store the question via `/remember`: "Journal prompt {{date}}: [question summary]"
 
-  ## Step 3 — Tell them how to respond
+  End by telling them they can swipe-reply to journal.
 
-  End with a note that they can swipe-reply with their answer and it'll be saved to their vault.
+  ## Output Format
 
-  ## Output format
+  This is a Telegram message — keep it readable but not bloated. Use this structure:
 
-  Keep it casual and short — this is a Telegram message, not an essay.
-
-  Example:
   ```
-  Looks like a solid day — the vault quiz feature landed and you had a busy calendar.
+  [Warm 1-sentence opener referencing something from the day]
 
-  What's one thing from today you want to remember?
+  📋 Today
+  • [bullet 1]
+  • [bullet 2]
+  • [bullet 3]
+
+  📅 Tomorrow
+  • [calendar events or "Clear calendar"]
+  • [commute weather one-liner, weekdays only]
+  • [any flagged tasks]
+
+  💭 [Journal question]
 
   Swipe-reply and I'll log it to your daily note.
   ```
+
+  Keep it tight — aim for a message that reads in 15-20 seconds.
