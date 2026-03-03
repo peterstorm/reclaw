@@ -64,7 +64,7 @@ describe('loadConfig', () => {
       expect(result.value.personalityPath).toBe('/workspace/personality.md');
       expect(result.value.claudeBinaryPath).toBe('claude');
       expect(result.value.chatTimeoutMs).toBe(3_600_000);
-      expect(result.value.scheduledTimeoutMs).toBe(600_000);
+      expect(result.value.scheduledTimeoutMs).toBe(1_200_000);
       expect(result.value.sessionIdleTimeoutMs).toBe(1_800_000);
     }
   });

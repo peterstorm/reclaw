@@ -93,7 +93,7 @@ export function createWorkers(deps: WorkerDeps): Workers {
 
   // Lock duration must exceed the longest possible job runtime, otherwise
   // BullMQ marks the job as stalled and re-queues it mid-execution.
-  const longLockMs = 10 * 60 * 1000; // 10 minutes
+  const longLockMs = 20 * 60 * 1000; // 20 minutes
 
   // ── Chat worker (FR-015: concurrency=1) ──────────────────────────────────
 
