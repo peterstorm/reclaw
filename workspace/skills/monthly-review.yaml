@@ -21,11 +21,12 @@ promptTemplate: |
   Read each one that falls within the previous month.
 
   **Journal entries:**
-  Read daily journal notes from the previous month:
+  Daily journal notes are stored in year/month folders: `~/dev/notes/remotevault/personal/journal/YYYY/MM/YYYY-MM-DD.md`
+  Read all notes from the previous month's folder:
   ```
-  ls ~/dev/notes/remotevault/personal/journal/ 2>/dev/null | grep '\.md$'
+  ls ~/dev/notes/remotevault/personal/journal/YYYY/MM/ 2>/dev/null
   ```
-  Filter by filename date for the previous month.
+  Replace YYYY/MM with the previous month's year and zero-padded month number.
 
   **Cortex memory:**
   Run `/recall` with queries: "last month", "shipped", "decision", "milestone", "learned", "struggle" to surface key events.

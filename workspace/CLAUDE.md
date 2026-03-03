@@ -30,9 +30,9 @@ The user can journal anytime — during the day via chat, or in response to the 
 - When in doubt, ask — don't silently journal a message that might be a task
 
 **How to write entries:**
-- Path: `~/dev/notes/remotevault/personal/journal/YYYY-MM-DD.md`
-- Create the `personal/journal/` directory if it doesn't exist
-- Frontmatter: `title`, `date`, `tags: [journal, daily]`, `up: "[[personal/journal/MOC]]"`
+- Path: `~/dev/notes/remotevault/personal/journal/YYYY/MM/YYYY-MM-DD.md` (e.g. `2026/03/2026-03-02.md`)
+- Create the year/month directories if they don't exist
+- Frontmatter: `title`, `date`, `tags: [journal, daily]`, `up: "[[personal/journal/MOC|Journal]]"`
 - Each entry gets a `## Entry — [time context]` heading (e.g. "Entry — Saturday evening", "Entry — Monday morning", "Entry — Wednesday afternoon"). Use the day name + time-of-day feel, not a clock time.
 - If the daily note already exists, **append** the new entry — never overwrite previous entries
 - Store a summary in cortex via `/remember`: "Journal [date]: [1-sentence summary]"

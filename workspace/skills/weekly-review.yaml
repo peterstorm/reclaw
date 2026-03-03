@@ -14,11 +14,12 @@ promptTemplate: |
   ## Step 1 — Gather the week's data
 
   **Journal entries:**
-  Read all daily journal notes from this week:
+  Daily journal notes are stored in year/month folders: `~/dev/notes/remotevault/personal/journal/YYYY/MM/YYYY-MM-DD.md`
+  Read this week's entries:
   ```
-  find ~/dev/notes/remotevault/personal/journal -name '*.md' -newer $(date -d '7 days ago' +%Y-%m-%d) 2>/dev/null | sort
+  find ~/dev/notes/remotevault/personal/journal -path '*/[0-9][0-9][0-9][0-9]/[0-9][0-9]/*.md' -newer $(date -d '7 days ago' +%Y-%m-%d) 2>/dev/null | sort
   ```
-  If the find approach doesn't work, list all files and filter by the date in the filename (YYYY-MM-DD.md format) for the past 7 days.
+  If the find approach doesn't work, check the current and previous month folders and filter by filename date.
 
   **Cortex memory:**
   Run `/recall` with queries: "this week", "decision", "shipped", "built", "fixed", "learned" to surface key events.
