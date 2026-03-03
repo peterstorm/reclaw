@@ -126,10 +126,23 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
     console.warn('[main] Cortex extraction disabled: script not found');
   }
 
-  // ── 1c. Guard runClaude with mutex (prevent concurrent workspace access) ──
-  const claudeMutex = createAsyncMutex();
-  const guardedRunClaude: typeof runClaudeFn = async (options) => {
-    const release = await claudeMutex.acquire();
+  // ── 1c. Guard runClaude with per-worker mutexes ──
+  // Chat and scheduled workers get separate mutexes so scheduled jobs
+  // (which are read-only) can run alongside chat without blocking.
+  const chatMutex = createAsyncMutex();
+  const scheduledMutex = createAsyncMutex();
+
+  const guardedRunClaudeChat: typeof runClaudeFn = async (options) => {
+    const release = await chatMutex.acquire();
+    try {
+      return await runClaudeFn(options);
+    } finally {
+      release();
+    }
+  };
+
+  const guardedRunClaudeScheduled: typeof runClaudeFn = async (options) => {
+    const release = await scheduledMutex.acquire();
     try {
       return await runClaudeFn(options);
     } finally {
@@ -204,10 +217,10 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
   // ── 8. Create workers ──────────────────────────────────────────────────────
   const workers: Workers = createWorkersFn({
     redisConnection: { host: config.redisHost, port: config.redisPort },
-    chatHandler: (job) => handleChatJobFn(job, { runClaude: guardedRunClaude, telegram, config, sessionStore, ...(triggerCortexExtraction ? { triggerCortexExtraction } : {}) }),
+    chatHandler: (job) => handleChatJobFn(job, { runClaude: guardedRunClaudeChat, telegram, config, sessionStore, ...(triggerCortexExtraction ? { triggerCortexExtraction } : {}) }),
     scheduledHandler: (job) =>
       handleScheduledJobFn(job, {
-        runClaude: guardedRunClaude,
+        runClaude: guardedRunClaudeScheduled,
         telegram,
         skillRegistry: skillWatcher.getRegistry(),
         config,
