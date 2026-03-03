@@ -415,11 +415,14 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
     });
   });
 
-  // ── 10. Start workers ──────────────────────────────────────────────────────
-  workers.start();
-
-  // ── 11. Start skill watcher — triggers initial load + reconcile ────────────
+  // ── 10. Start skill watcher and wait for initial load ───────────────────────
+  // Must complete before workers start so the skill registry is populated
+  // when catch-up jobs are processed (prevents "skill not found" race).
   skillWatcher.start();
+  await skillWatcher.ready();
+
+  // ── 11. Start workers ──────────────────────────────────────────────────────
+  workers.start();
 
   // ── 12. Start Telegram bot ─────────────────────────────────────────────────
   await telegram.start();

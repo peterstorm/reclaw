@@ -62,6 +62,7 @@ function makeMockSkillWatcher() {
     onRegistryChange: vi.fn((handler: (registry: SkillRegistry) => void) => {
       changeHandler = handler;
     }),
+    ready: vi.fn().mockResolvedValue(undefined),
     _triggerChange: (registry: SkillRegistry) => { changeHandler?.(registry); },
   };
 }

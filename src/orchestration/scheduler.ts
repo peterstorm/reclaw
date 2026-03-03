@@ -47,7 +47,12 @@ function buildScheduledJob(
   skill: SkillConfig,
   triggeredAt: Date,
 ): ScheduledJob | null {
-  const triggeredIso = triggeredAt.toISOString();
+  // Zero out sub-second precision so job IDs are deterministic.
+  // cron-parser carries milliseconds from `currentDate` into prev()/next(),
+  // which caused each restart to generate unique IDs defeating dedup.
+  const normalized = new Date(triggeredAt);
+  normalized.setMilliseconds(0);
+  const triggeredIso = normalized.toISOString();
   const validUntil = new Date(
     triggeredAt.getTime() + skill.validityWindowMinutes * 60 * 1000,
   );

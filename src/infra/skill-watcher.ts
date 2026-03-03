@@ -10,6 +10,8 @@ export type SkillWatcher = {
   readonly stop: () => Promise<void>;
   readonly getRegistry: () => SkillRegistry;
   readonly onRegistryChange: (handler: (registry: SkillRegistry) => void) => void;
+  /** Resolves when chokidar finishes the initial directory scan (all YAML files loaded). */
+  readonly ready: () => Promise<void>;
 };
 
 // ─── Pure helpers ─────────────────────────────────────────────────────────────
@@ -61,6 +63,9 @@ export function createSkillWatcher(skillsDir: string): SkillWatcher {
   let watcher: FSWatcher | null = null;
   // Per-file debounce timers to avoid one file's event cancelling another's
   const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  // Promise that resolves when chokidar finishes its initial scan
+  let readyResolve: (() => void) | null = null;
+  const readyPromise = new Promise<void>((resolve) => { readyResolve = resolve; });
 
   // Notify all registered change listeners
   const notifyHandlers = (reg: SkillRegistry): void => {
@@ -133,6 +138,10 @@ export function createSkillWatcher(skillsDir: string): SkillWatcher {
       debounce(filePath, () => removeFile(filePath));
     });
 
+    watcher.on('ready', () => {
+      readyResolve?.();
+    });
+
     watcher.on('error', (error: unknown) => {
       console.error('[skill-watcher] Watcher error:', error instanceof Error ? error.message : String(error));
     });
@@ -155,5 +164,7 @@ export function createSkillWatcher(skillsDir: string): SkillWatcher {
     changeHandlers.push(handler);
   };
 
-  return { start, stop, getRegistry, onRegistryChange } as const;
+  const ready = (): Promise<void> => readyPromise;
+
+  return { start, stop, getRegistry, onRegistryChange, ready } as const;
 }
