@@ -55,6 +55,9 @@ Defined in `personality.md`. Edit it if the user asks to change assistant behavi
 
 - **"Push" always means the parent reclaw repo** at `/home/peterstorm/dev/claude-plugins/reclaw/`, not the workspace sub-repo. Stage, commit, and `git push` from there.
 - **Update reclaw docs on every significant change.** When adding features, fixing bugs, or changing architecture, update the relevant Obsidian docs at `~/dev/notes/remotevault/reclaw/`: changelog.md, skills/MOC.md, todo.md, architecture.md, decisions.md, etc. The vault auto-syncs via git timer.
+- **Before implementing code**, read and follow the architecture and TypeScript rules:
+  - `~/.dotfiles/claude/project/meta/rules/architecture.md` — functional core/imperative shell, immutability, DDD, testability, error handling strategy
+  - `~/.dotfiles/claude/project/typescript/rules/typescript-patterns.md` — discriminated unions, ts-pattern, branded types, Result pattern
 
 # Startup Checklist
 1. Cortex memory surface is injected via hooks — check it for recent context.

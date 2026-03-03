@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import type { AppConfig } from '../infra/config.js';
 import type { TelegramAdapter } from '../infra/telegram.js';
 import type { ChatJob, JobResult, RecurringReminderJob, ReminderJob, ScheduledJob } from '../core/types.js';
@@ -192,21 +193,14 @@ export function createWorkers(deps: WorkerDeps): Workers {
       if (typeof data !== 'object' || data === null) {
         throw new Error('Invalid reminder job data: not an object');
       }
-      const kind = (data as Record<string, unknown>).kind;
-
-      if (kind === 'reminder') {
-        const result = await reminderHandler(data as ReminderJob);
-        if (!result.ok) throw new Error(result.error);
-        return result;
-      }
-
-      if (kind === 'recurring-reminder') {
-        const result = await recurringReminderHandler(data as RecurringReminderJob);
-        if (!result.ok) throw new Error(result.error);
-        return result;
-      }
-
-      throw new Error(`Invalid reminder job data: unexpected kind "${String(kind)}"`);
+      const result = await match((data as Record<string, unknown>).kind)
+        .with('reminder', () => reminderHandler(data as ReminderJob))
+        .with('recurring-reminder', () => recurringReminderHandler(data as RecurringReminderJob))
+        .otherwise((kind) => {
+          throw new Error(`Invalid reminder job data: unexpected kind "${String(kind)}"`);
+        });
+      if (!result.ok) throw new Error(result.error);
+      return result;
     },
     { connection, concurrency: 1 },
   );

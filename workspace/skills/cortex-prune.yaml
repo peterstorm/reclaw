@@ -1,0 +1,96 @@
+name: Cortex Prune
+schedule: "0 0 * * *"
+permissionProfile: scheduled
+validityWindowMinutes: 60
+timeout: 300
+promptTemplate: |
+  {{personality}}
+
+  Time: {{dayOfWeek}}, {{date}}
+
+  You are running nightly cortex memory maintenance. Prune stale, redundant, or low-value memories to keep the store lean and high-signal.
+
+  CRITICAL: This is an automated scheduled job. There is NO user present to respond. Do NOT output questions, confirmation requests, or tables asking for approval. Do NOT invoke /prune or any skill — follow ONLY the inline steps below. Execute all steps immediately and silently.
+
+  ## Step 1: Fetch all active memories
+
+  Query both project and global databases:
+
+  ```bash
+  bun -e "
+  import Database from 'bun:sqlite';
+  const db = new Database('{{cwd}}/.memory/cortex.db', { readonly: true });
+  const rows = db.query(\"SELECT id, memory_type, summary, confidence, access_count, pinned, created_at FROM memories WHERE status = 'active' ORDER BY memory_type, created_at\").all();
+  for (const r of rows) {
+    console.log(r.memory_type + ' | ' + r.id.slice(0,8) + ' | conf=' + r.confidence + ' acc=' + r.access_count + (r.pinned ? ' PIN' : '') + ' | ' + r.summary.slice(0,140));
+  }
+  console.log('Total:', rows.length);
+  db.close();
+  "
+  ```
+
+  Also check global DB at `~/.claude/memory/cortex-global.db` with the same query.
+
+  ## Step 2: Evaluate each memory
+
+  For each memory, decide **keep** or **archive**:
+
+  **ARCHIVE if:**
+  - Redundant: another active memory covers the same information
+  - Stale: refers to resolved issues, old session context, or completed tasks
+  - Too granular: implementation details better found by reading code
+  - Session-specific: one-time observations that won't help future sessions
+  - Generic: general best practices the LLM already knows
+  - Superseded: a newer memory covers this with updated info
+  - Meta: memories about the pruning process itself
+
+  **KEEP if:**
+  - Pinned (never archive pinned memories)
+  - Actionable: describes a pattern, gotcha, or decision affecting future work
+  - Structural: describes where things live or how systems connect (one per concept)
+  - High access count: frequently accessed = clearly useful
+  - Unique: no other memory covers this information
+
+  ## Step 3: Archive directly
+
+  Archive all identified memories in a single batch — no confirmation needed:
+
+  ```bash
+  bun -e "
+  import Database from 'bun:sqlite';
+  const db = new Database('{{cwd}}/.memory/cortex.db');
+  const ids = [/* full UUIDs to archive */];
+  const now = new Date().toISOString();
+  const stmt = db.prepare('UPDATE memories SET status = ?, updated_at = ? WHERE id = ?');
+  let count = 0;
+  for (const id of ids) {
+    const result = stmt.run('archived', now, id);
+    if (result.changes > 0) count++;
+  }
+  console.log('Archived', count, 'memories');
+  const remaining = db.query(\"SELECT COUNT(*) as c FROM memories WHERE status = 'active'\").get();
+  console.log('Active remaining:', remaining.c);
+  db.close();
+  "
+  ```
+
+  Do the same for global DB if needed.
+
+  ## Step 4: Regenerate surface
+
+  ```bash
+  bun /home/peterstorm/.claude/plugins/cache/local/cortex/0.1.0/engine/src/cli.ts generate {{cwd}}
+  ```
+
+  ## Guidelines
+
+  - Be aggressive: archived memories aren't deleted and can be restored
+  - One per concept: if multiple memories describe the same thing, keep the most comprehensive
+  - Favor summaries over details
+  - Progress/session context decays fast — archive it
+  - Merge conceptually similar architecture memories by keeping the best one
+
+  ## Output
+
+  - If memories were pruned: send a brief summary — how many reviewed, archived, remaining, and top reasons (1-3 bullet points). Keep it concise for Telegram.
+  - If nothing needed pruning: respond with exactly `ALL_CLEAR`
