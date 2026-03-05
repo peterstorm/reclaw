@@ -56,6 +56,7 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
   const permissionFlags = getPermissionFlags('chat');
 
   // 5. Run claude subprocess
+  console.log(`[chat] Running Claude for chatId=${job.chatId} resume=${isResuming}`);
   let result = await deps.runClaude({
     prompt,
     cwd: deps.config.workspacePath,
@@ -64,8 +65,11 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
     resumeSessionId,
   });
 
+  console.log(`[chat] Claude finished for chatId=${job.chatId} ok=${result.ok}${result.ok ? ` duration=${result.durationMs}ms` : ` error=${result.error}`}`);
+
   // 6. Stale session fallback — retry without resume on failure
   if (!result.ok && isResuming) {
+    console.log(`[chat] Stale session fallback for chatId=${job.chatId}, retrying fresh`);
     await deps.sessionStore.deleteSession(job.chatId);
     const freshPrompt = buildChatPrompt(personality, job.text);
     result = await deps.runClaude({

@@ -113,6 +113,7 @@ export async function runClaude(options: ClaudeOptions): Promise<ClaudeResult> {
   ];
 
   const startMs = Date.now();
+  console.log(`[claude] Spawning subprocess timeout=${timeoutMs}ms resume=${!!resumeSessionId}`);
 
   // Remove Claude Code env vars that block nested sessions.
   // Setting CLAUDECODE='' is insufficient — Claude Code checks existence, not value.
@@ -182,6 +183,7 @@ export async function runClaude(options: ClaudeOptions): Promise<ClaudeResult> {
   const durationMs = Date.now() - startMs;
 
   if (timedOut) {
+    console.log(`[claude] Subprocess timed out after ${durationMs}ms`);
     return { ok: false, error: 'timeout', timedOut: true };
   }
 
@@ -193,6 +195,7 @@ export async function runClaude(options: ClaudeOptions): Promise<ClaudeResult> {
     } catch {
       // ignore
     }
+    console.log(`[claude] Subprocess failed exit=${exitCode} duration=${durationMs}ms`);
     return {
       ok: false,
       error: `claude exited with code ${exitCode}: ${stderrText.trim()}`,
@@ -203,5 +206,6 @@ export async function runClaude(options: ClaudeOptions): Promise<ClaudeResult> {
   const parsed = parseStreamJsonOutput(rawOutput);
   const output = parsed.text ?? rawOutput.trim();
 
+  console.log(`[claude] Subprocess completed exit=${exitCode} duration=${durationMs}ms outputLen=${output.length}`);
   return { ok: true, output, sessionId: parsed.sessionId, durationMs };
 }

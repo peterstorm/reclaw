@@ -117,6 +117,7 @@ export function createWorkers(deps: WorkerDeps): Workers {
         throw new Error(`Invalid chat job data: missing or wrong kind field`);
       }
       const chatJob = data as ChatJob;
+      console.log(`[worker:chat] Processing job ${job.id ?? 'unknown'} for chatId=${chatJob.chatId}`);
       const result = await chatHandler(chatJob);
       if (!result.ok) {
         throw new Error(result.error);
@@ -158,6 +159,7 @@ export function createWorkers(deps: WorkerDeps): Workers {
         throw new Error(`Invalid scheduled job data: missing or wrong kind field`);
       }
       const scheduledJob = data as ScheduledJob;
+      console.log(`[worker:scheduled] Processing job ${job.id ?? 'unknown'} skill=${scheduledJob.skillName}`);
       const result = await scheduledHandler(scheduledJob);
       if (!result.ok) {
         throw new Error(result.error);
@@ -204,6 +206,7 @@ export function createWorkers(deps: WorkerDeps): Workers {
       if (typeof data !== 'object' || data === null) {
         throw new Error('Invalid reminder job data: not an object');
       }
+      console.log(`[worker:reminder] Processing job ${job.id ?? 'unknown'} kind=${(data as Record<string, unknown>).kind}`);
       const result = await match((data as Record<string, unknown>).kind)
         .with('reminder', () => reminderHandler(data as ReminderJob))
         .with('recurring-reminder', () => recurringReminderHandler(data as RecurringReminderJob))
@@ -255,6 +258,7 @@ export function createWorkers(deps: WorkerDeps): Workers {
       }
       // Construct ResearchJobLike wrapping real BullMQ job methods for checkpointing (SC-002/SC-003)
       const researchJobData = data as ResearchJobData;
+      console.log(`[worker:research] Processing job ${job.id ?? 'unknown'} topic="${researchJobData.topic}"`);
       const jobLike: ResearchJobLike = {
         data: researchJobData,
         updateData: job.updateData
