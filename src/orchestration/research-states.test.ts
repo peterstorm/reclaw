@@ -113,7 +113,6 @@ function makeMockDeps(overrides: Partial<ResearchDeps> = {}): ResearchDeps {
     start: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
     sendMessage: vi.fn().mockResolvedValue(1),
-    sendMarkdown: vi.fn().mockResolvedValue(undefined),
     sendChunkedMessage: vi.fn().mockResolvedValue([1]),
     onMessage: vi.fn(),
   };

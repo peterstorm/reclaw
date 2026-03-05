@@ -9,7 +9,6 @@ export type TelegramAdapter = {
   readonly start: () => Promise<void>;
   readonly stop: () => Promise<void>;
   readonly sendMessage: (chatId: number, text: string) => Promise<number>;
-  readonly sendMarkdown: (chatId: number, markdown: string) => Promise<void>;
   readonly sendChunkedMessage: (chatId: number, chunks: readonly string[]) => Promise<readonly number[]>;
   readonly onMessage: (
     handler: (msg: { userId: number; chatId: number; text: string; replyToMessageId?: number }) => void,

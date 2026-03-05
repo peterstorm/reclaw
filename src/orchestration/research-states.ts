@@ -15,6 +15,7 @@
 // FR-061:  Cortex summary stored for future recall.
 // FR-062:  Summary includes topic, grade, key findings, citation stats, hub link.
 
+import { match } from 'ts-pattern';
 import type { NotebookLMAdapter } from '../infra/notebooklm-client.js';
 import type { ResearchLLMAdapter } from '../infra/research-llm-client.js';
 import type { VaultWriterAdapter } from '../infra/vault-writer.js';
@@ -75,43 +76,22 @@ export async function executeState(
   ctx: ResearchContext,
   deps: ResearchDeps,
 ): Promise<ResearchEvent> {
-  switch (state.kind) {
-    case 'creating_notebook':
-      return executeCreatingNotebook(ctx, deps);
-
-    case 'searching_sources':
-      return executeSearchingSources(ctx, deps);
-
-    case 'adding_sources':
-      return executeAddingSources(ctx, deps);
-
-    case 'awaiting_processing':
-      return executeAwaitingProcessing(ctx, deps);
-
-    case 'generating_questions':
-      return executeGeneratingQuestions(ctx, deps);
-
-    case 'querying':
-      return executeQuerying(state, ctx, deps);
-
-    case 'resolving_citations':
-      return executeResolvingCitations(ctx);
-
-    case 'writing_vault':
-      return executeWritingVault(ctx, deps);
-
-    case 'notifying':
-      return executeNotifying(ctx, deps);
-
-    case 'done':
-    case 'failed':
-      // Terminal states should not be executed. Return a non-retriable error.
-      return {
-        type: 'ERROR',
-        error: `executeState called on terminal state: ${state.kind}`,
-        retriable: false,
-      };
-  }
+  return match(state)
+    .with({ kind: 'creating_notebook' }, () => executeCreatingNotebook(ctx, deps))
+    .with({ kind: 'searching_sources' }, () => executeSearchingSources(ctx, deps))
+    .with({ kind: 'adding_sources' }, () => executeAddingSources(ctx, deps))
+    .with({ kind: 'awaiting_processing' }, () => executeAwaitingProcessing(ctx, deps))
+    .with({ kind: 'generating_questions' }, () => executeGeneratingQuestions(ctx, deps))
+    .with({ kind: 'querying' }, (s) => executeQuerying(s, ctx, deps))
+    .with({ kind: 'resolving_citations' }, () => executeResolvingCitations(ctx))
+    .with({ kind: 'writing_vault' }, () => executeWritingVault(ctx, deps))
+    .with({ kind: 'notifying' }, () => executeNotifying(ctx, deps))
+    .with({ kind: 'done' }, { kind: 'failed' }, (s) => ({
+      type: 'ERROR' as const,
+      error: `executeState called on terminal state: ${s.kind}`,
+      retriable: false,
+    }))
+    .exhaustive();
 }
 
 // ─── State Executors ──────────────────────────────────────────────────────────

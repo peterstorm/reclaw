@@ -111,7 +111,6 @@ describe('createWorkers', () => {
       start: vi.fn().mockResolvedValue(undefined),
       stop: vi.fn().mockResolvedValue(undefined),
       sendMessage: vi.fn().mockResolvedValue(undefined),
-      sendMarkdown: vi.fn().mockResolvedValue(undefined),
       sendChunkedMessage: vi.fn().mockResolvedValue(undefined),
       onMessage: vi.fn(),
     };

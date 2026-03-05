@@ -5,6 +5,7 @@ import {
   serializeSessionRecord,
   type SessionRecord,
 } from '../core/session.js';
+import { makeClaudeSessionId } from '../core/types.js';
 import type { ClaudeSessionId } from '../core/types.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -60,7 +61,14 @@ export function createSessionStore(redis: RedisClient): SessionStore {
   const getMessageSession = async (messageId: number): Promise<ClaudeSessionId | null> => {
     const key = makeMessageSessionKey(messageId);
     const raw = await redis.get(key);
-    return raw as ClaudeSessionId | null;
+    if (raw === null) return null;
+
+    const result = makeClaudeSessionId(raw);
+    if (!result.ok) {
+      await redis.del(key);
+      return null;
+    }
+    return result.value;
   };
 
   return { getSession, saveSession, deleteSession, saveMessageSession, getMessageSession };

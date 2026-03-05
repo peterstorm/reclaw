@@ -13,6 +13,7 @@
 // FR-052: Special fallback: notifying exhausts retries -> done (vault deliverable exists)
 // FR-053: All accumulated data is preserved through transitions
 
+import { match } from 'ts-pattern';
 import type { ResearchContext, ResearchEvent, ResearchState } from './research-types.js';
 
 // ─── Per-State Retry Limits ───────────────────────────────────────────────────
@@ -70,39 +71,17 @@ export function transition(
   }
 
   // ── State-specific happy-path transitions ──────────────────────────────────
-  switch (state.kind) {
-    case 'creating_notebook':
-      return handleCreatingNotebook(state, event, ctx);
-
-    case 'searching_sources':
-      return handleSearchingSources(state, event, ctx);
-
-    case 'adding_sources':
-      return handleAddingSources(state, event, ctx);
-
-    case 'awaiting_processing':
-      return handleAwaitingProcessing(state, event, ctx);
-
-    case 'generating_questions':
-      return handleGeneratingQuestions(state, event, ctx);
-
-    case 'querying':
-      return handleQuerying(state, event, ctx);
-
-    case 'resolving_citations':
-      return handleResolvingCitations(state, event, ctx);
-
-    case 'writing_vault':
-      return handleWritingVault(state, event, ctx);
-
-    case 'notifying':
-      return handleNotifying(state, event, ctx);
-
-    case 'done':
-    case 'failed':
-      // Terminal states: no valid transitions. Return unchanged (defensive).
-      return { state, context: ctx };
-  }
+  return match(state)
+    .with({ kind: 'creating_notebook' }, (s) => handleCreatingNotebook(s, event, ctx))
+    .with({ kind: 'searching_sources' }, (s) => handleSearchingSources(s, event, ctx))
+    .with({ kind: 'adding_sources' }, (s) => handleAddingSources(s, event, ctx))
+    .with({ kind: 'awaiting_processing' }, (s) => handleAwaitingProcessing(s, event, ctx))
+    .with({ kind: 'generating_questions' }, (s) => handleGeneratingQuestions(s, event, ctx))
+    .with({ kind: 'querying' }, (s) => handleQuerying(s, event, ctx))
+    .with({ kind: 'resolving_citations' }, (s) => handleResolvingCitations(s, event, ctx))
+    .with({ kind: 'writing_vault' }, (s) => handleWritingVault(s, event, ctx))
+    .with({ kind: 'notifying' }, (s) => handleNotifying(s, event, ctx))
+    .exhaustive();
 }
 
 // ─── Error Handler ────────────────────────────────────────────────────────────
@@ -250,13 +229,13 @@ function handleQuerying(
   event: ResearchEvent,
   ctx: ResearchContext,
 ): { state: ResearchState; context: ResearchContext } {
-  switch (event.type) {
-    case 'QUERY_ANSWERED': {
+  return match(event)
+    .with({ type: 'QUERY_ANSWERED' }, (e) => {
       // Store the answer and stay in querying state
       // FR-053: preserve all accumulated answers
       const nextAnswers: Readonly<Record<string, import('./research-types.js').ChatResponse>> = {
         ...ctx.answers,
-        [event.question]: event.answer,
+        [e.question]: e.answer,
       };
       const nextContext: ResearchContext = {
         ...ctx,
@@ -264,39 +243,32 @@ function handleQuerying(
         chatsUsed: ctx.chatsUsed + 1,
         lastError: null,
       };
-      // questionsRemaining is decremented by the executor; the state stays querying
-      // until ALL_QUERIES_DONE is emitted
       return {
-        state: { kind: 'querying', questionsRemaining: state.questionsRemaining - 1 },
+        state: { kind: 'querying' as const, questionsRemaining: state.questionsRemaining - 1 },
         context: nextContext,
       };
-    }
-
-    case 'QUERY_SKIPPED': {
+    })
+    .with({ type: 'QUERY_SKIPPED' }, (e) => {
       // FR-023: skip failed questions, preserve partial answers
       const nextContext: ResearchContext = {
         ...ctx,
-        skippedQuestions: [...ctx.skippedQuestions, event.question],
+        skippedQuestions: [...ctx.skippedQuestions, e.question],
         lastError: null,
       };
       return {
-        state: { kind: 'querying', questionsRemaining: state.questionsRemaining - 1 },
+        state: { kind: 'querying' as const, questionsRemaining: state.questionsRemaining - 1 },
         context: nextContext,
       };
-    }
-
-    case 'ALL_QUERIES_DONE': {
+    })
+    .with({ type: 'ALL_QUERIES_DONE' }, () => {
       // FR-023: transition to resolving_citations even with partial answers
       const nextContext: ResearchContext = {
         ...ctx,
         lastError: null,
       };
-      return { state: { kind: 'resolving_citations' }, context: nextContext };
-    }
-
-    default:
-      return unexpectedEvent('querying', event, ctx);
-  }
+      return { state: { kind: 'resolving_citations' as const }, context: nextContext };
+    })
+    .otherwise(() => unexpectedEvent('querying', event, ctx));
 }
 
 function handleResolvingCitations(
