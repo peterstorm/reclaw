@@ -37,12 +37,12 @@ A Telegram-triggered deep research pipeline that creates a NotebookLM notebook, 
 - `executeState()` -- impure, one match arm per state, calls NotebookLM SDK / Anthropic API / filesystem
 - `runResearchJob()` -- imperative loop: execute -> transition -> checkpoint -> repeat
 
-### AD-4: Question Generation via Anthropic API (Haiku) over Claude Subprocess
+### AD-4: Question Generation via Claude CLI Subprocess (`claude -p`)
 
-**Choice:** Direct Anthropic API call using a lightweight model (Haiku) for question generation
-**Why:** FR-021 requires a lightweight LLM call, not the full chat subprocess. Spawning `claude -p` for a simple prompt is heavyweight (process overhead, session management, Cortex hooks). A direct `fetch()` to the Anthropic API with a small model is faster, cheaper, and avoids mutex contention with chat/scheduled workers. The API key (`ANTHROPIC_API_KEY`) is already available in the environment since Claude CLI requires it.
+**Choice:** Reuse existing `runClaude()` from `src/infra/claude-subprocess.ts` for question generation and query reformulation
+**Why:** Keeps the architecture uniform — all LLM calls in reclaw go through the same subprocess pattern. No separate API client to maintain, no additional API key management. The existing `runClaude()` already handles timeouts, error parsing, and stream-json output collection. FR-021 says "lightweight language model call" — `claude -p` with a focused prompt satisfies this without introducing a separate Anthropic SDK dependency. The research worker runs on its own dedicated queue (concurrency=1), so there is no mutex contention with chat/scheduled workers.
 **Rejected:**
-- Claude subprocess (`claude -p`) -- spawns full process, triggers Cortex hooks, mutex contention, 10x slower for a simple prompt
+- Direct Anthropic API fetch -- adds a separate client/adapter, different error handling patterns, additional dependency surface
 - Hardcoded questions -- misses FR-020's "informed by the topic and the list of ingested sources" requirement
 
 ### AD-5: NotebookLM SDK Client as Singleton with Lazy Init
@@ -107,8 +107,8 @@ src/core/topic-slug.test.ts          -- slug generation tests: special chars, le
 ```
 src/infra/notebooklm-client.ts       -- NotebookLM SDK wrapper: singleton factory, typed response interfaces
 src/infra/notebooklm-client.test.ts  -- unit tests for response parsing (mocked SDK)
-src/infra/anthropic-client.ts        -- lightweight Anthropic API client for question generation (direct fetch, no subprocess)
-src/infra/anthropic-client.test.ts   -- response parsing tests
+src/infra/research-llm-client.ts     -- Claude CLI subprocess wrapper for question generation and query reformulation
+src/infra/research-llm-client.test.ts -- prompt construction and response parsing tests (mocked runClaude)
 src/infra/vault-writer.ts            -- filesystem I/O: write vault folder structure, emergency fallback
 src/infra/vault-writer.test.ts       -- temp dir integration tests: file creation, directory structure
 src/infra/quota-tracker.ts           -- Redis-backed daily quota counter: increment, check, remaining
@@ -358,21 +358,22 @@ function createNotebookLMAdapter(cookies: string): NotebookLMAdapter;
 ```
 **Error handling:** All SDK calls wrapped in try/catch, returning `Result<T, string>`. Transient errors (network, 5xx) are retriable; permanent errors (400, 404) are not.
 
-### Anthropic Client (`src/infra/anthropic-client.ts`)
+### Research LLM Client (`src/infra/research-llm-client.ts`)
 
-**Responsibility:** Lightweight Anthropic API client for question generation. Direct `fetch()` call, no subprocess. Uses Haiku model for cost efficiency.
-**Depends on:** `src/core/types.ts` (Result type)
+**Responsibility:** Thin adapter that uses the existing `runClaude()` subprocess to generate research questions and reformulate queries. Reuses the same `claude -p` pattern used by chat and scheduled jobs. Each call spawns a fresh subprocess with a focused prompt — no session reuse needed.
+**Depends on:** `src/infra/claude-subprocess.ts` (runClaude), `src/core/research-types.ts` (SourceMeta), `src/core/types.ts` (Result)
 **Interface:**
 ```typescript
-type AnthropicAdapter = {
+type ResearchLLMAdapter = {
   readonly generateQuestions: (topic: string, sources: readonly SourceMeta[]) => Promise<Result<readonly string[], string>>;
   readonly reformulateQuery: (topic: string, previousError: string) => Promise<Result<string, string>>;
   readonly rephraseQuestion: (question: string, sources: readonly SourceMeta[]) => Promise<Result<string, string>>;
 };
 
-function createAnthropicAdapter(apiKey: string): AnthropicAdapter;
+function createResearchLLMAdapter(cwd: string, timeoutMs?: number): ResearchLLMAdapter;
 ```
-**Prompt design:** The question generation prompt receives the topic and source titles/URLs, and is instructed to produce 3-5 specific research questions that can be answered from the ingested sources.
+**Implementation:** Each method builds a focused prompt string, calls `runClaude({ prompt, cwd, permissionFlags: [], timeoutMs: 30_000 })`, and parses the response. For `generateQuestions`, the prompt instructs Claude to output a JSON array of 3-5 question strings. For `reformulateQuery`, the prompt provides the original topic and the previous error, asking for an improved search query. For `rephraseQuestion`, the prompt asks for a rephrased version of the question informed by source titles.
+**Error handling:** `runClaude` already returns `ClaudeResult` with ok/error. The adapter maps this to `Result<T, string>`. Subprocess timeout defaults to 30 seconds (question generation is a short task).
 
 ### Vault Writer (`src/infra/vault-writer.ts`)
 
@@ -412,7 +413,7 @@ function createQuotaTracker(redisClient: RedisClient, dailyLimit?: number): Quot
 ```typescript
 type ResearchDeps = {
   readonly notebookLM: NotebookLMAdapter;
-  readonly anthropic: AnthropicAdapter;
+  readonly researchLLM: ResearchLLMAdapter;
   readonly vaultWriter: VaultWriterAdapter;
   readonly telegram: TelegramAdapter;
   readonly quotaTracker: QuotaTracker;
@@ -428,10 +429,10 @@ function executeState(
 ```
 **State-specific behaviors:**
 - `creating_notebook` -- calls `notebookLM.createNotebook(ctx.topic)`
-- `searching_sources` -- calls `notebookLM.searchWeb()`, re-reasons with `anthropic.reformulateQuery()` if `ctx.lastError` is set
+- `searching_sources` -- calls `notebookLM.searchWeb()`, re-reasons with `researchLLM.reformulateQuery()` if `ctx.lastError` is set
 - `adding_sources` -- adds discovered sources (limit 10 per FR-012) + source hints (FR-013/014); drops previously failed sources on retry
 - `awaiting_processing` -- polls `notebookLM.waitForProcessing()` with 10-min timeout (FR-016)
-- `generating_questions` -- calls `anthropic.generateQuestions()` to produce 3-5 questions (FR-020/021)
+- `generating_questions` -- calls `researchLLM.generateQuestions()` to produce 3-5 questions (FR-020/021)
 - `querying` -- calls `notebookLM.chat()` for next unanswered question; increments quota tracker; applies semantic circuit breaker (FR-025); rephrases on retry
 - `resolving_citations` -- calls pure `resolveCitations()` (no I/O in this state; returns immediately)
 - `writing_vault` -- calls `vaultWriter.writeNotes()`, falls back to `writeEmergencyNote()` on final retry failure
@@ -503,7 +504,7 @@ BullMQ research worker picks up job
     -> checkpoint { state: generating_questions, context: { sources } }
 
   State: generating_questions
-    -> anthropic.generateQuestions(topic, sources) -> ["Q1", "Q2", "Q3", "Q4", "Q5"]
+    -> researchLLM.generateQuestions(topic, sources) -> ["Q1", "Q2", "Q3", "Q4", "Q5"]
     -> checkpoint { state: querying, context: { questions } }
 
   State: querying (loops per question)
@@ -580,13 +581,13 @@ I/O adapters wrapping external services. Each adapter returns `Result<T, string>
 
 **Files:**
 - `src/infra/notebooklm-client.ts` + `src/infra/notebooklm-client.test.ts`
-- `src/infra/anthropic-client.ts` + `src/infra/anthropic-client.test.ts`
+- `src/infra/research-llm-client.ts` + `src/infra/research-llm-client.test.ts`
 - `src/infra/vault-writer.ts` + `src/infra/vault-writer.test.ts`
 - `src/infra/quota-tracker.ts` + `src/infra/quota-tracker.test.ts`
 
 **Task decomposition for parallel implementation:**
 - Task 2A: `notebooklm-client.ts` -- depends on 1B (research-types); install `notebooklm-kit` package
-- Task 2B: `anthropic-client.ts` -- depends on 1B (research-types)
+- Task 2B: `research-llm-client.ts` -- depends on claude-subprocess.ts (existing), 1B (research-types)
 - Task 2C: `vault-writer.ts` -- depends on 1F (vault-content)
 - Task 2D: `quota-tracker.ts` -- standalone Redis adapter
 
@@ -641,7 +642,7 @@ Wires the functional core to the imperative shell. State executor functions call
 | Component | Test Focus | Mock Strategy |
 |-----------|-----------|---------------|
 | `notebooklm-client` | Response parsing, error wrapping, retry classification | Mock `notebooklm-kit` SDK methods |
-| `anthropic-client` | Question extraction from API response, error handling | Mock `fetch()` with fixture responses |
+| `research-llm-client` | Question extraction from subprocess output, error handling | Mock `runClaude()` with fixture responses |
 | `vault-writer` | Directory creation, file writing, emergency fallback | Temp directory (real filesystem) |
 | `quota-tracker` | Increment, TTL, remaining calculation | Mock Redis client (in-memory) |
 | `research-states` | Each state executor returns correct event type | Mock all infra adapters |
@@ -664,7 +665,7 @@ Wires the functional core to the imperative shell. State executor functions call
 ### Security
 
 - **Credential handling (FR-070):** NotebookLM cookies stored in SOPS-encrypted env vars, injected via `EnvironmentFile` in systemd unit. Never logged. Not exposed to Claude subprocess.
-- **Anthropic API key:** Already in environment for Claude CLI. Research handler reads `ANTHROPIC_API_KEY` directly. Not a new secret surface.
+- **Research LLM calls:** Research question generation uses `runClaude()` which inherits the existing Claude CLI authentication. No additional API key management needed for research.
 - **No user input in shell commands:** Topic text is used only in API calls and markdown generation. No `exec()` or template injection vectors.
 - **Vault path validation:** Topic slugs are sanitized (alphanumeric + hyphens only), preventing directory traversal in vault paths.
 
@@ -701,6 +702,6 @@ Wires the functional core to the imperative shell. State executor functions call
 
 2. **FR-070 auth env vars:** Inspect `notebooklm-kit` SDK's `NotebookLMClient` constructor during implementation of `notebooklm-client.ts`. Use whatever env var names the SDK expects. Update `config.ts` accordingly.
 
-3. **Cortex `/remember` integration:** The existing `triggerCortexExtraction` is for Claude subprocess sessions. Research doesn't use Claude subprocess. Instead, the `notifying` state should call Claude's `/remember` MCP command or write directly to Cortex via its API. Implementation agent determines the simplest integration path.
+3. **Cortex `/remember` integration:** The existing `triggerCortexExtraction` is for Claude subprocess sessions. Research now uses Claude subprocess via `runClaude()` for question generation, so Cortex integration should work similarly to chat jobs. The `notifying` state can either reuse the existing `triggerCortexExtraction` pattern or call Claude's `/remember` MCP command. Implementation agent determines the simplest integration path.
 
 4. **`sendMarkdown` usage:** The `TelegramAdapter` type defines `sendMarkdown` but it's not implemented in the factory. The research notification can use `sendMessage` (which already converts markdown to HTML). Implementation agent verifies whether research summaries need the chunked message approach for long summaries.

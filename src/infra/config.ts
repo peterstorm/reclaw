@@ -16,6 +16,10 @@ export const AppConfigSchema = z.object({
   scheduledTimeoutMs: z.number().int().positive().default(1_200_000), // 20 minutes
   geminiApiKey: z.string().optional(),
   sessionIdleTimeoutMs: z.number().int().positive().default(1_800_000), // 30min
+  notebooklmAuthToken: z.string().optional(),
+  notebooklmCookies: z.string().optional(),
+  researchTimeoutMs: z.number().int().positive().default(1_500_000), // 25 minutes
+  obsidianVaultPath: z.string().optional(),
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;
@@ -92,6 +96,14 @@ export function parseEnvToRaw(
       env['SESSION_IDLE_TIMEOUT_MS'],
       errors,
     ),
+    notebooklmAuthToken: env['NOTEBOOKLM_AUTH_TOKEN'],
+    notebooklmCookies: env['NOTEBOOKLM_COOKIES'],
+    researchTimeoutMs: parseNumericEnv(
+      'RESEARCH_TIMEOUT_MS',
+      env['RESEARCH_TIMEOUT_MS'],
+      errors,
+    ),
+    obsidianVaultPath: env['OBSIDIAN_VAULT_PATH'],
   };
   return { raw, errors };
 }

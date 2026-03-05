@@ -1,5 +1,7 @@
 import { Queue } from 'bullmq';
 import type { ChatJob, Job, ReminderJob, RecurringReminderJob, ScheduledJob } from '../core/types.js';
+import type { ResearchJobData } from '../core/research-types.js';
+import { stateProgress } from '../core/research-types.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -12,10 +14,16 @@ export type RecurringReminderInfo = {
   readonly chatId: number;
 };
 
+export type ResearchStatus = {
+  readonly active: { readonly topic: string; readonly state: string; readonly progress: number; readonly startedAt: string } | null;
+  readonly waiting: number;
+};
+
 export type Queues = {
   readonly chat: Queue;
   readonly scheduled: Queue;
   readonly reminder: Queue;
+  readonly research: Queue;
   readonly enqueueChat: (job: Extract<Job, { kind: 'chat' }>) => Promise<void>;
   readonly enqueueScheduled: (job: Extract<Job, { kind: 'scheduled' }>) => Promise<void>;
   readonly isScheduledJobKnown: (jobId: string) => Promise<boolean>;
@@ -23,6 +31,9 @@ export type Queues = {
   readonly enqueueRecurringReminder: (job: RecurringReminderJob) => Promise<string>;
   readonly listRecurringReminders: () => Promise<readonly RecurringReminderInfo[]>;
   readonly cancelRecurringReminder: (schedulerId: string) => Promise<boolean>;
+  readonly enqueueResearch: (jobData: ResearchJobData) => Promise<void>;
+  readonly getResearchQueuePosition: () => Promise<number>;
+  readonly getResearchStatus: () => Promise<ResearchStatus>;
 };
 
 // ─── Retry configuration (FR-014) ────────────────────────────────────────────
@@ -138,10 +149,58 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
     return reminder.removeJobScheduler(schedulerId);
   };
 
+  // ── Research queue (AD-1: dedicated reclaw-research queue) ───────────────
+  // NOTE: research queue does NOT use retryOptions — the state machine has its
+  // own retry logic per state.
+
+  const research = new Queue('reclaw-research', {
+    connection,
+  });
+  research.on('error', (err) => {
+    console.error('[queue:research] error', err);
+  });
+
+  const enqueueResearch = async (jobData: ResearchJobData): Promise<void> => {
+    const jobId = `research:${jobData.chatId}:${Date.now()}`;
+    await research.add(jobId, jobData, { jobId });
+  };
+
+  const getResearchQueuePosition = async (): Promise<number> => {
+    const [waiting, active] = await Promise.all([
+      research.getWaitingCount(),
+      research.getActiveCount(),
+    ]);
+    return waiting + active;
+  };
+
+  const getResearchStatus = async (): Promise<ResearchStatus> => {
+    const [activeJobs, waitingCount] = await Promise.all([
+      research.getActive(),
+      research.getWaitingCount(),
+    ]);
+
+    const activeJob = activeJobs[0];
+    if (!activeJob) {
+      return { active: null, waiting: waitingCount };
+    }
+
+    const data = activeJob.data as ResearchJobData | undefined;
+    return {
+      active: {
+        topic: data?.topic ?? '(unknown)',
+        state: data?.state?.kind ?? '(unknown)',
+        progress: data?.state ? stateProgress(data.state) : 0,
+        startedAt: data?.context?.startedAt ?? '(unknown)',
+      },
+      waiting: waitingCount,
+    };
+  };
+
   return {
-    chat, scheduled, reminder,
+    chat, scheduled, reminder, research,
     enqueueChat, enqueueScheduled, isScheduledJobKnown, enqueueReminder,
     enqueueRecurringReminder, listRecurringReminders, cancelRecurringReminder,
+    enqueueResearch, getResearchQueuePosition, getResearchStatus,
   } as const;
 }
 

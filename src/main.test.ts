@@ -19,8 +19,10 @@ const mockConfig: AppConfig = {
   skillsDir: '/workspace/skills',
   personalityPath: '/workspace/personality.md',
   claudeBinaryPath: 'claude',
+  chatTimeoutMs: 120_000,
   scheduledTimeoutMs: 300_000,
   sessionIdleTimeoutMs: 1_800_000,
+  researchTimeoutMs: 1_500_000,
 };
 
 // ─── Fake component builders ──────────────────────────────────────────────────
@@ -31,6 +33,7 @@ function makeMockTelegram() {
     start: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
     sendMessage: vi.fn().mockResolvedValue(1000),
+    sendMarkdown: vi.fn().mockResolvedValue(undefined),
     sendChunkedMessage: vi.fn().mockResolvedValue([1000]),
     onMessage: vi.fn((handler: (msg: { userId: number; chatId: number; text: string; replyToMessageId?: number }) => void) => {
       onMessageHandler = handler;
@@ -46,10 +49,20 @@ function makeMockQueues() {
     chat: { close: vi.fn().mockResolvedValue(undefined), on: vi.fn() },
     scheduled: { close: vi.fn().mockResolvedValue(undefined), on: vi.fn() },
     reminder: { close: vi.fn().mockResolvedValue(undefined), on: vi.fn() },
+    research: {
+      close: vi.fn().mockResolvedValue(undefined),
+      on: vi.fn(),
+      add: vi.fn().mockResolvedValue(undefined),
+    },
     enqueueChat: vi.fn().mockResolvedValue(undefined),
     enqueueScheduled: vi.fn().mockResolvedValue(undefined),
     isScheduledJobKnown: vi.fn().mockResolvedValue(false),
     enqueueReminder: vi.fn().mockResolvedValue(undefined),
+    enqueueRecurringReminder: vi.fn().mockResolvedValue('recur:123'),
+    listRecurringReminders: vi.fn().mockResolvedValue([]),
+    cancelRecurringReminder: vi.fn().mockResolvedValue(true),
+    enqueueResearch: vi.fn().mockResolvedValue(undefined),
+    getResearchQueuePosition: vi.fn().mockResolvedValue(1),
   };
 }
 
@@ -153,6 +166,14 @@ describe('bootstrap', () => {
     processOnceSpy.mockRestore();
   });
 
+  const mockQuotaTracker = {
+    hasQuota: vi.fn().mockResolvedValue(true),
+    getRemaining: vi.fn().mockResolvedValue(50),
+    getUsed: vi.fn().mockResolvedValue(0),
+    increment: vi.fn().mockResolvedValue(undefined),
+  };
+  const mockQuotaDisconnect = vi.fn().mockResolvedValue(undefined);
+
   function makeDeps(): BootstrapDeps {
     return {
       loadConfigFn: loadConfigMock,
@@ -164,7 +185,11 @@ describe('bootstrap', () => {
       runClaudeFn: vi.fn(),
       handleChatJobFn: vi.fn().mockResolvedValue({ ok: true, response: '' }),
       handleScheduledJobFn: vi.fn().mockResolvedValue({ ok: true, response: '' }),
+      handleReminderJobFn: vi.fn().mockResolvedValue({ ok: true, response: '' }),
+      handleRecurringReminderJobFn: vi.fn().mockResolvedValue({ ok: true, response: '' }),
+      handleResearchJobFn: vi.fn().mockResolvedValue({ hubPath: null, topic: 'test' }),
       createSessionStoreFn: createSessionStoreMock,
+      createQuotaTrackerFn: vi.fn().mockReturnValue({ tracker: mockQuotaTracker, disconnect: mockQuotaDisconnect }),
     };
   }
 
@@ -427,6 +452,115 @@ describe('bootstrap', () => {
 
       expect(mockSessionStore.getMessageSession).not.toHaveBeenCalled();
       expect(mockQueues.enqueueChat).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe('/research command (FR-090, AD-9)', () => {
+    it('enqueues research job and sends confirmation on valid /research command', async () => {
+      await bootstrap(makeDeps());
+      mockTelegram._triggerMessage({
+        userId: mockConfig.authorizedUserIds[0],
+        chatId: 99988877,
+        text: '/research AI agents and their applications',
+      });
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(mockQueues.enqueueResearch).toHaveBeenCalledOnce();
+      expect(mockTelegram.sendMessage).toHaveBeenCalledWith(
+        99988877,
+        expect.stringContaining('Research enqueued'),
+      );
+      expect(mockQueues.enqueueChat).not.toHaveBeenCalled();
+    });
+
+    it('sends error message when /research has no topic (FR-092)', async () => {
+      await bootstrap(makeDeps());
+      mockTelegram._triggerMessage({
+        userId: mockConfig.authorizedUserIds[0],
+        chatId: 99988877,
+        text: '/research',
+      });
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(mockTelegram.sendMessage).toHaveBeenCalledWith(
+        99988877,
+        expect.stringContaining('must not be empty'),
+      );
+      expect(mockQueues.enqueueResearch).not.toHaveBeenCalled();
+    });
+
+    it('sends quota error when quota is too low (FR-072)', async () => {
+      // Override quota tracker to return false (not enough quota)
+      const lowQuotaTracker = {
+        hasQuota: vi.fn().mockResolvedValue(false),
+        getRemaining: vi.fn().mockResolvedValue(2),
+        getUsed: vi.fn().mockResolvedValue(48),
+        increment: vi.fn().mockResolvedValue(undefined),
+      };
+      const deps: BootstrapDeps = {
+        ...makeDeps(),
+        createQuotaTrackerFn: vi.fn().mockReturnValue({
+          tracker: lowQuotaTracker,
+          disconnect: vi.fn().mockResolvedValue(undefined),
+        }),
+      };
+      await bootstrap(deps);
+      mockTelegram._triggerMessage({
+        userId: mockConfig.authorizedUserIds[0],
+        chatId: 99988877,
+        text: '/research quantum computing',
+      });
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(mockTelegram.sendMessage).toHaveBeenCalledWith(
+        99988877,
+        expect.stringContaining('quota'),
+      );
+      expect(mockQueues.enqueueResearch).not.toHaveBeenCalled();
+    });
+
+    it('includes topic in confirmation message', async () => {
+      await bootstrap(makeDeps());
+      mockTelegram._triggerMessage({
+        userId: mockConfig.authorizedUserIds[0],
+        chatId: 99988877,
+        text: '/research blockchain technology',
+      });
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(mockTelegram.sendMessage).toHaveBeenCalledWith(
+        99988877,
+        expect.stringContaining('blockchain technology'),
+      );
+    });
+
+    it('does not route /research to chat queue', async () => {
+      await bootstrap(makeDeps());
+      mockTelegram._triggerMessage({
+        userId: mockConfig.authorizedUserIds[0],
+        chatId: 99988877,
+        text: '/research machine learning',
+      });
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(mockQueues.enqueueChat).not.toHaveBeenCalled();
+    });
+
+    it('handles /research with URL source hints', async () => {
+      await bootstrap(makeDeps());
+      mockTelegram._triggerMessage({
+        userId: mockConfig.authorizedUserIds[0],
+        chatId: 99988877,
+        text: '/research neural networks https://arxiv.org/paper1',
+      });
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(mockQueues.enqueueResearch).toHaveBeenCalledOnce();
+      const callArgs = (mockQueues.enqueueResearch as ReturnType<typeof vi.fn>).mock.calls[0];
+      // The first arg is the ResearchJobData
+      const jobData = callArgs[0] as { topic: string; sourceHints: string[] };
+      expect(jobData.topic).toBe('neural networks');
+      expect(jobData.sourceHints).toContain('https://arxiv.org/paper1');
     });
   });
 });

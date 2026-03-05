@@ -17,6 +17,7 @@
     "chrono-node": "^2.9.0",
     "cron-parser": "^4.9.0",
     "grammy": "^1.26.0",
+    "notebooklm-kit": "^2.2.0",
     "ts-pattern": "^5.9.0",
     "yaml": "^2.5.0",
     "zod": "3.24.4"

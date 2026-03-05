@@ -134,8 +134,18 @@ export type RecurringReminderJob = {
   readonly schedulerId: string; // Job scheduler ID for cancellation
 };
 
+/** A research job: triggered by /research Telegram command. */
+export type ResearchJob = {
+  readonly kind: 'research';
+  readonly id: JobId;
+  readonly chatId: number;
+  readonly topic: string;
+  readonly sourceHints: readonly string[];
+  readonly enqueuedAt: string; // ISO 8601
+};
+
 /** All job variants. */
-export type Job = ChatJob | ScheduledJob | ReminderJob | RecurringReminderJob;
+export type Job = ChatJob | ScheduledJob | ReminderJob | RecurringReminderJob | ResearchJob;
 
 // ─── Job Type Guards ───────────────────────────────────────────────────────────
 
@@ -153,6 +163,10 @@ export function isReminderJob(job: Job): job is ReminderJob {
 
 export function isRecurringReminderJob(job: Job): job is RecurringReminderJob {
   return job.kind === 'recurring-reminder';
+}
+
+export function isResearchJob(job: Job): job is ResearchJob {
+  return job.kind === 'research';
 }
 
 // ─── Job Factory Functions ─────────────────────────────────────────────────────
@@ -283,6 +297,32 @@ export function makeRecurringReminderJob(params: {
     intervalMs: params.intervalMs ?? 0,
     ...(hasCron ? { cronPattern: params.cronPattern!, cronDescription: params.cronDescription ?? params.cronPattern! } : {}),
     schedulerId: params.schedulerId,
+  });
+}
+
+export function makeResearchJob(params: {
+  id: JobId;
+  chatId: number;
+  topic: string;
+  sourceHints: readonly string[];
+  enqueuedAt: string;
+}): Result<ResearchJob, string> {
+  if (params.topic.trim().length === 0) {
+    return err('Research topic must not be empty.');
+  }
+  if (!Number.isInteger(params.chatId)) {
+    return err(`chatId must be an integer, got: ${params.chatId}`);
+  }
+  if (!isIso8601(params.enqueuedAt)) {
+    return err(`enqueuedAt must be ISO 8601, got: ${params.enqueuedAt}`);
+  }
+  return ok({
+    kind: 'research',
+    id: params.id,
+    chatId: params.chatId,
+    topic: params.topic,
+    sourceHints: params.sourceHints,
+    enqueuedAt: params.enqueuedAt,
   });
 }
 

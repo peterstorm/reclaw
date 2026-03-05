@@ -4,8 +4,10 @@ import {
   flatMapResult,
   isChatJob,
   isScheduledJob,
+  isResearchJob,
   makeChatJob,
   makeJobId,
+  makeResearchJob,
   makeScheduledJob,
   makeSkillId,
   makeTelegramUserId,
@@ -410,5 +412,205 @@ describe('skillRegistryFromList', () => {
     const reg = skillRegistryFromList([s1, s2]);
     expect(reg.size).toBe(1);
     expect(reg.get('skill-a' as SkillId)?.name).toBe('Updated');
+  });
+});
+
+// ─── makeResearchJob ──────────────────────────────────────────────────────────
+
+describe('makeResearchJob', () => {
+  const validId = makeJobId('research-001');
+  if (!validId.ok) throw new Error('bad test setup');
+  const jobId = validId.value;
+
+  it('returns ok for valid params', () => {
+    const r = makeResearchJob({
+      id: jobId,
+      chatId: 987654,
+      topic: 'AI agents',
+      sourceHints: ['https://example.com'],
+      enqueuedAt: '2026-03-04T10:00:00Z',
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.kind).toBe('research');
+      expect(r.value.topic).toBe('AI agents');
+      expect(r.value.chatId).toBe(987654);
+      expect(r.value.sourceHints).toEqual(['https://example.com']);
+      expect(r.value.enqueuedAt).toBe('2026-03-04T10:00:00Z');
+    }
+  });
+
+  it('returns ok with empty sourceHints', () => {
+    const r = makeResearchJob({
+      id: jobId,
+      chatId: 1,
+      topic: 'quantum computing',
+      sourceHints: [],
+      enqueuedAt: '2026-03-04T10:00:00Z',
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it('returns err for empty topic', () => {
+    const r = makeResearchJob({
+      id: jobId,
+      chatId: 1,
+      topic: '',
+      sourceHints: [],
+      enqueuedAt: '2026-03-04T10:00:00Z',
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('topic');
+  });
+
+  it('returns err for whitespace-only topic', () => {
+    const r = makeResearchJob({
+      id: jobId,
+      chatId: 1,
+      topic: '   ',
+      sourceHints: [],
+      enqueuedAt: '2026-03-04T10:00:00Z',
+    });
+    expect(r.ok).toBe(false);
+  });
+
+  it('returns err for non-integer chatId', () => {
+    const r = makeResearchJob({
+      id: jobId,
+      chatId: 1.5,
+      topic: 'valid topic',
+      sourceHints: [],
+      enqueuedAt: '2026-03-04T10:00:00Z',
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('chatId');
+  });
+
+  it('returns ok for zero chatId (integer validation only, matches existing job patterns)', () => {
+    const r = makeResearchJob({
+      id: jobId,
+      chatId: 0,
+      topic: 'valid topic',
+      sourceHints: [],
+      enqueuedAt: '2026-03-04T10:00:00Z',
+    });
+    // Zero is a valid integer — chatId validation only checks Number.isInteger
+    expect(r.ok).toBe(true);
+  });
+
+  it('returns ok for negative chatId (Telegram group chats use negative IDs)', () => {
+    const r = makeResearchJob({
+      id: jobId,
+      chatId: -1001234567890,
+      topic: 'valid topic',
+      sourceHints: [],
+      enqueuedAt: '2026-03-04T10:00:00Z',
+    });
+    // Negative integers are valid — Telegram group chats use negative chat IDs
+    expect(r.ok).toBe(true);
+  });
+
+  it('returns err for invalid ISO 8601 enqueuedAt', () => {
+    const r = makeResearchJob({
+      id: jobId,
+      chatId: 1,
+      topic: 'valid topic',
+      sourceHints: [],
+      enqueuedAt: 'not-a-date',
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('enqueuedAt');
+  });
+
+  it('preserves sourceHints as readonly', () => {
+    const hints = ['https://example.com', 'https://another.com'];
+    const r = makeResearchJob({
+      id: jobId,
+      chatId: 1,
+      topic: 'valid topic',
+      sourceHints: hints,
+      enqueuedAt: '2026-03-04T10:00:00Z',
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.sourceHints).toEqual(hints);
+    }
+  });
+});
+
+// ─── isResearchJob ────────────────────────────────────────────────────────────
+
+describe('isResearchJob', () => {
+  const jobId = makeJobId('research-001');
+  const userId = makeTelegramUserId(111);
+  if (!jobId.ok || !userId.ok) throw new Error('bad test setup');
+
+  it('returns true for a research job', () => {
+    const r = makeResearchJob({
+      id: jobId.value,
+      chatId: 1,
+      topic: 'AI',
+      sourceHints: [],
+      enqueuedAt: '2026-03-04T10:00:00Z',
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(isResearchJob(r.value)).toBe(true);
+    }
+  });
+
+  it('returns false for a chat job', () => {
+    const r = makeChatJob({
+      id: jobId.value,
+      userId: userId.value,
+      text: 'hello',
+      chatId: 1,
+      receivedAt: '2026-03-04T10:00:00Z',
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(isResearchJob(r.value)).toBe(false);
+    }
+  });
+
+  it('returns false for a scheduled job', () => {
+    const skillId = makeSkillId('my-skill');
+    if (!skillId.ok) throw new Error('bad test setup');
+    const r = makeScheduledJob({
+      id: jobId.value,
+      skillId: skillId.value,
+      triggeredAt: '2026-03-04T10:00:00Z',
+      validUntil: '2026-03-04T10:30:00Z',
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(isResearchJob(r.value)).toBe(false);
+    }
+  });
+});
+
+// ─── ResearchJob in Job union ──────────────────────────────────────────────────
+
+describe('ResearchJob is part of Job union', () => {
+  it('Job union includes research kind via isChatJob and isResearchJob', () => {
+    const jobId = makeJobId('r-001');
+    if (!jobId.ok) throw new Error('bad test setup');
+    const r = makeResearchJob({
+      id: jobId.value,
+      chatId: 42,
+      topic: 'test',
+      sourceHints: [],
+      enqueuedAt: '2026-03-04T10:00:00Z',
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      const job = r.value;
+      // isResearchJob should return true
+      expect(isResearchJob(job)).toBe(true);
+      // isChatJob should return false
+      expect(isChatJob(job)).toBe(false);
+      // isScheduledJob should return false
+      expect(isScheduledJob(job)).toBe(false);
+    }
   });
 });

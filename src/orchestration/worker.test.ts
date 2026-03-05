@@ -15,8 +15,10 @@ const mockConfig: AppConfig = {
   skillsDir: '/workspace/skills',
   personalityPath: '/workspace/personality.md',
   claudeBinaryPath: 'claude',
+  chatTimeoutMs: 120_000,
   scheduledTimeoutMs: 300_000,
   sessionIdleTimeoutMs: 1_800_000,
+  researchTimeoutMs: 1_500_000,
 };
 
 const chatJob: ChatJob = {
@@ -43,6 +45,8 @@ type FakeBullJob = {
   id?: string;
   opts?: { attempts?: number };
   attemptsMade: number;
+  updateData?: (data: unknown) => Promise<void>;
+  updateProgress?: (progress: number) => Promise<void>;
 };
 
 type WorkerProcessor = (job: FakeBullJob) => Promise<unknown>;
@@ -93,6 +97,7 @@ describe('createWorkers', () => {
   let scheduledHandler: ReturnType<typeof vi.fn>;
   let reminderHandler: ReturnType<typeof vi.fn>;
   let recurringReminderHandler: ReturnType<typeof vi.fn>;
+  let researchHandler: ReturnType<typeof vi.fn>;
   let mockTelegram: TelegramAdapter;
   let fakeFactory: ReturnType<typeof makeFakeWorkerFactory>;
 
@@ -101,10 +106,12 @@ describe('createWorkers', () => {
     scheduledHandler = vi.fn().mockResolvedValue({ ok: true, response: 'scheduled response' } as JobResult);
     reminderHandler = vi.fn().mockResolvedValue({ ok: true, response: 'reminder response' } as JobResult);
     recurringReminderHandler = vi.fn().mockResolvedValue({ ok: true, response: 'recurring response' } as JobResult);
+    researchHandler = vi.fn().mockResolvedValue({ hubPath: '/vault/ai-agents/_index.md', topic: 'AI agents' });
     mockTelegram = {
       start: vi.fn().mockResolvedValue(undefined),
       stop: vi.fn().mockResolvedValue(undefined),
       sendMessage: vi.fn().mockResolvedValue(undefined),
+      sendMarkdown: vi.fn().mockResolvedValue(undefined),
       sendChunkedMessage: vi.fn().mockResolvedValue(undefined),
       onMessage: vi.fn(),
     };
@@ -122,6 +129,7 @@ describe('createWorkers', () => {
       scheduledHandler,
       reminderHandler,
       recurringReminderHandler,
+      researchHandler,
       telegram: mockTelegram,
       config: mockConfig,
       workerFactory: fakeFactory.factory,
@@ -140,9 +148,9 @@ describe('createWorkers', () => {
     expect(typeof workers.stop).toBe('function');
   });
 
-  it('creates three workers', () => {
+  it('creates four workers', () => {
     makeWorkers();
-    expect(fakeFactory.createdWorkers).toHaveLength(3);
+    expect(fakeFactory.createdWorkers).toHaveLength(4);
   });
 
   it('creates workers for correct queue names', () => {
@@ -151,6 +159,7 @@ describe('createWorkers', () => {
     expect(queueNames).toContain('reclaw-chat');
     expect(queueNames).toContain('reclaw-scheduled');
     expect(queueNames).toContain('reclaw-reminder');
+    expect(queueNames).toContain('reclaw-research');
   });
 
   it('sets concurrency=1 for both workers (AD-4, FR-015)', () => {
@@ -167,6 +176,7 @@ describe('createWorkers', () => {
       scheduledHandler,
       reminderHandler,
       recurringReminderHandler,
+      researchHandler,
       telegram: mockTelegram,
       config: mockConfig,
       workerFactory: fakeFactory.factory,
@@ -222,6 +232,7 @@ describe('createWorkers', () => {
       scheduledHandler,
       reminderHandler,
       recurringReminderHandler,
+      researchHandler,
       telegram: mockTelegram,
       config: mockConfig,
       workerFactory: fakeFactory.factory,
@@ -247,6 +258,7 @@ describe('createWorkers', () => {
       scheduledHandler,
       reminderHandler,
       recurringReminderHandler,
+      researchHandler,
       telegram: mockTelegram,
       config: mockConfig,
       workerFactory: fakeFactory.factory,
@@ -420,6 +432,165 @@ describe('createWorkers', () => {
     };
 
     await expect(reminderWorker!.processor(bullJob)).rejects.toThrow('unexpected kind');
+  });
+
+  // ── Research worker (AD-1, FR-002) ──────────────────────────────────────
+
+  it('research worker processes ResearchJobData via researchHandler', async () => {
+    makeWorkers();
+
+    const researchWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-research');
+    expect(researchWorker).toBeDefined();
+
+    const researchJobData = {
+      kind: 'research' as const,
+      topic: 'AI agents',
+      topicSlug: 'ai-agents' as import('../core/research-types.js').ResearchJobData['topicSlug'],
+      sourceHints: [],
+      chatId: 999888777,
+      state: { kind: 'creating_notebook' as const },
+      context: {
+        topic: 'AI agents',
+        topicSlug: 'ai-agents' as import('../core/research-types.js').ResearchJobData['topicSlug'],
+        sourceHints: [],
+        chatId: 999888777,
+        notebookId: null,
+        searchSessionId: null,
+        discoveredWebSources: [],
+        sources: [],
+        questions: [],
+        answers: {},
+        skippedQuestions: [],
+        resolvedNotes: [],
+        hubPath: null,
+        retries: {},
+        lastError: null,
+        trace: [],
+        chatsUsed: 0,
+        startedAt: '2026-03-04T10:00:00Z',
+      },
+    };
+
+    const mockUpdateData = vi.fn().mockResolvedValue(undefined);
+    const mockUpdateProgress = vi.fn().mockResolvedValue(undefined);
+    const bullJob: FakeBullJob = {
+      data: researchJobData,
+      id: 'research-job-001',
+      opts: { attempts: 1 },
+      attemptsMade: 0,
+      updateData: mockUpdateData,
+      updateProgress: mockUpdateProgress,
+    };
+
+    const result = await researchWorker!.processor(bullJob);
+    // Handler receives a ResearchJobLike wrapping the BullMQ job's updateData/updateProgress
+    expect(researchHandler).toHaveBeenCalledWith(
+      expect.objectContaining({ data: researchJobData }),
+    );
+    // Verify the jobLike has real updateData/updateProgress functions
+    const jobLikeArg = researchHandler.mock.calls[0]?.[0] as { updateData: unknown; updateProgress: unknown };
+    expect(typeof jobLikeArg.updateData).toBe('function');
+    expect(typeof jobLikeArg.updateProgress).toBe('function');
+    expect(result).toEqual({ hubPath: '/vault/ai-agents/_index.md', topic: 'AI agents' });
+  });
+
+  it('research worker throws on missing topic field', async () => {
+    makeWorkers();
+
+    const researchWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-research');
+    const bullJob: FakeBullJob = {
+      data: { state: { kind: 'creating_notebook' } },
+      id: 'x',
+      opts: { attempts: 1 },
+      attemptsMade: 0,
+    };
+
+    await expect(researchWorker!.processor(bullJob)).rejects.toThrow('Invalid research job data');
+  });
+
+  it('research worker throws on missing state field', async () => {
+    makeWorkers();
+
+    const researchWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-research');
+    const bullJob: FakeBullJob = {
+      data: { topic: 'AI agents' },
+      id: 'x',
+      opts: { attempts: 1 },
+      attemptsMade: 0,
+    };
+
+    await expect(researchWorker!.processor(bullJob)).rejects.toThrow('Invalid research job data');
+  });
+
+  it('research worker throws on null data', async () => {
+    makeWorkers();
+
+    const researchWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-research');
+    const bullJob: FakeBullJob = {
+      data: null,
+      id: 'x',
+      opts: { attempts: 1 },
+      attemptsMade: 0,
+    };
+
+    await expect(researchWorker!.processor(bullJob)).rejects.toThrow('Invalid research job data');
+  });
+
+  it('research worker has concurrency=1 and long lockDuration (SC-009)', () => {
+    makeWorkers();
+
+    const researchWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-research');
+    expect(researchWorker).toBeDefined();
+    expect(researchWorker!.opts.concurrency).toBe(1);
+    const expectedLockMs = 25 * 60 * 1000;
+    expect((researchWorker!.opts as { lockDuration?: number }).lockDuration).toBe(expectedLockMs);
+  });
+
+  it('dead letter: sends telegram notification on research job failure', async () => {
+    makeWorkers();
+
+    const researchWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-research');
+    const failedHandler = researchWorker!.eventHandlers.get('failed');
+    expect(failedHandler).toBeDefined();
+
+    const researchJobData = {
+      kind: 'research' as const,
+      topic: 'AI agents',
+      topicSlug: 'ai-agents',
+      sourceHints: [],
+      chatId: 999888777,
+      state: { kind: 'creating_notebook' as const },
+      context: {
+        topic: 'AI agents',
+        topicSlug: 'ai-agents',
+        sourceHints: [],
+        chatId: 999888777,
+        notebookId: null,
+        searchSessionId: null,
+        discoveredWebSources: [],
+        sources: [],
+        questions: [],
+        answers: {},
+        skippedQuestions: [],
+        resolvedNotes: [],
+        hubPath: null,
+        retries: {},
+        lastError: null,
+        trace: [],
+        chatsUsed: 0,
+        startedAt: '2026-03-04T10:00:00Z',
+      },
+    };
+
+    await failedHandler!(
+      { data: researchJobData, id: 'research-job-001', opts: { attempts: 1 }, attemptsMade: 1 },
+      new Error('research pipeline failed'),
+    );
+
+    expect(mockTelegram.sendMessage).toHaveBeenCalledWith(
+      researchJobData.chatId,
+      expect.stringContaining('permanently failed'),
+    );
   });
 });
 

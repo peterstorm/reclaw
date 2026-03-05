@@ -1,0 +1,138 @@
+id: self-improvement
+name: Self Improvement
+schedule: "0 13 * * *"
+permissionProfile: scheduled
+validityWindowMinutes: 120
+timeout: 600
+promptTemplate: |
+  {{personality}}
+
+  Today is {{dayOfWeek}}, {{date}}.
+
+  You are running a daily self-improvement analysis of the reclaw system. Your job is to critically examine the codebase, identify improvements, research new ideas, and produce an actionable improvement note.
+
+  ## Step 1 — Codebase Audit
+
+  Examine the reclaw source code and workspace for improvement opportunities:
+
+  **Source code:** `/home/peterstorm/dev/claude-plugins/reclaw/src/`
+  - Read key files: look at the main entrypoint, worker, scheduler, message handler, and any utilities
+  - Look for: code smells, repeated patterns that could be abstracted, error handling gaps, missing types, stale TODOs, dead code, performance concerns
+  - Check if TypeScript patterns follow the project rules at `~/.dotfiles/claude/project/typescript/rules/typescript-patterns.md` (discriminated unions, ts-pattern, Result pattern, branded types)
+  - Check architecture alignment with `~/.dotfiles/claude/project/meta/rules/architecture.md` (functional core/imperative shell, immutability, testability)
+
+  **Skills:** `/home/peterstorm/dev/claude-plugins/reclaw/workspace/skills/`
+  - Review scheduled skill prompts for inefficiencies, unclear instructions, or missing edge cases
+  - Identify skills that could be added or improved
+
+  **Config & infra:**
+  - Check package.json for outdated patterns or missing scripts
+  - Look at the NixOS service config if accessible
+  - Review any Docker/deployment config
+
+  ## Step 2 — Existing Context
+
+  **Check previous improvement notes:**
+  Read any existing notes in `~/dev/notes/remotevault/reclaw/improvements/` to avoid repeating suggestions already made. Build on previous ideas rather than restating them.
+
+  **Check the backlog:**
+  Read `~/dev/notes/remotevault/reclaw/todo.md` and `~/dev/notes/remotevault/reclaw/ideas.md` for known items.
+
+  **Cortex memory:**
+  Run `/recall` with queries like "reclaw architecture", "reclaw bug", "reclaw improvement", "feature idea" to surface relevant context.
+
+  ## Step 3 — External Inspiration
+
+  Search the web for inspiration and emerging patterns:
+
+  - Search for recent developments in: personal AI assistants, Claude API best practices, BullMQ patterns, Telegram bot patterns, home automation with LLMs
+  - Look for: new tools, libraries, or techniques relevant to reclaw's stack (TypeScript, BullMQ, Claude, Telegram, NixOS)
+  - Check if any dependencies have notable new versions or breaking changes
+  - Look for interesting open-source projects in the personal assistant / AI agent space
+
+  Pick 2-3 genuinely interesting external findings — don't pad with generic advice.
+
+  ## Step 4 — Write the Improvement Note
+
+  Create a note at: `~/dev/notes/remotevault/reclaw/improvements/{{date}}.md`
+  Create the `reclaw/improvements/` directory if it doesn't exist.
+
+  **Frontmatter:**
+  ```yaml
+  ---
+  title: "Reclaw Improvements — {{date}}"
+  date: {{date}}
+  tags: [reclaw, improvements, self-review]
+  up: "[[reclaw/improvements/MOC]]"
+  ---
+  ```
+
+  **Sections:**
+
+  ### Code Quality
+  - Specific issues found with file paths and line numbers
+  - Concrete suggestions, not vague "consider improving X"
+
+  ### Feature Ideas
+  - 2-3 new feature ideas with brief rationale
+  - Prioritize by impact vs effort
+  - Reference any external inspiration that sparked the idea
+
+  ### Skill Improvements
+  - Issues or enhancements for existing scheduled skills
+  - New skill ideas
+
+  ### External Findings
+  - 2-3 interesting discoveries from web search
+  - How they could apply to reclaw
+  - Links to relevant resources
+
+  ### Priority Recommendation
+  - Pick the single highest-impact improvement and explain why it should be next
+  - Reference effort estimate (quick win vs. multi-session project)
+
+  ## Step 5 — Update the MOC
+
+  If `~/dev/notes/remotevault/reclaw/improvements/MOC.md` doesn't exist, create it:
+
+  ```yaml
+  ---
+  title: Reclaw Improvements
+  date: {{date}}
+  tags: [moc, reclaw, improvements]
+  up: "[[reclaw/MOC]]"
+  ---
+  ```
+
+  ```markdown
+  # Reclaw Improvements
+
+  Daily self-improvement analysis of the reclaw system.
+
+  ## Notes
+  ```
+
+  Then append a link to today's note: `- [[reclaw/improvements/{{date}}|{{date}}]] — [1-line summary]`
+
+  ## Step 6 — Store in Cortex
+
+  Run `/remember`: "Self-improvement {{date}}: [1-sentence summary of the top recommendation]"
+
+  ## Output — Telegram Message
+
+  Send a concise summary. Format:
+
+  ```
+  🔧 Daily Self-Improvement — {{date}}
+
+  Top recommendation: [one-liner about the highest-priority item]
+
+  Code: [number] issues found
+  Features: [number] ideas
+  Skills: [number] suggestions
+  External: [number] findings
+
+  Full analysis saved to vault.
+  ```
+
+  If nothing meaningful was found (unlikely but possible), respond with exactly `ALL_CLEAR`.

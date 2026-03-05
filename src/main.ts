@@ -1,5 +1,7 @@
 import { makeChatJob, makeJobId, makeReminderJob, makeRecurringReminderJob, makeTelegramUserId } from './core/types.js';
 import { parseRemindCommand, isRemindListCommand, parseRemindCancelCommand, formatDuration, formatAbsoluteTime, formatSemanticDate } from './core/reminder.js';
+import { parseResearchCommand } from './core/research-request.js';
+import { makeResearchJobData } from './core/research-types.js';
 import { createAsyncMutex } from './core/async-mutex.js';
 import type { AppConfig } from './infra/config.js';
 import type { TelegramAdapter } from './infra/telegram.js';
@@ -10,10 +12,14 @@ import type { SessionStore } from './infra/session-store.js';
 import type { CronScheduler } from './orchestration/scheduler.js';
 import type { Workers } from './orchestration/worker.js';
 import type { Result, ScheduledJob, ChatJob, JobResult } from './core/types.js';
+import type { ResearchJobData } from './core/research-types.js';
+import type { ResearchJobLike } from './orchestration/research-handler.js';
 import type { runClaude } from './infra/claude-subprocess.js';
 import type { handleChatJob } from './orchestration/chat-handler.js';
 import type { handleScheduledJob } from './orchestration/scheduled-handler.js';
 import type { handleReminderJob, handleRecurringReminderJob } from './orchestration/reminder-handler.js';
+import type { handleResearchJob } from './orchestration/research-handler.js';
+import type { ResearchDeps } from './orchestration/research-states.js';
 
 // ─── Injectable deps (for testability) ───────────────────────────────────────
 
@@ -29,14 +35,22 @@ export type BootstrapDeps = {
     scheduledHandler: (job: ScheduledJob) => Promise<JobResult>;
     telegram: TelegramAdapter;
     config: AppConfig;
+    researchHandler: (job: ResearchJobLike) => Promise<{ hubPath: string | null; topic: string }>;
+    reminderHandler: (job: import('./core/types.js').ReminderJob) => Promise<JobResult>;
+    recurringReminderHandler: (job: import('./core/types.js').RecurringReminderJob) => Promise<JobResult>;
   }) => Workers;
   readonly runClaudeFn?: typeof runClaude;
   readonly handleChatJobFn?: typeof handleChatJob;
   readonly handleScheduledJobFn?: typeof handleScheduledJob;
   readonly handleReminderJobFn?: typeof handleReminderJob;
   readonly handleRecurringReminderJobFn?: typeof handleRecurringReminderJob;
+  readonly handleResearchJobFn?: typeof handleResearchJob;
   readonly createSessionStoreFn?: (redis: { host: string; port: number }) => {
     sessionStore: SessionStore;
+    disconnect: () => Promise<void>;
+  };
+  readonly createQuotaTrackerFn?: (redis: { host: string; port: number }) => {
+    tracker: import('./infra/quota-tracker.js').QuotaTracker;
     disconnect: () => Promise<void>;
   };
 };
@@ -80,9 +94,10 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
     injected.createSchedulerFn ??
     (await import('./orchestration/scheduler.js').then((m) => m.createScheduler));
 
-  const createWorkersFn =
-    injected.createWorkersFn ??
-    (await import('./orchestration/worker.js').then((m) => m.createWorkers));
+  const workerModule = await import('./orchestration/worker.js');
+  const createWorkersFn: typeof workerModule.createWorkers =
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (injected.createWorkersFn as any) ?? workerModule.createWorkers;
 
   const runClaudeFn: typeof runClaude =
     injected.runClaudeFn ??
@@ -103,6 +118,10 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
   const handleRecurringReminderJobFn: typeof handleRecurringReminderJob =
     injected.handleRecurringReminderJobFn ??
     (await import('./orchestration/reminder-handler.js').then((m) => m.handleRecurringReminderJob));
+
+  const handleResearchJobFn: typeof handleResearchJob =
+    injected.handleResearchJobFn ??
+    (await import('./orchestration/research-handler.js').then((m) => m.handleResearchJob));
 
   // ── 1. Load config — exit on failure ─────────────────────────────────────
   const configResult = loadConfigFn();
@@ -206,6 +225,45 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
     }
   });
 
+  // ── 8a. Lazy-init NotebookLM adapter (AD-5: created on first research job) ─
+  let notebookLMAdapter: import('./infra/notebooklm-client.js').NotebookLMAdapter | undefined;
+
+  const getOrCreateNotebookLMAdapter = async (): Promise<import('./infra/notebooklm-client.js').NotebookLMAdapter | null> => {
+    if (notebookLMAdapter) return notebookLMAdapter;
+    if (!config.notebooklmAuthToken || !config.notebooklmCookies) {
+      console.warn('[main] NotebookLM credentials not configured — research jobs will fail');
+      return null;
+    }
+    const { createNotebookLMAdapter } = await import('./infra/notebooklm-client.js');
+    notebookLMAdapter = await createNotebookLMAdapter(config.notebooklmAuthToken, config.notebooklmCookies);
+    return notebookLMAdapter;
+  };
+
+  // ── 8b. Create quota tracker using Redis ─────────────────────────────────
+  const createQuotaTrackerFn = injected.createQuotaTrackerFn ?? (async (redis: { host: string; port: number }) => {
+    const { default: Redis } = await import('ioredis');
+    const quotaRedis = new Redis({ host: redis.host, port: redis.port, maxRetriesPerRequest: null });
+    const { createQuotaTracker } = await import('./infra/quota-tracker.js');
+    const qtClient: import('./infra/quota-tracker.js').QuotaRedisClient = {
+      get: (key) => quotaRedis.get(key),
+      set: (key, value, mode, ttlSeconds) => quotaRedis.set(key, value, mode, ttlSeconds),
+      incr: (key) => quotaRedis.incr(key),
+      incrby: (key, count) => quotaRedis.incrby(key, count),
+      expire: (key, ttlSeconds) => quotaRedis.expire(key, ttlSeconds),
+    };
+    return { tracker: createQuotaTracker(qtClient), disconnect: () => quotaRedis.quit().then(() => {}) };
+  });
+
+  const quotaTracker = await createQuotaTrackerFn({ host: config.redisHost, port: config.redisPort });
+
+  // ── 8c. Create vault writer ───────────────────────────────────────────────
+  const vaultWriter = await import('./infra/vault-writer.js').then((m) => m.createVaultWriter());
+
+  // ── 8d. Research LLM adapter ─────────────────────────────────────────────
+  const researchLLMAdapter = await import('./infra/research-llm-client.js').then((m) =>
+    m.createResearchLLMAdapter(config.workspacePath),
+  );
+
   // ── 8. Create workers ──────────────────────────────────────────────────────
   const workers: Workers = createWorkersFn({
     redisConnection: { host: config.redisHost, port: config.redisPort },
@@ -221,6 +279,32 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
       }),
     reminderHandler: (job) => handleReminderJobFn(job, { telegram }),
     recurringReminderHandler: (job) => handleRecurringReminderJobFn(job, { telegram }),
+    researchHandler: async (job) => {
+      const notebookLM = await getOrCreateNotebookLMAdapter();
+      if (!notebookLM) {
+        throw new Error('NotebookLM adapter not configured: missing NOTEBOOKLM_AUTH_TOKEN or NOTEBOOKLM_COOKIES');
+      }
+      const researchDeps: ResearchDeps = {
+        notebookLM,
+        researchLLM: researchLLMAdapter,
+        vaultWriter,
+        telegram,
+        quotaTracker: quotaTracker.tracker,
+        vaultBasePath: config.obsidianVaultPath ?? config.workspacePath,
+        cortexRemember: async (text: string) => {
+          const result = await runClaudeFn({
+            cwd: config.workspacePath,
+            prompt: `Store this research summary in memory for future recall:\n\n${text}`,
+            permissionFlags: [],
+            timeoutMs: 30_000,
+          });
+          if (result.ok && result.sessionId && triggerCortexExtraction) {
+            triggerCortexExtraction(result.sessionId, config.workspacePath);
+          }
+        },
+      };
+      return handleResearchJobFn(job, researchDeps);
+    },
     telegram,
     config,
   });
@@ -369,6 +453,89 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
       return;
     }
 
+    // Handle /research-status command — show current research pipeline state
+    if (msg.text.trim().toLowerCase() === '/research-status') {
+      queues.getResearchStatus().then(async (status) => {
+        if (!status.active && status.waiting === 0) {
+          await telegram.sendMessage(msg.chatId, 'No research jobs running or queued.');
+          return;
+        }
+        const lines: string[] = [];
+        if (status.active) {
+          lines.push(
+            `Research: "${status.active.topic}"`,
+            `State: ${status.active.state}`,
+            `Progress: ${status.active.progress}%`,
+            `Started: ${status.active.startedAt}`,
+          );
+        }
+        if (status.waiting > 0) {
+          lines.push(`\nQueued: ${status.waiting} job(s) waiting`);
+        }
+        await telegram.sendMessage(msg.chatId, lines.join('\n'));
+      }).catch((err: unknown) => {
+        console.error('[main] Failed to get research status:', err);
+      });
+      return;
+    }
+
+    // Handle /research command — enqueue deep research job (FR-090, AD-9)
+    if (msg.text.trim().toLowerCase().startsWith('/research')) {
+      const researchParseResult = parseResearchCommand(msg.text);
+
+      if (!researchParseResult.ok) {
+        // FR-092: send Telegram error if topic is empty
+        telegram.sendMessage(msg.chatId, researchParseResult.error).catch((parseErr: unknown) => {
+          console.error('[main] Failed to send /research parse error:', parseErr);
+        });
+        return;
+      }
+
+      const { topic, sourceHints } = researchParseResult.value;
+
+      // FR-072: check quota before enqueuing
+      quotaTracker.tracker.hasQuota(5).then(async (hasEnoughQuota) => {
+        if (!hasEnoughQuota) {
+          await telegram.sendMessage(msg.chatId, 'Cannot enqueue research job: daily chat quota too low (need at least 5 remaining).');
+          return;
+        }
+
+        // Build ResearchJobData for the worker (state machine payload)
+        const researchJobDataResult = makeResearchJobData({
+          topic,
+          sourceHints,
+          chatId: msg.chatId,
+        });
+
+        if (!researchJobDataResult.ok) {
+          console.error(`[main] Failed to create ResearchJobData: ${researchJobDataResult.error}`);
+          telegram.sendMessage(msg.chatId, 'Failed to create research job. Please try again.').catch((e: unknown) => {
+            console.error('[main] Failed to send research error:', e);
+          });
+          return;
+        }
+
+        // Enqueue using the enqueueResearch abstraction
+        // (the worker reads ResearchJobData directly to run the state machine)
+        await queues.enqueueResearch(researchJobDataResult.value);
+
+        // FR-063: get queue position for confirmation message
+        const position = await queues.getResearchQueuePosition();
+
+        const confirmMsg = position > 1
+          ? `Research enqueued: "${topic}"\n\nQueue position: ${position} (${position - 1} job(s) ahead)`
+          : `Research enqueued: "${topic}"\n\nStarting now.`;
+
+        await telegram.sendMessage(msg.chatId, confirmMsg);
+      }).catch((researchErr: unknown) => {
+        console.error('[main] Failed to enqueue research job:', researchErr);
+        telegram.sendMessage(msg.chatId, 'An unexpected error occurred while enqueuing your research job. Please try again.').catch((e: unknown) => {
+          console.error('[main] Failed to send research error notification:', e);
+        });
+      });
+      return;
+    }
+
     // Reply-to-message routing: look up session for the replied-to message
     const replyRouting = msg.replyToMessageId !== undefined
       ? sessionStore.getMessageSession(msg.replyToMessageId).then((sessionId) => {
@@ -450,8 +617,12 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
       skillWatcher.stop(),
       telegram.stop(),
     ]);
-    await Promise.all([queues.chat.close(), queues.scheduled.close(), queues.reminder.close()]);
-    await disconnectRedis();
+    await Promise.all([queues.chat.close(), queues.scheduled.close(), queues.reminder.close(), queues.research.close()]);
+    await Promise.all([
+      disconnectRedis(),
+      quotaTracker.disconnect(),
+      notebookLMAdapter?.dispose() ?? Promise.resolve(),
+    ]);
     console.info('[main] Shutdown complete');
   };
 

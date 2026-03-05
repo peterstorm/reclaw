@@ -2,6 +2,8 @@ import { match } from 'ts-pattern';
 import type { AppConfig } from '../infra/config.js';
 import type { TelegramAdapter } from '../infra/telegram.js';
 import type { ChatJob, JobResult, RecurringReminderJob, ReminderJob, ScheduledJob } from '../core/types.js';
+import type { ResearchJobData } from '../core/research-types.js';
+import type { ResearchJobLike } from './research-handler.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -19,7 +21,14 @@ export type BullWorkerLike = {
 /** Factory function that creates a BullMQ-like worker. Injected for testability. */
 export type WorkerFactory = (
   queueName: string,
-  processor: (job: { data: unknown; id?: string; opts?: { attempts?: number }; attemptsMade: number }) => Promise<unknown>,
+  processor: (job: {
+    data: unknown;
+    id?: string;
+    opts?: { attempts?: number };
+    attemptsMade: number;
+    updateData?: (data: unknown) => Promise<void>;
+    updateProgress?: (progress: number) => Promise<void>;
+  }) => Promise<unknown>,
   opts: { connection: { host: string; port: number }; concurrency: number; lockDuration?: number; stalledInterval?: number },
 ) => BullWorkerLike;
 
@@ -29,6 +38,7 @@ type WorkerDeps = {
   readonly scheduledHandler: (job: ScheduledJob) => Promise<JobResult>;
   readonly reminderHandler: (job: ReminderJob) => Promise<JobResult>;
   readonly recurringReminderHandler: (job: RecurringReminderJob) => Promise<JobResult>;
+  readonly researchHandler: (job: ResearchJobLike) => Promise<{ hubPath: string | null; topic: string }>;
   readonly telegram: TelegramAdapter;
   readonly config: AppConfig;
   /** Injected for testing. Defaults to BullMQ Worker constructor. */
@@ -82,6 +92,7 @@ export function createWorkers(deps: WorkerDeps): Workers {
     scheduledHandler,
     reminderHandler,
     recurringReminderHandler,
+    researchHandler,
     telegram,
     config,
     workerFactory = defaultWorkerFactory,
@@ -226,6 +237,60 @@ export function createWorkers(deps: WorkerDeps): Workers {
     console.error('[worker:reminder] Worker error:', args[0]);
   });
 
+  // ── Research worker (AD-1: concurrency=1, 25min lock for SC-009) ─────────
+
+  const researchLockMs = 25 * 60 * 1000; // 25 minutes (FR-006, SC-009)
+
+  const researchWorker = workerFactory(
+    'reclaw-research',
+    async (job) => {
+      const data = job.data;
+      if (
+        typeof data !== 'object' ||
+        data === null ||
+        typeof (data as Record<string, unknown>).topic !== 'string' ||
+        typeof (data as Record<string, unknown>).state !== 'object'
+      ) {
+        throw new Error('Invalid research job data: expected ResearchJobData shape');
+      }
+      // Construct ResearchJobLike wrapping real BullMQ job methods for checkpointing (SC-002/SC-003)
+      const researchJobData = data as ResearchJobData;
+      const jobLike: ResearchJobLike = {
+        data: researchJobData,
+        updateData: job.updateData
+          ? (d: ResearchJobData) => job.updateData!(d)
+          : async () => {},
+        updateProgress: job.updateProgress
+          ? (p: number) => job.updateProgress!(p)
+          : async () => {},
+      };
+      return researchHandler(jobLike);
+    },
+    { connection, concurrency: 1, lockDuration: researchLockMs, stalledInterval: researchLockMs },
+  );
+
+  researchWorker.on('failed', async (...args: unknown[]) => {
+    const job = args[0] as { data: ResearchJobData; id?: string; opts?: { attempts?: number }; attemptsMade: number } | undefined;
+    const err = args[1] as Error | undefined;
+
+    if (job === undefined) return;
+    // Research queue has no retry — any failure is final
+    const maxAttempts = job.opts?.attempts ?? 1;
+    if (job.attemptsMade >= maxAttempts) {
+      const msg = formatDeadLetterMessage('research', job.id ?? 'unknown', err?.message ?? String(err));
+      const chatId = (job.data as ResearchJobData).chatId;
+      try {
+        await telegram.sendMessage(chatId, msg);
+      } catch (sendErr) {
+        console.error('[worker:research] Failed to send dead-letter notification:', sendErr);
+      }
+    }
+  });
+
+  researchWorker.on('error', (...args: unknown[]) => {
+    console.error('[worker:research] Worker error:', args[0]);
+  });
+
   // ─── Public API ───────────────────────────────────────────────────────────
 
   /**
@@ -240,7 +305,7 @@ export function createWorkers(deps: WorkerDeps): Workers {
    * Gracefully close both workers, draining any in-progress jobs.
    */
   const stop = async (): Promise<void> => {
-    await Promise.all([chatWorker.close(), scheduledWorker.close(), reminderWorker.close()]);
+    await Promise.all([chatWorker.close(), scheduledWorker.close(), reminderWorker.close(), researchWorker.close()]);
   };
 
   return { start, stop } as const;
