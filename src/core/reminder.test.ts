@@ -10,7 +10,6 @@ import {
   formatDuration,
   formatAbsoluteTime,
   formatSemanticDate,
-  type RecurringParsed,
 } from './reminder.js';
 
 // ─── parseDuration ────────────────────────────────────────────────────────────
@@ -128,8 +127,7 @@ describe('parseRemindCommand', () => {
   it('parses duration (backward compat)', () => {
     const r = parseRemindCommand('/remind 30m take a break', now);
     expect(r.ok).toBe(true);
-    if (r.ok && r.value.kind !== 'recurring') {
-      expect(r.value.kind).toBe('duration');
+    if (r.ok && r.value.kind === 'duration') {
       expect(r.value.text).toBe('take a break');
       expect(r.value.delayMs).toBe(30 * 60_000);
     }
@@ -156,8 +154,7 @@ describe('parseRemindCommand', () => {
   it('parses semantic date: tomorrow at 3pm', () => {
     const r = parseRemindCommand('/remind tomorrow at 3pm call dentist', now);
     expect(r.ok).toBe(true);
-    if (r.ok && r.value.kind !== 'recurring') {
-      expect(r.value.kind).toBe('semantic');
+    if (r.ok && r.value.kind === 'semantic') {
       expect(r.value.text).toBe('call dentist');
       expect(r.value.delayMs).toBeGreaterThan(0);
     }
@@ -226,7 +223,7 @@ describe('parseRecurringReminder', () => {
   it('parses valid interval and message', () => {
     const r = parseRecurringReminder('1d take vitamins');
     expect(r.ok).toBe(true);
-    if (r.ok) {
+    if (r.ok && r.value.type === 'interval') {
       expect(r.value.intervalMs).toBe(86_400_000);
       expect(r.value.text).toBe('take vitamins');
     }
@@ -235,7 +232,7 @@ describe('parseRecurringReminder', () => {
   it('parses hours', () => {
     const r = parseRecurringReminder('2h drink water');
     expect(r.ok).toBe(true);
-    if (r.ok) {
+    if (r.ok && r.value.type === 'interval') {
       expect(r.value.intervalMs).toBe(7_200_000);
       expect(r.value.text).toBe('drink water');
     }

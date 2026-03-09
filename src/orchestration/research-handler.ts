@@ -16,7 +16,6 @@ import { transition, MAX_RETRIES } from '../core/research-machine.js';
 import { isTerminal, stateProgress } from '../core/research-types.js';
 import type {
   ResearchJobData,
-  ResearchState,
   ResearchContext,
   TraceEvent,
 } from '../core/research-types.js';

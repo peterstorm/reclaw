@@ -48,7 +48,7 @@ const makeRegistry = (skills: SkillConfig[] = [makeSkillConfig()]): SkillRegistr
   return new Map(skills.map((s) => [s.id, s]));
 };
 
-const makeConfig = (overrides: Partial<AppConfig> = {}): AppConfig => ({
+const makeConfig = (overrides: Record<string, unknown> = {}): AppConfig => ({
   telegramToken: 'tok',
   authorizedUserIds: [123],
   redisHost: 'localhost',
@@ -57,7 +57,9 @@ const makeConfig = (overrides: Partial<AppConfig> = {}): AppConfig => ({
   skillsDir: '/workspace/skills',
   personalityPath: '/workspace/personality.md',
   claudeBinaryPath: 'claude',
+  chatTimeoutMs: 3_600_000,
   scheduledTimeoutMs: 300_000,
+  researchTimeoutMs: 1_500_000,
   sessionIdleTimeoutMs: 1_800_000,
   ...overrides,
 });
@@ -66,10 +68,11 @@ let nextMsgId = 500;
 const makeTelegram = (): TelegramAdapter => {
   nextMsgId = 500;
   return {
-    start: vi.fn<[], Promise<void>>().mockResolvedValue(undefined),
-    stop: vi.fn<[], Promise<void>>().mockResolvedValue(undefined),
-    sendMessage: vi.fn<[number, string], Promise<number>>().mockImplementation(() => Promise.resolve(nextMsgId++)),
-    sendChunkedMessage: vi.fn<[number, readonly string[]], Promise<readonly number[]>>().mockImplementation((_chatId, chunks) => {
+    start: vi.fn().mockResolvedValue(undefined),
+    stop: vi.fn().mockResolvedValue(undefined),
+    sendMessage: vi.fn().mockImplementation(() => Promise.resolve(nextMsgId++)),
+    editMessage: vi.fn().mockResolvedValue(undefined),
+    sendChunkedMessage: vi.fn().mockImplementation((_chatId: number, chunks: readonly string[]) => {
       const ids = chunks.map(() => nextMsgId++);
       return Promise.resolve(ids);
     }),
@@ -175,7 +178,7 @@ describe('handleScheduledJob', () => {
 
     expect(result.ok).toBe(true);
     // Prompt has empty personality interpolated
-    const callArgs = runClaude.mock.calls[0][0];
+    const callArgs = runClaude.mock.calls[0]![0];
     expect(callArgs.prompt).toContain('Personality: ');
   });
 
@@ -193,7 +196,7 @@ describe('handleScheduledJob', () => {
       config: makeConfig(),
     });
 
-    const callArgs = runClaude.mock.calls[0][0];
+    const callArgs = runClaude.mock.calls[0]![0];
     // Date should be a YYYY-MM-DD string
     expect(callArgs.prompt).toMatch(/Date: \d{4}-\d{2}-\d{2}/);
     // Day of week
@@ -214,7 +217,7 @@ describe('handleScheduledJob', () => {
       config: makeConfig(),
     });
 
-    const callArgs = runClaude.mock.calls[0][0];
+    const callArgs = runClaude.mock.calls[0]![0];
     expect(callArgs.permissionFlags).toEqual(getPermissionFlags('scheduled'));
   });
 
@@ -230,7 +233,7 @@ describe('handleScheduledJob', () => {
       config: makeConfig({ workspacePath: '/my/workspace', scheduledTimeoutMs: 200_000 }),
     });
 
-    const callArgs = runClaude.mock.calls[0][0];
+    const callArgs = runClaude.mock.calls[0]![0];
     expect(callArgs.cwd).toBe('/my/workspace');
     expect(callArgs.timeoutMs).toBe(200_000);
   });
@@ -248,10 +251,10 @@ describe('handleScheduledJob', () => {
     });
 
     expect(telegram.sendChunkedMessage).toHaveBeenCalledTimes(2);
-    const [chatId1, chunks1] = (telegram.sendChunkedMessage as ReturnType<typeof vi.fn>).mock.calls[0];
+    const [chatId1, chunks1] = (telegram.sendChunkedMessage as ReturnType<typeof vi.fn>).mock.calls[0]!;
     expect(chatId1).toBe(42);
     expect(chunks1).toEqual(['Briefing result']);
-    const [chatId2, chunks2] = (telegram.sendChunkedMessage as ReturnType<typeof vi.fn>).mock.calls[1];
+    const [chatId2, chunks2] = (telegram.sendChunkedMessage as ReturnType<typeof vi.fn>).mock.calls[1]!;
     expect(chatId2).toBe(99);
     expect(chunks2).toEqual(['Briefing result']);
   });

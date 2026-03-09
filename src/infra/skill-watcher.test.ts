@@ -65,7 +65,7 @@ async function waitForSkillAbsent(
 ): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeout) {
-    if (!getRegistry().has(skillId as ReturnType<typeof import('../core/types.js').makeSkillId>['value'])) return;
+    if (!getRegistry().has(skillId as import('../core/types.js').SkillId)) return;
     await wait(50);
   }
   throw new Error(`Timed out waiting for skill ${skillId} to be removed`);
@@ -107,7 +107,7 @@ describe('createSkillWatcher', () => {
       await waitForSkillCount(watcher.getRegistry, 1);
       const registry = watcher.getRegistry();
       expect(registry.size).toBe(1);
-      const skill = registry.get('morning-briefing' as ReturnType<typeof import('../core/types.js').makeSkillId>['value']);
+      const skill = registry.get('morning-briefing' as import('../core/types.js').SkillId);
       expect(skill).toBeDefined();
       expect(skill?.name).toBe('Morning Briefing');
     } finally {
@@ -140,7 +140,7 @@ describe('createSkillWatcher', () => {
     try {
       await waitForSkillCount(watcher.getRegistry, 1);
 
-      const before = watcher.getRegistry().get('morning-briefing' as ReturnType<typeof import('../core/types.js').makeSkillId>['value']);
+      const before = watcher.getRegistry().get('morning-briefing' as import('../core/types.js').SkillId);
       expect(before?.name).toBe('Morning Briefing');
 
       // Modify file
@@ -149,12 +149,12 @@ describe('createSkillWatcher', () => {
       // Wait for update
       const start = Date.now();
       while (Date.now() - start < 3000) {
-        const skill = watcher.getRegistry().get('morning-briefing' as ReturnType<typeof import('../core/types.js').makeSkillId>['value']);
+        const skill = watcher.getRegistry().get('morning-briefing' as import('../core/types.js').SkillId);
         if (skill?.name === 'Morning Briefing Updated') break;
         await wait(50);
       }
 
-      const after = watcher.getRegistry().get('morning-briefing' as ReturnType<typeof import('../core/types.js').makeSkillId>['value']);
+      const after = watcher.getRegistry().get('morning-briefing' as import('../core/types.js').SkillId);
       expect(after?.name).toBe('Morning Briefing Updated');
       expect(after?.validityWindowMinutes).toBe(60);
     } finally {
@@ -304,7 +304,7 @@ timeout: 300
       await wait(1000);
 
       expect(watcher.getRegistry().size).toBe(1);
-      const skill = watcher.getRegistry().get('morning-briefing' as ReturnType<typeof import('../core/types.js').makeSkillId>['value']);
+      const skill = watcher.getRegistry().get('morning-briefing' as import('../core/types.js').SkillId);
       expect(skill).toBeDefined();
     } finally {
       await watcher.stop();

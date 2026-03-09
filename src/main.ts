@@ -11,7 +11,7 @@ import type { CronScheduler } from './orchestration/scheduler.js';
 import type { Workers } from './orchestration/worker.js';
 import type { Result, ScheduledJob, ChatJob, JobResult } from './core/types.js';
 import type { ResearchJobLike } from './orchestration/research-handler.js';
-import type { runClaude } from './infra/claude-subprocess.js';
+import type { runClaude, runClaudeStreaming } from './infra/claude-subprocess.js';
 import type { handleChatJob } from './orchestration/chat-handler.js';
 import type { handleScheduledJob } from './orchestration/scheduled-handler.js';
 import type { handleReminderJob, handleRecurringReminderJob } from './orchestration/reminder-handler.js';
@@ -37,6 +37,7 @@ export type BootstrapDeps = {
     recurringReminderHandler: (job: import('./core/types.js').RecurringReminderJob) => Promise<JobResult>;
   }) => Workers;
   readonly runClaudeFn?: typeof runClaude;
+  readonly runClaudeStreamingFn?: typeof runClaudeStreaming;
   readonly handleChatJobFn?: typeof handleChatJob;
   readonly handleScheduledJobFn?: typeof handleScheduledJob;
   readonly handleReminderJobFn?: typeof handleReminderJob;
@@ -100,6 +101,10 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
     injected.runClaudeFn ??
     (await import('./infra/claude-subprocess.js').then((m) => m.runClaude));
 
+  const runClaudeStreamingFn: typeof runClaudeStreaming =
+    injected.runClaudeStreamingFn ??
+    (await import('./infra/claude-subprocess.js').then((m) => m.runClaudeStreaming));
+
   const handleChatJobFn: typeof handleChatJob =
     injected.handleChatJobFn ??
     (await import('./orchestration/chat-handler.js').then((m) => m.handleChatJob));
@@ -149,10 +154,10 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
   // subprocesses operating on disjoint files, so concurrency is safe.
   const chatMutex = createAsyncMutex();
 
-  const guardedRunClaudeChat: typeof runClaudeFn = async (options) => {
+  const guardedRunClaudeStreamingChat: typeof runClaudeStreamingFn = async (options, onChunk) => {
     const release = await chatMutex.acquire();
     try {
-      return await runClaudeFn(options);
+      return await runClaudeStreamingFn(options, onChunk);
     } finally {
       release();
     }
@@ -264,7 +269,7 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
   // ── 8. Create workers ──────────────────────────────────────────────────────
   const workers: Workers = createWorkersFn({
     redisConnection: { host: config.redisHost, port: config.redisPort },
-    chatHandler: (job) => handleChatJobFn(job, { runClaude: guardedRunClaudeChat, telegram, config, sessionStore, ...(triggerCortexExtraction ? { triggerCortexExtraction } : {}) }),
+    chatHandler: (job) => handleChatJobFn(job, { runClaudeStreaming: guardedRunClaudeStreamingChat, telegram, config, sessionStore, ...(triggerCortexExtraction ? { triggerCortexExtraction } : {}) }),
     scheduledHandler: (job) =>
       handleScheduledJobFn(job, {
         runClaude: runClaudeFn,

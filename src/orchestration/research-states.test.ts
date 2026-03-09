@@ -3,7 +3,7 @@
 // Per-state executor tests with mocked infrastructure deps.
 // All infra adapters are mocked — no real SDK/Redis/filesystem calls.
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   executeState,
   buildCortexSummary,
@@ -113,6 +113,7 @@ function makeMockDeps(overrides: Partial<ResearchDeps> = {}): ResearchDeps {
     start: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
     sendMessage: vi.fn().mockResolvedValue(1),
+    editMessage: vi.fn().mockResolvedValue(undefined),
     sendChunkedMessage: vi.fn().mockResolvedValue([1]),
     onMessage: vi.fn(),
   };

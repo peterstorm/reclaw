@@ -120,7 +120,7 @@ export function computeMetrics(
  *   - 2+ warnings -> "poor"
  */
 export function evaluateQuality(
-  ctx: ResearchContext,
+  _ctx: ResearchContext,
   metrics: ResearchMetrics,
 ): QualityResult {
   const warnings: string[] = [];

@@ -44,7 +44,7 @@ const chatJob: ChatJob = {
 const scheduledJob: ScheduledJob = {
   kind: 'scheduled',
   id: 'job-002' as JobId,
-  skillId: 'morning-briefing' as ReturnType<typeof import('../core/types.js').makeSkillId>['value'],
+  skillId: 'morning-briefing' as import('../core/types.js').SkillId,
   triggeredAt: '2026-02-26T06:00:00Z',
   validUntil: '2026-02-26T06:30:00Z',
 };

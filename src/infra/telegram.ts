@@ -5,11 +5,14 @@ import { markdownToTelegramHtml } from '../core/markdown-to-telegram.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+export type SendOptions = { readonly html?: boolean; readonly plain?: boolean };
+
 export type TelegramAdapter = {
   readonly start: () => Promise<void>;
   readonly stop: () => Promise<void>;
-  readonly sendMessage: (chatId: number, text: string) => Promise<number>;
-  readonly sendChunkedMessage: (chatId: number, chunks: readonly string[]) => Promise<readonly number[]>;
+  readonly sendMessage: (chatId: number, text: string, options?: SendOptions) => Promise<number>;
+  readonly editMessage: (chatId: number, messageId: number, text: string, options?: SendOptions) => Promise<void>;
+  readonly sendChunkedMessage: (chatId: number, chunks: readonly string[], options?: SendOptions) => Promise<readonly number[]>;
   readonly onMessage: (
     handler: (msg: { userId: number; chatId: number; text: string; replyToMessageId?: number }) => void,
   ) => void;
@@ -77,7 +80,7 @@ export function createTelegramAdapter(config: {
     if (messageHandler !== null) {
       try {
         const replyToMessageId = ctx.message.reply_to_message?.message_id;
-        messageHandler({ userId, chatId, text: ctx.message.text, replyToMessageId });
+        messageHandler({ userId, chatId, text: ctx.message.text, ...(replyToMessageId !== undefined ? { replyToMessageId } : {}) });
       } catch (err) {
         // NFR-013: log chatId only, never message text
         console.error(`[telegram] messageHandler error for chatId=${chatId}`, err);
@@ -85,11 +88,14 @@ export function createTelegramAdapter(config: {
     }
   });
 
-  const sendMessage = async (chatId: number, text: string): Promise<number> => {
+  const sendMessage = async (chatId: number, text: string, options?: SendOptions): Promise<number> => {
+    if (options?.plain) {
+      const sent = await bot.api.sendMessage(chatId, text);
+      return sent.message_id;
+    }
     try {
-      const html = markdownToTelegramHtml(text);
+      const html = options?.html ? text : markdownToTelegramHtml(text);
       if (html.length > TELEGRAM_MAX_LENGTH) {
-        // HTML expansion exceeded Telegram's limit — send plain text
         console.warn(`[telegram] HTML too long (${html.length} chars), sending plain text`);
         const sent = await bot.api.sendMessage(chatId, text);
         return sent.message_id;
@@ -103,6 +109,41 @@ export function createTelegramAdapter(config: {
     }
   };
 
+  const editMessage = async (chatId: number, messageId: number, text: string, options?: SendOptions): Promise<void> => {
+    if (options?.plain) {
+      try {
+        await bot.api.editMessageText(chatId, messageId, text);
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        if (errMsg.includes('message is not modified')) return;
+        console.warn('[telegram] Plain text edit failed:', errMsg);
+      }
+      return;
+    }
+    try {
+      const html = options?.html ? text : markdownToTelegramHtml(text);
+      if (html.length > TELEGRAM_MAX_LENGTH) {
+        console.warn(`[telegram] Edit HTML too long (${html.length} chars), sending plain text`);
+        await bot.api.editMessageText(chatId, messageId, text);
+        return;
+      }
+      await bot.api.editMessageText(chatId, messageId, html, { parse_mode: 'HTML' });
+    } catch (err) {
+      // "message is not modified" is harmless — content already matches, skip fallback
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (errMsg.includes('message is not modified')) return;
+
+      console.warn('[telegram] HTML edit failed, falling back to plain text:', errMsg);
+      try {
+        await bot.api.editMessageText(chatId, messageId, text);
+      } catch (plainErr) {
+        const plainErrMsg = plainErr instanceof Error ? plainErr.message : String(plainErr);
+        if (plainErrMsg.includes('message is not modified')) return;
+        console.warn('[telegram] Plain text edit also failed:', plainErrMsg);
+      }
+    }
+  };
+
   /**
    * FR-013: Send pre-split chunks sequentially with a small delay.
    * Chunks are produced by splitMessage; this function only does I/O.
@@ -110,10 +151,11 @@ export function createTelegramAdapter(config: {
   const sendChunkedMessage = async (
     chatId: number,
     chunks: readonly string[],
+    options?: SendOptions,
   ): Promise<readonly number[]> => {
     const messageIds: number[] = [];
     for (let i = 0; i < chunks.length; i++) {
-      const msgId = await sendMessage(chatId, chunks[i]);
+      const msgId = await sendMessage(chatId, chunks[i]!, options);
       messageIds.push(msgId);
       if (i < chunks.length - 1) {
         await sleep(CHUNK_DELAY_MS);
@@ -136,7 +178,7 @@ export function createTelegramAdapter(config: {
     await bot.stop();
   };
 
-  return { start, stop, sendMessage, sendChunkedMessage, onMessage };
+  return { start, stop, sendMessage, editMessage, sendChunkedMessage, onMessage };
 }
 
 export { splitMessage };

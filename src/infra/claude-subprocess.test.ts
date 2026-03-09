@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { parseStreamJsonOutput, runClaude, type SpawnFn } from './claude-subprocess.js';
+import { parseStreamJsonOutput, extractStreamDelta, runClaude, type SpawnFn } from './claude-subprocess.js';
 
 // ─── parseStreamJsonOutput — pure unit tests ──────────────────────────────────
 
@@ -72,6 +72,95 @@ describe('parseStreamJsonOutput (pure)', () => {
   it('returns null sessionId when not present', () => {
     const line = JSON.stringify({ type: 'result', result: 'hello' });
     expect(parseStreamJsonOutput(line).sessionId).toBeNull();
+  });
+});
+
+// ─── extractStreamDelta — pure unit tests ─────────────────────────────────────
+
+describe('extractStreamDelta (pure)', () => {
+  it('extracts text_delta as text StreamDelta', () => {
+    const line = JSON.stringify({
+      type: 'stream_event',
+      event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'hello' } },
+    });
+    expect(extractStreamDelta(line)).toEqual({ type: 'text', text: 'hello' });
+  });
+
+  it('extracts thinking_delta as thinking StreamDelta', () => {
+    const line = JSON.stringify({
+      type: 'stream_event',
+      event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'hmm' } },
+    });
+    expect(extractStreamDelta(line)).toEqual({ type: 'thinking', thinking: 'hmm' });
+  });
+
+  it('returns null for non-stream_event', () => {
+    const line = JSON.stringify({ type: 'result', result: 'ok' });
+    expect(extractStreamDelta(line)).toBeNull();
+  });
+
+  it('returns null for unknown delta type', () => {
+    const line = JSON.stringify({
+      type: 'stream_event',
+      event: { type: 'content_block_delta', delta: { type: 'unknown_delta', data: 'x' } },
+    });
+    expect(extractStreamDelta(line)).toBeNull();
+  });
+
+  it('returns null for empty string', () => {
+    expect(extractStreamDelta('')).toBeNull();
+  });
+
+  it('returns null for invalid JSON', () => {
+    expect(extractStreamDelta('not json')).toBeNull();
+  });
+
+  it('returns null when delta has no text field for text_delta', () => {
+    const line = JSON.stringify({
+      type: 'stream_event',
+      event: { type: 'content_block_delta', delta: { type: 'text_delta' } },
+    });
+    expect(extractStreamDelta(line)).toBeNull();
+  });
+
+  it('returns null when delta has no thinking field for thinking_delta', () => {
+    const line = JSON.stringify({
+      type: 'stream_event',
+      event: { type: 'content_block_delta', delta: { type: 'thinking_delta' } },
+    });
+    expect(extractStreamDelta(line)).toBeNull();
+  });
+
+  it('extracts content_block_start with thinking type as block_start', () => {
+    const line = JSON.stringify({
+      type: 'stream_event',
+      event: { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } },
+    });
+    expect(extractStreamDelta(line)).toEqual({ type: 'block_start', blockType: 'thinking' });
+  });
+
+  it('extracts content_block_start with text type as block_start', () => {
+    const line = JSON.stringify({
+      type: 'stream_event',
+      event: { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } },
+    });
+    expect(extractStreamDelta(line)).toEqual({ type: 'block_start', blockType: 'text' });
+  });
+
+  it('returns null for content_block_start with unknown block type', () => {
+    const line = JSON.stringify({
+      type: 'stream_event',
+      event: { type: 'content_block_start', index: 2, content_block: { type: 'tool_use', id: 'x' } },
+    });
+    expect(extractStreamDelta(line)).toBeNull();
+  });
+
+  it('returns null for content_block_stop events', () => {
+    const line = JSON.stringify({
+      type: 'stream_event',
+      event: { type: 'content_block_stop', index: 0 },
+    });
+    expect(extractStreamDelta(line)).toBeNull();
   });
 });
 
@@ -164,7 +253,7 @@ describe('runClaude', () => {
     });
 
     expect(spawnMock).toHaveBeenCalledOnce();
-    const [args] = spawnMock.mock.calls[0];
+    const [args] = spawnMock.mock.calls[0]!;
     expect(args).toEqual(['claude', '-p', '--output-format', 'stream-json', ...flags]);
   });
 
@@ -180,7 +269,7 @@ describe('runClaude', () => {
       _spawn: spawnMock,
     });
 
-    const [, spawnOptions] = spawnMock.mock.calls[0];
+    const [, spawnOptions] = spawnMock.mock.calls[0]!;
     expect(spawnOptions.cwd).toBe('/my/workspace');
   });
 
@@ -198,7 +287,7 @@ describe('runClaude', () => {
       _spawn: spawnMock,
     });
 
-    const [, spawnOptions] = spawnMock.mock.calls[0];
+    const [, spawnOptions] = spawnMock.mock.calls[0]!;
     expect(spawnOptions.env.MY_VAR).toBe('my_value');
   });
 
@@ -224,7 +313,7 @@ describe('runClaude', () => {
     expect(capturedStdin).not.toBeNull();
     expect(capturedStdin!.write).toHaveBeenCalled();
     expect(capturedStdin!.end).toHaveBeenCalled();
-    const writtenBytes = capturedStdin!.write.mock.calls[0][0];
+    const writtenBytes = capturedStdin!.write.mock.calls[0]![0];
     const decoded = new TextDecoder().decode(writtenBytes);
     expect(decoded).toBe('my prompt text');
   });
@@ -331,7 +420,7 @@ describe('runClaude', () => {
       _spawn: spawnMock,
     });
 
-    const [args] = spawnMock.mock.calls[0];
+    const [args] = spawnMock.mock.calls[0]!;
     expect(args).toContain('--allowedTools');
     expect(args).toContain('Read,Write,Bash,recall,remember');
     expect(args).toContain('--disallowedTools');
@@ -351,7 +440,7 @@ describe('runClaude', () => {
       _spawn: spawnMock,
     });
 
-    const [args] = spawnMock.mock.calls[0];
+    const [args] = spawnMock.mock.calls[0]!;
     expect(args).toContain('--resume');
     expect(args).toContain('sess-1');
   });
@@ -368,7 +457,7 @@ describe('runClaude', () => {
       _spawn: spawnMock,
     });
 
-    const [args] = spawnMock.mock.calls[0];
+    const [args] = spawnMock.mock.calls[0]!;
     expect(args).not.toContain('--resume');
   });
 

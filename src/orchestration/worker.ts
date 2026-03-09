@@ -159,7 +159,7 @@ export function createWorkers(deps: WorkerDeps): Workers {
         throw new Error(`Invalid scheduled job data: missing or wrong kind field`);
       }
       const scheduledJob = data as ScheduledJob;
-      console.log(`[worker:scheduled] Processing job ${job.id ?? 'unknown'} skill=${scheduledJob.skillName}`);
+      console.log(`[worker:scheduled] Processing job ${job.id ?? 'unknown'} skill=${scheduledJob.skillId}`);
       const result = await scheduledHandler(scheduledJob);
       if (!result.ok) {
         throw new Error(result.error);

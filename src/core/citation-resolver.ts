@@ -83,7 +83,7 @@ export function resolveAnswerCitations(
  *                       (populated from SDK rawData when available).
  */
 export function generatePassageAnchors(
-  source: SourceMeta,
+  _source: SourceMeta,
   passageNumbers: readonly number[],
   rawPassages?: ReadonlyMap<number, string>,
 ): string {

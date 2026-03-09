@@ -121,8 +121,10 @@ describe('bootstrap', () => {
   let createSchedulerMock: ReturnType<typeof vi.fn>;
   let createWorkersMock: ReturnType<typeof vi.fn>;
   let createSessionStoreMock: ReturnType<typeof vi.fn>;
-  let processExitSpy: ReturnType<typeof vi.spyOn>;
-  let processOnceSpy: ReturnType<typeof vi.spyOn>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let processExitSpy: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let processOnceSpy: any;
   const signalHandlers = new Map<string, () => void>();
 
   beforeEach(() => {
@@ -148,16 +150,18 @@ describe('bootstrap', () => {
       disconnect: mockDisconnectRedis,
     });
 
-    processExitSpy = vi.spyOn(process, 'exit').mockImplementation((_code?: number | string) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    processExitSpy = vi.spyOn(process, 'exit').mockImplementation(((_code?: number | string) => {
       throw new Error(`process.exit(${_code})`);
-    });
+    }) as any);
 
-    processOnceSpy = vi.spyOn(process, 'once').mockImplementation((event: string | symbol, handler) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    processOnceSpy = vi.spyOn(process, 'once').mockImplementation(((event: string | symbol, handler: (...args: unknown[]) => void) => {
       if (typeof event === 'string') {
         signalHandlers.set(event, handler as () => void);
       }
       return process;
-    });
+    }) as any);
   });
 
   afterEach(() => {
@@ -279,7 +283,7 @@ describe('bootstrap', () => {
     it('enqueues chat job when message received', async () => {
       await bootstrap(makeDeps());
       mockTelegram._triggerMessage({
-        userId: mockConfig.authorizedUserIds[0],
+        userId: mockConfig.authorizedUserIds[0]!,
         chatId: 99988877,
         text: 'Hello agent',
       });
@@ -290,7 +294,7 @@ describe('bootstrap', () => {
     it('enqueued chat job has correct kind, userId, text, chatId', async () => {
       await bootstrap(makeDeps());
       mockTelegram._triggerMessage({
-        userId: mockConfig.authorizedUserIds[0],
+        userId: mockConfig.authorizedUserIds[0]!,
         chatId: 99988877,
         text: 'Test message',
       });
@@ -299,7 +303,7 @@ describe('bootstrap', () => {
       const enqueuedJob = mockQueues.enqueueChat.mock.calls[0]?.[0];
       expect(enqueuedJob).toBeDefined();
       expect(enqueuedJob?.kind).toBe('chat');
-      expect(enqueuedJob?.userId).toBe(mockConfig.authorizedUserIds[0]);
+      expect(enqueuedJob?.userId).toBe(mockConfig.authorizedUserIds[0]!);
       expect(enqueuedJob?.text).toBe('Test message');
       expect(enqueuedJob?.chatId).toBe(99988877);
     });
@@ -320,7 +324,7 @@ describe('bootstrap', () => {
     it('clears session and sends confirmation', async () => {
       await bootstrap(makeDeps());
       mockTelegram._triggerMessage({
-        userId: mockConfig.authorizedUserIds[0],
+        userId: mockConfig.authorizedUserIds[0]!,
         chatId: 99988877,
         text: '/new',
       });
@@ -367,7 +371,8 @@ describe('bootstrap', () => {
     it('SIGTERM triggers shutdown', async () => {
       await bootstrap(makeDeps());
       // Use non-throwing mock so .catch doesn't re-trigger process.exit
-      processExitSpy.mockImplementation((() => {}) as unknown as typeof process.exit);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      processExitSpy.mockImplementation((() => {}) as any);
       const sigtermHandler = signalHandlers.get('SIGTERM');
       expect(sigtermHandler).toBeDefined();
       sigtermHandler?.();
@@ -379,7 +384,8 @@ describe('bootstrap', () => {
     it('SIGINT triggers shutdown', async () => {
       await bootstrap(makeDeps());
       // Use non-throwing mock so .catch doesn't re-trigger process.exit
-      processExitSpy.mockImplementation((() => {}) as unknown as typeof process.exit);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      processExitSpy.mockImplementation((() => {}) as any);
       const sigintHandler = signalHandlers.get('SIGINT');
       expect(sigintHandler).toBeDefined();
       sigintHandler?.();
@@ -403,7 +409,7 @@ describe('bootstrap', () => {
       mockSessionStore.getMessageSession.mockResolvedValue('sess-watchdog-1');
       await bootstrap(makeDeps());
       mockTelegram._triggerMessage({
-        userId: mockConfig.authorizedUserIds[0],
+        userId: mockConfig.authorizedUserIds[0]!,
         chatId: 99988877,
         text: 'flush the dead-letter queue',
         replyToMessageId: 500,
@@ -426,7 +432,7 @@ describe('bootstrap', () => {
       mockSessionStore.getMessageSession.mockResolvedValue(null);
       await bootstrap(makeDeps());
       mockTelegram._triggerMessage({
-        userId: mockConfig.authorizedUserIds[0],
+        userId: mockConfig.authorizedUserIds[0]!,
         chatId: 99988877,
         text: 'some reply',
         replyToMessageId: 999,
@@ -443,7 +449,7 @@ describe('bootstrap', () => {
     it('enqueues chat job normally when message is not a reply', async () => {
       await bootstrap(makeDeps());
       mockTelegram._triggerMessage({
-        userId: mockConfig.authorizedUserIds[0],
+        userId: mockConfig.authorizedUserIds[0]!,
         chatId: 99988877,
         text: 'normal message',
       });
@@ -458,7 +464,7 @@ describe('bootstrap', () => {
     it('enqueues research job and sends confirmation on valid /research command', async () => {
       await bootstrap(makeDeps());
       mockTelegram._triggerMessage({
-        userId: mockConfig.authorizedUserIds[0],
+        userId: mockConfig.authorizedUserIds[0]!,
         chatId: 99988877,
         text: '/research AI agents and their applications',
       });
@@ -475,7 +481,7 @@ describe('bootstrap', () => {
     it('sends error message when /research has no topic (FR-092)', async () => {
       await bootstrap(makeDeps());
       mockTelegram._triggerMessage({
-        userId: mockConfig.authorizedUserIds[0],
+        userId: mockConfig.authorizedUserIds[0]!,
         chatId: 99988877,
         text: '/research',
       });
@@ -505,7 +511,7 @@ describe('bootstrap', () => {
       };
       await bootstrap(deps);
       mockTelegram._triggerMessage({
-        userId: mockConfig.authorizedUserIds[0],
+        userId: mockConfig.authorizedUserIds[0]!,
         chatId: 99988877,
         text: '/research quantum computing',
       });
@@ -521,7 +527,7 @@ describe('bootstrap', () => {
     it('includes topic in confirmation message', async () => {
       await bootstrap(makeDeps());
       mockTelegram._triggerMessage({
-        userId: mockConfig.authorizedUserIds[0],
+        userId: mockConfig.authorizedUserIds[0]!,
         chatId: 99988877,
         text: '/research blockchain technology',
       });
@@ -536,7 +542,7 @@ describe('bootstrap', () => {
     it('does not route /research to chat queue', async () => {
       await bootstrap(makeDeps());
       mockTelegram._triggerMessage({
-        userId: mockConfig.authorizedUserIds[0],
+        userId: mockConfig.authorizedUserIds[0]!,
         chatId: 99988877,
         text: '/research machine learning',
       });
@@ -548,14 +554,14 @@ describe('bootstrap', () => {
     it('handles /research with URL source hints', async () => {
       await bootstrap(makeDeps());
       mockTelegram._triggerMessage({
-        userId: mockConfig.authorizedUserIds[0],
+        userId: mockConfig.authorizedUserIds[0]!,
         chatId: 99988877,
         text: '/research neural networks https://arxiv.org/paper1',
       });
       await new Promise((r) => setTimeout(r, 50));
 
       expect(mockQueues.enqueueResearch).toHaveBeenCalledOnce();
-      const callArgs = (mockQueues.enqueueResearch as ReturnType<typeof vi.fn>).mock.calls[0];
+      const callArgs = (mockQueues.enqueueResearch as ReturnType<typeof vi.fn>).mock.calls[0]!;
       // The first arg is the ResearchJobData
       const jobData = callArgs[0] as { topic: string; sourceHints: string[] };
       expect(jobData.topic).toBe('neural networks');

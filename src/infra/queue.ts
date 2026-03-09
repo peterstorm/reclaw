@@ -134,12 +134,14 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
       .filter((s) => (s.every !== undefined || s.pattern !== undefined) && s.id != null)
       .map((s) => {
         const data = (s as unknown as { template?: { data?: RecurringReminderJob } }).template?.data;
+        const cronPattern = data?.cronPattern ?? (s.pattern as string | undefined);
+        const cronDescription = data?.cronDescription;
         return {
           schedulerId: s.id!,
           text: data?.text ?? '(unknown)',
           intervalMs: s.every !== undefined ? Number(s.every) : 0,
-          cronPattern: data?.cronPattern ?? (s.pattern as string | undefined),
-          cronDescription: data?.cronDescription,
+          ...(cronPattern ? { cronPattern } : {}),
+          ...(cronDescription ? { cronDescription } : {}),
           chatId: data?.chatId ?? 0,
         };
       });

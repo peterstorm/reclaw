@@ -212,7 +212,7 @@ describe('NotebookLMAdapter (mock)', () => {
       const result = await adapter.searchWeb('nb-1', 'AI agents');
       expect(result.ok).toBe(true);
       if (result.ok) {
-        const source = result.value.webSources[0];
+        const source = result.value.webSources[0]!;
         expect(typeof source.title).toBe('string');
         expect(typeof source.url).toBe('string');
       }
@@ -381,7 +381,7 @@ describe('NotebookLMAdapter (mock)', () => {
       const result = await adapter.listSources('nb-1');
       expect(result.ok).toBe(true);
       if (result.ok) {
-        const source = result.value[0];
+        const source = result.value[0]!;
         expect(typeof source.id).toBe('string');
         expect(typeof source.title).toBe('string');
         expect(typeof source.url).toBe('string');

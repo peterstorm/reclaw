@@ -11,13 +11,12 @@
 // FR-080: Trace event per state transition.
 // FR-081: Progress reported as percentage.
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { handleResearchJob, type ResearchJobLike } from './research-handler.js';
 import type { ResearchDeps } from './research-states.js';
 import type {
   ResearchJobData,
   ResearchContext,
-  ResearchState,
   SourceMeta,
   ChatResponse,
 } from '../core/research-types.js';
@@ -29,8 +28,6 @@ import type { TelegramAdapter } from '../infra/telegram.js';
 import { makeResearchJobData } from '../core/research-types.js';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
-
-const MOCK_TOPIC_SLUG = 'ai-agents' as ReturnType<typeof import('../core/topic-slug.js').generateTopicSlug>;
 
 function makeInitialJobData(): ResearchJobData {
   const result = makeResearchJobData({
@@ -112,6 +109,7 @@ function makeMockDeps(overrides: Partial<ResearchDeps> = {}): ResearchDeps {
     start: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
     sendMessage: vi.fn().mockResolvedValue(1),
+    editMessage: vi.fn().mockResolvedValue(undefined),
     sendChunkedMessage: vi.fn().mockResolvedValue([1]),
     onMessage: vi.fn(),
   };

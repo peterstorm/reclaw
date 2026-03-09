@@ -56,10 +56,7 @@ describe('parseSkillConfig', () => {
   });
 
   it('applies default validityWindowMinutes of 30', () => {
-    const yaml = validYaml({ validityWindowMinutes: undefined });
-    const result = parseSkillConfig(yaml, '/skills/test-skill.yaml');
-    // Field omitted from YAML
-    const yamlNoWindow = yaml.replace(/validityWindowMinutes: undefined\n?/, '');
+    // Field omitted from YAML — test with minimal valid YAML
     const r2 = parseSkillConfig(
       'name: "Test"\npromptTemplate: "Do it"\npermissionProfile: "chat"',
       '/skills/test-skill.yaml',

@@ -116,7 +116,7 @@ export function isRetriableError(error: unknown): boolean {
     // Check for status codes in message
     const match = msg.match(/\b(4\d{2}|5\d{2})\b/);
     if (match) {
-      const code = parseInt(match[1], 10);
+      const code = parseInt(match[1]!, 10);
       return code >= 500;
     }
     // Default: do NOT retry unknown errors
@@ -160,14 +160,12 @@ async function pollUntilReady(
   try {
     const sources = await sdk.sources.list(notebookId);
     const pending = sources.filter(
-      (s: { status?: string; title?: string; url?: string; sourceId: string }) =>
-        s.status !== 'COMPLETE' && s.status !== 'ready',
+      (s) => (s as unknown as { status?: string }).status !== 'COMPLETE' && (s as unknown as { status?: string }).status !== 'ready',
     );
     if (pending.length > 0) {
       const descriptions = pending
         .map(
-          (s: { title?: string; url?: string; sourceId: string }) =>
-            `"${s.title ?? s.url ?? s.sourceId}"`,
+          (s) => `"${(s as unknown as { title?: string }).title ?? (s as unknown as { url?: string }).url ?? s.sourceId}"`,
         )
         .join(', ');
       pendingDetail = ` Unprocessed sources (${pending.length}): ${descriptions}.`;

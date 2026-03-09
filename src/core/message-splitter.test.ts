@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { splitMessage } from './message-splitter.js';
+import { splitMessage, splitHtml } from './message-splitter.js';
 
 // ─── Core invariant helpers ───────────────────────────────────────────────────
 
@@ -134,5 +134,92 @@ describe('splitMessage', () => {
         expect(chunk.length).toBeLessThanOrEqual(4096);
       }
     }
+  });
+});
+
+// ─── splitHtml tests ──────────────────────────────────────────────────────────
+
+describe('splitHtml', () => {
+  it('returns empty array for empty string', () => {
+    expect(splitHtml('')).toEqual([]);
+  });
+
+  it('returns single chunk when HTML fits within maxLength', () => {
+    const html = '<b>Hello</b>, world!';
+    expect(splitHtml(html, 4096)).toEqual([html]);
+  });
+
+  it('splits long HTML into multiple chunks', () => {
+    const html = `<b>${'a'.repeat(5000)}</b>`;
+    const result = splitHtml(html, 200);
+    expect(result.length).toBeGreaterThan(1);
+    for (const chunk of result) {
+      expect(chunk.length).toBeLessThanOrEqual(200);
+    }
+  });
+
+  it('closes and reopens tags at split boundaries', () => {
+    const content = 'x'.repeat(100);
+    const html = `<b>${content}</b>`;
+    const result = splitHtml(html, 60);
+
+    // First chunk should have a closing </b>
+    expect(result[0]).toMatch(/<\/b>$/);
+    // Second chunk should reopen with <b>
+    expect(result[1]).toMatch(/^<b>/);
+  });
+
+  it('handles nested tags across split boundaries', () => {
+    const content = 'word '.repeat(100);
+    const html = `<b><i>${content}</i></b>`;
+    const result = splitHtml(html, 200);
+
+    expect(result.length).toBeGreaterThan(1);
+    // First chunk closes both tags
+    expect(result[0]).toMatch(/<\/i><\/b>$/);
+    // Second chunk reopens both
+    expect(result[1]).toMatch(/^<b><i>/);
+  });
+
+  it('does not split inside an HTML tag', () => {
+    // Create HTML where a tag straddles the boundary
+    const filler = 'x'.repeat(90);
+    const html = `${filler}<a href="https://example.com">link</a>`;
+    const result = splitHtml(html, 100);
+
+    // No chunk should contain a broken tag
+    for (const chunk of result) {
+      const opens = (chunk.match(/</g) ?? []).length;
+      const closes = (chunk.match(/>/g) ?? []).length;
+      expect(opens).toBe(closes);
+    }
+  });
+
+  it('preserves text content across splits', () => {
+    const text = 'Hello world. This is a test. ';
+    const html = `<b>${text.repeat(50)}</b>`;
+    const result = splitHtml(html, 200);
+
+    // Strip tags and join — should contain all original text
+    const stripped = result.join('').replace(/<\/?[^>]+>/g, '');
+    expect(stripped).toBe(text.repeat(50));
+  });
+
+  it('every chunk has balanced tags', () => {
+    const html = `<pre><code class="language-ts">${'const x = 1;\n'.repeat(400)}</code></pre>`;
+    const result = splitHtml(html, 4096);
+
+    for (const chunk of result) {
+      const openTags = [...chunk.matchAll(/<([a-z]+)(?:\s[^>]*)?>/gi)].map((m) => m[1]!.toLowerCase());
+      const closeTags = [...chunk.matchAll(/<\/([a-z]+)>/gi)].map((m) => m[1]!.toLowerCase());
+      // Every open tag should have a matching close
+      for (const tag of openTags) {
+        expect(closeTags).toContain(tag);
+      }
+    }
+  });
+
+  it('throws RangeError for maxLength < 1', () => {
+    expect(() => splitHtml('hello', 0)).toThrowError(RangeError);
   });
 });

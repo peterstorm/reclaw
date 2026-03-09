@@ -68,12 +68,6 @@ function yamlValue(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
-/** Format a YAML list of strings. Empty array emits `[]`. */
-function yamlList(items: readonly string[]): string {
-  if (items.length === 0) return '[]';
-  return items.map((item) => `  - ${yamlValue(item)}`).join('\n');
-}
-
 // ─── buildHubNote ─────────────────────────────────────────────────────────────
 
 /**

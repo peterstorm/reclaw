@@ -6,7 +6,6 @@ import {
   buildEmergencyNote,
   buildAllVaultNotes,
 } from './vault-content.js';
-import type { VaultNote } from './vault-content.js';
 import type { ResearchContext, QualityResult, SourceMeta, ChatResponse } from './research-types.js';
 import type { TopicSlug } from './topic-slug.js';
 
@@ -42,6 +41,7 @@ const makeContext = (overrides: Partial<ResearchContext> = {}): ResearchContext 
   chatId: 12345,
   notebookId: 'notebook-abc',
   searchSessionId: null,
+  discoveredWebSources: [],
   sources,
   questions: ['What is AI?', 'How does ML work?'],
   answers: {

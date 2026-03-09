@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createScheduler } from './scheduler.js';
 import {
-  type JobId,
   type ScheduledJob,
   type SkillConfig,
   type SkillId,

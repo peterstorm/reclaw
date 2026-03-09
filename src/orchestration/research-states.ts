@@ -199,7 +199,7 @@ async function executeAddingSources(
     const discoveredResult = await deps.notebookLM.addDiscoveredSources(
       ctx.notebookId,
       ctx.searchSessionId,
-      ctx.discoveredWebSources,
+      [...ctx.discoveredWebSources],
       MAX_DISCOVERED_SOURCES,
     );
 
@@ -321,7 +321,7 @@ async function executeGeneratingQuestions(
  * If all questions are answered/skipped, it emits ALL_QUERIES_DONE.
  */
 async function executeQuerying(
-  state: Extract<ResearchState, { kind: 'querying' }>,
+  _state: Extract<ResearchState, { kind: 'querying' }>,
   ctx: ResearchContext,
   deps: ResearchDeps,
 ): Promise<ResearchEvent> {

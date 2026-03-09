@@ -34,12 +34,86 @@ export type ClaudeResult =
   | { readonly ok: true; readonly output: string; readonly sessionId: string | null; readonly durationMs: number }
   | { readonly ok: false; readonly error: string; readonly timedOut: boolean };
 
+/** A single delta extracted from a stream-json line. */
+export type StreamDelta =
+  | { readonly type: 'thinking'; readonly thinking: string }
+  | { readonly type: 'text'; readonly text: string }
+  | { readonly type: 'block_start'; readonly blockType: 'thinking' | 'text' };
+
+/** Accumulated state passed to the streaming callback. */
+export type StreamChunk = {
+  readonly phase: 'thinking' | 'text';
+  readonly thinking: string;
+  readonly text: string;
+  /** Thinking content for the current block only (resets on each new thinking block). */
+  readonly currentBlockThinking: string;
+  /** Text content for the current block only (resets on each new text block). */
+  readonly currentBlockText: string;
+  /** Number of thinking blocks started so far. */
+  readonly thinkingBlockCount: number;
+  /** Number of text blocks started so far. */
+  readonly textBlockCount: number;
+};
+
+/** Callback invoked with accumulated chunk state as streaming deltas arrive. */
+export type OnStreamChunk = (chunk: StreamChunk) => void;
+
 // ─── Stream-JSON parsing (pure) ───────────────────────────────────────────────
 
 export type ParsedClaudeOutput = {
   readonly text: string | null;
   readonly sessionId: string | null;
 };
+
+/**
+ * Extract a stream delta from a single stream-json line (with --include-partial-messages).
+ * Returns a StreamDelta for content_block_delta events (text_delta or thinking_delta), null otherwise.
+ */
+export function extractStreamDelta(line: string): StreamDelta | null {
+  const trimmed = line.trim();
+  if (trimmed === '') return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  const record = parsed as Record<string, unknown>;
+
+  if (record['type'] !== 'stream_event') return null;
+  const event = record['event'] as Record<string, unknown> | undefined;
+  if (!event) return null;
+
+  // Handle content_block_start — signals a new thinking or text block
+  if (event['type'] === 'content_block_start') {
+    const contentBlock = event['content_block'] as Record<string, unknown> | undefined;
+    if (contentBlock?.['type'] === 'thinking') {
+      return { type: 'block_start', blockType: 'thinking' };
+    }
+    if (contentBlock?.['type'] === 'text') {
+      return { type: 'block_start', blockType: 'text' };
+    }
+    return null;
+  }
+
+  // Handle content_block_delta — text or thinking content
+  if (event['type'] !== 'content_block_delta') return null;
+  const delta = event['delta'] as Record<string, unknown> | undefined;
+  if (!delta) return null;
+
+  if (delta['type'] === 'thinking_delta' && typeof delta['thinking'] === 'string') {
+    return { type: 'thinking', thinking: delta['thinking'] };
+  }
+
+  if (delta['type'] === 'text_delta' && typeof delta['text'] === 'string') {
+    return { type: 'text', text: delta['text'] };
+  }
+
+  return null;
+}
 
 /**
  * Parse Claude's stream-json output.
@@ -208,4 +282,183 @@ export async function runClaude(options: ClaudeOptions): Promise<ClaudeResult> {
 
   console.log(`[claude] Subprocess completed exit=${exitCode} duration=${durationMs}ms outputLen=${output.length}`);
   return { ok: true, output, sessionId: parsed.sessionId, durationMs };
+}
+
+// ─── Streaming subprocess runner ──────────────────────────────────────────────
+
+/**
+ * Spawn a `claude -p --include-partial-messages` subprocess that streams
+ * text deltas to an onChunk callback as they arrive.
+ *
+ * Same isolation / timeout / error-handling semantics as runClaude.
+ * The onChunk callback receives the full accumulated text so far (not just the delta).
+ */
+export async function runClaudeStreaming(
+  options: ClaudeOptions,
+  onChunk: OnStreamChunk,
+): Promise<ClaudeResult> {
+  const { prompt, cwd, permissionFlags, timeoutMs, env, resumeSessionId, _spawn } = options;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const spawnFn: SpawnFn = _spawn ?? (Bun.spawn as unknown as SpawnFn);
+
+  const args = [
+    'claude',
+    '-p',
+    '--output-format',
+    'stream-json',
+    '--include-partial-messages',
+    ...(resumeSessionId ? ['--resume', resumeSessionId] : []),
+    ...permissionFlags,
+  ];
+
+  const startMs = Date.now();
+  console.log(`[claude] Spawning streaming subprocess timeout=${timeoutMs}ms resume=${!!resumeSessionId}`);
+
+  const { CLAUDECODE: _cc, CLAUDE_CODE_ENTRYPOINT: _cce, ...cleanEnv } = process.env;
+
+  let proc: ReturnType<SpawnFn>;
+  try {
+    proc = spawnFn(args, {
+      cwd,
+      stdin: 'pipe',
+      stdout: 'pipe',
+      stderr: 'pipe',
+      env: { ...cleanEnv, ...(env ?? {}) },
+    });
+  } catch (spawnErr) {
+    return { ok: false, error: `Failed to spawn claude: ${String(spawnErr)}`, timedOut: false };
+  }
+
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    proc.stdin.write(new TextEncoder().encode(prompt));
+    proc.stdin.end();
+  } catch (stdinErr) {
+    proc.kill();
+    return { ok: false, error: `Failed to write stdin: ${String(stdinErr)}`, timedOut: false };
+  }
+
+  let timedOut = false;
+  timeoutId = setTimeout(() => {
+    timedOut = true;
+    proc.kill();
+  }, timeoutMs);
+
+  // Read stdout line by line, extracting deltas and calling onChunk
+  let accumulatedThinking = '';
+  let accumulatedText = '';
+  let currentBlockThinking = '';
+  let currentBlockText = '';
+  let thinkingBlockCount = 0;
+  let textBlockCount = 0;
+  let currentPhase: 'thinking' | 'text' = 'thinking';
+  let resultText: string | null = null;
+  let sessionId: string | null = null;
+
+  const emitChunk = (): void => {
+    onChunk({
+      phase: currentPhase,
+      thinking: accumulatedThinking,
+      text: accumulatedText,
+      currentBlockThinking,
+      currentBlockText,
+      thinkingBlockCount,
+      textBlockCount,
+    });
+  };
+
+  const processLine = (line: string): void => {
+    const delta = extractStreamDelta(line);
+    if (delta !== null) {
+      if (delta.type === 'block_start') {
+        if (delta.blockType === 'thinking') {
+          thinkingBlockCount++;
+          currentBlockThinking = '';
+          currentPhase = 'thinking';
+        } else {
+          textBlockCount++;
+          currentBlockText = '';
+          currentPhase = 'text';
+        }
+        emitChunk();
+      } else if (delta.type === 'thinking') {
+        accumulatedThinking += delta.thinking;
+        currentBlockThinking += delta.thinking;
+        currentPhase = 'thinking';
+        emitChunk();
+      } else {
+        accumulatedText += delta.text;
+        currentBlockText += delta.text;
+        currentPhase = 'text';
+        emitChunk();
+      }
+    }
+
+    const trimmed = line.trim();
+    if (trimmed !== '') {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed?.type === 'result') {
+          if (typeof parsed.result === 'string') resultText = parsed.result;
+          if (typeof parsed.session_id === 'string') sessionId = parsed.session_id;
+        }
+      } catch {
+        // skip non-JSON
+      }
+    }
+  };
+
+  try {
+    const reader = proc.stdout.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      let newlineIdx: number;
+      while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, newlineIdx);
+        buffer = buffer.slice(newlineIdx + 1);
+        processLine(line);
+      }
+    }
+
+    // Process any remaining buffer
+    if (buffer.trim() !== '') {
+      processLine(buffer);
+    }
+  } catch (readErr) {
+    clearTimeout(timeoutId);
+    proc.kill();
+    return { ok: false, error: `Failed to read stdout: ${String(readErr)}`, timedOut: false };
+  }
+
+  const exitCode = await proc.exited;
+  clearTimeout(timeoutId);
+  const durationMs = Date.now() - startMs;
+
+  if (timedOut) {
+    console.log(`[claude] Streaming subprocess timed out after ${durationMs}ms`);
+    return { ok: false, error: 'timeout', timedOut: true };
+  }
+
+  if (exitCode !== 0) {
+    let stderrText = '';
+    try {
+      stderrText = await new Response(proc.stderr).text();
+    } catch {
+      // ignore
+    }
+    console.log(`[claude] Streaming subprocess failed exit=${exitCode} duration=${durationMs}ms`);
+    return { ok: false, error: `claude exited with code ${exitCode}: ${stderrText.trim()}`, timedOut: false };
+  }
+
+  const output = resultText ?? (accumulatedText || '');
+  console.log(`[claude] Streaming subprocess completed exit=${exitCode} duration=${durationMs}ms outputLen=${output.length}`);
+  return { ok: true, output, sessionId, durationMs };
 }
