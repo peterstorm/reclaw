@@ -677,6 +677,77 @@ describe('handleChatJob', () => {
     expect(thinking2Edit).toBeDefined();
   }, 10000);
 
+  it('updates blocks via catch-up and transition edits during rapid transitions', async () => {
+    const job = makeChatJob({ chatId: 789 });
+    const telegram = makeTelegram();
+    let sendCount = 0;
+    (telegram.sendMessage as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      sendCount++;
+      // 1=placeholder(42), 2=text1(43), 3=thinking2(44), 4=text2(45)
+      return Promise.resolve(40 + sendCount + 1);
+    });
+    const sessionStore = makeSessionStore();
+
+    // Rapid transitions — NO 1600ms gaps, simulates the real bug scenario
+    const runClaudeStreaming = vi.fn().mockImplementation(
+      async (_opts: unknown, onChunk?: OnStreamChunk) => {
+        if (onChunk) {
+          // Thinking 1 — reuses placeholder (42), immediate
+          onChunk(chunk('thinking', 'First thought', '', {
+            currentBlockThinking: 'First thought',
+            thinkingBlockCount: 1,
+          }));
+          // Text 1 — creates new msg (43), content arrives before sendMessage resolves
+          onChunk(chunk('text', 'First thought', 'Answer one', {
+            currentBlockText: 'Answer one',
+            thinkingBlockCount: 1,
+            textBlockCount: 1,
+          }));
+          // Let sendMessage promises resolve so catch-up edits fire
+          await new Promise((r) => setTimeout(r, 10));
+          // Thinking 2 — creates new msg (44), should trigger transition edit on text1
+          onChunk(chunk('thinking', 'First thought\nSecond thought', 'Answer one', {
+            currentBlockThinking: 'Second thought',
+            thinkingBlockCount: 2,
+            textBlockCount: 1,
+          }));
+          await new Promise((r) => setTimeout(r, 10));
+          // Text 2 — creates new msg (45)
+          onChunk(chunk('text', 'First thought\nSecond thought', 'Answer oneAnswer two', {
+            currentBlockText: 'Answer two',
+            thinkingBlockCount: 2,
+            textBlockCount: 2,
+          }));
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        return { ok: true, output: 'Answer oneAnswer two', sessionId: null, durationMs: 200 };
+      },
+    );
+
+    await handleChatJob(job, {
+      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      telegram,
+      config: makeConfig(),
+      sessionStore,
+    });
+
+    const editCalls = (telegram.editMessage as ReturnType<typeof vi.fn>).mock.calls;
+
+    // Text→thinking transition edit: text1 (msg 43) should have been edited
+    // with its content BEFORE finalization (transition edit or catch-up edit)
+    const text1Edits = editCalls.filter(
+      (c: unknown[]) => c[1] === 43 && typeof c[2] === 'string' && (c[2] as string).includes('Answer one'),
+    );
+    // Should have at least 2 edits on text1: one from catch-up/transition + one from finalization
+    expect(text1Edits.length).toBeGreaterThanOrEqual(2);
+
+    // Thinking→text transition edit: thinking1 (placeholder 42) should have italic content
+    const thinking1Edits = editCalls.filter(
+      (c: unknown[]) => c[1] === 42 && typeof c[2] === 'string' && (c[2] as string).includes('<i>'),
+    );
+    expect(thinking1Edits.length).toBeGreaterThanOrEqual(1);
+  });
+
   it('streams text into a new message after thinking instead of waiting', async () => {
     const job = makeChatJob({ chatId: 789 });
     const telegram = makeTelegram();
