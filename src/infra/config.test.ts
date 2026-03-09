@@ -65,7 +65,6 @@ describe('loadConfig', () => {
       expect(result.value.claudeBinaryPath).toBe('claude');
       expect(result.value.chatTimeoutMs).toBe(3_600_000);
       expect(result.value.scheduledTimeoutMs).toBe(1_200_000);
-      expect(result.value.sessionIdleTimeoutMs).toBe(1_800_000);
     }
   });
 
@@ -161,7 +160,6 @@ describe('loadConfig', () => {
       CLAUDE_BINARY_PATH: '/usr/bin/claude',
       CHAT_TIMEOUT_MS: '1800000',
       SCHEDULED_TIMEOUT_MS: '180000',
-      SESSION_IDLE_TIMEOUT_MS: '900000',
     });
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -173,7 +171,6 @@ describe('loadConfig', () => {
       expect(result.value.claudeBinaryPath).toBe('/usr/bin/claude');
       expect(result.value.chatTimeoutMs).toBe(1800000);
       expect(result.value.scheduledTimeoutMs).toBe(180000);
-      expect(result.value.sessionIdleTimeoutMs).toBe(900000);
     }
   });
 

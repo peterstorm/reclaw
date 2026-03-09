@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import {
   makeSessionKey,
   makeMessageSessionKey,
-  isSessionExpired,
   parseSessionRecord,
   serializeSessionRecord,
   type SessionRecord,
@@ -28,29 +27,6 @@ describe('makeMessageSessionKey', () => {
 
   it('uses no colons', () => {
     expect(makeMessageSessionKey(123)).not.toContain(':');
-  });
-});
-
-describe('isSessionExpired', () => {
-  const record: SessionRecord = {
-    sessionId: SESSION_ID,
-    lastActivityAt: '2026-02-26T10:00:00.000Z',
-  };
-  const recordMs = new Date('2026-02-26T10:00:00.000Z').getTime();
-
-  it('returns false when within timeout', () => {
-    const now = recordMs + 1_000; // 1s later
-    expect(isSessionExpired(record, now, 1_800_000)).toBe(false);
-  });
-
-  it('returns true when past timeout', () => {
-    const now = recordMs + 1_800_001; // 30min + 1ms
-    expect(isSessionExpired(record, now, 1_800_000)).toBe(true);
-  });
-
-  it('returns false at exact boundary', () => {
-    const now = recordMs + 1_800_000; // exactly 30min
-    expect(isSessionExpired(record, now, 1_800_000)).toBe(false);
   });
 });
 

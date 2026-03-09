@@ -113,7 +113,6 @@ export async function handleScheduledJob(job: ScheduledJob, deps: ScheduledDeps)
             await deps.sessionStore.saveMessageSession(
               msgId,
               sessionIdResult.value,
-              deps.config.sessionIdleTimeoutMs,
             );
           }
         }

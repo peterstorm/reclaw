@@ -44,7 +44,6 @@ const makeConfig = (overrides: Record<string, unknown> = {}): AppConfig => ({
   chatTimeoutMs: 3_600_000,
   scheduledTimeoutMs: 300_000,
   researchTimeoutMs: 1_500_000,
-  sessionIdleTimeoutMs: 1_800_000,
   ...overrides,
 });
 
@@ -339,10 +338,9 @@ describe('handleChatJob', () => {
     });
 
     expect(sessionStore.saveSession).toHaveBeenCalledOnce();
-    const [chatId, record, ttl] = sessionStore.saveSession.mock.calls[0]!;
+    const [chatId, record] = sessionStore.saveSession.mock.calls[0]!;
     expect(chatId).toBe(456);
     expect(record.sessionId).toBe('sess-new');
-    expect(ttl).toBe(1_800_000);
   });
 
   it('does not save session when sessionId is null', async () => {
@@ -382,31 +380,6 @@ describe('handleChatJob', () => {
     // Should send just the user message, not personality+message
     expect(callArgs.prompt).toBe('follow up question');
     expect(callArgs.resumeSessionId).toBe('sess-existing');
-  });
-
-  it('treats expired session as new — sends full prompt, no resume', async () => {
-    mockReadFile.mockResolvedValue('Be helpful.' as unknown as ArrayBuffer);
-    const job = makeChatJob({ text: 'new question' });
-    const telegram = makeTelegram();
-    const sessionStore = makeSessionStore();
-    // Session from 2 hours ago with 30min timeout
-    sessionStore.getSession.mockResolvedValue({
-      sessionId: 'sess-old' as ClaudeSessionId,
-      lastActivityAt: new Date(Date.now() - 7_200_000).toISOString(),
-    } satisfies SessionRecord);
-    const runClaudeStreaming = makeRunClaudeStreaming({ ok: true, output: 'fresh answer', sessionId: 'sess-new', durationMs: 100 });
-
-    await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
-      telegram,
-      config: makeConfig(),
-      sessionStore,
-    });
-
-    const callArgs = runClaudeStreaming.mock.calls[0]![0];
-    expect(callArgs.prompt).toContain('Be helpful.');
-    expect(callArgs.prompt).toContain('new question');
-    expect(callArgs.resumeSessionId).toBeUndefined();
   });
 
   it('falls back to fresh session on resume failure', async () => {

@@ -3,7 +3,6 @@ import { buildChatPrompt } from '../core/prompt-builder.js';
 import { getPermissionFlags } from '../core/permissions.js';
 import { splitMessage, splitHtml } from '../core/message-splitter.js';
 import { markdownToTelegramHtml } from '../core/markdown-to-telegram.js';
-import { isSessionExpired } from '../core/session.js';
 import { jobResultOk, jobResultErr, makeClaudeSessionId, type ChatJob, type JobResult } from '../core/types.js';
 import type { runClaudeStreaming, StreamChunk } from '../infra/claude-subprocess.js';
 import type { TelegramAdapter } from '../infra/telegram.js';
@@ -74,11 +73,8 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
 
   // 2. Look up existing session
   const existingSession = await deps.sessionStore.getSession(job.chatId);
-  const now = Date.now();
-  const ttlMs = deps.config.sessionIdleTimeoutMs;
 
-  const isResuming =
-    existingSession !== null && !isSessionExpired(existingSession, now, ttlMs);
+  const isResuming = existingSession !== null;
 
   // 3. Build prompt — skip personality on resume (already in Claude's context)
   const prompt = isResuming ? job.text : buildChatPrompt(personality, job.text);
@@ -280,7 +276,6 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
       await deps.sessionStore.saveSession(
         job.chatId,
         { sessionId: sessionIdResult.value, lastActivityAt: new Date().toISOString() },
-        ttlMs,
       );
     }
   }

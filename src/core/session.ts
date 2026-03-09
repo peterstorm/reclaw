@@ -19,16 +19,6 @@ export function makeMessageSessionKey(messageId: number): string {
   return `reclaw-msg-session-${messageId}`;
 }
 
-/** Check if a session has exceeded the idle timeout. */
-export function isSessionExpired(
-  record: SessionRecord,
-  nowMs: number,
-  timeoutMs: number,
-): boolean {
-  const lastActivity = new Date(record.lastActivityAt).getTime();
-  return nowMs - lastActivity > timeoutMs;
-}
-
 /** Parse a JSON string into a SessionRecord. */
 export function parseSessionRecord(raw: string): Result<SessionRecord, string> {
   let parsed: unknown;

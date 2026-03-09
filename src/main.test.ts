@@ -21,7 +21,7 @@ const mockConfig: AppConfig = {
   claudeBinaryPath: 'claude',
   chatTimeoutMs: 120_000,
   scheduledTimeoutMs: 300_000,
-  sessionIdleTimeoutMs: 1_800_000,
+
   researchTimeoutMs: 1_500_000,
 };
 
@@ -422,7 +422,6 @@ describe('bootstrap', () => {
       expect(mockSessionStore.saveSession).toHaveBeenCalledWith(
         99988877,
         expect.objectContaining({ sessionId: 'sess-watchdog-1' }),
-        mockConfig.sessionIdleTimeoutMs,
       );
       // Should still enqueue the chat job
       expect(mockQueues.enqueueChat).toHaveBeenCalledOnce();

@@ -60,7 +60,6 @@ const makeDeps = (overrides: Partial<MessageRouterDeps> = {}): MessageRouterDeps
   sessionStore: makeSessionStore(),
   queues: makeQueues(),
   quotaTracker: makeQuotaTracker(),
-  config: { sessionIdleTimeoutMs: 1_800_000 },
   ...overrides,
 });
 
@@ -224,7 +223,6 @@ describe('routeMessage', () => {
       expect(deps.sessionStore.saveSession).toHaveBeenCalledWith(
         456,
         expect.objectContaining({ sessionId: 'session-abc' }),
-        1_800_000,
       );
       await vi.waitFor(() => {
         expect(deps.queues.enqueueChat).toHaveBeenCalled();

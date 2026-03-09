@@ -15,7 +15,6 @@ export const AppConfigSchema = z.object({
   chatTimeoutMs: z.number().int().positive().default(3_600_000), // 1 hour
   scheduledTimeoutMs: z.number().int().positive().default(1_200_000), // 20 minutes
   geminiApiKey: z.string().optional(),
-  sessionIdleTimeoutMs: z.number().int().positive().default(1_800_000), // 30min
   notebooklmAuthToken: z.string().optional(),
   notebooklmCookies: z.string().optional(),
   researchTimeoutMs: z.number().int().positive().default(1_500_000), // 25 minutes
@@ -91,11 +90,6 @@ export function parseEnvToRaw(
       errors,
     ),
     geminiApiKey: env['GEMINI_API_KEY'],
-    sessionIdleTimeoutMs: parseNumericEnv(
-      'SESSION_IDLE_TIMEOUT_MS',
-      env['SESSION_IDLE_TIMEOUT_MS'],
-      errors,
-    ),
     notebooklmAuthToken: env['NOTEBOOKLM_AUTH_TOKEN'],
     notebooklmCookies: env['NOTEBOOKLM_COOKIES'],
     researchTimeoutMs: parseNumericEnv(

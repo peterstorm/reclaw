@@ -317,7 +317,6 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
     sessionStore,
     queues,
     quotaTracker: quotaTracker.tracker,
-    config,
   }));
 
   // ── 10. Start skill watcher and wait for initial load ───────────────────────

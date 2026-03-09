@@ -21,7 +21,6 @@ export type MessageRouterDeps = {
   readonly sessionStore: SessionStore;
   readonly queues: Queues;
   readonly quotaTracker: QuotaTracker;
-  readonly config: { readonly sessionIdleTimeoutMs: number };
 };
 
 // ─── Router ───────────────────────────────────────────────────────────────────
@@ -72,7 +71,6 @@ export function routeMessage(msg: IncomingMessage, deps: MessageRouterDeps): voi
         return deps.sessionStore.saveSession(
           msg.chatId,
           { sessionId, lastActivityAt: new Date().toISOString() },
-          deps.config.sessionIdleTimeoutMs,
         );
       }).catch((err: unknown) => {
         console.error('[router] Failed to route reply-to session:', err);

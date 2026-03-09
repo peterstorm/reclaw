@@ -60,7 +60,6 @@ const makeConfig = (overrides: Record<string, unknown> = {}): AppConfig => ({
   chatTimeoutMs: 3_600_000,
   scheduledTimeoutMs: 300_000,
   researchTimeoutMs: 1_500_000,
-  sessionIdleTimeoutMs: 1_800_000,
   ...overrides,
 });
 
@@ -442,7 +441,6 @@ describe('handleScheduledJob', () => {
     expect(sessionStore.saveMessageSession).toHaveBeenCalledWith(
       500,
       'sess-watchdog-1' as ClaudeSessionId,
-      1_800_000,
     );
   });
 
@@ -463,9 +461,9 @@ describe('handleScheduledJob', () => {
     });
 
     expect(sessionStore.saveMessageSession).toHaveBeenCalledTimes(3);
-    expect(sessionStore.saveMessageSession).toHaveBeenCalledWith(500, 'sess-multi' as ClaudeSessionId, 1_800_000);
-    expect(sessionStore.saveMessageSession).toHaveBeenCalledWith(501, 'sess-multi' as ClaudeSessionId, 1_800_000);
-    expect(sessionStore.saveMessageSession).toHaveBeenCalledWith(502, 'sess-multi' as ClaudeSessionId, 1_800_000);
+    expect(sessionStore.saveMessageSession).toHaveBeenCalledWith(500, 'sess-multi' as ClaudeSessionId);
+    expect(sessionStore.saveMessageSession).toHaveBeenCalledWith(501, 'sess-multi' as ClaudeSessionId);
+    expect(sessionStore.saveMessageSession).toHaveBeenCalledWith(502, 'sess-multi' as ClaudeSessionId);
   });
 
   it('does not save mapping when sessionId is null', async () => {

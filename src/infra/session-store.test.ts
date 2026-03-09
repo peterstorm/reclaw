@@ -5,7 +5,7 @@ import type { ClaudeSessionId } from '../core/types.js';
 
 const SESSION_ID = 'sess-abc-123' as ClaudeSessionId;
 const CHAT_ID = 456;
-const TTL_MS = 1_800_000;
+const SESSION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 function makeMockRedis(): RedisClient & {
   get: ReturnType<typeof vi.fn>;
@@ -53,15 +53,15 @@ describe('createSessionStore', () => {
   });
 
   describe('saveSession', () => {
-    it('saves serialized record with TTL', async () => {
+    it('saves serialized record with 30-day TTL', async () => {
       const record: SessionRecord = { sessionId: SESSION_ID, lastActivityAt: '2026-02-26T10:00:00Z' };
       const store = createSessionStore(redis);
-      await store.saveSession(CHAT_ID, record, TTL_MS);
+      await store.saveSession(CHAT_ID, record);
 
       expect(redis.set).toHaveBeenCalledWith(
         'reclaw-session-456',
         serializeSessionRecord(record),
-        { PX: TTL_MS },
+        { PX: SESSION_RETENTION_MS },
       );
     });
   });
@@ -75,14 +75,14 @@ describe('createSessionStore', () => {
   });
 
   describe('saveMessageSession', () => {
-    it('saves sessionId string keyed by messageId with TTL', async () => {
+    it('saves sessionId string keyed by messageId with 30-day TTL', async () => {
       const store = createSessionStore(redis);
-      await store.saveMessageSession(100, SESSION_ID, TTL_MS);
+      await store.saveMessageSession(100, SESSION_ID);
 
       expect(redis.set).toHaveBeenCalledWith(
         'reclaw-msg-session-100',
         SESSION_ID,
-        { PX: TTL_MS },
+        { PX: SESSION_RETENTION_MS },
       );
     });
   });
