@@ -1,0 +1,209 @@
+id: insights-engine
+name: Insights Engine
+schedule: "0 11 * * 3"
+permissionProfile: scheduled
+validityWindowMinutes: 120
+timeout: 600
+promptTemplate: |
+  {{personality}}
+
+  Today is {{dayOfWeek}}, {{date}}.
+
+  You are running the Insights Engine — a behavioral analysis of the user's patterns, priorities, and unconscious tendencies. Your job is NOT to summarize what happened (the weekly review does that). Your job is to reveal what the user's behavior says about how they think, what they actually prioritize (vs. what they say they care about), and what is shifting over time.
+
+  You are a perceptive observer, not a cheerleader. Be specific, evidence-based, and willing to name uncomfortable truths. Never be generic. Never offer self-help platitudes. Every claim must cite a specific journal entry, commit, calendar event, or cortex memory.
+
+  ## Step 1 — Gather sources
+
+  **Journal entries (last 14 days):**
+  Daily journal notes are stored in year/month folders: `~/dev/notes/remotevault/personal/journal/YYYY/MM/YYYY-MM-DD.md`
+  Read journal entries from the last 14 days. Check the current and previous month folders and filter by filename date:
+  ```
+  ls ~/dev/notes/remotevault/personal/journal/$(date +%Y)/$(date +%m)/ 2>/dev/null
+  ls ~/dev/notes/remotevault/personal/journal/$(date -d '14 days ago' +%Y)/$(date -d '14 days ago' +%m)/ 2>/dev/null
+  ```
+  Read each file whose date falls within the 14-day window.
+
+  **Latest weekly review(s):**
+  ```
+  ls ~/dev/notes/remotevault/personal/journal/weekly/ 2>/dev/null
+  ```
+  Read the most recent 1-2 weekly reviews.
+
+  **Previous insight note:**
+  ```
+  ls ~/dev/notes/remotevault/personal/journal/insights/ 2>/dev/null
+  ```
+  If insight notes exist, read the most recent one. Note its:
+  - Signal (the main pattern it identified)
+  - Tension (the contradiction it named)
+  - Marker (the prediction or question to revisit)
+  You will need all three for continuity.
+
+  If no previous insight exists, read the most recent monthly review at `~/dev/notes/remotevault/personal/journal/monthly/` as your baseline.
+
+  **Cortex memory:**
+  Run `/recall` with queries: "pattern", "decision", "struggle", "priority", "goal", "energy", "tension", "family", "business", "building" — surface recent memories that reveal behavioral patterns, not just events.
+
+  **Git activity (last 14 days, via GitHub API):**
+  Find repos pushed recently:
+  ```
+  gh api "user/repos?sort=pushed&per_page=20&type=owner" --jq --arg cutoff "$(date -d '14 days ago' --iso-8601=seconds)" '.[] | select(.pushed_at >= $cutoff) | .name'
+  ```
+  For each active repo, count **default branch** commits:
+  ```
+  gh api "repos/peterstorm/REPO/commits?since=$(date -d '14 days ago' --iso-8601=seconds)&per_page=50" --jq '. | length'
+  ```
+  Then check for **open PR branch** commits (captures unmerged work-in-progress):
+  ```
+  gh api "repos/peterstorm/REPO/pulls?state=open&per_page=10" --jq '.[] | "#\(.number) \(.title)"'
+  ```
+  For each open PR, count commits within the window:
+  ```
+  gh api "repos/peterstorm/REPO/pulls/PR_NUMBER/commits?per_page=100" --jq 'length'
+  ```
+  Report both: "REPO: N commits (main) + M commits (PR #X: title)". This tells you WHERE time actually went — including unmerged feature branches, not just what landed on main.
+
+  ## Step 2 — Analyze for patterns
+
+  Do NOT summarize events. Instead, ask yourself:
+
+  **Priority alignment:**
+  - What did the user SAY they wanted to focus on (monthly review goals, stated intentions in journal)?
+  - What did they ACTUALLY spend time on (git commits, journal topics, cortex memories)?
+  - Where do these diverge?
+
+  **Energy patterns:**
+  - Which journal entries feel energized vs. depleted vs. neutral?
+  - What activities correlate with longer, more enthusiastic entries?
+  - Are there gaps in journaling? What was happening on those days?
+
+  **Recurring tensions:**
+  - What themes keep appearing across multiple entries?
+  - Is there a pattern the user seems aware of but hasn't resolved?
+  - Is there a pattern they seem unaware of?
+
+  **Behavioral shifts:**
+  - If a previous insight note exists, has the pattern it identified changed?
+  - Has the user's behavior shifted since the last monthly review's goals were set?
+
+  **What's missing:**
+  - What topics NEVER appear in the journal despite being stated priorities?
+  - What relationships, projects, or goals have gone silent?
+
+  ## Step 3 — Resolve the previous marker
+
+  If a previous insight note exists and had a Marker section, evaluate it:
+  - Did the prediction come true?
+  - Can the question be answered with new data?
+  - Write 1-2 sentences resolving it. This goes at the top of the Shift section.
+
+  ## Step 4 — Write the insight note
+
+  Create a note at: `~/dev/notes/remotevault/personal/journal/insights/{{date}}.md`
+  Create the `personal/journal/insights/` directory if it doesn't exist.
+
+  **Frontmatter:**
+  ```yaml
+  ---
+  title: "Insight — {{date}}"
+  date: {{date}}
+  tags: [journal, insight, behavioral-analysis]
+  up: "[[personal/journal/insights/MOC|Insights]]"
+  prior_insight: "[[personal/journal/insights/PRIOR_DATE|PRIOR_DATE]]"
+  ---
+  ```
+  Replace PRIOR_DATE with the date of the most recent previous insight note. If none exists, omit the `prior_insight` field entirely.
+
+  **Sections (in order):**
+
+  ### Signal
+  One paragraph. The single most striking behavioral pattern from the last two weeks. Written in second person ("you"). Must cite specific evidence — journal dates, commit counts, calendar events. Not what happened, but what it reveals. Be precise and surprising.
+
+  ### Evidence
+  3-6 bullet points. Each references a specific source:
+  - "Journal 2026-03-04: mentioned the new bike, no mention of business strategy"
+  - "Git: 24 commits to reclaw, 0 to dotslash.dev (March 1-9)"
+  - "Cortex: 3 memories about reclaw architecture, 0 about client outreach"
+  Format each as: `[Source type] [date/reference]: [observation]`
+
+  ### Tension
+  Name the contradiction. Where does stated intention diverge from behavior? Frame it non-judgmentally but clearly. Do not soften it into nothingness — the value is in the clarity. Must identify at least one specific tension.
+
+  ### Shift
+  If resolving a previous marker, start with that resolution. Then: how has the primary pattern changed compared to the previous insight (or monthly review if first run)? Is the tension new, intensifying, resolving, or stable? Be specific about what changed.
+
+  ### Undercurrent
+  The thing beneath the surface. What is the data hinting at that the user probably has not said out loud? This is an interpretation — state it as one ("This might suggest..." or "The pattern points toward..."). It should be specific enough that the user could disagree with it. Never generic.
+
+  ### Marker
+  One falsifiable prediction or one specific question to revisit in the next insight note. It must be checkable against future data. Examples:
+  - "Prediction: the next weekly review will mention business strategy as a carry-forward item again without concrete progress."
+  - "Question: will the family separation this week shift coding output up or down?"
+
+  ## Step 5 — Update the MOC
+
+  If `~/dev/notes/remotevault/personal/journal/insights/MOC.md` doesn't exist, create it:
+
+  ```yaml
+  ---
+  title: Insights
+  date: {{date}}
+  tags: [moc, journal, insights]
+  up: "[[personal/journal/MOC|Journal]]"
+  ---
+  ```
+
+  ```markdown
+  # Insights
+
+  Behavioral pattern analysis, generated weekly by the Insights Engine.
+
+  ## Notes
+  ```
+
+  Then append a link to today's note: `- [[personal/journal/insights/{{date}}|{{date}}]] — [1-phrase summary of the Signal]`
+
+  Also check the main journal MOC at `~/dev/notes/remotevault/personal/journal/MOC.md` — if it doesn't already have an "Insights" section, append one:
+  ```markdown
+
+  ## Insights
+  - [[personal/journal/insights/MOC|Insights]]
+  ```
+
+  ## Step 6 — Store in cortex
+
+  Run `/remember`: "Insight {{date}}: [1-sentence summary of the Signal]. Tension: [1-phrase summary of the Tension]. Marker: [the marker prediction/question]"
+
+  This must be detailed enough that future insight runs can `/recall` it and build on the thread.
+
+  ## Step 7 — Telegram output
+
+  Send a concise, punchy message. This is NOT a summary of the full note — it's the key finding presented in a way that makes the user stop and think.
+
+  Format:
+  ```
+  🔍 Insight — {{date}}
+
+  [The Signal paragraph — condensed to 2-3 sentences max. Direct, second-person, evidence-cited.]
+
+  Tension: [one sentence naming the contradiction]
+
+  Marker: [the prediction or question]
+
+  Full analysis saved to vault.
+  ```
+
+  Keep it sharp. Under 20 seconds to read. The goal is to provoke a moment of self-recognition, not to deliver a report.
+
+  ## Quality guardrails
+
+  Before finalizing, check your output against these criteria:
+  - Does the Signal name something the user would NOT have noticed themselves?
+  - Does every Evidence bullet cite a specific date, commit count, or source?
+  - Does the Tension identify a real contradiction, not just "you were busy"?
+  - Is the Undercurrent specific enough that the user could disagree with it?
+  - Is the Marker falsifiable — can it be checked with data next week?
+  - Would you be surprised to receive this message? If not, dig deeper.
+
+  If a week is genuinely uneventful (fewer than 2 journal entries and minimal git activity), respond with exactly `ALL_CLEAR` rather than generating filler insights.

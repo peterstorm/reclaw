@@ -38,11 +38,19 @@ promptTemplate: |
   ```
   gh api "user/repos?sort=pushed&per_page=30&type=owner" --jq --arg cutoff "$(date -d '1 month ago' --iso-8601=seconds)" '.[] | select(.pushed_at >= $cutoff) | .name'
   ```
-  Then for each active repo, get the month's commits:
+  Then for each active repo, get the month's **default branch** commits:
   ```
   gh api "repos/peterstorm/REPO/commits?since=$(date -d '1 month ago' --iso-8601=seconds)&per_page=50" --jq '.[] | "\(.sha[0:7]) \(.commit.message | split("\n")[0])"'
   ```
-  Run the second command for each repo found in the first step. Group results by repo name in your summary.
+  Also check for **open PR branch** commits (captures unmerged work-in-progress):
+  ```
+  gh api "repos/peterstorm/REPO/pulls?state=open&per_page=10" --jq '.[] | "#\(.number) \(.title)"'
+  ```
+  For each open PR, get its commits:
+  ```
+  gh api "repos/peterstorm/REPO/pulls/PR_NUMBER/commits?per_page=100" --jq '.[] | "\(.sha[0:7]) \(.commit.message | split("\n")[0])"'
+  ```
+  Run these for each repo found in the first step. Group results by repo name in your summary, noting PR branch work separately.
 
   ## Step 2 — Write the monthly review note
 

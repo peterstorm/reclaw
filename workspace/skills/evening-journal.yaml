@@ -23,9 +23,17 @@ promptTemplate: |
   ```
   gh api "user/repos?sort=pushed&per_page=10&type=owner" --jq '.[] | select(.pushed_at >= "{{date}}") | .name'
   ```
-  Then for each repo with recent pushes, get today's commits:
+  Then for each repo with recent pushes, get today's **default branch** commits:
   ```
   gh api "repos/peterstorm/REPO/commits?since=$(date -d '00:00' --iso-8601=seconds)&per_page=10" --jq '.[] | "\(.sha[0:7]) \(.commit.message | split("\n")[0])"'
+  ```
+  Also check for **open PR branch** commits (captures unmerged work-in-progress):
+  ```
+  gh api "repos/peterstorm/REPO/pulls?state=open&per_page=10" --jq '.[] | "#\(.number) \(.title)"'
+  ```
+  For each open PR, get today's commits:
+  ```
+  gh api "repos/peterstorm/REPO/pulls/PR_NUMBER/commits?per_page=100" --jq '.[] | select(.commit.author.date >= "{{date}}") | "\(.sha[0:7]) \(.commit.message | split("\n")[0])"'
   ```
 
   **Calendar events (today):**

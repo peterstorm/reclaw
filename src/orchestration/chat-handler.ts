@@ -98,22 +98,30 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
   //    Block boundaries are detected from content_block_start events in StreamChunk,
   //    with fallback to phase-transition detection.
   const streamBlocks: StreamBlock[] = [];
-  let pendingNewMsg = false;
   let lastEditAt = 0;
   let lastSeenThinkingBlocks = 0;
   let lastSeenTextBlocks = 0;
 
   /** Start a new streaming block. First block reuses placeholder; subsequent get new messages. */
   const startNewBlock = (type: 'thinking' | 'text'): void => {
-    // Transition edit: finalize previous thinking block immediately
+    // Transition edit: finalize previous block immediately (both thinking→text and text→thinking)
     const prevBlock = streamBlocks.length > 0 ? streamBlocks[streamBlocks.length - 1] : null;
-    if (prevBlock?.type === 'thinking' && type === 'text' && prevBlock.msgIds.length > 0 && !pendingNewMsg) {
-      const escaped = escapeHtml(prevBlock.content);
-      const displayContent = escaped.slice(prevBlock.committedChars);
-      if (displayContent.length > 0) {
-        const msgId = prevBlock.msgIds[prevBlock.msgIds.length - 1]!;
-        deps.telegram.editMessage(job.chatId, msgId, `<i>${displayContent}</i>`, { html: true }).catch((err) => {
-          console.warn(`[chat] Thinking transition edit failed for chatId=${job.chatId}:`, err instanceof Error ? err.message : err);
+    if (prevBlock && prevBlock.msgIds.length > 0 && prevBlock.content.length > 0) {
+      const msgId = prevBlock.msgIds[prevBlock.msgIds.length - 1]!;
+      if (prevBlock.type === 'thinking') {
+        const escaped = escapeHtml(prevBlock.content);
+        const displayContent = escaped.slice(prevBlock.committedChars);
+        if (displayContent.length > 0) {
+          deps.telegram.editMessage(job.chatId, msgId, `<i>${displayContent}</i>`, { html: true }).catch((err) => {
+            console.warn(`[chat] Thinking transition edit failed for chatId=${job.chatId}:`, err instanceof Error ? err.message : err);
+          });
+        }
+      } else {
+        const preview = prevBlock.content.length > PREVIEW_MAX_CHARS
+          ? prevBlock.content.slice(0, PREVIEW_MAX_CHARS) + '...'
+          : prevBlock.content;
+        deps.telegram.editMessage(job.chatId, msgId, preview, { plain: true }).catch((err) => {
+          console.warn(`[chat] Text transition edit failed for chatId=${job.chatId}:`, err instanceof Error ? err.message : err);
         });
       }
     }
@@ -126,15 +134,32 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
       newBlock.msgIds.push(placeholderMsgId);
     } else {
       // Subsequent blocks get new messages
-      pendingNewMsg = true;
       const initial = type === 'thinking' ? '<i>...</i>' : '...';
       const opts = type === 'thinking' ? { html: true } : { plain: true };
       deps.telegram.sendMessage(job.chatId, initial, opts).then((msgId) => {
         newBlock.msgIds.push(msgId);
-        pendingNewMsg = false;
+        // Catch-up edit: if content accumulated while waiting for message ID
+        if (newBlock.content.length > 0) {
+          lastEditAt = Date.now();
+          if (newBlock.type === 'thinking') {
+            const escaped = escapeHtml(newBlock.content);
+            const display = escaped.slice(newBlock.committedChars);
+            if (display.length > 0 && display.length <= THINKING_CHUNK_MAX) {
+              deps.telegram.editMessage(job.chatId, msgId, `<i>${display}</i>`, { html: true }).catch((err) => {
+                console.warn(`[chat] Thinking catch-up edit failed for chatId=${job.chatId}:`, err instanceof Error ? err.message : err);
+              });
+            }
+          } else {
+            const preview = newBlock.content.length > PREVIEW_MAX_CHARS
+              ? newBlock.content.slice(0, PREVIEW_MAX_CHARS) + '...'
+              : newBlock.content;
+            deps.telegram.editMessage(job.chatId, msgId, preview, { plain: true }).catch((err) => {
+              console.warn(`[chat] Text catch-up edit failed for chatId=${job.chatId}:`, err instanceof Error ? err.message : err);
+            });
+          }
+        }
       }).catch((err) => {
         console.warn(`[chat] New block message failed for chatId=${job.chatId}:`, err instanceof Error ? err.message : err);
-        pendingNewMsg = false;
       });
     }
   };
@@ -142,7 +167,6 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
   /** Reset all streaming state — used before stale session fallback retry. */
   const resetStreamingState = (): void => {
     streamBlocks.length = 0;
-    pendingNewMsg = false;
     lastEditAt = 0;
     lastSeenThinkingBlocks = 0;
     lastSeenTextBlocks = 0;
@@ -181,7 +205,7 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
     if (nowMs - lastEditAt < EDIT_THROTTLE_MS) return;
     lastEditAt = nowMs;
 
-    if (pendingNewMsg || currentBlock.msgIds.length === 0) return;
+    if (currentBlock.msgIds.length === 0) return;
 
     if (chunk.phase === 'thinking') {
       const escaped = escapeHtml(currentBlock.content);
@@ -203,13 +227,10 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
         currentBlock.committedChars += firstPart.length;
 
         const remainder = displayContent.slice(firstPart.length);
-        pendingNewMsg = true;
         deps.telegram.sendMessage(job.chatId, `<i>${remainder}</i>`, { html: true }).then((newMsgId) => {
           currentBlock.msgIds.push(newMsgId);
-          pendingNewMsg = false;
         }).catch((err) => {
           console.warn(`[chat] Thinking overflow msg failed for chatId=${job.chatId}:`, err instanceof Error ? err.message : err);
-          pendingNewMsg = false;
         });
       }
     } else {

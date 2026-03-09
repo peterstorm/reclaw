@@ -31,11 +31,19 @@ promptTemplate: |
   ```
   gh api "user/repos?sort=pushed&per_page=20&type=owner" --jq --arg cutoff "$(date -d '7 days ago' --iso-8601=seconds)" '.[] | select(.pushed_at >= $cutoff) | .name'
   ```
-  Then for each active repo, get the week's commits:
+  Then for each active repo, get the week's **default branch** commits:
   ```
   gh api "repos/peterstorm/REPO/commits?since=$(date -d '7 days ago' --iso-8601=seconds)&per_page=30" --jq '.[] | "\(.sha[0:7]) \(.commit.message | split("\n")[0])"'
   ```
-  Run the second command for each repo found in the first step.
+  Also check for **open PR branch** commits (captures unmerged work-in-progress):
+  ```
+  gh api "repos/peterstorm/REPO/pulls?state=open&per_page=10" --jq '.[] | "#\(.number) \(.title)"'
+  ```
+  For each open PR, get its commits:
+  ```
+  gh api "repos/peterstorm/REPO/pulls/PR_NUMBER/commits?per_page=100" --jq '.[] | "\(.sha[0:7]) \(.commit.message | split("\n")[0])"'
+  ```
+  Run these for each repo found in the first step. Include PR branch work in the summary — it represents real effort even if not yet merged.
 
   **Calendar events this week:**
   Check `~/.local/share/calendars/icloud/D8C2180E-3AD0-406E-9B55-23DA5F2CC674/` for events from the past 7 days.
