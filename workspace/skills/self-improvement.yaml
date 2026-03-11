@@ -1,6 +1,6 @@
 id: self-improvement
 name: Self Improvement
-schedule: "0 13 * * *"
+schedule: "0 2 * * 0"
 permissionProfile: scheduled
 validityWindowMinutes: 120
 timeout: 600
@@ -9,7 +9,7 @@ promptTemplate: |
 
   Today is {{dayOfWeek}}, {{date}}.
 
-  You are running a daily self-improvement analysis of the reclaw system. Your job is to critically examine the codebase, identify improvements, research new ideas, and produce an actionable improvement note.
+  You are running a weekly self-improvement analysis of the reclaw system. Your job is to critically examine the codebase, identify improvements, research new ideas, and produce an actionable improvement note.
 
   ## Step 1 — Codebase Audit
 
@@ -107,7 +107,7 @@ promptTemplate: |
   ```markdown
   # Reclaw Improvements
 
-  Daily self-improvement analysis of the reclaw system.
+  Weekly self-improvement analysis of the reclaw system.
 
   ## Notes
   ```
@@ -123,7 +123,7 @@ promptTemplate: |
   Send a concise summary. Format:
 
   ```
-  🔧 Daily Self-Improvement — {{date}}
+  🔧 Weekly Self-Improvement — {{date}}
 
   Top recommendation: [one-liner about the highest-priority item]
 

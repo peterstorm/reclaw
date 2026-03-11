@@ -20,9 +20,12 @@ promptTemplate: |
   3. Simon Willison's Weblog — https://simonwillison.net/atom/everything/
   4. Ars Technica — https://feeds.arstechnica.com/arstechnica/index
   5. LWN.net — https://lwn.net/headlines/rss
-  6. Anthropic Blog — https://www.anthropic.com/rss.xml
-  7. One Useful Thing (Ethan Mollick) — https://www.oneusefulthing.org/feed
-  8. Lilian Weng — https://lilianweng.github.io/index.xml
+  6. One Useful Thing (Ethan Mollick) — https://www.oneusefulthing.org/feed
+  7. Lilian Weng — https://lilianweng.github.io/index.xml
+  8. Zvi Mowshowitz (Don't Worry About the Vase) — https://thezvi.substack.com/feed
+  9. Latent Space — https://www.latent.space/feed
+  10. AI Snake Oil / Normal Tech — https://www.normaltech.ai/feed
+  11. Interconnects (Nathan Lambert) — https://www.interconnects.ai/feed
 
   ## Output format
 
