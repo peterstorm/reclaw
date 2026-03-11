@@ -232,12 +232,21 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
 
   const getOrCreateNotebookLMAdapter = async (): Promise<import('./infra/notebooklm-client.js').NotebookLMAdapter | null> => {
     if (notebookLMAdapter) return notebookLMAdapter;
-    if (!config.notebooklmAuthToken || !config.notebooklmCookies) {
+    const { createNotebookLMAdapter } = await import('./infra/notebooklm-client.js');
+    const hasToken = config.notebooklmAuthToken && config.notebooklmCookies;
+    const hasGoogle = config.googleEmail && config.googlePassword;
+    if (hasToken) {
+      notebookLMAdapter = await createNotebookLMAdapter({
+        kind: 'token', authToken: config.notebooklmAuthToken!, cookies: config.notebooklmCookies!,
+      });
+    } else if (hasGoogle) {
+      notebookLMAdapter = await createNotebookLMAdapter({
+        kind: 'google', email: config.googleEmail!, password: config.googlePassword!,
+      });
+    } else {
       console.warn('[main] NotebookLM credentials not configured — research jobs will fail');
       return null;
     }
-    const { createNotebookLMAdapter } = await import('./infra/notebooklm-client.js');
-    notebookLMAdapter = await createNotebookLMAdapter(config.notebooklmAuthToken, config.notebooklmCookies);
     return notebookLMAdapter;
   };
 
@@ -284,7 +293,7 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
     researchHandler: async (job) => {
       const notebookLM = await getOrCreateNotebookLMAdapter();
       if (!notebookLM) {
-        throw new Error('NotebookLM adapter not configured: missing NOTEBOOKLM_AUTH_TOKEN or NOTEBOOKLM_COOKIES');
+        throw new Error('NotebookLM adapter not configured: set NOTEBOOKLM_AUTH_TOKEN + NOTEBOOKLM_COOKIES, or GOOGLE_EMAIL + GOOGLE_PASSWORD');
       }
       const researchDeps: ResearchDeps = {
         notebookLM,

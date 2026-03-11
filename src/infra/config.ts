@@ -17,6 +17,8 @@ export const AppConfigSchema = z.object({
   geminiApiKey: z.string().optional(),
   notebooklmAuthToken: z.string().optional(),
   notebooklmCookies: z.string().optional(),
+  googleEmail: z.string().email().optional(),
+  googlePassword: z.string().optional(),
   researchTimeoutMs: z.number().int().positive().default(1_500_000), // 25 minutes
   obsidianVaultPath: z.string().optional(),
 });
@@ -92,6 +94,8 @@ export function parseEnvToRaw(
     geminiApiKey: env['GEMINI_API_KEY'],
     notebooklmAuthToken: env['NOTEBOOKLM_AUTH_TOKEN'],
     notebooklmCookies: env['NOTEBOOKLM_COOKIES'],
+    googleEmail: env['GOOGLE_EMAIL'],
+    googlePassword: env['GOOGLE_PASSWORD'],
     researchTimeoutMs: parseNumericEnv(
       'RESEARCH_TIMEOUT_MS',
       env['RESEARCH_TIMEOUT_MS'],

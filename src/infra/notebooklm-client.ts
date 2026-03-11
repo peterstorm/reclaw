@@ -10,7 +10,8 @@
 // FR-015: System MUST wait for all added sources to complete processing.
 // FR-016: System MUST enforce a maximum wait time of 10 minutes.
 // FR-024: System MUST track the number of NotebookLM chat calls consumed.
-// FR-070: Auth via NOTEBOOKLM_AUTH_TOKEN + NOTEBOOKLM_COOKIES env vars.
+// FR-070: Auth via NOTEBOOKLM_AUTH_TOKEN + NOTEBOOKLM_COOKIES env vars,
+//         or GOOGLE_EMAIL + GOOGLE_PASSWORD for auto browser login (no 2FA).
 
 import { NotebookLMClient } from 'notebooklm-kit';
 import type { Result } from '../core/types.js';
@@ -181,24 +182,27 @@ async function pollUntilReady(
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
 
+/** Credentials for the NotebookLM adapter — either manual token/cookies or Google auto-login. */
+export type NotebookLMCredentials =
+  | { readonly kind: 'token'; readonly authToken: string; readonly cookies: string }
+  | { readonly kind: 'google'; readonly email: string; readonly password: string };
+
 /**
  * Create a NotebookLM adapter.
  *
- * FR-070: Auth credentials come from NOTEBOOKLM_AUTH_TOKEN and NOTEBOOKLM_COOKIES
- * env vars (SDK reads them automatically via createNotebookLMClient).
+ * FR-070: Auth credentials come from either:
+ *   - NOTEBOOKLM_AUTH_TOKEN + NOTEBOOKLM_COOKIES (manual, token-based), or
+ *   - GOOGLE_EMAIL + GOOGLE_PASSWORD (auto browser login via Playwright, no 2FA).
  *
  * AD-5: The SDK starts an auto-refresh timer — create once, reuse across jobs.
- *
- * @param authToken - value of NOTEBOOKLM_AUTH_TOKEN
- * @param cookies   - value of NOTEBOOKLM_COOKIES
  */
 export async function createNotebookLMAdapter(
-  authToken: string,
-  cookies: string,
+  credentials: NotebookLMCredentials,
 ): Promise<NotebookLMAdapter> {
   const sdk = new NotebookLMClient({
-    authToken,
-    cookies,
+    ...(credentials.kind === 'token'
+      ? { authToken: credentials.authToken, cookies: credentials.cookies }
+      : { auth: { email: credentials.email, password: credentials.password, headless: true } }),
     autoRefresh: { enabled: true, interval: 10 * 60 * 1000 },
   });
 

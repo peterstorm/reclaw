@@ -226,6 +226,29 @@ describe('loadConfig', () => {
     }
   });
 
+  it('parses GOOGLE_EMAIL and GOOGLE_PASSWORD', () => {
+    const result = loadConfig({ ...VALID_ENV, GOOGLE_EMAIL: 'bot@gmail.com', GOOGLE_PASSWORD: 'secret' });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.googleEmail).toBe('bot@gmail.com');
+      expect(result.value.googlePassword).toBe('secret');
+    }
+  });
+
+  it('googleEmail and googlePassword are undefined when not set', () => {
+    const result = loadConfig(VALID_ENV);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.googleEmail).toBeUndefined();
+      expect(result.value.googlePassword).toBeUndefined();
+    }
+  });
+
+  it('rejects invalid GOOGLE_EMAIL format', () => {
+    const result = loadConfig({ ...VALID_ENV, GOOGLE_EMAIL: 'not-an-email' });
+    expect(result.ok).toBe(false);
+  });
+
   it('defaults researchTimeoutMs to 1_500_000 (25 minutes)', () => {
     const result = loadConfig(VALID_ENV);
     expect(result.ok).toBe(true);
