@@ -21,8 +21,6 @@ const mockConfig: AppConfig = {
   claudeBinaryPath: 'claude',
   chatTimeoutMs: 120_000,
   scheduledTimeoutMs: 300_000,
-
-  researchTimeoutMs: 1_500_000,
 };
 
 // ─── Fake component builders ──────────────────────────────────────────────────

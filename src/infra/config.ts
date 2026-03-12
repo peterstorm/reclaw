@@ -19,7 +19,6 @@ export const AppConfigSchema = z.object({
   notebooklmCookies: z.string().optional(),
   googleEmail: z.string().email().optional(),
   googlePassword: z.string().optional(),
-  researchTimeoutMs: z.number().int().positive().default(1_500_000), // 25 minutes
   obsidianVaultPath: z.string().optional(),
 });
 
@@ -96,11 +95,6 @@ export function parseEnvToRaw(
     notebooklmCookies: env['NOTEBOOKLM_COOKIES'],
     googleEmail: env['GOOGLE_EMAIL'],
     googlePassword: env['GOOGLE_PASSWORD'],
-    researchTimeoutMs: parseNumericEnv(
-      'RESEARCH_TIMEOUT_MS',
-      env['RESEARCH_TIMEOUT_MS'],
-      errors,
-    ),
     obsidianVaultPath: env['OBSIDIAN_VAULT_PATH'],
   };
   return { raw, errors };

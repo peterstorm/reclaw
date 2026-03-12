@@ -43,7 +43,6 @@ const makeConfig = (overrides: Record<string, unknown> = {}): AppConfig => ({
   claudeBinaryPath: 'claude',
   chatTimeoutMs: 3_600_000,
   scheduledTimeoutMs: 300_000,
-  researchTimeoutMs: 1_500_000,
   ...overrides,
 });
 

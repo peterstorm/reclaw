@@ -249,30 +249,6 @@ describe('loadConfig', () => {
     expect(result.ok).toBe(false);
   });
 
-  it('defaults researchTimeoutMs to 1_500_000 (25 minutes)', () => {
-    const result = loadConfig(VALID_ENV);
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.value.researchTimeoutMs).toBe(1_500_000);
-    }
-  });
-
-  it('parses RESEARCH_TIMEOUT_MS', () => {
-    const result = loadConfig({ ...VALID_ENV, RESEARCH_TIMEOUT_MS: '900000' });
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.value.researchTimeoutMs).toBe(900000);
-    }
-  });
-
-  it('returns err for non-integer RESEARCH_TIMEOUT_MS', () => {
-    const result = loadConfig({ ...VALID_ENV, RESEARCH_TIMEOUT_MS: 'not-a-number' });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error).toContain('RESEARCH_TIMEOUT_MS');
-    }
-  });
-
   it('parses OBSIDIAN_VAULT_PATH', () => {
     const result = loadConfig({ ...VALID_ENV, OBSIDIAN_VAULT_PATH: '/home/user/vault' });
     expect(result.ok).toBe(true);
