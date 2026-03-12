@@ -17,8 +17,6 @@ const mockConfig: AppConfig = {
   claudeBinaryPath: 'claude',
   chatTimeoutMs: 120_000,
   scheduledTimeoutMs: 300_000,
-
-  researchTimeoutMs: 1_500_000,
 };
 
 const chatJob: ChatJob = {
@@ -542,7 +540,7 @@ describe('createWorkers', () => {
     const researchWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-research');
     expect(researchWorker).toBeDefined();
     expect(researchWorker!.opts.concurrency).toBe(1);
-    const expectedLockMs = 25 * 60 * 1000;
+    const expectedLockMs = 60 * 60 * 1000;
     expect((researchWorker!.opts as { lockDuration?: number }).lockDuration).toBe(expectedLockMs);
   });
 

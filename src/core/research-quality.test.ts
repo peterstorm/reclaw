@@ -39,6 +39,9 @@ function makeContext(overrides: Partial<ResearchContext> = {}): ResearchContext 
     trace: [],
     chatsUsed: 0,
     startedAt: new Date(Date.now() - 60_000).toISOString(), // 1 minute ago
+    generateAudio: false,
+    generateVideo: false,
+    artifacts: [],
   };
   return { ...defaultCtx, ...overrides };
 }

@@ -81,6 +81,28 @@ export type NotebookLMAdapter = {
   /** List all sources in the notebook. */
   readonly listSources: (notebookId: string) => Promise<Result<readonly SourceMeta[], AdapterError>>;
 
+  /** Create an audio overview artifact. Returns the artifact ID. */
+  readonly createAudioOverview: (
+    notebookId: string,
+    options?: { instructions?: string },
+  ) => Promise<Result<string, AdapterError>>;
+
+  /** Create a video overview artifact. Returns the artifact ID. */
+  readonly createVideoOverview: (
+    notebookId: string,
+    options?: { instructions?: string },
+  ) => Promise<Result<string, AdapterError>>;
+
+  /** Poll an artifact until READY or FAILED. Returns the final state. */
+  readonly waitForArtifact: (
+    artifactId: string,
+    notebookId: string,
+    timeoutMs: number,
+  ) => Promise<Result<'ready' | 'failed', AdapterError>>;
+
+  /** Share notebook publicly and return the share URL. */
+  readonly shareNotebook: (notebookId: string) => Promise<Result<string, AdapterError>>;
+
   /** Dispose of the client and stop auto-refresh. */
   readonly dispose: () => Promise<void>;
 };
@@ -320,6 +342,85 @@ export async function createNotebookLMAdapter(
     return { ok: true, value: sources };
   };
 
+  // ─── createAudioOverview ───────────────────────────────────────────────────
+
+  const createAudioOverview = async (
+    notebookId: string,
+    options?: { instructions?: string },
+  ): Promise<Result<string, AdapterError>> => {
+    const createOpts: Record<string, unknown> = { customization: { format: 0 } };
+    if (options?.instructions) createOpts.instructions = options.instructions;
+    const result = await safeCall(() =>
+      sdk.artifacts.audio.create(notebookId, createOpts),
+    );
+    if (!result.ok) return result;
+    const audioId: string = (result.value as { audioId?: string }).audioId ?? '';
+    if (!audioId) {
+      return { ok: false, error: { message: 'Audio creation returned no audioId', retriable: false } };
+    }
+    return { ok: true, value: audioId };
+  };
+
+  // ─── createVideoOverview ──────────────────────────────────────────────────
+
+  const createVideoOverview = async (
+    notebookId: string,
+    options?: { instructions?: string },
+  ): Promise<Result<string, AdapterError>> => {
+    const videoOpts: Record<string, unknown> = {};
+    if (options?.instructions) videoOpts.instructions = options.instructions;
+    const result = await safeCall(() =>
+      sdk.artifacts.video.create(notebookId, videoOpts),
+    );
+    if (!result.ok) return result;
+    const videoId: string = (result.value as { videoId?: string }).videoId ?? '';
+    if (!videoId) {
+      return { ok: false, error: { message: 'Video creation returned no videoId', retriable: false } };
+    }
+    return { ok: true, value: videoId };
+  };
+
+  // ─── waitForArtifact ──────────────────────────────────────────────────────
+
+  const waitForArtifact = async (
+    artifactId: string,
+    notebookId: string,
+    timeoutMs: number,
+  ): Promise<Result<'ready' | 'failed', AdapterError>> => {
+    return safeCall(async () => {
+      const deadline = Date.now() + timeoutMs;
+      const pollIntervalMs = 15_000;
+
+      while (Date.now() < deadline) {
+        const artifact = await sdk.artifacts.get(artifactId, notebookId);
+        const state = (artifact as { state?: number }).state;
+        // ArtifactState: CREATING = 1, READY = 2, FAILED = 3
+        if (state === 2) return 'ready' as const;
+        if (state === 3) return 'failed' as const;
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+        await new Promise<void>((r) => setTimeout(r, Math.min(pollIntervalMs, remaining)));
+      }
+      throw new Error(`Artifact ${artifactId} did not become ready within ${timeoutMs}ms`);
+    });
+  };
+
+  // ─── shareNotebook ────────────────────────────────────────────────────────
+
+  const shareNotebook = async (
+    notebookId: string,
+  ): Promise<Result<string, AdapterError>> => {
+    const result = await safeCall(() =>
+      sdk.artifacts.share(notebookId, { accessType: 1 }), // anyone with link
+    );
+    if (!result.ok) return result;
+    const shareUrl: string = (result.value as { shareUrl?: string }).shareUrl ?? '';
+    if (!shareUrl) {
+      return { ok: false, error: { message: 'Share returned no shareUrl', retriable: false } };
+    }
+    return { ok: true, value: shareUrl };
+  };
+
   // ─── dispose ───────────────────────────────────────────────────────────────
 
   const dispose = async (): Promise<void> => {
@@ -335,6 +436,10 @@ export async function createNotebookLMAdapter(
     waitForProcessing,
     chat,
     listSources,
+    createAudioOverview,
+    createVideoOverview,
+    waitForArtifact,
+    shareNotebook,
     dispose,
   } as const;
 }

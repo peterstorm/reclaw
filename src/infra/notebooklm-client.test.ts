@@ -147,6 +147,10 @@ function createMockAdapter(overrides: MockAdapterOverrides = {}): NotebookLMAdap
         { id: 'src-2', title: 'YouTube Video', url: 'https://youtube.com/watch?v=abc', sourceType: 'youtube' },
       ],
     }),
+    createAudioOverview: async () => ({ ok: true, value: 'audio-001' }),
+    createVideoOverview: async () => ({ ok: true, value: 'video-001' }),
+    waitForArtifact: async () => ({ ok: true, value: 'ready' as const }),
+    shareNotebook: async () => ({ ok: true, value: 'https://notebooklm.google.com/notebook/shared-123' }),
     dispose: async () => undefined,
     ...overrides,
   };
@@ -430,6 +434,10 @@ describe('NotebookLMAdapter contract', () => {
       'waitForProcessing',
       'chat',
       'listSources',
+      'createAudioOverview',
+      'createVideoOverview',
+      'waitForArtifact',
+      'shareNotebook',
       'dispose',
     ];
     for (const method of requiredMethods) {

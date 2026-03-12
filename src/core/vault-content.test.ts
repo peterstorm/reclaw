@@ -56,6 +56,9 @@ const makeContext = (overrides: Partial<ResearchContext> = {}): ResearchContext 
   trace: [],
   chatsUsed: 2,
   startedAt: '2026-03-04T10:00:00.000Z',
+  generateAudio: false,
+  generateVideo: false,
+  artifacts: [],
   ...overrides,
 });
 

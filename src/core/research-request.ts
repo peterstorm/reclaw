@@ -10,6 +10,8 @@ import { type Result, ok, err } from './types.js';
 export type ResearchRequest = {
   readonly topic: string;
   readonly sourceHints: readonly string[];
+  readonly generateAudio: boolean;
+  readonly generateVideo: boolean;
 };
 
 // ─── URL Detection ────────────────────────────────────────────────────────────
@@ -55,7 +57,15 @@ export function parseResearchCommand(text: string): Result<ResearchRequest, stri
   }
 
   // Strip the /research prefix and any immediately following whitespace
-  const remainder = trimmed.slice(prefix.length).replace(/^\s+/, '');
+  const rawRemainder = trimmed.slice(prefix.length).replace(/^\s+/, '');
+
+  // Extract --audio and --video flags (case-insensitive), then strip them
+  const generateAudio = /(?:^|\s)--audio\b/i.test(rawRemainder);
+  const generateVideo = /(?:^|\s)--video\b/i.test(rawRemainder);
+  const remainder = rawRemainder
+    .replace(/(?:^|\s)--audio\b/gi, ' ')
+    .replace(/(?:^|\s)--video\b/gi, ' ')
+    .replace(/^\s+/, '');
 
   // FR-091: topic is everything up to the first URL
   const firstUrlIndex = indexOfFirstUrl(remainder);
@@ -85,5 +95,5 @@ export function parseResearchCommand(text: string): Result<ResearchRequest, stri
   // FR-013: extract source hints from the URL section
   const sourceHints = extractUrls(urlSection);
 
-  return ok({ topic, sourceHints });
+  return ok({ topic, sourceHints, generateAudio, generateVideo });
 }

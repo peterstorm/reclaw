@@ -34,6 +34,7 @@ export const MAX_RETRIES: Readonly<Record<string, number>> = Object.freeze({
   generating_questions: 2,
   querying: 2,
   writing_vault: 3,
+  generating_artifacts: 2,
   notifying: 2,
 });
 
@@ -80,6 +81,7 @@ export function transition(
     .with({ kind: 'querying' }, (s) => handleQuerying(s, event, ctx))
     .with({ kind: 'resolving_citations' }, (s) => handleResolvingCitations(s, event, ctx))
     .with({ kind: 'writing_vault' }, (s) => handleWritingVault(s, event, ctx))
+    .with({ kind: 'generating_artifacts' }, (s) => handleGeneratingArtifacts(s, event, ctx))
     .with({ kind: 'notifying' }, (s) => handleNotifying(s, event, ctx))
     .exhaustive();
 }
@@ -115,6 +117,16 @@ function handleError(
   }
 
   // Retries exhausted. Special case per FR-052:
+  // If we're in 'generating_artifacts' and retries are exhausted, skip to 'notifying'
+  // because the vault deliverable already exists — artifact generation is best-effort.
+  if (stateKey === 'generating_artifacts') {
+    const nextContext: ResearchContext = {
+      ...ctx,
+      lastError: event.error,
+    };
+    return { state: { kind: 'notifying' }, context: nextContext };
+  }
+
   // If we're in 'notifying' and retries are exhausted, transition to 'done'
   // because the vault deliverable already exists.
   if (stateKey === 'notifying') {
@@ -293,6 +305,11 @@ function handleWritingVault(
   event: ResearchEvent,
   ctx: ResearchContext,
 ): { state: ResearchState; context: ResearchContext } {
+  // Route to generating_artifacts if audio/video requested, otherwise straight to notifying
+  const nextKind = (ctx.generateAudio || ctx.generateVideo)
+    ? 'generating_artifacts' as const
+    : 'notifying' as const;
+
   if (event.type === 'VAULT_WRITTEN') {
     const nextContext: ResearchContext = {
       ...ctx,
@@ -300,7 +317,7 @@ function handleWritingVault(
       lastError: null,
       retries: clearRetries(ctx.retries, 'writing_vault'),
     };
-    return { state: { kind: 'notifying' }, context: nextContext };
+    return { state: { kind: nextKind }, context: nextContext };
   }
 
   if (event.type === 'EMERGENCY_WRITTEN') {
@@ -311,10 +328,28 @@ function handleWritingVault(
       lastError: null,
       retries: clearRetries(ctx.retries, 'writing_vault'),
     };
-    return { state: { kind: 'notifying' }, context: nextContext };
+    return { state: { kind: nextKind }, context: nextContext };
   }
 
   return unexpectedEvent('writing_vault', event, ctx);
+}
+
+function handleGeneratingArtifacts(
+  _state: Extract<ResearchState, { kind: 'generating_artifacts' }>,
+  event: ResearchEvent,
+  ctx: ResearchContext,
+): { state: ResearchState; context: ResearchContext } {
+  if (event.type !== 'ARTIFACTS_GENERATED') {
+    return unexpectedEvent('generating_artifacts', event, ctx);
+  }
+
+  const nextContext: ResearchContext = {
+    ...ctx,
+    artifacts: event.artifacts,
+    lastError: null,
+    retries: clearRetries(ctx.retries, 'generating_artifacts'),
+  };
+  return { state: { kind: 'notifying' }, context: nextContext };
 }
 
 function handleNotifying(

@@ -28,7 +28,7 @@ import type {
 } from '../core/research-types.js';
 import { buildAllVaultNotes, buildEmergencyNote } from '../core/vault-content.js';
 import { resolveAnswerCitations } from '../core/citation-resolver.js';
-import type { ResolvedNote } from '../core/research-types.js';
+import type { ArtifactMeta, ResolvedNote } from '../core/research-types.js';
 import { computeMetrics, evaluateQuality } from '../core/research-quality.js';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -41,6 +41,9 @@ const MAX_DISCOVERED_SOURCES = 10;
 
 /** Timeout for waiting for sources to be processed by NotebookLM. FR-016: 10 minutes. */
 const PROCESSING_TIMEOUT_MS = 10 * 60 * 1000;
+
+/** Timeout for waiting for artifact generation (audio/video). 15 minutes. */
+const ARTIFACT_TIMEOUT_MS = 15 * 60 * 1000;
 
 // ─── ResearchDeps ─────────────────────────────────────────────────────────────
 
@@ -85,6 +88,7 @@ export async function executeState(
     .with({ kind: 'querying' }, (s) => executeQuerying(s, ctx, deps))
     .with({ kind: 'resolving_citations' }, () => executeResolvingCitations(ctx))
     .with({ kind: 'writing_vault' }, () => executeWritingVault(ctx, deps))
+    .with({ kind: 'generating_artifacts' }, () => executeGeneratingArtifacts(ctx, deps))
     .with({ kind: 'notifying' }, () => executeNotifying(ctx, deps))
     .with({ kind: 'done' }, { kind: 'failed' }, (s) => ({
       type: 'ERROR' as const,
@@ -471,6 +475,99 @@ async function executeWritingVault(
 }
 
 /**
+ * generating_artifacts: Generate audio/video overviews from the notebook.
+ *
+ * Best-effort: individual failures are logged but do not produce ERROR events.
+ * Always returns ARTIFACTS_GENERATED (possibly with empty list).
+ */
+async function executeGeneratingArtifacts(
+  ctx: ResearchContext,
+  deps: ResearchDeps,
+): Promise<ResearchEvent> {
+  if (ctx.notebookId === null) {
+    return {
+      type: 'ERROR',
+      error: 'generating_artifacts: notebookId is null',
+      retriable: false,
+    };
+  }
+
+  const artifacts: ArtifactMeta[] = [];
+
+  // Get a share URL for the notebook (shared link, no Google login required)
+  let shareUrl: string | null = null;
+  const shareResult = await deps.notebookLM.shareNotebook(ctx.notebookId);
+  if (shareResult.ok) {
+    shareUrl = shareResult.value;
+  } else {
+    console.warn('[research:artifacts] shareNotebook failed, falling back to direct URL:', shareResult.error.message);
+  }
+  const notebookUrl = shareUrl ?? `https://notebooklm.google.com/notebook/${ctx.notebookId}`;
+
+  // Generate audio overview if requested
+  if (ctx.generateAudio) {
+    const createResult = await deps.notebookLM.createAudioOverview(
+      ctx.notebookId,
+      { instructions: `Create a deep-dive audio overview about: ${ctx.topic}` },
+    );
+
+    if (createResult.ok) {
+      const waitResult = await deps.notebookLM.waitForArtifact(
+        createResult.value,
+        ctx.notebookId,
+        ARTIFACT_TIMEOUT_MS,
+      );
+      if (waitResult.ok && waitResult.value === 'ready') {
+        artifacts.push({ type: 'audio', artifactId: createResult.value, url: notebookUrl });
+      } else {
+        console.warn('[research:artifacts] Audio generation failed or timed out');
+      }
+    } else {
+      console.warn('[research:artifacts] createAudioOverview failed:', createResult.error.message);
+    }
+  }
+
+  // Generate video overview if requested
+  if (ctx.generateVideo) {
+    const createResult = await deps.notebookLM.createVideoOverview(
+      ctx.notebookId,
+      { instructions: `Create a video overview about: ${ctx.topic}` },
+    );
+
+    if (createResult.ok) {
+      const waitResult = await deps.notebookLM.waitForArtifact(
+        createResult.value,
+        ctx.notebookId,
+        ARTIFACT_TIMEOUT_MS,
+      );
+      if (waitResult.ok && waitResult.value === 'ready') {
+        artifacts.push({ type: 'video', artifactId: createResult.value, url: notebookUrl });
+      } else {
+        console.warn('[research:artifacts] Video generation failed or timed out');
+      }
+    } else {
+      console.warn('[research:artifacts] createVideoOverview failed:', createResult.error.message);
+    }
+  }
+
+  // Append media section to hub note if any artifacts were generated
+  if (artifacts.length > 0 && ctx.hubPath !== null) {
+    const mediaLines = artifacts.map((a) => {
+      const label = a.type === 'audio' ? 'Audio Overview' : 'Video Overview';
+      return `- [${label}](${a.url})`;
+    });
+    const mediaSection = `\n\n## Media\n\n${mediaLines.join('\n')}\n`;
+
+    const appendResult = await deps.vaultWriter.appendToNote(ctx.hubPath, mediaSection);
+    if (!appendResult.ok) {
+      console.warn('[research:artifacts] Failed to append media section:', appendResult.error);
+    }
+  }
+
+  return { type: 'ARTIFACTS_GENERATED', artifacts };
+}
+
+/**
  * notifying: Send Telegram summary and store Cortex memory.
  *
  * FR-060: Telegram summary: questions answered, citations, sources, quota, grade.
@@ -521,6 +618,10 @@ async function executeNotifying(
       ? `\n\nSkipped questions (${ctx.skippedQuestions.length}): ${ctx.skippedQuestions.join(', ')}`
       : '';
 
+  const artifactLinks = ctx.artifacts.length > 0
+    ? `\n\nMedia:\n${ctx.artifacts.map((a) => `• ${a.type === 'audio' ? 'Audio' : 'Video'}: ${a.url}`).join('\n')}`
+    : '';
+
   const telegramSummary =
     `Research Complete: ${ctx.topic}\n\n` +
     `Quality: ${quality.grade.toUpperCase()}\n` +
@@ -532,6 +633,7 @@ async function executeNotifying(
     skippedSection +
     warningsText +
     keyFindingsSection +
+    artifactLinks +
     hubLink;
 
   // Send Telegram notification

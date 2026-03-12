@@ -76,6 +76,10 @@ function makeMockDeps(overrides: Partial<ResearchDeps> = {}): ResearchDeps {
       ok: true,
       value: [makeMockSource()],
     }),
+    createAudioOverview: vi.fn().mockResolvedValue({ ok: true, value: 'audio-001' }),
+    createVideoOverview: vi.fn().mockResolvedValue({ ok: true, value: 'video-001' }),
+    waitForArtifact: vi.fn().mockResolvedValue({ ok: true, value: 'ready' }),
+    shareNotebook: vi.fn().mockResolvedValue({ ok: true, value: 'https://notebooklm.google.com/notebook/shared-123' }),
     dispose: vi.fn().mockResolvedValue(undefined),
   };
 
@@ -103,6 +107,7 @@ function makeMockDeps(overrides: Partial<ResearchDeps> = {}): ResearchDeps {
       ok: true,
       value: '/vault/reclaw/research/ai-agents/_emergency.md',
     }),
+    appendToNote: vi.fn().mockResolvedValue({ ok: true, value: undefined }),
   };
 
   const telegram: TelegramAdapter = {
@@ -374,6 +379,7 @@ describe('handleResearchJob', () => {
           ok: true,
           value: '/vault/reclaw/research/ai-agents/_emergency.md',
         }),
+        appendToNote: vi.fn().mockResolvedValue({ ok: true, value: undefined }),
       },
     });
 

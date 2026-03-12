@@ -54,6 +54,13 @@ export type WebSource = {
   readonly url: string;
 };
 
+/** Metadata for a generated audio or video artifact. */
+export type ArtifactMeta = {
+  readonly type: 'audio' | 'video';
+  readonly artifactId: string;
+  readonly url: string;
+};
+
 /** Quality grade for a completed research job. */
 export type QualityGrade = 'good' | 'partial' | 'poor';
 
@@ -95,6 +102,7 @@ export type ResearchState =
   | { readonly kind: 'querying'; readonly questionsRemaining: number }
   | { readonly kind: 'resolving_citations' }
   | { readonly kind: 'writing_vault' }
+  | { readonly kind: 'generating_artifacts' }
   | { readonly kind: 'notifying' }
   | { readonly kind: 'done' }
   | { readonly kind: 'failed'; readonly error: string; readonly failedState: string };
@@ -114,6 +122,7 @@ export type ResearchEvent =
   | { readonly type: 'CITATIONS_RESOLVED'; readonly resolvedNotes: readonly ResolvedNote[] }
   | { readonly type: 'VAULT_WRITTEN'; readonly hubPath: string }
   | { readonly type: 'EMERGENCY_WRITTEN'; readonly path: string }
+  | { readonly type: 'ARTIFACTS_GENERATED'; readonly artifacts: readonly ArtifactMeta[] }
   | { readonly type: 'NOTIFIED' }
   | { readonly type: 'ERROR'; readonly error: string; readonly retriable: boolean };
 
@@ -137,6 +146,9 @@ export type ResearchContext = {
   readonly answers: Readonly<Record<string, ChatResponse>>;
   readonly skippedQuestions: readonly string[];
   readonly resolvedNotes: readonly ResolvedNote[];
+  readonly generateAudio: boolean;
+  readonly generateVideo: boolean;
+  readonly artifacts: readonly ArtifactMeta[];
   readonly hubPath: string | null;
   readonly retries: Partial<Record<string, number>>;
   readonly lastError: string | null;
@@ -176,6 +188,7 @@ const STATE_ORDER: ReadonlyArray<ResearchState['kind']> = [
   'querying',
   'resolving_citations',
   'writing_vault',
+  'generating_artifacts',
   'notifying',
   'done',
 ];
@@ -193,6 +206,8 @@ export function makeResearchJobData(params: {
   topic: string;
   sourceHints: readonly string[];
   chatId: number;
+  generateAudio?: boolean;
+  generateVideo?: boolean;
 }): Result<ResearchJobData, string> {
   if (params.topic.trim().length === 0) {
     return err('Research topic must not be empty.');
@@ -217,6 +232,9 @@ export function makeResearchJobData(params: {
     answers: {},
     skippedQuestions: [],
     resolvedNotes: [],
+    generateAudio: params.generateAudio ?? false,
+    generateVideo: params.generateVideo ?? false,
+    artifacts: [],
     hubPath: null,
     retries: {},
     lastError: null,

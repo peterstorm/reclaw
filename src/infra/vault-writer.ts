@@ -42,6 +42,11 @@ export type VaultWriterAdapter = {
     note: VaultNote,
     basePath: string,
   ) => Promise<Result<string, string>>;
+  /** Append content to an existing note file. */
+  readonly appendToNote: (
+    absolutePath: string,
+    content: string,
+  ) => Promise<Result<void, string>>;
 };
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
@@ -164,5 +169,18 @@ export function createVaultWriter(): VaultWriterAdapter {
     }
   };
 
-  return { writeNotes, writeEmergencyNote };
+  const appendToNote = async (
+    absolutePath: string,
+    content: string,
+  ): Promise<Result<void, string>> => {
+    try {
+      await fs.appendFile(absolutePath, content, 'utf8');
+      return ok(undefined);
+    } catch (e) {
+      const errorMsg = e instanceof Error ? e.message : String(e);
+      return err(`Failed to append to note: ${errorMsg}`);
+    }
+  };
+
+  return { writeNotes, writeEmergencyNote, appendToNote };
 }

@@ -227,6 +227,9 @@ describe('createQueues', () => {
         trace: [] as never[],
         chatsUsed: 0,
         startedAt: '2026-03-04T10:00:00Z',
+        generateAudio: false,
+        generateVideo: false,
+        artifacts: [],
       },
     };
     await queues.enqueueResearch(researchJobData);

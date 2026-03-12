@@ -44,6 +44,9 @@ const makeMockContext = (overrides: Partial<ResearchContext> = {}): ResearchCont
   trace: [],
   chatsUsed: 0,
   startedAt: '2026-03-04T10:00:00.000Z',
+  generateAudio: false,
+  generateVideo: false,
+  artifacts: [],
   ...overrides,
 });
 
@@ -86,6 +89,10 @@ function makeMockDeps(overrides: Partial<ResearchDeps> = {}): ResearchDeps {
       ok: true,
       value: [makeMockSource()],
     }),
+    createAudioOverview: vi.fn().mockResolvedValue({ ok: true, value: 'audio-001' }),
+    createVideoOverview: vi.fn().mockResolvedValue({ ok: true, value: 'video-001' }),
+    waitForArtifact: vi.fn().mockResolvedValue({ ok: true, value: 'ready' }),
+    shareNotebook: vi.fn().mockResolvedValue({ ok: true, value: 'https://notebooklm.google.com/notebook/shared-123' }),
     dispose: vi.fn().mockResolvedValue(undefined),
   };
 
@@ -107,6 +114,7 @@ function makeMockDeps(overrides: Partial<ResearchDeps> = {}): ResearchDeps {
   const vaultWriter: VaultWriterAdapter = {
     writeNotes: vi.fn().mockResolvedValue({ ok: true, value: '/vault/reclaw/research/ai-agents/_index.md' }),
     writeEmergencyNote: vi.fn().mockResolvedValue({ ok: true, value: '/vault/reclaw/research/ai-agents/_emergency.md' }),
+    appendToNote: vi.fn().mockResolvedValue({ ok: true, value: undefined }),
   };
 
   const telegram: TelegramAdapter = {
@@ -901,6 +909,7 @@ describe('executeState / writing_vault', () => {
       vaultWriter: {
         writeNotes: vi.fn().mockResolvedValue({ ok: false, error: 'Disk full' }),
         writeEmergencyNote: vi.fn().mockResolvedValue({ ok: false, error: 'Also disk full' }),
+        appendToNote: vi.fn().mockResolvedValue({ ok: true, value: undefined }),
       },
     });
 
@@ -999,6 +1008,48 @@ describe('executeState / notifying', () => {
     expect(event.type).toBe('ERROR');
     if (event.type === 'ERROR') {
       expect(event.retriable).toBe(true);
+    }
+  });
+});
+
+// ─── generating_artifacts tests ────────────────────────────────────────────────
+
+describe('executeState / generating_artifacts', () => {
+  it('returns ARTIFACTS_GENERATED with audio entry when generateAudio is true', async () => {
+    const state: ResearchState = { kind: 'generating_artifacts' };
+    const ctx = makeMockContext({
+      notebookId: 'nb-001',
+      generateAudio: true,
+      generateVideo: false,
+    });
+    const deps = makeMockDeps();
+
+    const event = await executeState(state, ctx, deps);
+
+    expect(event.type).toBe('ARTIFACTS_GENERATED');
+    if (event.type === 'ARTIFACTS_GENERATED') {
+      expect(event.artifacts.length).toBeGreaterThanOrEqual(1);
+      const audioArtifact = event.artifacts.find((a) => a.type === 'audio');
+      expect(audioArtifact).toBeDefined();
+    }
+    expect(deps.notebookLM.createAudioOverview).toHaveBeenCalledWith('nb-001', expect.anything());
+    expect(deps.notebookLM.waitForArtifact).toHaveBeenCalled();
+  });
+
+  it('returns ERROR (non-retriable) when notebookId is null', async () => {
+    const state: ResearchState = { kind: 'generating_artifacts' };
+    const ctx = makeMockContext({
+      notebookId: null,
+      generateAudio: true,
+    });
+    const deps = makeMockDeps();
+
+    const event = await executeState(state, ctx, deps);
+
+    expect(event.type).toBe('ERROR');
+    if (event.type === 'ERROR') {
+      expect(event.retriable).toBe(false);
+      expect(event.error).toContain('notebookId is null');
     }
   });
 });

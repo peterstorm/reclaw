@@ -38,6 +38,9 @@ function makeContext(overrides: Partial<ResearchContext> = {}): ResearchContext 
     trace: [],
     chatsUsed: 0,
     startedAt: '2026-03-03T10:00:00.000Z',
+    generateAudio: false,
+    generateVideo: false,
+    artifacts: [],
     ...overrides,
   };
 }
@@ -911,6 +914,63 @@ describe('FR-052: notifying state error exhaustion -> done (not failed)', () => 
 
     const result = transition(state, event, ctx);
     // Non-retriable goes to failed directly (does NOT get FR-052 treatment)
+    expect(result.state.kind).toBe('failed');
+  });
+});
+
+// ─── Happy Path: generating_artifacts ─────────────────────────────────────────
+
+describe('transition: generating_artifacts -> ARTIFACTS_GENERATED', () => {
+  it('transitions to notifying with artifacts stored in context', () => {
+    const state: ResearchState = { kind: 'generating_artifacts' };
+    const artifacts = [
+      { type: 'audio' as const, artifactId: 'audio-001', url: 'https://notebooklm.google.com/audio/001' },
+    ];
+    const event: ResearchEvent = { type: 'ARTIFACTS_GENERATED', artifacts };
+    const ctx = makeContext();
+
+    const result = transition(state, event, ctx);
+    expect(result.state.kind).toBe('notifying');
+    expect(result.context.artifacts).toEqual(artifacts);
+  });
+
+  it('clears lastError on success', () => {
+    const state: ResearchState = { kind: 'generating_artifacts' };
+    const event: ResearchEvent = { type: 'ARTIFACTS_GENERATED', artifacts: [] };
+    const ctx = makeContext({ lastError: 'prior error' });
+
+    const result = transition(state, event, ctx);
+    expect(result.context.lastError).toBeNull();
+  });
+});
+
+describe('transition: generating_artifacts -> ERROR (retry)', () => {
+  it('stays in generating_artifacts on retriable error with incremented retry', () => {
+    const state: ResearchState = { kind: 'generating_artifacts' };
+    const ctx = makeContext({ retries: {} });
+
+    const result = transition(state, errorEvent('Artifact generation timeout', true), ctx);
+    expect(result.state.kind).toBe('generating_artifacts');
+    expect(result.context.retries['generating_artifacts']).toBe(1);
+  });
+
+  it('transitions to notifying (not failed) when retries exhausted', () => {
+    const state: ResearchState = { kind: 'generating_artifacts' };
+    const maxRetries = MAX_RETRIES['generating_artifacts'] ?? 2;
+    const ctx = makeContext({ retries: { generating_artifacts: maxRetries } });
+
+    const result = transition(state, errorEvent('Persistent artifact error', true), ctx);
+    // generating_artifacts follows the same pattern as notifying (FR-052):
+    // on retry exhaustion, proceed to notifying rather than failing
+    expect(result.state.kind).toBe('notifying');
+  });
+
+  it('transitions to failed on unexpected event', () => {
+    const state: ResearchState = { kind: 'generating_artifacts' };
+    const event: ResearchEvent = { type: 'NOTEBOOK_CREATED', notebookId: 'nb-001' };
+    const ctx = makeContext();
+
+    const result = transition(state, event, ctx);
     expect(result.state.kind).toBe('failed');
   });
 });

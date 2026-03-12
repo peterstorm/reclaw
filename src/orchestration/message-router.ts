@@ -269,7 +269,7 @@ function routeResearchCommand(msg: IncomingMessage, deps: MessageRouterDeps): vo
     return;
   }
 
-  const { topic, sourceHints } = researchParseResult.value;
+  const { topic, sourceHints, generateAudio, generateVideo } = researchParseResult.value;
 
   deps.quotaTracker.hasQuota(5).then(async (hasEnoughQuota) => {
     if (!hasEnoughQuota) {
@@ -281,6 +281,8 @@ function routeResearchCommand(msg: IncomingMessage, deps: MessageRouterDeps): vo
       topic,
       sourceHints,
       chatId: msg.chatId,
+      generateAudio,
+      generateVideo,
     });
 
     if (!researchJobDataResult.ok) {
@@ -295,9 +297,17 @@ function routeResearchCommand(msg: IncomingMessage, deps: MessageRouterDeps): vo
 
     const position = await deps.queues.getResearchQueuePosition();
 
+    const mediaFlags = [
+      generateAudio ? 'audio' : null,
+      generateVideo ? 'video' : null,
+    ].filter(Boolean);
+    const mediaSuffix = mediaFlags.length > 0
+      ? `\nMedia: ${mediaFlags.join(' + ')} overview will be generated.`
+      : '';
+
     const confirmMsg = position > 1
-      ? `Research enqueued: "${topic}"\n\nQueue position: ${position} (${position - 1} job(s) ahead)`
-      : `Research enqueued: "${topic}"\n\nStarting now.`;
+      ? `Research enqueued: "${topic}"\n\nQueue position: ${position} (${position - 1} job(s) ahead)${mediaSuffix}`
+      : `Research enqueued: "${topic}"\n\nStarting now.${mediaSuffix}`;
 
     await deps.telegram.sendMessage(msg.chatId, confirmMsg);
   }).catch((researchErr: unknown) => {

@@ -240,9 +240,9 @@ export function createWorkers(deps: WorkerDeps): Workers {
     console.error('[worker:reminder] Worker error:', args[0]);
   });
 
-  // ── Research worker (AD-1: concurrency=1, 25min lock for SC-009) ─────────
-
-  const researchLockMs = 25 * 60 * 1000; // 25 minutes (FR-006, SC-009)
+  // ── Research worker (AD-1: concurrency=1, long lock for SC-009) ──────────
+  // 60 minutes: base pipeline (~10min) + artifact generation (up to 2×15min) + margin
+  const researchLockMs = 60 * 60 * 1000;
 
   const researchWorker = workerFactory(
     'reclaw-research',
