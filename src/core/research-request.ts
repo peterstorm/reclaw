@@ -57,7 +57,8 @@ export function parseResearchCommand(text: string): Result<ResearchRequest, stri
   }
 
   // Strip the /research prefix and any immediately following whitespace
-  const rawRemainder = trimmed.slice(prefix.length).replace(/^\s+/, '');
+  // Normalize em dashes (—) and en dashes (–) to double hyphens (Telegram autocorrect fix)
+  const rawRemainder = trimmed.slice(prefix.length).replace(/^\s+/, '').replace(/[—–]/g, '--');
 
   // Extract --audio and --video flags (case-insensitive), then strip them
   const generateAudio = /(?:^|\s)--audio\b/i.test(rawRemainder);
