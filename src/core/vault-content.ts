@@ -87,7 +87,7 @@ export function buildHubNote(ctx: ResearchContext, quality: QualityResult): Vaul
   const sourceLinks = ctx.sources
     .map((s) => {
       const title = sanitizeTitleForWikilink(s.title);
-      return `- [[${title}]]`;
+      return `- [[${title}]] — [${s.sourceType}](${s.url})`;
     })
     .join('\n');
 

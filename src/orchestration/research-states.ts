@@ -287,7 +287,13 @@ async function executeAwaitingProcessing(
     };
   }
 
-  return { type: 'SOURCES_READY', sources: listResult.value };
+  // Backfill missing URLs from discovered web sources (SDK doesn't return them for web search results)
+  const urlByTitle = new Map(ctx.discoveredWebSources.map((ws) => [ws.title, ws.url]));
+  const sources = listResult.value.map((s) =>
+    s.url === '' && urlByTitle.has(s.title) ? { ...s, url: urlByTitle.get(s.title)! } : s,
+  );
+
+  return { type: 'SOURCES_READY', sources };
 }
 
 /**
