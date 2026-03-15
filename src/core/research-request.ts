@@ -34,6 +34,37 @@ function indexOfFirstUrl(text: string): number {
   return match ? match.index : -1;
 }
 
+/**
+ * Derive a human-readable topic from a URL's path segments.
+ * Strips protocol, domain, query params, and converts dashes/underscores to spaces.
+ */
+function topicFromUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    // Use the last meaningful path segment(s)
+    const segments = parsed.pathname
+      .split('/')
+      .filter((s) => s.length > 0)
+      // Drop very short segments (e.g. "abs", "p") unless it's the only one
+      .filter((s, _, arr) => arr.length === 1 || s.length > 2);
+
+    if (segments.length > 0) {
+      // Take up to last 3 segments, clean them up
+      const topic = segments
+        .slice(-3)
+        .map((s) => decodeURIComponent(s).replace(/[-_]+/g, ' ').replace(/\.[a-zA-Z]{2,4}$/, ''))
+        .join(' ')
+        .trim();
+      if (topic.length > 0) return topic;
+    }
+    // Fallback: use hostname without www/common TLDs
+    return parsed.hostname.replace(/^www\./, '').replace(/\.(com|org|net|io|dev)$/, '');
+  } catch {
+    // If URL parsing fails, strip protocol and use what's left
+    return url.replace(/^https?:\/\//, '').replace(/[/?#].*$/, '');
+  }
+}
+
 // ─── Parser ───────────────────────────────────────────────────────────────────
 
 /**
@@ -63,9 +94,15 @@ export function parseResearchCommand(text: string): Result<ResearchRequest, stri
   // Extract --audio and --video flags (case-insensitive), then strip them
   const generateAudio = /(?:^|\s)--audio\b/i.test(rawRemainder);
   const generateVideo = /(?:^|\s)--video\b/i.test(rawRemainder);
+
+  // Extract --link <url> flag: captures the URL immediately following --link
+  const linkMatch = rawRemainder.match(/(?:^|\s)--link\s+(https?:\/\/\S+)/i);
+  const linkUrl = linkMatch ? linkMatch[1] : null;
+
   const remainder = rawRemainder
     .replace(/(?:^|\s)--audio\b/gi, ' ')
     .replace(/(?:^|\s)--video\b/gi, ' ')
+    .replace(/(?:^|\s)--link\s+https?:\/\/\S+/gi, ' ')
     .replace(/^\s+/, '');
 
   // FR-091: topic is everything up to the first URL
@@ -84,17 +121,25 @@ export function parseResearchCommand(text: string): Result<ResearchRequest, stri
     urlSection = remainder.slice(firstUrlIndex);
   }
 
-  const topic = topicRaw.trim();
+  let topic = topicRaw.trim();
 
-  // FR-092: reject empty topic
+  // When --link is used without explicit topic text, derive topic from the URL
+  if (topic.length === 0 && linkUrl) {
+    topic = topicFromUrl(linkUrl);
+  }
+
+  // FR-092: reject empty topic (must have either text or --link)
   if (topic.length === 0) {
     return err(
-      'Research topic must not be empty. Usage: /research <topic> [url1] [url2...]',
+      'Research topic must not be empty. Usage: /research <topic> [url1] [url2...] or /research --link <url>',
     );
   }
 
-  // FR-013: extract source hints from the URL section
-  const sourceHints = extractUrls(urlSection);
+  // FR-013: extract source hints from the URL section + --link URL
+  const sourceHints = [
+    ...(linkUrl ? [linkUrl] : []),
+    ...extractUrls(urlSection),
+  ];
 
   return ok({ topic, sourceHints, generateAudio, generateVideo });
 }

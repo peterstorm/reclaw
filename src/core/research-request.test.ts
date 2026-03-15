@@ -207,4 +207,76 @@ describe('parseResearchCommand', () => {
       expect(r.value.topic).toBe('the   history  of  computing');
     }
   });
+
+  // ── --link flag ─────────────────────────────────────────────────────────────
+
+  it('accepts --link with URL and derives topic from path', () => {
+    const r = parseResearchCommand('/research --link https://example.com/article-about-ai-agents');
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.topic).toBe('article about ai agents');
+      expect(r.value.sourceHints).toEqual(['https://example.com/article-about-ai-agents']);
+    }
+  });
+
+  it('uses explicit topic over URL-derived topic when both provided', () => {
+    const r = parseResearchCommand('/research My custom topic --link https://example.com/some-path');
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.topic).toBe('My custom topic');
+      expect(r.value.sourceHints).toEqual(['https://example.com/some-path']);
+    }
+  });
+
+  it('combines --link URL with additional source hint URLs', () => {
+    const r = parseResearchCommand(
+      '/research AI safety --link https://primary.com/article https://extra.com/ref',
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.topic).toBe('AI safety');
+      // --link URL comes first, then additional URLs
+      expect(r.value.sourceHints).toEqual([
+        'https://primary.com/article',
+        'https://extra.com/ref',
+      ]);
+    }
+  });
+
+  it('handles --link with --audio and --video flags', () => {
+    const r = parseResearchCommand('/research --link https://blog.com/post --audio --video');
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.topic).toBe('post');
+      expect(r.value.sourceHints).toEqual(['https://blog.com/post']);
+      expect(r.value.generateAudio).toBe(true);
+      expect(r.value.generateVideo).toBe(true);
+    }
+  });
+
+  it('derives topic from URL hostname when path is empty', () => {
+    const r = parseResearchCommand('/research --link https://www.example.com');
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.topic).toBe('example');
+      expect(r.value.sourceHints).toEqual(['https://www.example.com']);
+    }
+  });
+
+  it('handles --link with complex URL path segments', () => {
+    const r = parseResearchCommand('/research --link https://arxiv.org/abs/2301.12345');
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.topic).toBe('abs 2301.12345');
+      expect(r.value.sourceHints).toEqual(['https://arxiv.org/abs/2301.12345']);
+    }
+  });
+
+  it('handles Telegram autocorrected em dash before link', () => {
+    const r = parseResearchCommand('/research —link https://example.com/article');
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.sourceHints).toEqual(['https://example.com/article']);
+    }
+  });
 });
