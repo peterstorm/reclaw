@@ -191,6 +191,7 @@ function handleAddingSources(
 
   const nextContext: ResearchContext = {
     ...ctx,
+    sourceUrlById: event.sourceUrlById,
     lastError: null,
     retries: clearRetries(ctx.retries, 'adding_sources'),
   };

@@ -33,6 +33,7 @@ const makeMockContext = (overrides: Partial<ResearchContext> = {}): ResearchCont
   notebookId: null,
   searchSessionId: null,
   discoveredWebSources: [],
+  sourceUrlById: {},
   sources: [],
   questions: [],
   answers: {},
@@ -386,6 +387,29 @@ describe('executeState / adding_sources', () => {
     }
   });
 
+  it('populates sourceUrlById for hint and discovered sources', async () => {
+    const state: ResearchState = { kind: 'adding_sources' };
+    const ctx = makeMockContext({
+      notebookId: 'nb-001',
+      searchSessionId: 'session-001',
+      discoveredWebSources: [
+        { title: 'Source 1', url: 'https://example.com/1' },
+      ],
+      sourceHints: ['https://youtube.com/watch?v=abc'],
+    });
+    const deps = makeMockDeps();
+
+    const event = await executeState(state, ctx, deps);
+
+    expect(event.type).toBe('SOURCES_ADDED');
+    if (event.type === 'SOURCES_ADDED') {
+      // Discovered source gets ID from addDiscoveredSources mock ('id-1')
+      expect(event.sourceUrlById['id-1']).toBe('https://example.com/1');
+      // YouTube hint gets ID from addYouTubeSource mock ('id-yt-1')
+      expect(event.sourceUrlById['id-yt-1']).toBe('https://youtube.com/watch?v=abc');
+    }
+  });
+
   it('returns ERROR if all sources fail to add', async () => {
     const state: ResearchState = { kind: 'adding_sources' };
     const ctx = makeMockContext({
@@ -466,6 +490,30 @@ describe('executeState / awaiting_processing', () => {
     const event = await executeState(state, ctx, deps);
 
     expect(event.type).toBe('ERROR');
+  });
+
+  it('backfills missing URLs from sourceUrlById map', async () => {
+    const state: ResearchState = { kind: 'awaiting_processing' };
+    const ctx = makeMockContext({
+      notebookId: 'nb-001',
+      sourceUrlById: { 'src-no-url': 'https://example.com/original-url' },
+    });
+    const deps = makeMockDeps({
+      notebookLM: {
+        ...makeMockDeps().notebookLM,
+        listSources: vi.fn().mockResolvedValue({
+          ok: true,
+          value: [makeMockSource({ id: 'src-no-url', url: '', title: 'Renamed Title' })],
+        }),
+      },
+    });
+
+    const event = await executeState(state, ctx, deps);
+
+    expect(event.type).toBe('SOURCES_READY');
+    if (event.type === 'SOURCES_READY') {
+      expect(event.sources[0]?.url).toBe('https://example.com/original-url');
+    }
   });
 
   it('returns ERROR (non-retriable) when notebookId is null', async () => {

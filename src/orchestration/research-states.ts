@@ -195,11 +195,13 @@ async function executeAddingSources(
   }
 
   const addedIds: string[] = [];
+  const sourceUrlById: Record<string, string> = {};
   const errors: string[] = [];
 
   // Step 1: Add discovered web sources using the session ID and sources stored in context.
   // These were captured during searching_sources and checkpointed to avoid re-searching.
   if (ctx.searchSessionId !== null && ctx.discoveredWebSources.length > 0) {
+    const capped = ctx.discoveredWebSources.slice(0, MAX_DISCOVERED_SOURCES);
     const discoveredResult = await deps.notebookLM.addDiscoveredSources(
       ctx.notebookId,
       ctx.searchSessionId,
@@ -209,6 +211,14 @@ async function executeAddingSources(
 
     if (discoveredResult.ok) {
       addedIds.push(...discoveredResult.value);
+      // Map returned IDs to their original URLs (SDK preserves input order)
+      for (let i = 0; i < discoveredResult.value.length && i < capped.length; i++) {
+        const id = discoveredResult.value[i];
+        const src = capped[i];
+        if (id !== undefined && src !== undefined) {
+          sourceUrlById[id] = src.url;
+        }
+      }
     } else {
       errors.push(`addDiscoveredSources: ${discoveredResult.error.message}`);
     }
@@ -225,6 +235,7 @@ async function executeAddingSources(
 
     if (hintResult.ok) {
       addedIds.push(hintResult.value);
+      sourceUrlById[hintResult.value] = url;
     } else {
       // Source hint failures are non-fatal — log and continue
       errors.push(`addSourceHint(${url}): ${hintResult.error.message}`);
@@ -243,7 +254,7 @@ async function executeAddingSources(
     };
   }
 
-  return { type: 'SOURCES_ADDED', sourceIds: addedIds };
+  return { type: 'SOURCES_ADDED', sourceIds: addedIds, sourceUrlById };
 }
 
 /**
@@ -287,11 +298,16 @@ async function executeAwaitingProcessing(
     };
   }
 
-  // Backfill missing URLs from discovered web sources (SDK doesn't return them for web search results)
+  // Backfill missing URLs: try ID-based map first (reliable), then title-based (best-effort)
   const urlByTitle = new Map(ctx.discoveredWebSources.map((ws) => [ws.title, ws.url]));
-  const sources = listResult.value.map((s) =>
-    s.url === '' && urlByTitle.has(s.title) ? { ...s, url: urlByTitle.get(s.title)! } : s,
-  );
+  const sources = listResult.value.map((s) => {
+    if (s.url !== '') return s;
+    const byId = ctx.sourceUrlById[s.id];
+    if (byId) return { ...s, url: byId };
+    const byTitle = urlByTitle.get(s.title);
+    if (byTitle) return { ...s, url: byTitle };
+    return s;
+  });
 
   return { type: 'SOURCES_READY', sources };
 }

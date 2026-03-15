@@ -27,6 +27,7 @@ function makeContext(overrides: Partial<ResearchContext> = {}): ResearchContext 
     notebookId: null,
     searchSessionId: null,
     discoveredWebSources: [],
+    sourceUrlById: {},
     sources: [],
     questions: [],
     answers: {},
@@ -209,7 +210,7 @@ describe('transition: searching_sources -> SOURCES_DISCOVERED', () => {
 describe('transition: adding_sources -> SOURCES_ADDED', () => {
   it('transitions to awaiting_processing', () => {
     const state: ResearchState = { kind: 'adding_sources' };
-    const event: ResearchEvent = { type: 'SOURCES_ADDED', sourceIds: ['id-1', 'id-2'] };
+    const event: ResearchEvent = { type: 'SOURCES_ADDED', sourceIds: ['id-1', 'id-2'], sourceUrlById: {} };
     const ctx = makeContext();
 
     const result = transition(state, event, ctx);
@@ -218,11 +219,21 @@ describe('transition: adding_sources -> SOURCES_ADDED', () => {
 
   it('clears lastError on success', () => {
     const state: ResearchState = { kind: 'adding_sources' };
-    const event: ResearchEvent = { type: 'SOURCES_ADDED', sourceIds: [] };
+    const event: ResearchEvent = { type: 'SOURCES_ADDED', sourceIds: [], sourceUrlById: {} };
     const ctx = makeContext({ lastError: 'prior error' });
 
     const result = transition(state, event, ctx);
     expect(result.context.lastError).toBeNull();
+  });
+
+  it('stores sourceUrlById in context', () => {
+    const state: ResearchState = { kind: 'adding_sources' };
+    const urlMap = { 'id-1': 'https://example.com/a', 'id-2': 'https://youtube.com/watch?v=xyz' };
+    const event: ResearchEvent = { type: 'SOURCES_ADDED', sourceIds: ['id-1', 'id-2'], sourceUrlById: urlMap };
+    const ctx = makeContext();
+
+    const result = transition(state, event, ctx);
+    expect(result.context.sourceUrlById).toEqual(urlMap);
   });
 
   it('fails on unexpected event', () => {
@@ -1100,7 +1111,7 @@ describe('full pipeline happy path', () => {
     expect(state.kind).toBe('adding_sources');
 
     // 3. adding_sources -> awaiting_processing
-    r = transition(state, { type: 'SOURCES_ADDED', sourceIds: ['src-1'] }, ctx);
+    r = transition(state, { type: 'SOURCES_ADDED', sourceIds: ['src-1'], sourceUrlById: {} }, ctx);
     state = r.state; ctx = r.context;
     expect(state.kind).toBe('awaiting_processing');
 

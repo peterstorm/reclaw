@@ -113,7 +113,7 @@ export type ResearchState =
 export type ResearchEvent =
   | { readonly type: 'NOTEBOOK_CREATED'; readonly notebookId: string }
   | { readonly type: 'SOURCES_DISCOVERED'; readonly webSources: readonly WebSource[]; readonly sessionId: string }
-  | { readonly type: 'SOURCES_ADDED'; readonly sourceIds: readonly string[] }
+  | { readonly type: 'SOURCES_ADDED'; readonly sourceIds: readonly string[]; readonly sourceUrlById: Readonly<Record<string, string>> }
   | { readonly type: 'SOURCES_READY'; readonly sources: readonly SourceMeta[] }
   | { readonly type: 'QUESTIONS_GENERATED'; readonly questions: readonly string[] }
   | { readonly type: 'QUERY_ANSWERED'; readonly question: string; readonly answer: ChatResponse }
@@ -141,6 +141,8 @@ export type ResearchContext = {
   readonly searchSessionId: string | null;
   /** Web sources discovered during searching_sources, carried into adding_sources. FR-012. */
   readonly discoveredWebSources: readonly WebSource[];
+  /** Map of sourceId → original URL, built during adding_sources for backfilling. */
+  readonly sourceUrlById: Readonly<Record<string, string>>;
   readonly sources: readonly SourceMeta[];
   readonly questions: readonly string[];
   readonly answers: Readonly<Record<string, ChatResponse>>;
@@ -227,6 +229,7 @@ export function makeResearchJobData(params: {
     notebookId: null,
     searchSessionId: null,
     discoveredWebSources: [],
+    sourceUrlById: {},
     sources: [],
     questions: [],
     answers: {},

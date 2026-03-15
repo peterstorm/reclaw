@@ -216,6 +216,7 @@ describe('createQueues', () => {
         notebookId: null,
         searchSessionId: null,
         discoveredWebSources: [] as never[],
+        sourceUrlById: {},
         sources: [] as never[],
         questions: [] as readonly string[],
         answers: {} as Record<string, never>,
