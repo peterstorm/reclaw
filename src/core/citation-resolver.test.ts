@@ -113,6 +113,47 @@ describe('resolveAnswerCitations', () => {
     });
   });
 
+  describe('multi-citation formats', () => {
+    it('resolves comma-separated [N, M] into two wikilinks', () => {
+      const { resolvedText } = resolveAnswerCitations('See [1, 2].', sources);
+      expect(resolvedText).toBe('See [[First Source#Passage 1]], [[Second Source#Passage 2]].');
+    });
+
+    it('resolves range [1-3] into three wikilinks', () => {
+      const { resolvedText } = resolveAnswerCitations('See [1-3].', sources);
+      expect(resolvedText).toBe('See [[First Source#Passage 1]], [[Second Source#Passage 2]], [[Third Source#Passage 3]].');
+    });
+
+    it('resolves comma-separated with spaces [1, 3]', () => {
+      const { resolvedText } = resolveAnswerCitations('From [1, 3].', sources);
+      expect(resolvedText).toBe('From [[First Source#Passage 1]], [[Third Source#Passage 3]].');
+    });
+
+    it('tracks all cited indices from multi-citation groups', () => {
+      const { citedSourceIndices } = resolveAnswerCitations('[1, 2, 3]', sources);
+      expect(citedSourceIndices.has(0)).toBe(true);
+      expect(citedSourceIndices.has(1)).toBe(true);
+      expect(citedSourceIndices.has(2)).toBe(true);
+      expect(citedSourceIndices.size).toBe(3);
+    });
+
+    it('leaves entire group unchanged when all citations are out of range', () => {
+      const { resolvedText } = resolveAnswerCitations('See [98, 99].', sources);
+      expect(resolvedText).toBe('See [98, 99].');
+    });
+
+    it('partially resolves when some citations are in range and some are not', () => {
+      const { resolvedText } = resolveAnswerCitations('See [1, 99].', sources);
+      expect(resolvedText).toContain('[[First Source#Passage 1]]');
+      expect(resolvedText).toContain('[99]');
+    });
+
+    it('handles en-dash range [1–3]', () => {
+      const { resolvedText } = resolveAnswerCitations('See [1\u20133].', sources);
+      expect(resolvedText).toBe('See [[First Source#Passage 1]], [[Second Source#Passage 2]], [[Third Source#Passage 3]].');
+    });
+  });
+
   describe('edge cases', () => {
     it('handles empty answer text', () => {
       const { resolvedText, citedSourceIndices } = resolveAnswerCitations('', sources);
@@ -297,5 +338,17 @@ describe('sanitizeTitleForWikilink', () => {
   it('strips all wikilink-invalid characters in one pass', () => {
     const result = sanitizeTitleForWikilink('A[B]C|D#E^F');
     expect(result).not.toMatch(/[[\]|#^]/);
+  });
+
+  it('strips colons from titles', () => {
+    expect(sanitizeTitleForWikilink('Code Execution with MCP: A New Approach')).toBe(
+      'Code Execution with MCP A New Approach',
+    );
+  });
+
+  it('strips all filesystem-illegal characters', () => {
+    const result = sanitizeTitleForWikilink('A/B\\C:D*E?F"G<H>I');
+    expect(result).not.toMatch(/[/\\:*?"<>]/);
+    expect(result).toBe('ABCDEFGHI');
   });
 });

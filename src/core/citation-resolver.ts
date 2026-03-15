@@ -26,13 +26,14 @@ export type CitationResolutionResult = {
 // ─── resolveAnswerCitations ────────────────────────────────────────────────────
 
 /**
- * Replace all [N] citation markers in answerText with Obsidian wikilinks.
+ * Replace all citation markers in answerText with Obsidian wikilinks.
  *
  * FR-031, FR-032:
- * - Parses every [N] marker (1-indexed) in the answer text.
+ * - Parses citation markers (1-indexed) in the answer text.
+ *   Supports single [N], comma-separated [N, M], range [N-M],
+ *   and mixed [N, M-O] formats.
  * - Looks up sources[N-1] to find the SourceMeta.
- * - Replaces [N] with [[Source Title#Passage N]] where Source Title is the
- *   sanitized note title (see sanitizeTitleForWikilink).
+ * - Replaces each citation number with [[Source Title#Passage N]].
  * - If N is out of range (source doesn't exist), leaves [N] as-is.
  * - Returns the resolved text and the set of 0-indexed source indices cited.
  *
@@ -45,22 +46,63 @@ export function resolveAnswerCitations(
 ): CitationResolutionResult {
   const citedSourceIndices = new Set<number>();
 
-  // Match all [N] markers where N is one or more digits.
-  // We use a replacer function to accumulate indices and build wikilinks.
-  const resolvedText = answerText.replace(/\[(\d+)\]/g, (_match, digits: string) => {
-    const n = parseInt(digits, 10);
-    const sourceIndex = n - 1; // [N] is 1-indexed; array is 0-indexed
-    const source = sources[sourceIndex];
-    if (source === undefined) {
-      // Out-of-range citation — leave original marker unchanged
-      return `[${digits}]`;
-    }
-    citedSourceIndices.add(sourceIndex);
-    const noteTitle = sanitizeTitleForWikilink(source.title);
-    return `[[${noteTitle}#Passage ${n}]]`;
-  });
+  // Match citation markers: [N], [N, M], [N-M], [N, M-O, P], etc.
+  // Content must be digits separated by commas, hyphens/en-dashes, and spaces.
+  const resolvedText = answerText.replace(
+    /\[(\d+(?:\s*[,\-–]\s*\d+)*)\]/g,
+    (_match, inner: string) => {
+      const citationNumbers = expandCitationGroup(inner);
+
+      const parts: string[] = citationNumbers.map((n) => {
+        const sourceIndex = n - 1;
+        const source = sources[sourceIndex];
+        if (source === undefined) {
+          return `[${n}]`;
+        }
+        citedSourceIndices.add(sourceIndex);
+        const noteTitle = sanitizeTitleForWikilink(source.title);
+        return `[[${noteTitle}#Passage ${n}]]`;
+      });
+
+      // If every citation was out of range, preserve the original bracket syntax
+      if (parts.every((p) => p.startsWith('[') && !p.startsWith('[['))) {
+        return _match;
+      }
+
+      return parts.join(', ');
+    },
+  );
 
   return { resolvedText, citedSourceIndices };
+}
+
+/**
+ * Expand a citation group string like "2, 3" or "7-9" or "4, 10-13"
+ * into a sorted array of individual citation numbers.
+ */
+function expandCitationGroup(inner: string): readonly number[] {
+  const segments = inner.split(/\s*,\s*/);
+  const numbers: number[] = [];
+
+  for (const segment of segments) {
+    const rangeParts = segment.split(/\s*[-–]\s*/);
+    if (rangeParts.length === 2) {
+      const start = parseInt(rangeParts[0]!, 10);
+      const end = parseInt(rangeParts[1]!, 10);
+      if (!isNaN(start) && !isNaN(end) && end >= start && end - start < 100) {
+        for (let i = start; i <= end; i++) {
+          numbers.push(i);
+        }
+      }
+    } else {
+      const n = parseInt(segment, 10);
+      if (!isNaN(n)) {
+        numbers.push(n);
+      }
+    }
+  }
+
+  return numbers;
 }
 
 // ─── generatePassageAnchors ────────────────────────────────────────────────────
@@ -110,16 +152,16 @@ export function generatePassageAnchors(
 /**
  * Sanitize a source title for use inside an Obsidian wikilink.
  *
- * Obsidian wikilinks cannot contain `|`, `[`, `]`, `#`, or `^` characters.
- * We strip these to produce a valid link target that matches the note filename.
+ * Strips both wikilink-invalid chars (`|`, `[`, `]`, `#`, `^`) and
+ * filesystem-illegal chars (`:`, `*`, `?`, `"`, `<`, `>`, `/`, `\`)
+ * so that wikilink targets match the note filename on disk.
  *
  * This must match the title sanitization used in buildSourceNote() so that
  * wikilinks point to the correct file.
  */
 export function sanitizeTitleForWikilink(title: string): string {
-  // Remove characters that are invalid in Obsidian wikilinks / note filenames
   return title
-    .replace(/[[\]|#^]/g, '')  // strip wikilink-invalid characters
-    .replace(/\s+/g, ' ')       // collapse whitespace
+    .replace(/[/\\:*?"<>|[\]#^]/g, '')  // strip filesystem-illegal + wikilink-invalid chars
+    .replace(/\s+/g, ' ')
     .trim();
 }

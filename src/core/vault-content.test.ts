@@ -239,9 +239,9 @@ describe('buildSourceNote', () => {
   });
 
   describe('wikilink back to hub', () => {
-    it('contains [[_index]] wikilink', () => {
+    it('contains disambiguated wikilink to hub note', () => {
       const note = buildSourceNote(source, topicSlug, hubPath, passageAnchors, researchDate, notebookId);
-      expect(note.content).toContain('[[_index]]');
+      expect(note.content).toContain('[[artificial-intelligence/_index|artificial-intelligence]]');
     });
   });
 
@@ -309,9 +309,9 @@ describe('buildQANote', () => {
       expect(note.content).toContain('_No sources cited._');
     });
 
-    it('contains up link to hub note', () => {
+    it('contains disambiguated up link to hub note', () => {
       const note = buildQANote(question, resolvedAnswer, citedSources, topicSlug, hubPath);
-      expect(note.content).toContain('[[_index]]');
+      expect(note.content).toContain('[[artificial-intelligence/_index|artificial-intelligence]]');
     });
 
     it('contains question in frontmatter', () => {
@@ -500,7 +500,7 @@ describe('buildAllVaultNotes', () => {
         // Extract the note title from the wikilink (before #)
         const inner = wikilink.slice(2, wikilink.length - 2);
         const titlePart = inner.split('#')[0]!.trim();
-        if (titlePart === '_index') continue; // hub note link
+        if (titlePart.endsWith('/_index')) continue; // hub note link
         // Check that a source note exists with this title in its path
         const matchingSource = sourceNotes.find((sn) =>
           sn.relativePath.includes(titlePart),

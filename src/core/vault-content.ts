@@ -154,9 +154,7 @@ export function buildSourceNote(
   notebookId: string,
 ): VaultNote {
   const relativePath = sourceRelativePath(topicSlug, source.title);
-  // hubPath is passed as relative path; convert to wikilink title
-  // The hub's wikilink is just "_index"
-  const hubWikilink = `[[_index]]`;
+  const hubWikilink = `[[${topicSlug}/_index|${topicSlug}]]`;
 
   const content = `---
 title: ${yamlValue(source.title)}
@@ -203,7 +201,7 @@ export function buildQANote(
   hubPath: string,
 ): VaultNote {
   const relativePath = qaRelativePath(topicSlug, question);
-  const hubWikilink = `[[_index]]`;
+  const hubWikilink = `[[${topicSlug}/_index|${topicSlug}]]`;
 
   const citedSourceLinks =
     citedSources.length > 0
