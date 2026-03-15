@@ -171,7 +171,10 @@ export function createTelegramAdapter(config: {
   };
 
   const start = async (): Promise<void> => {
-    bot.start();
+    bot.start().catch((err: unknown) => {
+      console.error('[telegram] bot.start() failed:', err);
+      process.exit(1);
+    });
   };
 
   const stop = async (): Promise<void> => {

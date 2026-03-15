@@ -2,6 +2,7 @@ import { parseExpression } from 'cron-parser';
 import { getNextRun, isWithinValidityWindow } from '../core/schedule.js';
 import {
   type JobId,
+  type Result,
   type ScheduledJob,
   type SkillConfig,
   type SkillId,
@@ -28,15 +29,12 @@ type CronEntry = {
 
 /**
  * Compute a unique job ID for a scheduled firing.
- * Pure: takes skillId + triggeredAt ISO string, returns a deterministic ID.
+ * Pure: takes skillId + triggeredAt ISO string, returns a deterministic Result.
  */
-function makeScheduledJobId(skillId: SkillId, triggeredAt: string): JobId {
+function makeScheduledJobId(skillId: SkillId, triggeredAt: string): Result<JobId, string> {
   const sanitized = triggeredAt.replaceAll(':', '-');
   const raw = `scheduled:${skillId}:${sanitized}`;
-  const result = makeJobId(raw);
-  // raw is never empty, so this always succeeds
-  if (!result.ok) throw new Error(`Unexpected JobId error: ${result.error}`);
-  return result.value;
+  return makeJobId(raw);
 }
 
 /**
@@ -57,10 +55,14 @@ function buildScheduledJob(
     triggeredAt.getTime() + skill.validityWindowMinutes * 60 * 1000,
   );
   const validUntilIso = validUntil.toISOString();
-  const id = makeScheduledJobId(skill.id, triggeredIso);
+  const idResult = makeScheduledJobId(skill.id, triggeredIso);
+  if (!idResult.ok) {
+    console.error(`[scheduler] Failed to create job ID for ${skill.id}: ${idResult.error}`);
+    return null;
+  }
 
   const result = makeScheduledJob({
-    id,
+    id: idResult.value,
     skillId: skill.id,
     triggeredAt: triggeredIso,
     validUntil: validUntilIso,

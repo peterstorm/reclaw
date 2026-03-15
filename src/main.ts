@@ -185,12 +185,16 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
     port: config.redisPort,
   });
 
-  // ── 4. Create session store ────────────────────────────────────────────────
+  // ── 4. Create shared Redis connection for session store + quota tracker ────
+  //    Tests inject their own createSessionStoreFn/createQuotaTrackerFn.
+  //    Production uses a single ioredis connection for both.
+  let sharedRedis: { quit: () => Promise<string> } | null = null;
+
   const createSessionStoreFn = injected.createSessionStoreFn ?? (async (redis: { host: string; port: number }) => {
     const { default: Redis } = await import('ioredis');
     const ioredis = new Redis({ host: redis.host, port: redis.port, maxRetriesPerRequest: null });
+    sharedRedis = ioredis;
     const { createSessionStore } = await import('./infra/session-store.js');
-    // Adapt ioredis to our minimal RedisClient interface
     const client: import('./infra/session-store.js').RedisClient = {
       get: (key) => ioredis.get(key),
       set: (key, value, options) => {
@@ -250,10 +254,17 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
     return notebookLMAdapter;
   };
 
-  // ── 8b. Create quota tracker using Redis ─────────────────────────────────
+  // ── 8b. Create quota tracker using shared Redis connection ─────────────────
   const createQuotaTrackerFn = injected.createQuotaTrackerFn ?? (async (redis: { host: string; port: number }) => {
-    const { default: Redis } = await import('ioredis');
-    const quotaRedis = new Redis({ host: redis.host, port: redis.port, maxRetriesPerRequest: null });
+    // Reuse the shared ioredis connection from session store when available
+    const ioredis = sharedRedis as import('ioredis').default | null;
+    let quotaRedis: import('ioredis').default;
+    if (ioredis) {
+      quotaRedis = ioredis;
+    } else {
+      const { default: Redis } = await import('ioredis');
+      quotaRedis = new Redis({ host: redis.host, port: redis.port, maxRetriesPerRequest: null });
+    }
     const { createQuotaTracker } = await import('./infra/quota-tracker.js');
     const qtClient: import('./infra/quota-tracker.js').QuotaRedisClient = {
       get: (key) => quotaRedis.get(key),
@@ -262,7 +273,8 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
       incrby: (key, count) => quotaRedis.incrby(key, count),
       expire: (key, ttlSeconds) => quotaRedis.expire(key, ttlSeconds),
     };
-    return { tracker: createQuotaTracker(qtClient), disconnect: () => quotaRedis.quit().then(() => {}) };
+    // Don't disconnect here — the shared connection is owned by the session store
+    return { tracker: createQuotaTracker(qtClient), disconnect: async () => {} };
   });
 
   const quotaTracker = await createQuotaTrackerFn({ host: config.redisHost, port: config.redisPort });
@@ -332,7 +344,12 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
   // Must complete before workers start so the skill registry is populated
   // when catch-up jobs are processed (prevents "skill not found" race).
   skillWatcher.start();
-  await skillWatcher.ready();
+  await Promise.race([
+    skillWatcher.ready(),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Skill watcher ready timeout (10s)')), 10_000),
+    ),
+  ]);
 
   // ── 11. Start workers ──────────────────────────────────────────────────────
   workers.start();

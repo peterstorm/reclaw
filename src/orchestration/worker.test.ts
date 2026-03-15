@@ -504,7 +504,7 @@ describe('createWorkers', () => {
       attemptsMade: 0,
     };
 
-    await expect(researchWorker!.processor(bullJob)).rejects.toThrow('Invalid research job data');
+    await expect(researchWorker!.processor(bullJob)).rejects.toThrow('Invalid research job');
   });
 
   it('research worker throws on missing state field', async () => {
@@ -518,7 +518,7 @@ describe('createWorkers', () => {
       attemptsMade: 0,
     };
 
-    await expect(researchWorker!.processor(bullJob)).rejects.toThrow('Invalid research job data');
+    await expect(researchWorker!.processor(bullJob)).rejects.toThrow('Invalid research job');
   });
 
   it('research worker throws on null data', async () => {
@@ -532,7 +532,7 @@ describe('createWorkers', () => {
       attemptsMade: 0,
     };
 
-    await expect(researchWorker!.processor(bullJob)).rejects.toThrow('Invalid research job data');
+    await expect(researchWorker!.processor(bullJob)).rejects.toThrow('Invalid research job');
   });
 
   it('research worker has concurrency=1 and long lockDuration (SC-009)', () => {

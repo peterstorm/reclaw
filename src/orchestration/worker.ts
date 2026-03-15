@@ -4,6 +4,7 @@ import type { TelegramAdapter } from '../infra/telegram.js';
 import type { ChatJob, JobResult, RecurringReminderJob, ReminderJob, ScheduledJob } from '../core/types.js';
 import type { ResearchJobData } from '../core/research-types.js';
 import type { ResearchJobLike } from './research-handler.js';
+import { parseChatJob, parseScheduledJob, parseReminderJob, parseRecurringReminderJob, parseResearchJobData } from '../core/job-schemas.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -74,6 +75,48 @@ const defaultWorkerFactory: WorkerFactory = (queueName, processor, opts) => {
   return new Worker(queueName, processor, opts);
 };
 
+// ─── Dead letter + error wiring ──────────────────────────────────────────────
+
+type DeadLetterOpts = {
+  readonly worker: BullWorkerLike;
+  readonly jobKind: string;
+  readonly telegram: TelegramAdapter;
+  /** Extract recipient chat IDs from the raw job data. */
+  readonly getChatIds: (data: unknown) => readonly number[];
+  /** Defaults to 3 if not specified. */
+  readonly defaultMaxAttempts?: number;
+};
+
+/**
+ * Attach dead-letter notification + error logging handlers to a BullMQ worker.
+ * Replaces the previously copy-pasted `on('failed')` / `on('error')` blocks.
+ */
+function attachDeadLetterHandler(opts: DeadLetterOpts): void {
+  const { worker, jobKind, telegram, getChatIds, defaultMaxAttempts = 3 } = opts;
+
+  worker.on('failed', async (...args: unknown[]) => {
+    const job = args[0] as { data: unknown; id?: string; opts?: { attempts?: number }; attemptsMade: number } | undefined;
+    const err = args[1] as Error | undefined;
+
+    if (job === undefined) return;
+    const maxAttempts = job.opts?.attempts ?? defaultMaxAttempts;
+    if (job.attemptsMade >= maxAttempts) {
+      const msg = formatDeadLetterMessage(jobKind, job.id ?? 'unknown', err?.message ?? String(err));
+      for (const chatId of getChatIds(job.data)) {
+        try {
+          await telegram.sendMessage(chatId, msg);
+        } catch (sendErr) {
+          console.error(`[worker:${jobKind}] Failed to send dead-letter notification:`, sendErr);
+        }
+      }
+    }
+  });
+
+  worker.on('error', (...args: unknown[]) => {
+    console.error(`[worker:${jobKind}] Worker error:`, args[0]);
+  });
+}
+
 // ─── Factory ──────────────────────────────────────────────────────────────────
 
 /**
@@ -112,11 +155,9 @@ export function createWorkers(deps: WorkerDeps): Workers {
   const chatWorker = workerFactory(
     'reclaw-chat',
     async (job) => {
-      const data = job.data;
-      if (typeof data !== 'object' || data === null || (data as Record<string, unknown>).kind !== 'chat') {
-        throw new Error(`Invalid chat job data: missing or wrong kind field`);
-      }
-      const chatJob = data as ChatJob;
+      const parsed = parseChatJob(job.data);
+      if (!parsed.ok) throw new Error(parsed.error);
+      const chatJob = parsed.value;
       console.log(`[worker:chat] Processing job ${job.id ?? 'unknown'} for chatId=${chatJob.chatId}`);
       const result = await chatHandler(chatJob);
       if (!result.ok) {
@@ -127,26 +168,11 @@ export function createWorkers(deps: WorkerDeps): Workers {
     { connection, concurrency: 1, lockDuration: longLockMs, stalledInterval: longLockMs },
   );
 
-  chatWorker.on('failed', async (...args: unknown[]) => {
-    const job = args[0] as { data: ChatJob; id?: string; opts?: { attempts?: number }; attemptsMade: number } | undefined;
-    const err = args[1] as Error | undefined;
-
-    // Dead letter: job has exhausted all retries
-    if (job === undefined) return;
-    const maxAttempts = job.opts?.attempts ?? 3;
-    if (job.attemptsMade >= maxAttempts) {
-      const msg = formatDeadLetterMessage('chat', job.id ?? 'unknown', err?.message ?? String(err));
-      const chatId = (job.data as ChatJob).chatId;
-      try {
-        await telegram.sendMessage(chatId, msg);
-      } catch (sendErr) {
-        console.error('[worker:chat] Failed to send dead-letter notification:', sendErr);
-      }
-    }
-  });
-
-  chatWorker.on('error', (...args: unknown[]) => {
-    console.error('[worker:chat] Worker error:', args[0]);
+  attachDeadLetterHandler({
+    worker: chatWorker,
+    jobKind: 'chat',
+    telegram,
+    getChatIds: (data) => [(data as ChatJob).chatId],
   });
 
   // ── Scheduled worker (FR-015: concurrency=1) ─────────────────────────────
@@ -154,11 +180,9 @@ export function createWorkers(deps: WorkerDeps): Workers {
   const scheduledWorker = workerFactory(
     'reclaw-scheduled',
     async (job) => {
-      const data = job.data;
-      if (typeof data !== 'object' || data === null || (data as Record<string, unknown>).kind !== 'scheduled') {
-        throw new Error(`Invalid scheduled job data: missing or wrong kind field`);
-      }
-      const scheduledJob = data as ScheduledJob;
+      const parsed = parseScheduledJob(job.data);
+      if (!parsed.ok) throw new Error(parsed.error);
+      const scheduledJob = parsed.value;
       console.log(`[worker:scheduled] Processing job ${job.id ?? 'unknown'} skill=${scheduledJob.skillId}`);
       const result = await scheduledHandler(scheduledJob);
       if (!result.ok) {
@@ -169,32 +193,12 @@ export function createWorkers(deps: WorkerDeps): Workers {
     { connection, concurrency: 1, lockDuration: longLockMs, stalledInterval: longLockMs },
   );
 
-  scheduledWorker.on('failed', async (...args: unknown[]) => {
-    const job = args[0] as { data: ScheduledJob; id?: string; opts?: { attempts?: number }; attemptsMade: number } | undefined;
-    const err = args[1] as Error | undefined;
-
-    // Dead letter: job has exhausted all retries
-    if (job === undefined) return;
-    const maxAttempts = job.opts?.attempts ?? 3;
-    if (job.attemptsMade >= maxAttempts) {
-      const msg = formatDeadLetterMessage(
-        'scheduled',
-        job.id ?? 'unknown',
-        err?.message ?? String(err),
-      );
-      // FR-005: Deliver to all authorized users' chats
-      for (const userId of config.authorizedUserIds) {
-        try {
-          await telegram.sendMessage(userId, msg);
-        } catch (sendErr) {
-          console.error('[worker:scheduled] Failed to send dead-letter notification:', sendErr);
-        }
-      }
-    }
-  });
-
-  scheduledWorker.on('error', (...args: unknown[]) => {
-    console.error('[worker:scheduled] Worker error:', args[0]);
+  // FR-005: Deliver to all authorized users' chats
+  attachDeadLetterHandler({
+    worker: scheduledWorker,
+    jobKind: 'scheduled',
+    telegram,
+    getChatIds: () => config.authorizedUserIds,
   });
 
   // ── Reminder worker (concurrency=1, lightweight — no AI subprocess) ─────
@@ -206,12 +210,21 @@ export function createWorkers(deps: WorkerDeps): Workers {
       if (typeof data !== 'object' || data === null) {
         throw new Error('Invalid reminder job data: not an object');
       }
-      console.log(`[worker:reminder] Processing job ${job.id ?? 'unknown'} kind=${(data as Record<string, unknown>).kind}`);
-      const result = await match((data as Record<string, unknown>).kind)
-        .with('reminder', () => reminderHandler(data as ReminderJob))
-        .with('recurring-reminder', () => recurringReminderHandler(data as RecurringReminderJob))
-        .otherwise((kind) => {
-          throw new Error(`Invalid reminder job data: unexpected kind "${String(kind)}"`);
+      const kind = (data as Record<string, unknown>).kind;
+      console.log(`[worker:reminder] Processing job ${job.id ?? 'unknown'} kind=${kind}`);
+      const result = await match(kind)
+        .with('reminder', () => {
+          const parsed = parseReminderJob(data);
+          if (!parsed.ok) throw new Error(parsed.error);
+          return reminderHandler(parsed.value);
+        })
+        .with('recurring-reminder', () => {
+          const parsed = parseRecurringReminderJob(data);
+          if (!parsed.ok) throw new Error(parsed.error);
+          return recurringReminderHandler(parsed.value);
+        })
+        .otherwise((k) => {
+          throw new Error(`Invalid reminder job data: unexpected kind "${String(k)}"`);
         });
       if (!result.ok) throw new Error(result.error);
       return result;
@@ -219,25 +232,11 @@ export function createWorkers(deps: WorkerDeps): Workers {
     { connection, concurrency: 1 },
   );
 
-  reminderWorker.on('failed', async (...args: unknown[]) => {
-    const job = args[0] as { data: ReminderJob; id?: string; opts?: { attempts?: number }; attemptsMade: number } | undefined;
-    const err = args[1] as Error | undefined;
-
-    if (job === undefined) return;
-    const maxAttempts = job.opts?.attempts ?? 3;
-    if (job.attemptsMade >= maxAttempts) {
-      const msg = formatDeadLetterMessage('reminder', job.id ?? 'unknown', err?.message ?? String(err));
-      const chatId = (job.data as ReminderJob).chatId;
-      try {
-        await telegram.sendMessage(chatId, msg);
-      } catch (sendErr) {
-        console.error('[worker:reminder] Failed to send dead-letter notification:', sendErr);
-      }
-    }
-  });
-
-  reminderWorker.on('error', (...args: unknown[]) => {
-    console.error('[worker:reminder] Worker error:', args[0]);
+  attachDeadLetterHandler({
+    worker: reminderWorker,
+    jobKind: 'reminder',
+    telegram,
+    getChatIds: (data) => [(data as ReminderJob).chatId],
   });
 
   // ── Research worker (AD-1: concurrency=1, long lock for SC-009) ──────────
@@ -247,17 +246,10 @@ export function createWorkers(deps: WorkerDeps): Workers {
   const researchWorker = workerFactory(
     'reclaw-research',
     async (job) => {
-      const data = job.data;
-      if (
-        typeof data !== 'object' ||
-        data === null ||
-        typeof (data as Record<string, unknown>).topic !== 'string' ||
-        typeof (data as Record<string, unknown>).state !== 'object'
-      ) {
-        throw new Error('Invalid research job data: expected ResearchJobData shape');
-      }
+      const parsed = parseResearchJobData(job.data);
+      if (!parsed.ok) throw new Error(parsed.error);
       // Construct ResearchJobLike wrapping real BullMQ job methods for checkpointing (SC-002/SC-003)
-      const researchJobData = data as ResearchJobData;
+      const researchJobData = parsed.value;
       console.log(`[worker:research] Processing job ${job.id ?? 'unknown'} topic="${researchJobData.topic}"`);
       const jobLike: ResearchJobLike = {
         data: researchJobData,
@@ -273,26 +265,13 @@ export function createWorkers(deps: WorkerDeps): Workers {
     { connection, concurrency: 1, lockDuration: researchLockMs, stalledInterval: researchLockMs },
   );
 
-  researchWorker.on('failed', async (...args: unknown[]) => {
-    const job = args[0] as { data: ResearchJobData; id?: string; opts?: { attempts?: number }; attemptsMade: number } | undefined;
-    const err = args[1] as Error | undefined;
-
-    if (job === undefined) return;
-    // Research queue has no retry — any failure is final
-    const maxAttempts = job.opts?.attempts ?? 1;
-    if (job.attemptsMade >= maxAttempts) {
-      const msg = formatDeadLetterMessage('research', job.id ?? 'unknown', err?.message ?? String(err));
-      const chatId = (job.data as ResearchJobData).chatId;
-      try {
-        await telegram.sendMessage(chatId, msg);
-      } catch (sendErr) {
-        console.error('[worker:research] Failed to send dead-letter notification:', sendErr);
-      }
-    }
-  });
-
-  researchWorker.on('error', (...args: unknown[]) => {
-    console.error('[worker:research] Worker error:', args[0]);
+  // Research queue has no retry — any failure is final
+  attachDeadLetterHandler({
+    worker: researchWorker,
+    jobKind: 'research',
+    telegram,
+    getChatIds: (data) => [(data as ResearchJobData).chatId],
+    defaultMaxAttempts: 1,
   });
 
   // ─── Public API ───────────────────────────────────────────────────────────

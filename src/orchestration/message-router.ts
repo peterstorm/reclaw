@@ -1,5 +1,6 @@
+import { match } from 'ts-pattern';
 import { makeTelegramUserId, makeChatJob, makeJobId, makeReminderJob, makeRecurringReminderJob } from '../core/types.js';
-import { parseRemindCommand, isRemindListCommand, parseRemindCancelCommand, formatDuration, formatAbsoluteTime, formatSemanticDate } from '../core/reminder.js';
+import { parseRemindCommand, isRemindListCommand, parseRemindCancelCommand, formatReminderList, formatReminderConfirmation } from '../core/reminder.js';
 import { parseResearchCommand } from '../core/research-request.js';
 import { makeResearchJobData } from '../core/research-types.js';
 import type { TelegramAdapter } from '../infra/telegram.js';
@@ -23,6 +24,26 @@ export type MessageRouterDeps = {
   readonly quotaTracker: QuotaTracker;
 };
 
+// ─── Command Discriminated Union ─────────────────────────────────────────────
+
+type Command =
+  | { readonly kind: 'new' }
+  | { readonly kind: 'remind' }
+  | { readonly kind: 'research-status' }
+  | { readonly kind: 'research' }
+  | { readonly kind: 'chat' };
+
+/** Parse raw message text into a Command for exhaustive routing. */
+export function parseCommandKind(text: string): Command {
+  const trimmed = text.trim();
+  if (trimmed === '/new') return { kind: 'new' };
+  if (trimmed.startsWith('/remind')) return { kind: 'remind' };
+  const lower = trimmed.toLowerCase();
+  if (lower === '/research-status') return { kind: 'research-status' };
+  if (lower.startsWith('/research')) return { kind: 'research' };
+  return { kind: 'chat' };
+}
+
 // ─── Router ───────────────────────────────────────────────────────────────────
 
 /**
@@ -36,74 +57,59 @@ export function routeMessage(msg: IncomingMessage, deps: MessageRouterDeps): voi
     return;
   }
 
-  // ── /new — clear session ──
-  if (msg.text.trim() === '/new') {
-    deps.sessionStore.deleteSession(msg.chatId).then(() => {
-      return deps.telegram.sendMessage(msg.chatId, 'Session cleared. Next message starts a fresh conversation.');
-    }).catch((err: unknown) => {
-      console.error('[router] Failed to handle /new command:', err);
-    });
-    return;
-  }
-
-  // ── /remind family ──
-  if (msg.text.trim().startsWith('/remind')) {
-    routeRemindCommand(msg, deps);
-    return;
-  }
-
-  // ── /research-status ──
-  if (msg.text.trim().toLowerCase() === '/research-status') {
-    routeResearchStatus(msg, deps);
-    return;
-  }
-
-  // ── /research <topic> ──
-  if (msg.text.trim().toLowerCase().startsWith('/research')) {
-    routeResearchCommand(msg, deps);
-    return;
-  }
-
-  // ── Reply-to-message routing + default chat ──
-  const replyRouting = msg.replyToMessageId !== undefined
-    ? deps.sessionStore.getMessageSession(msg.replyToMessageId).then((sessionId) => {
-        if (sessionId === null) return;
-        return deps.sessionStore.saveSession(
-          msg.chatId,
-          { sessionId, lastActivityAt: new Date().toISOString() },
-        );
+  match(parseCommandKind(msg.text))
+    .with({ kind: 'new' }, () => {
+      deps.sessionStore.deleteSession(msg.chatId).then(() => {
+        return deps.telegram.sendMessage(msg.chatId, 'Session cleared. Next message starts a fresh conversation.');
       }).catch((err: unknown) => {
-        console.error('[router] Failed to route reply-to session:', err);
-      })
-    : Promise.resolve();
+        console.error('[router] Failed to handle /new command:', err);
+      });
+    })
+    .with({ kind: 'remind' }, () => routeRemindCommand(msg, deps))
+    .with({ kind: 'research-status' }, () => routeResearchStatus(msg, deps))
+    .with({ kind: 'research' }, () => routeResearchCommand(msg, deps))
+    .with({ kind: 'chat' }, () => {
+      const replyRouting = msg.replyToMessageId !== undefined
+        ? deps.sessionStore.getMessageSession(msg.replyToMessageId).then((sessionId) => {
+            if (sessionId === null) return;
+            return deps.sessionStore.saveSession(
+              msg.chatId,
+              { sessionId, lastActivityAt: new Date().toISOString() },
+            );
+          }).catch((err: unknown) => {
+            console.error('[router] Failed to route reply-to session:', err);
+          })
+        : Promise.resolve();
 
-  replyRouting.then(() => {
-    const jobIdRaw = `chat:${msg.userId}:${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
-    const jobIdResult = makeJobId(jobIdRaw);
-    if (!jobIdResult.ok) {
-      console.error(`[router] Failed to create jobId: ${jobIdResult.error}`);
-      return;
-    }
+      replyRouting.then(() => {
+        const jobIdRaw = `chat:${msg.userId}:${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+        const jobIdResult = makeJobId(jobIdRaw);
+        if (!jobIdResult.ok) {
+          console.error(`[router] Failed to create jobId: ${jobIdResult.error}`);
+          return;
+        }
 
-    const chatJobResult = makeChatJob({
-      id: jobIdResult.value,
-      userId: userIdResult.value,
-      text: msg.text,
-      chatId: msg.chatId,
-      receivedAt: new Date().toISOString(),
-    });
+        const chatJobResult = makeChatJob({
+          id: jobIdResult.value,
+          userId: userIdResult.value,
+          text: msg.text,
+          chatId: msg.chatId,
+          receivedAt: new Date().toISOString(),
+        });
 
-    if (!chatJobResult.ok) {
-      console.error(`[router] Failed to create ChatJob: ${chatJobResult.error}`);
-      return;
-    }
+        if (!chatJobResult.ok) {
+          console.error(`[router] Failed to create ChatJob: ${chatJobResult.error}`);
+          return;
+        }
 
-    deps.queues.enqueueChat(chatJobResult.value).catch((err: unknown) => {
-      console.error('[router] Failed to enqueue chat job:', err);
-    });
-  }).catch((err: unknown) => {
-    console.error('[router] Failed to process message:', err);
-  });
+        deps.queues.enqueueChat(chatJobResult.value).catch((err: unknown) => {
+          console.error('[router] Failed to enqueue chat job:', err);
+        });
+      }).catch((err: unknown) => {
+        console.error('[router] Failed to process message:', err);
+      });
+    })
+    .exhaustive();
 }
 
 // ─── /remind sub-router ──────────────────────────────────────────────────────
@@ -114,14 +120,7 @@ function routeRemindCommand(msg: IncomingMessage, deps: MessageRouterDeps): void
     deps.queues.listRecurringReminders()
       .then((reminders) => {
         const mine = reminders.filter((r) => r.chatId === msg.chatId);
-        if (mine.length === 0) {
-          return deps.telegram.sendMessage(msg.chatId, 'No active recurring reminders.');
-        }
-        const lines = mine.map((r, i) => {
-          const schedule = r.cronDescription ?? (r.cronPattern ? r.cronPattern : `every ${formatDuration(r.intervalMs)}`);
-          return `${i + 1}. \`${r.schedulerId}\` ${schedule} — ${r.text}`;
-        });
-        const listMsg = `Active recurring reminders:\n\n${lines.join('\n')}\n\nCancel with: /remind cancel <id>`;
+        const listMsg = formatReminderList(mine) ?? 'No active recurring reminders.';
         return deps.telegram.sendMessage(msg.chatId, listMsg);
       })
       .catch((listErr: unknown) => {
@@ -183,10 +182,7 @@ function routeRemindCommand(msg: IncomingMessage, deps: MessageRouterDeps): void
 
     deps.queues.enqueueRecurringReminder(recurringResult.value)
       .then(() => {
-        const confirmMsg = recurParsed.kind === 'cron-recurring'
-          ? `Got it — I'll remind you ${recurParsed.cronDescription} to: ${recurParsed.text}`
-          : `Got it — I'll remind you every ${formatDuration(recurParsed.intervalMs)} to: ${recurParsed.text}`;
-        return deps.telegram.sendMessage(msg.chatId, confirmMsg);
+        return deps.telegram.sendMessage(msg.chatId, formatReminderConfirmation(parseResult.value));
       })
       .catch((recurErr: unknown) => {
         console.error('[router] Failed to enqueue recurring reminder:', recurErr);
@@ -218,13 +214,7 @@ function routeRemindCommand(msg: IncomingMessage, deps: MessageRouterDeps): void
 
   deps.queues.enqueueReminder(reminderResult.value)
     .then(() => {
-      const confirmMsg =
-        parsed.kind === 'duration'
-          ? `Got it — I'll remind you in ${formatDuration(parsed.delayMs)}.`
-          : parsed.kind === 'absolute'
-            ? `Got it — I'll remind you at ${formatAbsoluteTime(parsed.delayMs)}.`
-            : `Got it — I'll remind you on ${formatSemanticDate(parsed.delayMs)}.`;
-      return deps.telegram.sendMessage(msg.chatId, confirmMsg);
+      return deps.telegram.sendMessage(msg.chatId, formatReminderConfirmation(parseResult.value));
     })
     .catch((enqErr: unknown) => {
       console.error('[router] Failed to enqueue reminder job:', enqErr);

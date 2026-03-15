@@ -415,6 +415,49 @@ export function parseRemindCommand(input: string, now: Date = new Date()): Resul
   return err(`Could not parse a duration, time, or date from: "${withoutPrefix}". Examples: 30m, 14:30, tomorrow at 3pm, next friday`);
 }
 
+// ─── Reminder list + confirmation formatting ────────────────────────────────
+
+/** Minimal shape needed for formatting — avoids coupling to infra/queue RecurringReminderInfo. */
+type ReminderListEntry = {
+  readonly schedulerId: string;
+  readonly text: string;
+  readonly intervalMs: number;
+  readonly cronDescription?: string;
+  readonly cronPattern?: string;
+};
+
+/**
+ * Format a list of recurring reminders for display.
+ * Returns null if the list is empty.
+ */
+export function formatReminderList(reminders: readonly ReminderListEntry[]): string | null {
+  if (reminders.length === 0) return null;
+  const lines = reminders.map((r, i) => {
+    const schedule = r.cronDescription ?? (r.cronPattern ? r.cronPattern : `every ${formatDuration(r.intervalMs)}`);
+    return `${i + 1}. \`${r.schedulerId}\` ${schedule} — ${r.text}`;
+  });
+  return `Active recurring reminders:\n\n${lines.join('\n')}\n\nCancel with: /remind cancel <id>`;
+}
+
+/**
+ * Build a confirmation message for a successfully enqueued reminder.
+ */
+export function formatReminderConfirmation(parsed: ParsedReminder): string {
+  if (parsed.kind === 'cron-recurring') {
+    return `Got it — I'll remind you ${parsed.cronDescription} to: ${parsed.text}`;
+  }
+  if (parsed.kind === 'recurring') {
+    return `Got it — I'll remind you every ${formatDuration(parsed.intervalMs)} to: ${parsed.text}`;
+  }
+  if (parsed.kind === 'duration') {
+    return `Got it — I'll remind you in ${formatDuration(parsed.delayMs)}.`;
+  }
+  if (parsed.kind === 'absolute') {
+    return `Got it — I'll remind you at ${formatAbsoluteTime(parsed.delayMs)}.`;
+  }
+  return `Got it — I'll remind you on ${formatSemanticDate(parsed.delayMs)}.`;
+}
+
 // ─── Human-readable duration formatting ───────────────────────────────────────
 
 /**

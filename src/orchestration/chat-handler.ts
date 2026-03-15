@@ -41,6 +41,18 @@ type StreamBlock = {
   committedChars: number;
 };
 
+/** All mutable state for the streaming callback. Grouped for clarity and atomic reset. */
+type StreamState = {
+  blocks: StreamBlock[];
+  lastEditAt: number;
+  lastSeenThinkingBlocks: number;
+  lastSeenTextBlocks: number;
+};
+
+function createStreamState(): StreamState {
+  return { blocks: [], lastEditAt: 0, lastSeenThinkingBlocks: 0, lastSeenTextBlocks: 0 };
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function escapeHtml(s: string): string {
@@ -97,15 +109,12 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
   //    Thinking blocks are shown as italic, text blocks as plain text previews.
   //    Block boundaries are detected from content_block_start events in StreamChunk,
   //    with fallback to phase-transition detection.
-  const streamBlocks: StreamBlock[] = [];
-  let lastEditAt = 0;
-  let lastSeenThinkingBlocks = 0;
-  let lastSeenTextBlocks = 0;
+  let stream = createStreamState();
 
   /** Start a new streaming block. First block reuses placeholder; subsequent get new messages. */
   const startNewBlock = (type: 'thinking' | 'text'): void => {
     // Transition edit: finalize previous block immediately (both thinking→text and text→thinking)
-    const prevBlock = streamBlocks.length > 0 ? streamBlocks[streamBlocks.length - 1] : null;
+    const prevBlock = stream.blocks.length > 0 ? stream.blocks[stream.blocks.length - 1] : null;
     if (prevBlock && prevBlock.msgIds.length > 0 && prevBlock.content.length > 0) {
       const msgId = prevBlock.msgIds[prevBlock.msgIds.length - 1]!;
       if (prevBlock.type === 'thinking') {
@@ -127,9 +136,9 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
     }
 
     const newBlock: StreamBlock = { type, content: '', msgIds: [], committedChars: 0 };
-    streamBlocks.push(newBlock);
+    stream.blocks.push(newBlock);
 
-    if (streamBlocks.length === 1 && placeholderMsgId !== null) {
+    if (stream.blocks.length === 1 && placeholderMsgId !== null) {
       // First block reuses placeholder
       newBlock.msgIds.push(placeholderMsgId);
     } else {
@@ -140,7 +149,7 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
         newBlock.msgIds.push(msgId);
         // Catch-up edit: if content accumulated while waiting for message ID
         if (newBlock.content.length > 0) {
-          lastEditAt = Date.now();
+          stream.lastEditAt = Date.now();
           if (newBlock.type === 'thinking') {
             const escaped = escapeHtml(newBlock.content);
             const display = escaped.slice(newBlock.committedChars);
@@ -166,32 +175,29 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
 
   /** Reset all streaming state — used before stale session fallback retry. */
   const resetStreamingState = (): void => {
-    streamBlocks.length = 0;
-    lastEditAt = 0;
-    lastSeenThinkingBlocks = 0;
-    lastSeenTextBlocks = 0;
+    stream = createStreamState();
   };
 
   const onChunk = (chunk: StreamChunk): void => {
     if (placeholderMsgId === null) return;
 
     // Detect new blocks from block counts (content_block_start events)
-    if (chunk.thinkingBlockCount > lastSeenThinkingBlocks) {
-      lastSeenThinkingBlocks = chunk.thinkingBlockCount;
+    if (chunk.thinkingBlockCount > stream.lastSeenThinkingBlocks) {
+      stream.lastSeenThinkingBlocks = chunk.thinkingBlockCount;
       startNewBlock('thinking');
     }
-    if (chunk.textBlockCount > lastSeenTextBlocks) {
-      lastSeenTextBlocks = chunk.textBlockCount;
+    if (chunk.textBlockCount > stream.lastSeenTextBlocks) {
+      stream.lastSeenTextBlocks = chunk.textBlockCount;
       startNewBlock('text');
     }
 
     // Fallback: if no blocks yet, or phase changed without block_start, create block
-    const lastBlock = streamBlocks.length > 0 ? streamBlocks[streamBlocks.length - 1] : null;
+    const lastBlock = stream.blocks.length > 0 ? stream.blocks[stream.blocks.length - 1] : null;
     if (!lastBlock || lastBlock.type !== chunk.phase) {
       startNewBlock(chunk.phase);
     }
 
-    const currentBlock = streamBlocks[streamBlocks.length - 1]!;
+    const currentBlock = stream.blocks[stream.blocks.length - 1]!;
 
     // Update block content from per-block accumulators
     if (chunk.phase === 'thinking') {
@@ -202,8 +208,8 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
 
     // Throttle edits
     const nowMs = Date.now();
-    if (nowMs - lastEditAt < EDIT_THROTTLE_MS) return;
-    lastEditAt = nowMs;
+    if (nowMs - stream.lastEditAt < EDIT_THROTTLE_MS) return;
+    stream.lastEditAt = nowMs;
 
     if (currentBlock.msgIds.length === 0) return;
 
@@ -280,7 +286,7 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
   // 9. Handle failure (FR-012)
   if (!result.ok) {
     const errorMsg = 'Sorry, I ran into a problem processing your message. Please try again.';
-    if (streamBlocks.length > 0) {
+    if (stream.blocks.length > 0) {
       await deps.telegram.sendMessage(job.chatId, errorMsg);
     } else if (placeholderMsgId !== null) {
       await deps.telegram.editMessage(job.chatId, placeholderMsgId, errorMsg);
@@ -302,10 +308,10 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
   }
 
   // 11. Finalize all blocks — convert to proper HTML and edit messages
-  if (streamBlocks.length > 0) {
+  if (stream.blocks.length > 0) {
     const finalizationPromises: Promise<unknown>[] = [];
 
-    for (const block of streamBlocks) {
+    for (const block of stream.blocks) {
       if (block.content.length === 0) continue;
 
       if (block.type === 'thinking') {
@@ -342,7 +348,11 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
       }
     }
 
-    await Promise.all(finalizationPromises);
+    // Batch to avoid Telegram rate limits on large responses
+    const BATCH_SIZE = 10;
+    for (let i = 0; i < finalizationPromises.length; i += BATCH_SIZE) {
+      await Promise.all(finalizationPromises.slice(i, i + BATCH_SIZE));
+    }
   } else if (placeholderMsgId !== null) {
     // No streaming blocks — fall back to result.output
     const responseHtml = markdownToTelegramHtml(result.output);
