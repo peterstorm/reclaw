@@ -86,7 +86,7 @@ export function buildHubNote(ctx: ResearchContext, quality: QualityResult): Vaul
 
   const sourceLinks = ctx.sources
     .map((s) => {
-      const title = sanitizeTitleForWikilink(s.title);
+      const title = sanitizeFilename(sanitizeTitleForWikilink(s.title));
       return `- [[${title}]] — [${s.sourceType}](${s.url})`;
     })
     .join('\n');
@@ -209,7 +209,7 @@ export function buildQANote(
     citedSources.length > 0
       ? citedSources
           .map((s) => {
-            const title = sanitizeTitleForWikilink(s.title);
+            const title = sanitizeFilename(sanitizeTitleForWikilink(s.title));
             return `- [[${title}]]`;
           })
           .join('\n')
