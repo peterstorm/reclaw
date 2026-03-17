@@ -112,6 +112,7 @@ topic_slug: ${ctx.topicSlug}
 tags:
   - research
   - ${ctx.topicSlug}
+up: "[[reclaw/research/MOC]]"
 ---
 
 # ${ctx.topic}

@@ -487,6 +487,27 @@ async function executeWritingVault(
   const writeResult = await deps.vaultWriter.writeNotes(notes, deps.vaultBasePath);
 
   if (writeResult.ok) {
+    // Append new topic to the Research MOC (best-effort — failure here doesn't block the pipeline)
+    try {
+      const researchDate = ctx.startedAt.split('T')[0] ?? ctx.startedAt;
+      const mocEntry = `\n- [[reclaw/research/${ctx.topicSlug}/_index|${ctx.topic}]] — (${researchDate})\n`;
+      const mocPath = `${deps.vaultBasePath}/reclaw/research/MOC.md`;
+      // Insert before "## Related Learning Notes" if it exists, otherwise append to end
+      const fs = await import('fs/promises');
+      const mocContent = await fs.readFile(mocPath, 'utf8');
+      const relatedIdx = mocContent.indexOf('\n## Related Learning Notes');
+      const updatedMoc = relatedIdx !== -1
+        ? mocContent.slice(0, relatedIdx) + `\n## Uncategorized\n${mocEntry}` + mocContent.slice(relatedIdx)
+        : mocContent + `\n## Uncategorized\n${mocEntry}`;
+      // Only append if this topic isn't already in the MOC
+      if (!mocContent.includes(ctx.topicSlug)) {
+        await fs.writeFile(mocPath, updatedMoc, 'utf8');
+        console.log(`[research:vault] Added ${ctx.topicSlug} to Research MOC`);
+      }
+    } catch (mocErr) {
+      console.warn('[research:vault] Failed to update Research MOC:', mocErr);
+    }
+
     return { type: 'VAULT_WRITTEN', hubPath: writeResult.value };
   }
 
