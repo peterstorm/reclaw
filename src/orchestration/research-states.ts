@@ -439,6 +439,19 @@ async function executeQuerying(
 async function executeResolvingCitations(
   ctx: ResearchContext,
 ): Promise<ResearchEvent> {
+  // TEMP DEBUG: dump rawData to inspect citation-source mapping structure
+  // See ~/dev/notes/remotevault/reclaw/citation-source-mapping.md for investigation plan
+  const firstAnswer = Object.values(ctx.answers)[0];
+  if (firstAnswer?.rawData) {
+    try {
+      const fs = await import('fs/promises');
+      await fs.writeFile('/tmp/reclaw-rawdata-debug.json', JSON.stringify(firstAnswer.rawData, null, 2));
+      console.log('[research:citations] Dumped rawData to /tmp/reclaw-rawdata-debug.json');
+    } catch (err) {
+      console.warn('[research:citations] Failed to dump rawData:', err);
+    }
+  }
+
   const resolvedNotes: ResolvedNote[] = [];
 
   for (const [question, response] of Object.entries(ctx.answers)) {
