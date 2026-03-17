@@ -37,7 +37,7 @@ import { computeMetrics, evaluateQuality } from '../core/research-quality.js';
 const SEMANTIC_MIN_ANSWER_LENGTH = 100;
 
 /** Top N web sources to add from discovery results. FR-012. */
-const MAX_DISCOVERED_SOURCES = 10;
+const MAX_DISCOVERED_SOURCES = 20;
 
 /** Timeout for waiting for sources to be processed by NotebookLM. FR-016: 10 minutes. */
 const PROCESSING_TIMEOUT_MS = 10 * 60 * 1000;
