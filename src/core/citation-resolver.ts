@@ -23,6 +23,61 @@ export type CitationResolutionResult = {
   readonly citedSourceIndices: Set<number>;
 };
 
+/**
+ * Map from 1-indexed passage number to 0-indexed source index.
+ *
+ * NotebookLM [N] markers are passage references (per-answer, up to 40+),
+ * NOT source indices. Each passage belongs to a specific source.
+ */
+export type PassageToSourceMap = ReadonlyMap<number, number>;
+
+// ─── extractPassageToSourceMap ────────────────────────────────────────────────
+
+/**
+ * Extract a passage→source mapping from NotebookLM rawData.
+ *
+ * NotebookLM answers contain [N] markers that are passage references (1-indexed).
+ * The rawData encodes which source each passage belongs to at:
+ *   rawData[1][i][5][0][0][0] = source UUID for passage i+1
+ *
+ * Returns a Map<passageNumber, sourceIndex> for use by resolveAnswerCitations.
+ * Returns an empty map if rawData is missing or in an unexpected format.
+ */
+export function extractPassageToSourceMap(
+  rawData: unknown,
+  sources: readonly SourceMeta[],
+): PassageToSourceMap {
+  const map = new Map<number, number>();
+
+  if (!Array.isArray(rawData) || rawData.length < 2 || !Array.isArray(rawData[1])) {
+    return map;
+  }
+
+  const sourceIdToIndex = new Map<string, number>();
+  for (let i = 0; i < sources.length; i++) {
+    sourceIdToIndex.set(sources[i]!.id, i);
+  }
+
+  const passages: unknown[] = rawData[1];
+  for (let i = 0; i < passages.length; i++) {
+    const entry = passages[i];
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const sourceId = (entry as any)?.[5]?.[0]?.[0]?.[0];
+      if (typeof sourceId === 'string') {
+        const sourceIndex = sourceIdToIndex.get(sourceId);
+        if (sourceIndex !== undefined) {
+          map.set(i + 1, sourceIndex); // passage numbers are 1-indexed
+        }
+      }
+    } catch {
+      // Skip entries with unexpected structure
+    }
+  }
+
+  return map;
+}
+
 // ─── resolveAnswerCitations ────────────────────────────────────────────────────
 
 /**
@@ -32,7 +87,8 @@ export type CitationResolutionResult = {
  * - Parses citation markers (1-indexed) in the answer text.
  *   Supports single [N], comma-separated [N, M], range [N-M],
  *   and mixed [N, M-O] formats.
- * - Looks up sources[N-1] to find the SourceMeta.
+ * - When passageToSourceMap is provided, uses it to find the correct source
+ *   for each passage number. Falls back to sources[N-1] when no map entry.
  * - Replaces each citation number with [[Source Title#Passage N]].
  * - If N is out of range (source doesn't exist), leaves [N] as-is.
  * - Returns the resolved text and the set of 0-indexed source indices cited.
@@ -43,6 +99,7 @@ export type CitationResolutionResult = {
 export function resolveAnswerCitations(
   answerText: string,
   sources: readonly SourceMeta[],
+  passageToSourceMap?: PassageToSourceMap,
 ): CitationResolutionResult {
   const citedSourceIndices = new Set<number>();
 
@@ -54,7 +111,7 @@ export function resolveAnswerCitations(
       const citationNumbers = expandCitationGroup(inner);
 
       const parts: string[] = citationNumbers.map((n) => {
-        const sourceIndex = n - 1;
+        const sourceIndex = passageToSourceMap?.get(n) ?? (n - 1);
         const source = sources[sourceIndex];
         if (source === undefined) {
           return `[${n}]`;

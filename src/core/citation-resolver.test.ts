@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   resolveAnswerCitations,
+  extractPassageToSourceMap,
   generatePassageAnchors,
   sanitizeTitleForWikilink,
 } from './citation-resolver.js';
@@ -211,6 +212,128 @@ describe('resolveAnswerCitations', () => {
       // Title part should not contain wikilink-invalid characters
       expect(titlePart).not.toMatch(/[[\]|#^]/);
     });
+  });
+
+  describe('passageToSourceMap integration', () => {
+    it('uses passageToSourceMap to resolve [N] to the correct source', () => {
+      // passage 1 → source index 2 (Third Source), passage 2 → source index 0 (First Source)
+      const map = new Map([[1, 2], [2, 0]]);
+      const { resolvedText } = resolveAnswerCitations('See [1] and [2].', sources, map);
+      expect(resolvedText).toBe('See [[Third Source#Passage 1]] and [[First Source#Passage 2]].');
+    });
+
+    it('reports correct citedSourceIndices from passageToSourceMap', () => {
+      const map = new Map([[1, 2], [2, 2]]); // both passages from Third Source
+      const { citedSourceIndices } = resolveAnswerCitations('[1] [2]', sources, map);
+      expect(citedSourceIndices.size).toBe(1);
+      expect(citedSourceIndices.has(2)).toBe(true);
+    });
+
+    it('falls back to N-1 for passages not in passageToSourceMap', () => {
+      const map = new Map([[1, 2]]); // only passage 1 is mapped
+      const { resolvedText } = resolveAnswerCitations('[1] [2]', sources, map);
+      expect(resolvedText).toContain('[[Third Source#Passage 1]]');
+      // passage 2 falls back to sources[2-1] = Second Source
+      expect(resolvedText).toContain('[[Second Source#Passage 2]]');
+    });
+
+    it('resolves passages beyond source count when map is provided', () => {
+      // 3 sources but passage [15] maps to source index 1
+      const map = new Map([[15, 1]]);
+      const { resolvedText, citedSourceIndices } = resolveAnswerCitations('See [15].', sources, map);
+      expect(resolvedText).toBe('See [[Second Source#Passage 15]].');
+      expect(citedSourceIndices.has(1)).toBe(true);
+    });
+
+    it('handles comma-separated citations with passageToSourceMap', () => {
+      const map = new Map([[1, 0], [5, 2]]);
+      const { resolvedText } = resolveAnswerCitations('See [1, 5].', sources, map);
+      expect(resolvedText).toBe('See [[First Source#Passage 1]], [[Third Source#Passage 5]].');
+    });
+  });
+});
+
+// ─── extractPassageToSourceMap ────────────────────────────────────────────────
+
+describe('extractPassageToSourceMap', () => {
+  // Helper to build rawData in NotebookLM's format:
+  // rawData[1][i][5][0][0][0] = source UUID for passage i+1
+  const buildRawData = (passageMappings: Array<string | null>): unknown[] => {
+    const passages = passageMappings.map((sourceId) => {
+      if (sourceId === null) return null;
+      // Minimal structure: entry[5][0][0][0] = sourceId
+      return [null, null, null, null, null, [[[sourceId]]]];
+    });
+    return ['answer-text-placeholder', passages];
+  };
+
+  it('extracts passage-to-source mapping from rawData', () => {
+    const rawData = buildRawData(['src-1', 'src-2', 'src-3']);
+    const map = extractPassageToSourceMap(rawData, sources);
+    expect(map.get(1)).toBe(0); // passage 1 → source index 0
+    expect(map.get(2)).toBe(1); // passage 2 → source index 1
+    expect(map.get(3)).toBe(2); // passage 3 → source index 2
+    expect(map.size).toBe(3);
+  });
+
+  it('maps multiple passages to the same source', () => {
+    const rawData = buildRawData(['src-1', 'src-1', 'src-2', 'src-1']);
+    const map = extractPassageToSourceMap(rawData, sources);
+    expect(map.get(1)).toBe(0);
+    expect(map.get(2)).toBe(0);
+    expect(map.get(3)).toBe(1);
+    expect(map.get(4)).toBe(0);
+  });
+
+  it('skips passages with unknown source IDs', () => {
+    const rawData = buildRawData(['src-1', 'unknown-id', 'src-3']);
+    const map = extractPassageToSourceMap(rawData, sources);
+    expect(map.get(1)).toBe(0);
+    expect(map.has(2)).toBe(false); // unknown ID skipped
+    expect(map.get(3)).toBe(2);
+    expect(map.size).toBe(2);
+  });
+
+  it('returns empty map for null rawData', () => {
+    const map = extractPassageToSourceMap(null, sources);
+    expect(map.size).toBe(0);
+  });
+
+  it('returns empty map for undefined rawData', () => {
+    const map = extractPassageToSourceMap(undefined, sources);
+    expect(map.size).toBe(0);
+  });
+
+  it('returns empty map when rawData[1] is not an array', () => {
+    const map = extractPassageToSourceMap(['text', 'not-an-array'], sources);
+    expect(map.size).toBe(0);
+  });
+
+  it('returns empty map for empty array rawData', () => {
+    const map = extractPassageToSourceMap([], sources);
+    expect(map.size).toBe(0);
+  });
+
+  it('skips null entries in passage array', () => {
+    const rawData = buildRawData(['src-1', null, 'src-3']);
+    const map = extractPassageToSourceMap(rawData, sources);
+    expect(map.get(1)).toBe(0);
+    expect(map.has(2)).toBe(false);
+    expect(map.get(3)).toBe(2);
+  });
+
+  it('handles entries with unexpected nested structure gracefully', () => {
+    const rawData: unknown[] = ['text', [
+      [null, null, null, null, null, [[[sources[0]!.id]]]],  // valid
+      'not-an-object',                                        // invalid
+      42,                                                      // invalid
+      [null, null, null, null, null, [[[sources[2]!.id]]]],  // valid
+    ]];
+    const map = extractPassageToSourceMap(rawData, sources);
+    expect(map.get(1)).toBe(0);
+    expect(map.has(2)).toBe(false);
+    expect(map.has(3)).toBe(false);
+    expect(map.get(4)).toBe(2);
   });
 });
 

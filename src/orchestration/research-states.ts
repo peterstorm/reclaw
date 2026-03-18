@@ -27,7 +27,7 @@ import type {
   ResearchState,
 } from '../core/research-types.js';
 import { buildAllVaultNotes, buildEmergencyNote } from '../core/vault-content.js';
-import { resolveAnswerCitations } from '../core/citation-resolver.js';
+import { resolveAnswerCitations, extractPassageToSourceMap } from '../core/citation-resolver.js';
 import type { ArtifactMeta, ResolvedNote } from '../core/research-types.js';
 import { computeMetrics, evaluateQuality } from '../core/research-quality.js';
 
@@ -435,35 +435,19 @@ async function executeQuerying(
  *
  * Pure transform — no I/O in this state.
  * FR-031, FR-032: Replace [N] markers with [[Source Title#Passage N]] wikilinks.
+ *
+ * NotebookLM [N] markers are passage references (not source indices).
+ * Each answer's rawData encodes which source each passage belongs to.
  */
 async function executeResolvingCitations(
   ctx: ResearchContext,
 ): Promise<ResearchEvent> {
-  // DEBUG: dump all answers' rawData + citations to inspect mapping structure
-  try {
-    const fs = await import('fs/promises');
-    const debugPayload = {
-      sources: ctx.sources.map((s, i) => ({ index: i, id: s.id, title: s.title, url: s.url, sourceType: s.sourceType })),
-      answers: Object.fromEntries(
-        Object.entries(ctx.answers).map(([q, r]) => [q, {
-          citationsArray: r.citations,
-          textFirst300: r.text.slice(0, 300),
-          rawDataKeys: r.rawData ? Object.keys(r.rawData as Record<string, unknown>) : null,
-          rawData: r.rawData,
-        }]),
-      ),
-    };
-    await fs.writeFile('/tmp/reclaw-citation-debug.json', JSON.stringify(debugPayload, null, 2));
-    console.log('[research:citations] Dumped full citation debug to /tmp/reclaw-citation-debug.json');
-  } catch (err) {
-    console.warn('[research:citations] Failed to dump debug:', err);
-  }
-
   const resolvedNotes: ResolvedNote[] = [];
 
   for (const [question, response] of Object.entries(ctx.answers)) {
-    console.log(`[research:citations] Resolving: "${question.slice(0, 60)}..." — citations array: [${response.citations.join(', ')}]`);
-    const { resolvedText, citedSourceIndices } = resolveAnswerCitations(response.text, ctx.sources);
+    const passageMap = extractPassageToSourceMap(response.rawData, ctx.sources);
+    console.log(`[research:citations] Resolving: "${question.slice(0, 60)}..." — ${passageMap.size} passage→source mappings`);
+    const { resolvedText, citedSourceIndices } = resolveAnswerCitations(response.text, ctx.sources, passageMap);
     console.log(`[research:citations] -> cited source indices: [${Array.from(citedSourceIndices).join(', ')}]`);
     resolvedNotes.push({
       type: 'qa',
