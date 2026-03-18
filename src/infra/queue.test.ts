@@ -204,12 +204,14 @@ describe('createQueues', () => {
     const queues = createQueues(redisConnection);
     const researchJobData = {
       topic: 'AI agents',
+      prompt: null,
       topicSlug: 'ai-agents' as import('../core/research-types.js').ResearchJobData['topicSlug'],
       sourceHints: [] as readonly string[],
       chatId: 987654,
       state: { kind: 'creating_notebook' as const },
       context: {
         topic: 'AI agents',
+        prompt: null,
         topicSlug: 'ai-agents' as import('../core/research-types.js').ResearchJobData['topicSlug'],
         sourceHints: [] as readonly string[],
         chatId: 987654,

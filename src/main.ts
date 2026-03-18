@@ -284,7 +284,7 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
 
   // ── 8d. Research LLM adapter ─────────────────────────────────────────────
   const researchLLMAdapter = await import('./infra/research-llm-client.js').then((m) =>
-    m.createResearchLLMAdapter(config.workspacePath),
+    m.createResearchLLMAdapter(config.workspacePath, 30_000, 600_000),
   );
 
   // ── 8. Create workers ──────────────────────────────────────────────────────
@@ -350,6 +350,20 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
       setTimeout(() => reject(new Error('Skill watcher ready timeout (10s)')), 10_000),
     ),
   ]);
+
+  // ── 10b. Drain stale chat jobs from previous instance ───────────────────
+  // Chat jobs are ephemeral user messages — any left in the queue from before
+  // this restart are stale (the Claude session they referenced is gone).
+  // drain() removes waiting jobs; clean() removes delayed (pending retries)
+  // and failed jobs that would otherwise resurrect via BullMQ backoff.
+  try {
+    await queues.chat.drain();
+    await queues.chat.clean(0, 0, 'delayed');
+    await queues.chat.clean(0, 0, 'failed');
+    console.info('[main] Drained stale chat jobs from previous instance');
+  } catch (err: unknown) {
+    console.warn('[main] Failed to drain stale chat jobs:', err);
+  }
 
   // ── 11. Start workers ──────────────────────────────────────────────────────
   workers.start();

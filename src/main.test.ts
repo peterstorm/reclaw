@@ -43,7 +43,7 @@ function makeMockTelegram() {
 
 function makeMockQueues() {
   return {
-    chat: { close: vi.fn().mockResolvedValue(undefined), on: vi.fn() },
+    chat: { close: vi.fn().mockResolvedValue(undefined), on: vi.fn(), drain: vi.fn().mockResolvedValue(undefined), clean: vi.fn().mockResolvedValue(undefined) },
     scheduled: { close: vi.fn().mockResolvedValue(undefined), on: vi.fn() },
     reminder: { close: vi.fn().mockResolvedValue(undefined), on: vi.fn() },
     research: {
