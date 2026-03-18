@@ -48,6 +48,7 @@ const makeMockContext = (overrides: Partial<ResearchContext> = {}): ResearchCont
   generateAudio: false,
   generateVideo: false,
   artifacts: [],
+  artifactFailures: [],
   ...overrides,
 });
 
@@ -304,7 +305,7 @@ describe('executeState / adding_sources', () => {
       'nb-001',
       'session-001',
       expect.arrayContaining([{ title: 'Source 1', url: 'https://example.com/1' }]),
-      10,
+      50,
     );
   });
 

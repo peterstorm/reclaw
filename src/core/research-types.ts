@@ -122,7 +122,7 @@ export type ResearchEvent =
   | { readonly type: 'CITATIONS_RESOLVED'; readonly resolvedNotes: readonly ResolvedNote[] }
   | { readonly type: 'VAULT_WRITTEN'; readonly hubPath: string }
   | { readonly type: 'EMERGENCY_WRITTEN'; readonly path: string }
-  | { readonly type: 'ARTIFACTS_GENERATED'; readonly artifacts: readonly ArtifactMeta[] }
+  | { readonly type: 'ARTIFACTS_GENERATED'; readonly artifacts: readonly ArtifactMeta[]; readonly artifactFailures: readonly string[] }
   | { readonly type: 'NOTIFIED' }
   | { readonly type: 'ERROR'; readonly error: string; readonly retriable: boolean };
 
@@ -151,6 +151,8 @@ export type ResearchContext = {
   readonly generateAudio: boolean;
   readonly generateVideo: boolean;
   readonly artifacts: readonly ArtifactMeta[];
+  /** Types of artifacts that were requested but failed to generate. */
+  readonly artifactFailures: readonly string[];
   readonly hubPath: string | null;
   readonly retries: Partial<Record<string, number>>;
   readonly lastError: string | null;
@@ -238,6 +240,7 @@ export function makeResearchJobData(params: {
     generateAudio: params.generateAudio ?? false,
     generateVideo: params.generateVideo ?? false,
     artifacts: [],
+    artifactFailures: [],
     hubPath: null,
     retries: {},
     lastError: null,

@@ -36,8 +36,8 @@ import { computeMetrics, evaluateQuality } from '../core/research-quality.js';
 /** Minimum answer text length below which we consider the response too short (semantic circuit breaker). */
 const SEMANTIC_MIN_ANSWER_LENGTH = 100;
 
-/** Top N web sources to add from discovery results. FR-012. */
-const MAX_DISCOVERED_SOURCES = 20;
+/** Top N web sources to add from discovery results. FR-012. Plus tier supports up to 300. */
+const MAX_DISCOVERED_SOURCES = 50;
 
 /** Timeout for waiting for sources to be processed by NotebookLM. FR-016: 10 minutes. */
 const PROCESSING_TIMEOUT_MS = 10 * 60 * 1000;
@@ -174,7 +174,7 @@ async function executeSearchingSources(
 /**
  * adding_sources: Add discovered web sources + source hint URLs to the notebook.
  *
- * FR-012: Add top 10 discovered sources.
+ * FR-012: Add top discovered sources (capped by MAX_DISCOVERED_SOURCES).
  * FR-013: Add user-provided source hint URLs.
  * FR-014: Support YouTube URLs and web URLs.
  *
@@ -439,23 +439,32 @@ async function executeQuerying(
 async function executeResolvingCitations(
   ctx: ResearchContext,
 ): Promise<ResearchEvent> {
-  // TEMP DEBUG: dump rawData to inspect citation-source mapping structure
-  // See ~/dev/notes/remotevault/reclaw/citation-source-mapping.md for investigation plan
-  const firstAnswer = Object.values(ctx.answers)[0];
-  if (firstAnswer?.rawData) {
-    try {
-      const fs = await import('fs/promises');
-      await fs.writeFile('/tmp/reclaw-rawdata-debug.json', JSON.stringify(firstAnswer.rawData, null, 2));
-      console.log('[research:citations] Dumped rawData to /tmp/reclaw-rawdata-debug.json');
-    } catch (err) {
-      console.warn('[research:citations] Failed to dump rawData:', err);
-    }
+  // DEBUG: dump all answers' rawData + citations to inspect mapping structure
+  try {
+    const fs = await import('fs/promises');
+    const debugPayload = {
+      sources: ctx.sources.map((s, i) => ({ index: i, id: s.id, title: s.title, url: s.url, sourceType: s.sourceType })),
+      answers: Object.fromEntries(
+        Object.entries(ctx.answers).map(([q, r]) => [q, {
+          citationsArray: r.citations,
+          textFirst300: r.text.slice(0, 300),
+          rawDataKeys: r.rawData ? Object.keys(r.rawData as Record<string, unknown>) : null,
+          rawData: r.rawData,
+        }]),
+      ),
+    };
+    await fs.writeFile('/tmp/reclaw-citation-debug.json', JSON.stringify(debugPayload, null, 2));
+    console.log('[research:citations] Dumped full citation debug to /tmp/reclaw-citation-debug.json');
+  } catch (err) {
+    console.warn('[research:citations] Failed to dump debug:', err);
   }
 
   const resolvedNotes: ResolvedNote[] = [];
 
   for (const [question, response] of Object.entries(ctx.answers)) {
+    console.log(`[research:citations] Resolving: "${question.slice(0, 60)}..." — citations array: [${response.citations.join(', ')}]`);
     const { resolvedText, citedSourceIndices } = resolveAnswerCitations(response.text, ctx.sources);
+    console.log(`[research:citations] -> cited source indices: [${Array.from(citedSourceIndices).join(', ')}]`);
     resolvedNotes.push({
       type: 'qa',
       filename: question,
@@ -549,6 +558,7 @@ async function executeGeneratingArtifacts(
   }
 
   const artifacts: ArtifactMeta[] = [];
+  const artifactFailures: string[] = [];
 
   // Get a share URL for the notebook (shared link, no Google login required)
   let shareUrl: string | null = null;
@@ -576,10 +586,13 @@ async function executeGeneratingArtifacts(
       if (waitResult.ok && waitResult.value === 'ready') {
         artifacts.push({ type: 'audio', artifactId: createResult.value, url: notebookUrl });
       } else {
-        console.warn('[research:artifacts] Audio generation failed or timed out');
+        const reason = waitResult.ok ? `artifact state: ${waitResult.value}` : waitResult.error.message;
+        console.warn('[research:artifacts] Audio generation failed or timed out:', reason);
+        artifactFailures.push(`Audio: ${reason}`);
       }
     } else {
       console.warn('[research:artifacts] createAudioOverview failed:', createResult.error.message);
+      artifactFailures.push(`Audio: ${createResult.error.message}`);
     }
   }
 
@@ -599,10 +612,13 @@ async function executeGeneratingArtifacts(
       if (waitResult.ok && waitResult.value === 'ready') {
         artifacts.push({ type: 'video', artifactId: createResult.value, url: notebookUrl });
       } else {
-        console.warn('[research:artifacts] Video generation failed or timed out');
+        const reason = waitResult.ok ? `artifact state: ${waitResult.value}` : waitResult.error.message;
+        console.warn('[research:artifacts] Video generation failed or timed out:', reason);
+        artifactFailures.push(`Video: ${reason}`);
       }
     } else {
       console.warn('[research:artifacts] createVideoOverview failed:', createResult.error.message);
+      artifactFailures.push(`Video: ${createResult.error.message}`);
     }
   }
 
@@ -620,7 +636,7 @@ async function executeGeneratingArtifacts(
     }
   }
 
-  return { type: 'ARTIFACTS_GENERATED', artifacts };
+  return { type: 'ARTIFACTS_GENERATED', artifacts, artifactFailures };
 }
 
 /**
@@ -678,6 +694,10 @@ async function executeNotifying(
     ? `\n\nMedia:\n${ctx.artifacts.map((a) => `• ${a.type === 'audio' ? 'Audio' : 'Video'}: ${a.url}`).join('\n')}`
     : '';
 
+  const artifactFailuresText = ctx.artifactFailures.length > 0
+    ? `\n\nFailed artifacts:\n${ctx.artifactFailures.map((f) => `• ${f}`).join('\n')}`
+    : '';
+
   const telegramSummary =
     `Research Complete: ${ctx.topic}\n\n` +
     `Quality: ${quality.grade.toUpperCase()}\n` +
@@ -690,6 +710,7 @@ async function executeNotifying(
     warningsText +
     keyFindingsSection +
     artifactLinks +
+    artifactFailuresText +
     hubLink;
 
   // Send Telegram notification

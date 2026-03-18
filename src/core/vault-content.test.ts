@@ -60,6 +60,7 @@ const makeContext = (overrides: Partial<ResearchContext> = {}): ResearchContext 
   generateAudio: false,
   generateVideo: false,
   artifacts: [],
+  artifactFailures: [],
   ...overrides,
 });
 

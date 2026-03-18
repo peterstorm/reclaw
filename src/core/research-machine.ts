@@ -347,6 +347,7 @@ function handleGeneratingArtifacts(
   const nextContext: ResearchContext = {
     ...ctx,
     artifacts: event.artifacts,
+    artifactFailures: event.artifactFailures,
     lastError: null,
     retries: clearRetries(ctx.retries, 'generating_artifacts'),
   };

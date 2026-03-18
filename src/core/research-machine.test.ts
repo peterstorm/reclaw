@@ -42,6 +42,7 @@ function makeContext(overrides: Partial<ResearchContext> = {}): ResearchContext 
     generateAudio: false,
     generateVideo: false,
     artifacts: [],
+    artifactFailures: [],
     ...overrides,
   };
 }
@@ -937,7 +938,7 @@ describe('transition: generating_artifacts -> ARTIFACTS_GENERATED', () => {
     const artifacts = [
       { type: 'audio' as const, artifactId: 'audio-001', url: 'https://notebooklm.google.com/audio/001' },
     ];
-    const event: ResearchEvent = { type: 'ARTIFACTS_GENERATED', artifacts };
+    const event: ResearchEvent = { type: 'ARTIFACTS_GENERATED', artifacts, artifactFailures: [] };
     const ctx = makeContext();
 
     const result = transition(state, event, ctx);
@@ -947,7 +948,7 @@ describe('transition: generating_artifacts -> ARTIFACTS_GENERATED', () => {
 
   it('clears lastError on success', () => {
     const state: ResearchState = { kind: 'generating_artifacts' };
-    const event: ResearchEvent = { type: 'ARTIFACTS_GENERATED', artifacts: [] };
+    const event: ResearchEvent = { type: 'ARTIFACTS_GENERATED', artifacts: [], artifactFailures: [] };
     const ctx = makeContext({ lastError: 'prior error' });
 
     const result = transition(state, event, ctx);

@@ -231,6 +231,7 @@ describe('createQueues', () => {
         generateAudio: false,
         generateVideo: false,
         artifacts: [],
+        artifactFailures: [],
       },
     };
     await queues.enqueueResearch(researchJobData);

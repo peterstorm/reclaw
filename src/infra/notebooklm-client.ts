@@ -4,7 +4,7 @@
 //
 // FR-010: System MUST create one NotebookLM notebook per research topic.
 // FR-011: System MUST perform a web search via the NotebookLM SDK.
-// FR-012: System MUST add the top 10 discovered web sources.
+// FR-012: System MUST add the top discovered web sources (capped by MAX_DISCOVERED_SOURCES).
 // FR-013: System MUST parse user-provided source hint URLs.
 // FR-014: System MUST support YouTube URLs and web URLs as source hint types.
 // FR-015: System MUST wait for all added sources to complete processing.
@@ -318,6 +318,7 @@ export async function createNotebookLMAdapter(
     const result = await safeCall(() => sdk.generation.chat(notebookId, question));
     if (!result.ok) return result;
     const data = result.value;
+
     const chatResponse: ChatResponse = {
       text: data.text ?? '',
       citations: data.citations ?? [],

@@ -43,6 +43,7 @@ function makeContext(overrides: Partial<ResearchContext> = {}): ResearchContext 
     generateAudio: false,
     generateVideo: false,
     artifacts: [],
+    artifactFailures: [],
   };
   return { ...defaultCtx, ...overrides };
 }
