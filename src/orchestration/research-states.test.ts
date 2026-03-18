@@ -7,6 +7,8 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   executeState,
   buildCortexSummary,
+  normalizeUrl,
+  deduplicateClaudeUrls,
   type ResearchDeps,
 } from './research-states.js';
 import type {
@@ -33,6 +35,7 @@ const makeMockContext = (overrides: Partial<ResearchContext> = {}): ResearchCont
   notebookId: null,
   searchSessionId: null,
   discoveredWebSources: [],
+  claudeDiscoveredUrls: [],
   sourceUrlById: {},
   sources: [],
   questions: [],
@@ -110,6 +113,10 @@ function makeMockDeps(overrides: Partial<ResearchDeps> = {}): ResearchDeps {
     rephraseQuestion: vi.fn().mockResolvedValue({
       ok: true,
       value: 'Rephrased question?',
+    }),
+    discoverSourceUrls: vi.fn().mockResolvedValue({
+      ok: true,
+      value: ['https://claude-found.com/article1', 'https://claude-found.com/article2'],
     }),
   };
 
@@ -1131,6 +1138,221 @@ describe('executeState / terminal states', () => {
     if (event.type === 'ERROR') {
       expect(event.retriable).toBe(false);
     }
+  });
+});
+
+// ─── normalizeUrl tests ───────────────────────────────────────────────────────
+
+describe('normalizeUrl', () => {
+  it('strips trailing slash', () => {
+    expect(normalizeUrl('https://example.com/')).toBe('https://example.com');
+  });
+
+  it('lowercases hostname', () => {
+    expect(normalizeUrl('https://Example.COM/path')).toBe('https://example.com/path');
+  });
+
+  it('removes hash fragment', () => {
+    expect(normalizeUrl('https://example.com/page#section')).toBe('https://example.com/page');
+  });
+
+  it('removes utm tracking parameters', () => {
+    const url = 'https://example.com/page?utm_source=twitter&utm_medium=social&key=val';
+    const normalized = normalizeUrl(url);
+    expect(normalized).not.toContain('utm_source');
+    expect(normalized).not.toContain('utm_medium');
+    expect(normalized).toContain('key=val');
+  });
+
+  it('handles invalid URLs gracefully', () => {
+    expect(normalizeUrl('not-a-url')).toBe('not-a-url');
+  });
+});
+
+// ─── deduplicateClaudeUrls tests ─────────────────────────────────────────────
+
+describe('deduplicateClaudeUrls', () => {
+  it('removes URLs present in NotebookLM sources', () => {
+    const claudeUrls = ['https://example.com/a', 'https://example.com/b'];
+    const nbSources = [{ title: 'Source A', url: 'https://example.com/a' }];
+    const result = deduplicateClaudeUrls(claudeUrls, nbSources, []);
+    expect(result).toEqual(['https://example.com/b']);
+  });
+
+  it('removes URLs present in sourceHints', () => {
+    const claudeUrls = ['https://example.com/a', 'https://example.com/b'];
+    const result = deduplicateClaudeUrls(claudeUrls, [], ['https://example.com/b']);
+    expect(result).toEqual(['https://example.com/a']);
+  });
+
+  it('handles trailing-slash normalization', () => {
+    const claudeUrls = ['https://example.com/page/'];
+    const nbSources = [{ title: 'Page', url: 'https://example.com/page' }];
+    const result = deduplicateClaudeUrls(claudeUrls, nbSources, []);
+    expect(result).toEqual([]);
+  });
+
+  it('returns all URLs when no duplicates exist', () => {
+    const claudeUrls = ['https://new1.com', 'https://new2.com'];
+    const nbSources = [{ title: 'Old', url: 'https://old.com' }];
+    const result = deduplicateClaudeUrls(claudeUrls, nbSources, ['https://hint.com']);
+    expect(result).toEqual(['https://new1.com', 'https://new2.com']);
+  });
+
+  it('returns empty array when all are duplicates', () => {
+    const claudeUrls = ['https://example.com/a'];
+    const result = deduplicateClaudeUrls(claudeUrls, [], ['https://example.com/a']);
+    expect(result).toEqual([]);
+  });
+});
+
+// ─── searching_sources Claude web search tests ───────────────────────────────
+
+describe('executeState / searching_sources (Claude web search)', () => {
+  it('includes claudeDiscoveredUrls in SOURCES_DISCOVERED event', async () => {
+    const state: ResearchState = { kind: 'searching_sources' };
+    const ctx = makeMockContext({ notebookId: 'nb-001' });
+    const deps = makeMockDeps();
+
+    const event = await executeState(state, ctx, deps);
+
+    expect(event.type).toBe('SOURCES_DISCOVERED');
+    if (event.type === 'SOURCES_DISCOVERED') {
+      expect(event.claudeDiscoveredUrls.length).toBe(2);
+      expect(event.claudeDiscoveredUrls).toContain('https://claude-found.com/article1');
+    }
+  });
+
+  it('returns SOURCES_DISCOVERED with empty claudeDiscoveredUrls when Claude search fails', async () => {
+    const state: ResearchState = { kind: 'searching_sources' };
+    const ctx = makeMockContext({ notebookId: 'nb-001' });
+    const deps = makeMockDeps({
+      researchLLM: {
+        ...makeMockDeps().researchLLM,
+        discoverSourceUrls: vi.fn().mockResolvedValue({ ok: false, error: 'timeout' }),
+      },
+    });
+
+    const event = await executeState(state, ctx, deps);
+
+    expect(event.type).toBe('SOURCES_DISCOVERED');
+    if (event.type === 'SOURCES_DISCOVERED') {
+      expect(event.claudeDiscoveredUrls).toEqual([]);
+      expect(event.webSources.length).toBe(2); // NotebookLM sources still present
+    }
+  });
+
+  it('deduplicates Claude URLs against NotebookLM sources', async () => {
+    const state: ResearchState = { kind: 'searching_sources' };
+    const ctx = makeMockContext({ notebookId: 'nb-001' });
+    const deps = makeMockDeps({
+      researchLLM: {
+        ...makeMockDeps().researchLLM,
+        discoverSourceUrls: vi.fn().mockResolvedValue({
+          ok: true,
+          value: ['https://example.com/1', 'https://new-source.com/article'],
+        }),
+      },
+    });
+
+    const event = await executeState(state, ctx, deps);
+
+    expect(event.type).toBe('SOURCES_DISCOVERED');
+    if (event.type === 'SOURCES_DISCOVERED') {
+      // https://example.com/1 is already in NotebookLM sources, should be deduped
+      expect(event.claudeDiscoveredUrls).toEqual(['https://new-source.com/article']);
+    }
+  });
+
+  it('catches unexpected throws from Claude search', async () => {
+    const state: ResearchState = { kind: 'searching_sources' };
+    const ctx = makeMockContext({ notebookId: 'nb-001' });
+    const deps = makeMockDeps({
+      researchLLM: {
+        ...makeMockDeps().researchLLM,
+        discoverSourceUrls: vi.fn().mockRejectedValue(new Error('unexpected crash')),
+      },
+    });
+
+    const event = await executeState(state, ctx, deps);
+
+    expect(event.type).toBe('SOURCES_DISCOVERED');
+    if (event.type === 'SOURCES_DISCOVERED') {
+      expect(event.claudeDiscoveredUrls).toEqual([]);
+    }
+  });
+});
+
+// ─── adding_sources Claude URL tests ──────────────────────────────────────────
+
+describe('executeState / adding_sources (Claude-discovered URLs)', () => {
+  it('adds Claude-discovered URLs via addSourceUrl', async () => {
+    const state: ResearchState = { kind: 'adding_sources' };
+    const ctx = makeMockContext({
+      notebookId: 'nb-001',
+      claudeDiscoveredUrls: ['https://claude-found.com/a', 'https://claude-found.com/b'],
+    });
+    const deps = makeMockDeps();
+
+    await executeState(state, ctx, deps);
+
+    expect(deps.notebookLM.addSourceUrl).toHaveBeenCalledWith('nb-001', 'https://claude-found.com/a');
+    expect(deps.notebookLM.addSourceUrl).toHaveBeenCalledWith('nb-001', 'https://claude-found.com/b');
+  });
+
+  it('adds Claude YouTube URLs via addYouTubeSource', async () => {
+    const state: ResearchState = { kind: 'adding_sources' };
+    const ctx = makeMockContext({
+      notebookId: 'nb-001',
+      claudeDiscoveredUrls: ['https://youtube.com/watch?v=test123'],
+    });
+    const deps = makeMockDeps();
+
+    await executeState(state, ctx, deps);
+
+    expect(deps.notebookLM.addYouTubeSource).toHaveBeenCalledWith('nb-001', 'https://youtube.com/watch?v=test123');
+  });
+
+  it('Claude URL add failure is non-fatal', async () => {
+    const state: ResearchState = { kind: 'adding_sources' };
+    const ctx = makeMockContext({
+      notebookId: 'nb-001',
+      searchSessionId: 'session-001',
+      discoveredWebSources: [{ title: 'Source 1', url: 'https://example.com/1' }],
+      claudeDiscoveredUrls: ['https://claude-found.com/fails'],
+    });
+    const addSourceUrl = vi.fn().mockResolvedValue({
+      ok: false,
+      error: { message: '429 Too Many Requests', retriable: true },
+    });
+    const deps = makeMockDeps({
+      notebookLM: {
+        ...makeMockDeps().notebookLM,
+        addSourceUrl: addSourceUrl,
+      },
+    });
+
+    const event = await executeState(state, ctx, deps);
+
+    // Should still succeed because discovered sources were added
+    expect(event.type).toBe('SOURCES_ADDED');
+  });
+
+  it('handles undefined claudeDiscoveredUrls for legacy checkpoints', async () => {
+    const state: ResearchState = { kind: 'adding_sources' };
+    // Simulate a legacy checkpoint without claudeDiscoveredUrls
+    const ctx = makeMockContext({
+      notebookId: 'nb-001',
+      sourceHints: ['https://example.com/blog'],
+    }) as ResearchContext;
+    // Remove the field to simulate legacy data
+    const legacyCtx = { ...ctx } as Record<string, unknown>;
+    delete legacyCtx['claudeDiscoveredUrls'];
+    const deps = makeMockDeps();
+
+    const event = await executeState(state, legacyCtx as ResearchContext, deps);
+
+    expect(event.type).toBe('SOURCES_ADDED');
   });
 });
 

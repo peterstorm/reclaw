@@ -174,6 +174,7 @@ function handleSearchingSources(
     ...ctx,
     discoveredWebSources: event.webSources,
     searchSessionId: event.sessionId,
+    claudeDiscoveredUrls: event.claudeDiscoveredUrls,
     lastError: null,
     retries: clearRetries(ctx.retries, 'searching_sources'),
   };

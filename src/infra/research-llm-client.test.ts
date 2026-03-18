@@ -3,8 +3,10 @@ import {
   buildGenerateQuestionsPrompt,
   buildReformulateQueryPrompt,
   buildRephraseQuestionPrompt,
+  buildDiscoverSourcesPrompt,
   parseQuestionsFromOutput,
   parseSingleLineResponse,
+  parseDiscoveredUrlsFromOutput,
   createResearchLLMAdapter,
 } from './research-llm-client.js';
 import type { SourceMeta } from '../core/research-types.js';
@@ -229,6 +231,97 @@ describe('parseSingleLineResponse', () => {
   });
 });
 
+// ─── parseDiscoveredUrlsFromOutput tests ──────────────────────────────────────
+
+describe('parseDiscoveredUrlsFromOutput', () => {
+  it('parses a valid JSON array of URLs', () => {
+    const output = '["https://example.com/a", "https://example.com/b"]';
+    const result = parseDiscoveredUrlsFromOutput(output);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toEqual(['https://example.com/a', 'https://example.com/b']);
+    }
+  });
+
+  it('filters out non-URL strings', () => {
+    const output = '["https://example.com/a", "not-a-url", "also bad"]';
+    const result = parseDiscoveredUrlsFromOutput(output);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toEqual(['https://example.com/a']);
+    }
+  });
+
+  it('filters out non-HTTP(S) URLs', () => {
+    const output = '["https://example.com/a", "ftp://example.com/b", "file:///etc/passwd"]';
+    const result = parseDiscoveredUrlsFromOutput(output);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toEqual(['https://example.com/a']);
+    }
+  });
+
+  it('deduplicates identical URLs', () => {
+    const output = '["https://example.com/a", "https://example.com/a", "https://example.com/b"]';
+    const result = parseDiscoveredUrlsFromOutput(output);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toEqual(['https://example.com/a', 'https://example.com/b']);
+    }
+  });
+
+  it('caps at 15 URLs', () => {
+    const urls = Array.from({ length: 20 }, (_, i) => `"https://example.com/${i}"`);
+    const output = `[${urls.join(', ')}]`;
+    const result = parseDiscoveredUrlsFromOutput(output);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.length).toBe(15);
+    }
+  });
+
+  it('returns error when no JSON array found', () => {
+    const result = parseDiscoveredUrlsFromOutput('Here are some URLs: example.com');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('No JSON array');
+    }
+  });
+
+  it('returns error when no valid URLs in array', () => {
+    const output = '["not-a-url", "also-not-valid"]';
+    const result = parseDiscoveredUrlsFromOutput(output);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('No valid URLs');
+    }
+  });
+
+  it('extracts JSON array embedded in surrounding text', () => {
+    const output = 'Here are the sources:\n["https://example.com/a", "https://example.com/b"]\nDone!';
+    const result = parseDiscoveredUrlsFromOutput(output);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.length).toBe(2);
+    }
+  });
+
+  it('handles malformed JSON gracefully', () => {
+    const output = '[https://example.com, broken]';
+    const result = parseDiscoveredUrlsFromOutput(output);
+    expect(result.ok).toBe(false);
+  });
+
+  it('filters out non-string entries', () => {
+    const output = '["https://example.com/a", 123, null, "https://example.com/b"]';
+    const result = parseDiscoveredUrlsFromOutput(output);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toEqual(['https://example.com/a', 'https://example.com/b']);
+    }
+  });
+});
+
 // ─── createResearchLLMAdapter integration tests (mocked runClaude) ────────────
 
 describe('createResearchLLMAdapter', () => {
@@ -259,6 +352,7 @@ describe('createResearchLLMAdapter', () => {
     expect(typeof adapter.generateQuestions).toBe('function');
     expect(typeof adapter.reformulateQuery).toBe('function');
     expect(typeof adapter.rephraseQuestion).toBe('function');
+    expect(typeof adapter.discoverSourceUrls).toBe('function');
   });
 
   it('adapter methods are all functions', () => {
@@ -266,6 +360,7 @@ describe('createResearchLLMAdapter', () => {
     expect(typeof adapter.generateQuestions).toBe('function');
     expect(typeof adapter.reformulateQuery).toBe('function');
     expect(typeof adapter.rephraseQuestion).toBe('function');
+    expect(typeof adapter.discoverSourceUrls).toBe('function');
   });
 
   // Test error handling when Claude fails (requires Bun runtime — Bun.spawn not available in vitest/Node)
@@ -301,6 +396,17 @@ describe('Prompt quality', () => {
   it('rephraseQuestion prompt instructs no other text', () => {
     const prompt = buildRephraseQuestionPrompt('question?', []);
     expect(prompt.toUpperCase()).toContain('ONLY');
+  });
+
+  it('discoverSources prompt instructs JSON array output', () => {
+    const prompt = buildDiscoverSourcesPrompt('AI agents');
+    expect(prompt).toContain('JSON array');
+    expect(prompt.toUpperCase()).toContain('ONLY');
+  });
+
+  it('discoverSources prompt includes the topic', () => {
+    const prompt = buildDiscoverSourcesPrompt('quantum computing');
+    expect(prompt).toContain('quantum computing');
   });
 
   it('generateQuestions prompt with 10 sources includes all', () => {

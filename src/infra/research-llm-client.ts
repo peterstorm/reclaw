@@ -41,6 +41,14 @@ export type ResearchLLMAdapter = {
     question: string,
     sources: readonly SourceMeta[],
   ) => Promise<Result<string, string>>;
+
+  /**
+   * Use Claude web search to discover relevant source URLs for a topic.
+   * Returns a deduplicated list of valid HTTP(S) URLs.
+   */
+  readonly discoverSourceUrls: (
+    topic: string,
+  ) => Promise<Result<readonly string[], string>>;
 };
 
 // ─── Pure: prompt builders ────────────────────────────────────────────────────
@@ -123,6 +131,26 @@ Requirements:
 - The question must end with a question mark.`;
 }
 
+/**
+ * Build the source discovery prompt for Claude web search.
+ * Instructs Claude to search the web and return a JSON array of relevant URLs.
+ */
+export function buildDiscoverSourcesPrompt(topic: string): string {
+  return `You are a research source discoverer. Search the web to find high-quality, authoritative sources about the topic below.
+
+Topic: ${topic}
+
+Requirements:
+- Search the web for the topic and find relevant, authoritative sources.
+- Focus on academic papers, official documentation, reputable news sources, and expert analyses.
+- Prefer primary sources over aggregators or social media.
+- Return between 10 and 15 unique URLs.
+- Output ONLY a JSON array of URL strings, no other text.
+
+Example output format:
+["https://example.com/article1", "https://example.com/paper2", "https://example.com/docs3"]`;
+}
+
 // ─── Pure: response parsers ───────────────────────────────────────────────────
 
 /**
@@ -189,22 +217,82 @@ export function parseSingleLineResponse(
   return { ok: true, value: firstLine };
 }
 
+/** Maximum number of URLs to return from Claude web search discovery. */
+const MAX_CLAUDE_DISCOVERED_URLS = 15;
+
+/**
+ * Parse a JSON array of URL strings from Claude's web search output.
+ * Filters to valid HTTP(S) URLs and deduplicates.
+ */
+export function parseDiscoveredUrlsFromOutput(
+  output: string,
+): Result<readonly string[], string> {
+  const match = output.match(/\[[\s\S]*\]/);
+  if (!match) {
+    return {
+      ok: false,
+      error: `No JSON array found in Claude web search output: ${output.slice(0, 200)}`,
+    };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(match[0]);
+  } catch (e) {
+    return {
+      ok: false,
+      error: `Failed to parse JSON array from web search output: ${String(e)}`,
+    };
+  }
+
+  if (!Array.isArray(parsed)) {
+    return { ok: false, error: 'Parsed JSON is not an array' };
+  }
+
+  const urls = parsed
+    .filter((u): u is string => typeof u === 'string' && u.trim().length > 0)
+    .filter((u) => {
+      try {
+        const url = new URL(u);
+        return url.protocol === 'http:' || url.protocol === 'https:';
+      } catch {
+        return false;
+      }
+    });
+
+  const unique = [...new Set(urls)];
+
+  if (unique.length === 0) {
+    return { ok: false, error: 'No valid URLs found in Claude web search output' };
+  }
+
+  return { ok: true, value: unique.slice(0, MAX_CLAUDE_DISCOVERED_URLS) };
+}
+
 // ─── Factory ──────────────────────────────────────────────────────────────────
 
 /**
  * Create a research LLM adapter backed by the Claude CLI subprocess.
  *
- * @param cwd        - Working directory for the Claude subprocess.
- * @param timeoutMs  - Timeout for each subprocess call (default: 30 seconds).
+ * @param cwd                - Working directory for the Claude subprocess.
+ * @param timeoutMs          - Timeout for each subprocess call (default: 30 seconds).
+ * @param webSearchTimeoutMs - Timeout for Claude web search calls (default: 120 seconds).
  */
 export function createResearchLLMAdapter(
   cwd: string,
   timeoutMs = 30_000,
+  webSearchTimeoutMs = 120_000,
 ): ResearchLLMAdapter {
   const baseOptions: Omit<ClaudeOptions, 'prompt'> = {
     cwd,
     permissionFlags: [],
     timeoutMs,
+  };
+
+  const webSearchOptions: Omit<ClaudeOptions, 'prompt'> = {
+    cwd,
+    permissionFlags: ['--allowedTools', 'WebSearch(*)'],
+    timeoutMs: webSearchTimeoutMs,
   };
 
   const generateQuestions = async (
@@ -258,5 +346,21 @@ export function createResearchLLMAdapter(
     return parseSingleLineResponse(claudeResult.output, 'rephrased question');
   };
 
-  return { generateQuestions, reformulateQuery, rephraseQuestion } as const;
+  const discoverSourceUrls = async (
+    topic: string,
+  ): Promise<Result<readonly string[], string>> => {
+    const prompt = buildDiscoverSourcesPrompt(topic);
+    const claudeResult = await runClaude({ ...webSearchOptions, prompt });
+
+    if (!claudeResult.ok) {
+      return {
+        ok: false,
+        error: `Claude web search subprocess failed: ${claudeResult.error}`,
+      };
+    }
+
+    return parseDiscoveredUrlsFromOutput(claudeResult.output);
+  };
+
+  return { generateQuestions, reformulateQuery, rephraseQuestion, discoverSourceUrls } as const;
 }

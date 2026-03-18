@@ -96,6 +96,10 @@ function makeMockDeps(overrides: Partial<ResearchDeps> = {}): ResearchDeps {
       ok: true,
       value: 'rephrased?',
     }),
+    discoverSourceUrls: vi.fn().mockResolvedValue({
+      ok: true,
+      value: ['https://claude-found.com/article1'],
+    }),
   };
 
   const vaultWriter: VaultWriterAdapter = {

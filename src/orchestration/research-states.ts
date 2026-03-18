@@ -45,6 +45,50 @@ const PROCESSING_TIMEOUT_MS = 10 * 60 * 1000;
 /** Timeout for waiting for artifact generation (audio/video). 15 minutes. */
 const ARTIFACT_TIMEOUT_MS = 15 * 60 * 1000;
 
+// ─── URL helpers ──────────────────────────────────────────────────────────────
+
+/** Check if a URL is a YouTube URL. */
+function isYouTubeUrl(url: string): boolean {
+  return url.includes('youtube.com/') || url.includes('youtu.be/');
+}
+
+/**
+ * Normalize a URL for deduplication: lowercase host, strip trailing slash,
+ * remove hash, remove common tracking params.
+ */
+export function normalizeUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    parsed.hash = '';
+    for (const key of ['utm_source', 'utm_medium', 'utm_campaign', 'ref']) {
+      parsed.searchParams.delete(key);
+    }
+    let normalized = parsed.toString();
+    if (normalized.endsWith('/')) {
+      normalized = normalized.slice(0, -1);
+    }
+    return normalized.toLowerCase();
+  } catch {
+    return url.toLowerCase();
+  }
+}
+
+/**
+ * Deduplicate Claude-discovered URLs against NotebookLM web sources and user source hints.
+ */
+export function deduplicateClaudeUrls(
+  claudeUrls: readonly string[],
+  notebookLMSources: readonly import('../core/research-types.js').WebSource[],
+  sourceHints: readonly string[],
+): readonly string[] {
+  const existingUrls = new Set<string>([
+    ...notebookLMSources.map((s) => normalizeUrl(s.url)),
+    ...sourceHints.map(normalizeUrl),
+  ]);
+
+  return claudeUrls.filter((url) => !existingUrls.has(normalizeUrl(url)));
+}
+
 // ─── ResearchDeps ─────────────────────────────────────────────────────────────
 
 /**
@@ -154,20 +198,42 @@ async function executeSearchingSources(
     }
   }
 
-  const result = await deps.notebookLM.searchWeb(ctx.notebookId, query);
+  // Run NotebookLM search and Claude web search in parallel
+  const [notebookLMResult, claudeSearchResult] = await Promise.all([
+    deps.notebookLM.searchWeb(ctx.notebookId, query),
+    deps.researchLLM.discoverSourceUrls(ctx.topic).catch((err) => {
+      console.warn('[research:searching] Claude web search threw:', err);
+      return { ok: false as const, error: String(err) };
+    }),
+  ]);
 
-  if (!result.ok) {
+  // NotebookLM search failure is still fatal
+  if (!notebookLMResult.ok) {
     return {
       type: 'ERROR',
-      error: result.error.message,
-      retriable: result.error.retriable,
+      error: notebookLMResult.error.message,
+      retriable: notebookLMResult.error.retriable,
     };
+  }
+
+  // Claude search failure is non-blocking — log and continue with empty list
+  let claudeUrls: readonly string[] = [];
+  if (claudeSearchResult.ok) {
+    claudeUrls = deduplicateClaudeUrls(
+      claudeSearchResult.value,
+      notebookLMResult.value.webSources,
+      ctx.sourceHints,
+    );
+    console.log(`[research:searching] Claude web search found ${claudeSearchResult.value.length} URLs, ${claudeUrls.length} after dedup`);
+  } else {
+    console.warn('[research:searching] Claude web search failed (non-blocking):', claudeSearchResult.error);
   }
 
   return {
     type: 'SOURCES_DISCOVERED',
-    webSources: result.value.webSources,
-    sessionId: result.value.sessionId,
+    webSources: notebookLMResult.value.webSources,
+    sessionId: notebookLMResult.value.sessionId,
+    claudeDiscoveredUrls: claudeUrls,
   };
 }
 
@@ -224,12 +290,24 @@ async function executeAddingSources(
     }
   }
 
+  // Step 1.5: Add Claude-discovered URLs individually via addSourceUrl
+  const claudeUrls = ctx.claudeDiscoveredUrls ?? [];
+  for (const url of claudeUrls) {
+    const claudeResult = isYouTubeUrl(url)
+      ? await deps.notebookLM.addYouTubeSource(ctx.notebookId, url)
+      : await deps.notebookLM.addSourceUrl(ctx.notebookId, url);
+
+    if (claudeResult.ok) {
+      addedIds.push(claudeResult.value);
+      sourceUrlById[claudeResult.value] = url;
+    } else {
+      errors.push(`addClaudeSource(${url}): ${claudeResult.error.message}`);
+    }
+  }
+
   // Step 2: Add source hint URLs (FR-013 / FR-014)
   for (const url of ctx.sourceHints) {
-    const isYouTube =
-      url.includes('youtube.com/') || url.includes('youtu.be/');
-
-    const hintResult = isYouTube
+    const hintResult = isYouTubeUrl(url)
       ? await deps.notebookLM.addYouTubeSource(ctx.notebookId, url)
       : await deps.notebookLM.addSourceUrl(ctx.notebookId, url);
 

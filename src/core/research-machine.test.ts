@@ -27,6 +27,7 @@ function makeContext(overrides: Partial<ResearchContext> = {}): ResearchContext 
     notebookId: null,
     searchSessionId: null,
     discoveredWebSources: [],
+    claudeDiscoveredUrls: [],
     sourceUrlById: {},
     sources: [],
     questions: [],
@@ -150,6 +151,7 @@ describe('transition: searching_sources -> SOURCES_DISCOVERED', () => {
       type: 'SOURCES_DISCOVERED',
       webSources: [{ title: 'Article', url: 'https://example.com' }],
       sessionId: 'session-001',
+      claudeDiscoveredUrls: [],
     };
     const ctx = makeContext();
 
@@ -167,6 +169,7 @@ describe('transition: searching_sources -> SOURCES_DISCOVERED', () => {
       type: 'SOURCES_DISCOVERED',
       webSources,
       sessionId: 'session-abc',
+      claudeDiscoveredUrls: [],
     };
     const ctx = makeContext();
 
@@ -180,6 +183,7 @@ describe('transition: searching_sources -> SOURCES_DISCOVERED', () => {
       type: 'SOURCES_DISCOVERED',
       webSources: [],
       sessionId: 'session-xyz',
+      claudeDiscoveredUrls: ['https://claude-found.com/article'],
     };
     const ctx = makeContext();
 
@@ -187,9 +191,24 @@ describe('transition: searching_sources -> SOURCES_DISCOVERED', () => {
     expect(result.context.searchSessionId).toBe('session-xyz');
   });
 
+  it('stores claudeDiscoveredUrls in context', () => {
+    const state: ResearchState = { kind: 'searching_sources' };
+    const claudeUrls = ['https://claude-found.com/a', 'https://claude-found.com/b'];
+    const event: ResearchEvent = {
+      type: 'SOURCES_DISCOVERED',
+      webSources: [],
+      sessionId: 'session-001',
+      claudeDiscoveredUrls: claudeUrls,
+    };
+    const ctx = makeContext();
+
+    const result = transition(state, event, ctx);
+    expect(result.context.claudeDiscoveredUrls).toEqual(claudeUrls);
+  });
+
   it('clears lastError on success', () => {
     const state: ResearchState = { kind: 'searching_sources' };
-    const event: ResearchEvent = { type: 'SOURCES_DISCOVERED', webSources: [], sessionId: 'session-001' };
+    const event: ResearchEvent = { type: 'SOURCES_DISCOVERED', webSources: [], sessionId: 'session-001', claudeDiscoveredUrls: [] };
     const ctx = makeContext({ lastError: 'prior error' });
 
     const result = transition(state, event, ctx);
@@ -1107,7 +1126,7 @@ describe('full pipeline happy path', () => {
     expect(ctx.notebookId).toBe('nb-001');
 
     // 2. searching_sources -> adding_sources
-    r = transition(state, { type: 'SOURCES_DISCOVERED', webSources: [], sessionId: 'session-001' }, ctx);
+    r = transition(state, { type: 'SOURCES_DISCOVERED', webSources: [], sessionId: 'session-001', claudeDiscoveredUrls: [] }, ctx);
     state = r.state; ctx = r.context;
     expect(state.kind).toBe('adding_sources');
 

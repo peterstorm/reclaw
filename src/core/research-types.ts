@@ -112,7 +112,7 @@ export type ResearchState =
 /** Events emitted by state executors that drive state machine transitions. */
 export type ResearchEvent =
   | { readonly type: 'NOTEBOOK_CREATED'; readonly notebookId: string }
-  | { readonly type: 'SOURCES_DISCOVERED'; readonly webSources: readonly WebSource[]; readonly sessionId: string }
+  | { readonly type: 'SOURCES_DISCOVERED'; readonly webSources: readonly WebSource[]; readonly sessionId: string; readonly claudeDiscoveredUrls: readonly string[] }
   | { readonly type: 'SOURCES_ADDED'; readonly sourceIds: readonly string[]; readonly sourceUrlById: Readonly<Record<string, string>> }
   | { readonly type: 'SOURCES_READY'; readonly sources: readonly SourceMeta[] }
   | { readonly type: 'QUESTIONS_GENERATED'; readonly questions: readonly string[] }
@@ -141,6 +141,8 @@ export type ResearchContext = {
   readonly searchSessionId: string | null;
   /** Web sources discovered during searching_sources, carried into adding_sources. FR-012. */
   readonly discoveredWebSources: readonly WebSource[];
+  /** URLs discovered by Claude web search, added individually in adding_sources. */
+  readonly claudeDiscoveredUrls: readonly string[];
   /** Map of sourceId → original URL, built during adding_sources for backfilling. */
   readonly sourceUrlById: Readonly<Record<string, string>>;
   readonly sources: readonly SourceMeta[];
@@ -231,6 +233,7 @@ export function makeResearchJobData(params: {
     notebookId: null,
     searchSessionId: null,
     discoveredWebSources: [],
+    claudeDiscoveredUrls: [],
     sourceUrlById: {},
     sources: [],
     questions: [],
