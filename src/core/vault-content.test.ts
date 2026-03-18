@@ -36,6 +36,7 @@ const chatResponse = (text: string, citations: number[] = []): ChatResponse => (
 
 const makeContext = (overrides: Partial<ResearchContext> = {}): ResearchContext => ({
   topic: 'Artificial Intelligence',
+  prompt: null,
   topicSlug: makeTopicSlug('artificial-intelligence'),
   sourceHints: [],
   chatId: 12345,

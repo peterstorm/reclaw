@@ -279,4 +279,94 @@ describe('parseResearchCommand', () => {
       expect(r.value.sourceHints).toEqual(['https://example.com/article']);
     }
   });
+
+  // ── Pipe separator (title | prompt) ──────────────────────────────────────
+
+  it('splits title and prompt on pipe separator', () => {
+    const r = parseResearchCommand('/research Transformer Attention | Find papers on multi-head attention after 2023');
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.topic).toBe('Transformer Attention');
+      expect(r.value.prompt).toBe('Find papers on multi-head attention after 2023');
+      expect(r.value.sourceHints).toEqual([]);
+    }
+  });
+
+  it('sets prompt to null when no pipe separator', () => {
+    const r = parseResearchCommand('/research AI agents');
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.prompt).toBeNull();
+    }
+  });
+
+  it('collects URLs from both sides of the pipe', () => {
+    const r = parseResearchCommand('/research Rust Ownership https://doc.rust-lang.org | Focus on borrow checker edge cases https://blog.rust-lang.org');
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.topic).toBe('Rust Ownership');
+      expect(r.value.prompt).toBe('Focus on borrow checker edge cases');
+      expect(r.value.sourceHints).toEqual([
+        'https://doc.rust-lang.org',
+        'https://blog.rust-lang.org',
+      ]);
+    }
+  });
+
+  it('handles pipe with --audio flag', () => {
+    const r = parseResearchCommand('/research Transformers | Focus on efficiency --audio');
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.topic).toBe('Transformers');
+      expect(r.value.prompt).toBe('Focus on efficiency');
+      expect(r.value.generateAudio).toBe(true);
+    }
+  });
+
+  it('handles pipe with --video and --audio flags', () => {
+    const r = parseResearchCommand('/research AI Safety | Academic papers only --audio --video');
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.topic).toBe('AI Safety');
+      expect(r.value.prompt).toBe('Academic papers only');
+      expect(r.value.generateAudio).toBe(true);
+      expect(r.value.generateVideo).toBe(true);
+    }
+  });
+
+  it('trims whitespace around pipe separator', () => {
+    const r = parseResearchCommand('/research  AI Agents  |  Focus on autonomous reasoning  ');
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.topic).toBe('AI Agents');
+      expect(r.value.prompt).toBe('Focus on autonomous reasoning');
+    }
+  });
+
+  it('sets prompt to null when pipe has empty right side', () => {
+    const r = parseResearchCommand('/research AI Agents |');
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.topic).toBe('AI Agents');
+      expect(r.value.prompt).toBeNull();
+    }
+  });
+
+  it('rejects pipe with empty left side (no title)', () => {
+    const r = parseResearchCommand('/research | some prompt');
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toContain('empty');
+    }
+  });
+
+  it('handles pipe with --link flag', () => {
+    const r = parseResearchCommand('/research AI Safety | Focus on alignment --link https://example.com/alignment');
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.topic).toBe('AI Safety');
+      expect(r.value.prompt).toBe('Focus on alignment');
+      expect(r.value.sourceHints).toContain('https://example.com/alignment');
+    }
+  });
 });

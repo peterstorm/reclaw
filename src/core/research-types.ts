@@ -134,6 +134,8 @@ export type ResearchEvent =
  */
 export type ResearchContext = {
   readonly topic: string;
+  /** Optional research prompt guiding source discovery and question generation. */
+  readonly prompt: string | null;
   readonly topicSlug: TopicSlug;
   readonly sourceHints: readonly string[];
   readonly chatId: number;
@@ -171,6 +173,7 @@ export type ResearchContext = {
  */
 export type ResearchJobData = {
   readonly topic: string;
+  readonly prompt: string | null;
   readonly topicSlug: TopicSlug;
   readonly sourceHints: readonly string[];
   readonly chatId: number;
@@ -210,6 +213,7 @@ const STATE_ORDER: ReadonlyArray<ResearchState['kind']> = [
  */
 export function makeResearchJobData(params: {
   topic: string;
+  prompt?: string | null;
   sourceHints: readonly string[];
   chatId: number;
   generateAudio?: boolean;
@@ -227,6 +231,7 @@ export function makeResearchJobData(params: {
 
   const context: ResearchContext = {
     topic: params.topic,
+    prompt: params.prompt ?? null,
     topicSlug,
     sourceHints: params.sourceHints,
     chatId: params.chatId,
@@ -254,6 +259,7 @@ export function makeResearchJobData(params: {
 
   const jobData: ResearchJobData = {
     topic: params.topic,
+    prompt: params.prompt ?? null,
     topicSlug,
     sourceHints: params.sourceHints,
     chatId: params.chatId,

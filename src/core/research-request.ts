@@ -9,6 +9,8 @@ import { type Result, ok, err } from './types.js';
  */
 export type ResearchRequest = {
   readonly topic: string;
+  /** Optional research prompt that guides source discovery and question generation. */
+  readonly prompt: string | null;
   readonly sourceHints: readonly string[];
   readonly generateAudio: boolean;
   readonly generateVideo: boolean;
@@ -105,41 +107,91 @@ export function parseResearchCommand(text: string): Result<ResearchRequest, stri
     .replace(/(?:^|\s)--link\s+https?:\/\/\S+/gi, ' ')
     .replace(/^\s+/, '');
 
-  // FR-091: topic is everything up to the first URL
+  // Split on pipe separator: left = title, right = prompt
+  // If no pipe, entire remainder is the title (backward compatible)
+  let titleSection: string;
+  let prompt: string | null = null;
+
+  const pipeIndex = remainder.indexOf('|');
+  if (pipeIndex !== -1) {
+    titleSection = remainder.slice(0, pipeIndex);
+    const promptSection = remainder.slice(pipeIndex + 1);
+    // Extract URLs from the prompt section and strip them out to get the prompt text
+    const promptUrls = extractUrls(promptSection);
+    const promptText = promptSection.replace(/https?:\/\/\S+/gi, '').trim();
+    if (promptText.length > 0) {
+      prompt = promptText;
+    }
+    // Collect URLs from both sides
+    const titleFirstUrlIndex = indexOfFirstUrl(titleSection);
+    let topicRaw: string;
+    let titleUrlSection: string;
+
+    if (titleFirstUrlIndex === -1) {
+      topicRaw = titleSection;
+      titleUrlSection = '';
+    } else {
+      topicRaw = titleSection.slice(0, titleFirstUrlIndex);
+      titleUrlSection = titleSection.slice(titleFirstUrlIndex);
+    }
+
+    const topic = topicRaw.trim();
+
+    if (topic.length === 0 && linkUrl) {
+      return ok({
+        topic: topicFromUrl(linkUrl),
+        prompt,
+        sourceHints: [linkUrl, ...extractUrls(titleUrlSection), ...promptUrls],
+        generateAudio,
+        generateVideo,
+      });
+    }
+
+    if (topic.length === 0) {
+      return err(
+        'Research topic must not be empty. Usage: /research <topic> | <prompt> [urls...] or /research <topic> [urls...]',
+      );
+    }
+
+    const sourceHints = [
+      ...(linkUrl ? [linkUrl] : []),
+      ...extractUrls(titleUrlSection),
+      ...promptUrls,
+    ];
+
+    return ok({ topic, prompt, sourceHints, generateAudio, generateVideo });
+  }
+
+  // No pipe — original parsing: topic is everything up to the first URL
   const firstUrlIndex = indexOfFirstUrl(remainder);
 
   let topicRaw: string;
   let urlSection: string;
 
   if (firstUrlIndex === -1) {
-    // No URLs — entire remainder is the topic
     topicRaw = remainder;
     urlSection = '';
   } else {
-    // Split at first URL
     topicRaw = remainder.slice(0, firstUrlIndex);
     urlSection = remainder.slice(firstUrlIndex);
   }
 
   let topic = topicRaw.trim();
 
-  // When --link is used without explicit topic text, derive topic from the URL
   if (topic.length === 0 && linkUrl) {
     topic = topicFromUrl(linkUrl);
   }
 
-  // FR-092: reject empty topic (must have either text or --link)
   if (topic.length === 0) {
     return err(
-      'Research topic must not be empty. Usage: /research <topic> [url1] [url2...] or /research --link <url>',
+      'Research topic must not be empty. Usage: /research <topic> | <prompt> [urls...] or /research <topic> [urls...]',
     );
   }
 
-  // FR-013: extract source hints from the URL section + --link URL
   const sourceHints = [
     ...(linkUrl ? [linkUrl] : []),
     ...extractUrls(urlSection),
   ];
 
-  return ok({ topic, sourceHints, generateAudio, generateVideo });
+  return ok({ topic, prompt, sourceHints, generateAudio, generateVideo });
 }

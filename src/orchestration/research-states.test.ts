@@ -29,6 +29,7 @@ const MOCK_TOPIC_SLUG = 'ai-agents' as ReturnType<typeof import('../core/topic-s
 
 const makeMockContext = (overrides: Partial<ResearchContext> = {}): ResearchContext => ({
   topic: 'AI agents',
+  prompt: null,
   topicSlug: MOCK_TOPIC_SLUG,
   sourceHints: [],
   chatId: 12345,
@@ -258,6 +259,7 @@ describe('executeState / searching_sources', () => {
     expect(deps.researchLLM.reformulateQuery).toHaveBeenCalledWith(
       'AI agents',
       'No results found',
+      null,
     );
     // searchWeb should be called with the reformulated query
     expect(deps.notebookLM.searchWeb).toHaveBeenCalledWith('nb-001', 'AI autonomous agents');
@@ -558,6 +560,7 @@ describe('executeState / generating_questions', () => {
     expect(deps.researchLLM.generateQuestions).toHaveBeenCalledWith(
       'AI agents',
       ctx.sources,
+      null,
     );
   });
 

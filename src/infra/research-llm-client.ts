@@ -18,10 +18,12 @@ export type ResearchLLMAdapter = {
   /**
    * Generate 3-5 research questions for a given topic, informed by source titles.
    * FR-020: informed by the topic and the list of ingested sources.
+   * When prompt is provided, it guides question focus and specificity.
    */
   readonly generateQuestions: (
     topic: string,
     sources: readonly SourceMeta[],
+    prompt?: string | null,
   ) => Promise<Result<readonly string[], string>>;
 
   /**
@@ -31,6 +33,7 @@ export type ResearchLLMAdapter = {
   readonly reformulateQuery: (
     topic: string,
     previousError: string,
+    prompt?: string | null,
   ) => Promise<Result<string, string>>;
 
   /**
@@ -45,9 +48,11 @@ export type ResearchLLMAdapter = {
   /**
    * Use Claude web search to discover relevant source URLs for a topic.
    * Returns a deduplicated list of valid HTTP(S) URLs.
+   * When prompt is provided, it guides what kind of sources to prioritize.
    */
   readonly discoverSourceUrls: (
     topic: string,
+    prompt?: string | null,
   ) => Promise<Result<readonly string[], string>>;
 };
 
@@ -60,23 +65,28 @@ export type ResearchLLMAdapter = {
 export function buildGenerateQuestionsPrompt(
   topic: string,
   sources: readonly SourceMeta[],
+  prompt?: string | null,
 ): string {
   const sourceTitles =
     sources.length > 0
       ? sources.map((s, i) => `${i + 1}. ${s.title}`).join('\n')
       : '(no sources listed yet)';
 
+  const focusSection = prompt
+    ? `\nResearch focus: ${prompt}\n`
+    : '';
+
   return `You are a research question generator. Generate 3 to 5 focused, specific research questions for the topic below.
 
 Topic: ${topic}
-
+${focusSection}
 Available sources:
 ${sourceTitles}
 
 Requirements:
 - Generate between 3 and 5 questions (no fewer, no more than 5).
 - Each question must be directly researchable using the listed sources.
-- Questions should be specific, not generic.
+- Questions should be specific, not generic.${prompt ? '\n- Prioritize questions aligned with the research focus.' : ''}
 - Cover different aspects of the topic.
 - Output ONLY a JSON array of strings, no other text.
 
@@ -91,10 +101,15 @@ Example output format:
 export function buildReformulateQueryPrompt(
   topic: string,
   previousError: string,
+  prompt?: string | null,
 ): string {
+  const contextSection = prompt
+    ? `\nResearch focus: ${prompt}`
+    : '';
+
   return `You are a search query optimizer. A web search for a research topic failed. Suggest a better search query.
 
-Original topic: ${topic}
+Original topic: ${topic}${contextSection}
 Previous error: ${previousError}
 
 Requirements:
@@ -135,14 +150,21 @@ Requirements:
  * Build the source discovery prompt for Claude web search.
  * Instructs Claude to search the web and return a JSON array of relevant URLs.
  */
-export function buildDiscoverSourcesPrompt(topic: string): string {
+export function buildDiscoverSourcesPrompt(
+  topic: string,
+  prompt?: string | null,
+): string {
+  const focusSection = prompt
+    ? `\nResearch focus: ${prompt}\n`
+    : '';
+
   return `You are a research source discoverer. Search the web to find high-quality, authoritative sources about the topic below.
 
 Topic: ${topic}
-
+${focusSection}
 Requirements:
 - Search the web for the topic and find relevant, authoritative sources.
-- Focus on academic papers, official documentation, reputable news sources, and expert analyses.
+- Focus on academic papers, official documentation, reputable news sources, and expert analyses.${prompt ? '\n- Prioritize sources aligned with the research focus.' : ''}
 - Prefer primary sources over aggregators or social media.
 - Return between 10 and 15 unique URLs.
 - Output ONLY a JSON array of URL strings, no other text.
@@ -298,8 +320,9 @@ export function createResearchLLMAdapter(
   const generateQuestions = async (
     topic: string,
     sources: readonly SourceMeta[],
+    researchPrompt?: string | null,
   ): Promise<Result<readonly string[], string>> => {
-    const prompt = buildGenerateQuestionsPrompt(topic, sources);
+    const prompt = buildGenerateQuestionsPrompt(topic, sources, researchPrompt);
     const claudeResult = await runClaude({ ...baseOptions, prompt });
 
     if (!claudeResult.ok) {
@@ -315,8 +338,9 @@ export function createResearchLLMAdapter(
   const reformulateQuery = async (
     topic: string,
     previousError: string,
+    researchPrompt?: string | null,
   ): Promise<Result<string, string>> => {
-    const prompt = buildReformulateQueryPrompt(topic, previousError);
+    const prompt = buildReformulateQueryPrompt(topic, previousError, researchPrompt);
     const claudeResult = await runClaude({ ...baseOptions, prompt });
 
     if (!claudeResult.ok) {
@@ -348,8 +372,9 @@ export function createResearchLLMAdapter(
 
   const discoverSourceUrls = async (
     topic: string,
+    researchPrompt?: string | null,
   ): Promise<Result<readonly string[], string>> => {
-    const prompt = buildDiscoverSourcesPrompt(topic);
+    const prompt = buildDiscoverSourcesPrompt(topic, researchPrompt);
     const claudeResult = await runClaude({ ...webSearchOptions, prompt });
 
     if (!claudeResult.ok) {

@@ -185,11 +185,13 @@ async function executeSearchingSources(
   }
 
   // FR-051: Re-reasoning on retry — reformulate the query if previous attempt failed
-  let query = ctx.topic;
+  // Use prompt as the search query when available, falling back to topic
+  let query = ctx.prompt ?? ctx.topic;
   if (ctx.lastError !== null) {
     const reformulateResult = await deps.researchLLM.reformulateQuery(
       ctx.topic,
       ctx.lastError,
+      ctx.prompt,
     );
     if (reformulateResult.ok) {
       query = reformulateResult.value;
@@ -201,7 +203,7 @@ async function executeSearchingSources(
   // Run NotebookLM search and Claude web search in parallel
   const [notebookLMResult, claudeSearchResult] = await Promise.all([
     deps.notebookLM.searchWeb(ctx.notebookId, query),
-    deps.researchLLM.discoverSourceUrls(ctx.topic).catch((err) => {
+    deps.researchLLM.discoverSourceUrls(ctx.topic, ctx.prompt).catch((err) => {
       console.warn('[research:searching] Claude web search threw:', err);
       return { ok: false as const, error: String(err) };
     }),
@@ -400,7 +402,7 @@ async function executeGeneratingQuestions(
   ctx: ResearchContext,
   deps: ResearchDeps,
 ): Promise<ResearchEvent> {
-  const result = await deps.researchLLM.generateQuestions(ctx.topic, ctx.sources);
+  const result = await deps.researchLLM.generateQuestions(ctx.topic, ctx.sources, ctx.prompt);
 
   if (!result.ok) {
     return {

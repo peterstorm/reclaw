@@ -57,6 +57,18 @@ describe('buildGenerateQuestionsPrompt', () => {
     expect(prompt).toContain('2.');
     expect(prompt).toContain('3.');
   });
+
+  it('includes research focus when prompt is provided', () => {
+    const prompt = buildGenerateQuestionsPrompt('AI agents', mockSources, 'Focus on safety implications');
+    expect(prompt).toContain('Research focus: Focus on safety implications');
+    expect(prompt).toContain('Prioritize questions aligned with the research focus');
+  });
+
+  it('omits research focus when prompt is null', () => {
+    const prompt = buildGenerateQuestionsPrompt('AI agents', mockSources, null);
+    expect(prompt).not.toContain('Research focus');
+    expect(prompt).not.toContain('Prioritize questions');
+  });
 });
 
 // ─── buildReformulateQueryPrompt tests ────────────────────────────────────────
@@ -407,6 +419,17 @@ describe('Prompt quality', () => {
   it('discoverSources prompt includes the topic', () => {
     const prompt = buildDiscoverSourcesPrompt('quantum computing');
     expect(prompt).toContain('quantum computing');
+  });
+
+  it('discoverSources prompt includes research focus when prompt is provided', () => {
+    const prompt = buildDiscoverSourcesPrompt('quantum computing', 'Focus on quantum error correction');
+    expect(prompt).toContain('Research focus: Focus on quantum error correction');
+    expect(prompt).toContain('Prioritize sources aligned with the research focus');
+  });
+
+  it('discoverSources prompt omits research focus when prompt is null', () => {
+    const prompt = buildDiscoverSourcesPrompt('quantum computing', null);
+    expect(prompt).not.toContain('Research focus');
   });
 
   it('generateQuestions prompt with 10 sources includes all', () => {

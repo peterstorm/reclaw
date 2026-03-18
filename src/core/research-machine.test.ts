@@ -21,6 +21,7 @@ import type {
 function makeContext(overrides: Partial<ResearchContext> = {}): ResearchContext {
   return {
     topic: 'AI agents',
+    prompt: null,
     topicSlug: 'ai-agents' as ResearchContext['topicSlug'],
     sourceHints: [],
     chatId: 12345,

@@ -107,6 +107,31 @@ describe('makeResearchJobData', () => {
     expect(Number.isNaN(new Date(startedAt).getTime())).toBe(false);
   });
 
+  it('stores prompt on both job data and context', () => {
+    const result = makeResearchJobData({
+      topic: 'Some topic',
+      prompt: 'Focus on academic papers',
+      sourceHints: [],
+      chatId: 1,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.prompt).toBe('Focus on academic papers');
+    expect(result.value.context.prompt).toBe('Focus on academic papers');
+  });
+
+  it('defaults prompt to null when not provided', () => {
+    const result = makeResearchJobData({
+      topic: 'Some topic',
+      sourceHints: [],
+      chatId: 1,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.prompt).toBeNull();
+    expect(result.value.context.prompt).toBeNull();
+  });
+
   // Validation failures
 
   it('rejects empty topic', () => {

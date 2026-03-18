@@ -22,6 +22,7 @@ function makeSource(id: string, title: string): SourceMeta {
 function makeContext(overrides: Partial<ResearchContext> = {}): ResearchContext {
   const defaultCtx: ResearchContext = {
     topic: 'Test Topic',
+    prompt: null,
     topicSlug: 'test-topic' as TopicSlug,
     sourceHints: [],
     chatId: 123,

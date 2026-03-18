@@ -259,7 +259,7 @@ function routeResearchCommand(msg: IncomingMessage, deps: MessageRouterDeps): vo
     return;
   }
 
-  const { topic, sourceHints, generateAudio, generateVideo } = researchParseResult.value;
+  const { topic, prompt, sourceHints, generateAudio, generateVideo } = researchParseResult.value;
 
   deps.quotaTracker.hasQuota(5).then(async (hasEnoughQuota) => {
     if (!hasEnoughQuota) {
@@ -269,6 +269,7 @@ function routeResearchCommand(msg: IncomingMessage, deps: MessageRouterDeps): vo
 
     const researchJobDataResult = makeResearchJobData({
       topic,
+      prompt,
       sourceHints,
       chatId: msg.chatId,
       generateAudio,
@@ -295,9 +296,10 @@ function routeResearchCommand(msg: IncomingMessage, deps: MessageRouterDeps): vo
       ? `\nMedia: ${mediaFlags.join(' + ')} overview will be generated.`
       : '';
 
+    const promptSuffix = prompt ? `\nFocus: ${prompt}` : '';
     const confirmMsg = position > 1
-      ? `Research enqueued: "${topic}"\n\nQueue position: ${position} (${position - 1} job(s) ahead)${mediaSuffix}`
-      : `Research enqueued: "${topic}"\n\nStarting now.${mediaSuffix}`;
+      ? `Research enqueued: "${topic}"${promptSuffix}\n\nQueue position: ${position} (${position - 1} job(s) ahead)${mediaSuffix}`
+      : `Research enqueued: "${topic}"${promptSuffix}\n\nStarting now.${mediaSuffix}`;
 
     await deps.telegram.sendMessage(msg.chatId, confirmMsg);
   }).catch((researchErr: unknown) => {

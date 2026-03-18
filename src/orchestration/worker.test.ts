@@ -443,12 +443,14 @@ describe('createWorkers', () => {
     const researchJobData = {
       kind: 'research' as const,
       topic: 'AI agents',
+      prompt: null,
       topicSlug: 'ai-agents' as import('../core/research-types.js').ResearchJobData['topicSlug'],
       sourceHints: [],
       chatId: 999888777,
       state: { kind: 'creating_notebook' as const },
       context: {
         topic: 'AI agents',
+        prompt: null,
         topicSlug: 'ai-agents' as import('../core/research-types.js').ResearchJobData['topicSlug'],
         sourceHints: [],
         chatId: 999888777,
@@ -555,12 +557,14 @@ describe('createWorkers', () => {
     const researchJobData = {
       kind: 'research' as const,
       topic: 'AI agents',
+      prompt: null,
       topicSlug: 'ai-agents',
       sourceHints: [],
       chatId: 999888777,
       state: { kind: 'creating_notebook' as const },
       context: {
         topic: 'AI agents',
+        prompt: null,
         topicSlug: 'ai-agents',
         sourceHints: [],
         chatId: 999888777,

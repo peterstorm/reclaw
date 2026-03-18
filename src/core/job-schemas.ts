@@ -50,6 +50,7 @@ const RecurringReminderJobSchema = z.object({
 // The research pipeline validates its own invariants.
 const ResearchJobDataSchema = z.object({
   topic: z.string().min(1),
+  prompt: z.string().nullable().optional(),
   topicSlug: z.string().min(1),
   sourceHints: z.array(z.string()),
   chatId: z.number().int(),
