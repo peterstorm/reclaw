@@ -1,4 +1,4 @@
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile, writeFile, readdir } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import type { PodcastJob, JobResult } from '../core/types.js';
 import { jobResultOk, jobResultErr } from '../core/types.js';
@@ -69,6 +69,28 @@ async function resolveNotePath(notePath: string): Promise<{ filePath: string; ti
       return { filePath: match, title };
     }
     return null;
+  }
+}
+
+// ─── Vault link-back ─────────────────────────────────────────────────────────
+
+export async function appendPodcastLink(
+  filePath: string,
+  formatLabel: string,
+  shareUrl: string,
+): Promise<void> {
+  const content = await readFile(filePath, 'utf-8');
+  const date = new Date().toISOString().slice(0, 10);
+  const entry = `- [${formatLabel} — ${date}](${shareUrl})`;
+
+  if (content.includes('## Podcasts')) {
+    // Section exists — append entry at end (Podcasts is always last section)
+    const suffix = content.endsWith('\n') ? '' : '\n';
+    await writeFile(filePath, `${content}${suffix}${entry}\n`, 'utf-8');
+  } else {
+    // Add new section at end of file
+    const suffix = content.endsWith('\n') ? '\n' : '\n\n';
+    await writeFile(filePath, `${content}${suffix}## Podcasts\n\n${entry}\n`, 'utf-8');
   }
 }
 
@@ -153,7 +175,10 @@ export async function handlePodcastJob(
   const shareResult = await notebookLM.shareNotebook(notebookId);
   const shareUrl = shareResult.ok ? shareResult.value : `https://notebooklm.google.com/notebook/${notebookId}`;
 
-  // 9. Notify
+  // 9. Link podcast back to source note
+  await appendPodcastLink(note.filePath, formatLabel, shareUrl).catch(console.error);
+
+  // 10. Notify
   const successMsg = `Podcast ready: ${note.title}\nFormat: ${formatLabel}\n\n${shareUrl}`;
   await telegram.sendMessage(job.chatId, successMsg).catch(console.error);
 
