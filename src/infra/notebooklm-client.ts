@@ -314,8 +314,14 @@ export async function createNotebookLMAdapter(
       sdk.sources.addFromText(notebookId, { title, content }),
     );
     if (!result.ok) return result;
-    const raw = result.value as { sourceId?: string; sourceIds?: string[] };
-    const sourceId = raw.sourceId ?? raw.sourceIds?.[0] ?? '';
+    // SDK returns plain string (sourceId) for small texts, or AddSourceResult for chunked uploads
+    const val = result.value;
+    const sourceId = typeof val === 'string'
+      ? val
+      : (val as { sourceId?: string; allSourceIds?: string[]; sourceIds?: string[] }).sourceId
+        ?? (val as { allSourceIds?: string[] }).allSourceIds?.[0]
+        ?? (val as { sourceIds?: string[] }).sourceIds?.[0]
+        ?? '';
     if (!sourceId) {
       return { ok: false, error: { message: 'addFromText returned no sourceId', retriable: false } };
     }
