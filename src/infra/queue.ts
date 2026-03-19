@@ -1,5 +1,5 @@
 import { Queue } from 'bullmq';
-import type { ChatJob, Job, ReminderJob, RecurringReminderJob, ScheduledJob } from '../core/types.js';
+import type { ChatJob, Job, PodcastJob, ReminderJob, RecurringReminderJob, ScheduledJob } from '../core/types.js';
 import type { ResearchJobData } from '../core/research-types.js';
 import { stateProgress } from '../core/research-types.js';
 
@@ -24,6 +24,7 @@ export type Queues = {
   readonly scheduled: Queue;
   readonly reminder: Queue;
   readonly research: Queue;
+  readonly podcast: Queue;
   readonly enqueueChat: (job: Extract<Job, { kind: 'chat' }>) => Promise<void>;
   readonly enqueueScheduled: (job: Extract<Job, { kind: 'scheduled' }>) => Promise<void>;
   readonly isScheduledJobKnown: (jobId: string) => Promise<boolean>;
@@ -34,6 +35,7 @@ export type Queues = {
   readonly enqueueResearch: (jobData: ResearchJobData) => Promise<void>;
   readonly getResearchQueuePosition: () => Promise<number>;
   readonly getResearchStatus: () => Promise<ResearchStatus>;
+  readonly enqueuePodcast: (job: PodcastJob) => Promise<void>;
 };
 
 // ─── Retry configuration (FR-014) ────────────────────────────────────────────
@@ -162,6 +164,19 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
     console.error('[queue:research] error', err);
   });
 
+  // ── Podcast queue (no retry — failure is final, like research) ──────────
+
+  const podcast = new Queue('reclaw-podcast', {
+    connection,
+  });
+  podcast.on('error', (err) => {
+    console.error('[queue:podcast] error', err);
+  });
+
+  const enqueuePodcast = async (job: PodcastJob): Promise<void> => {
+    await podcast.add(job.id, job, { jobId: job.id });
+  };
+
   const enqueueResearch = async (jobData: ResearchJobData): Promise<void> => {
     const jobId = `research:${jobData.chatId}:${Date.now()}`;
     await research.add(jobId, jobData, { jobId });
@@ -199,10 +214,11 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
   };
 
   return {
-    chat, scheduled, reminder, research,
+    chat, scheduled, reminder, research, podcast,
     enqueueChat, enqueueScheduled, isScheduledJobKnown, enqueueReminder,
     enqueueRecurringReminder, listRecurringReminders, cancelRecurringReminder,
     enqueueResearch, getResearchQueuePosition, getResearchStatus,
+    enqueuePodcast,
   } as const;
 }
 

@@ -130,6 +130,7 @@ function createMockAdapter(overrides: MockAdapterOverrides = {}): NotebookLMAdap
       value: sources.slice(0, limit).map((_, i) => `src-id-${i}`),
     }),
     addSourceUrl: async (_notebookId, url) => ({ ok: true, value: `url-src-${url.split('/').pop()}` }),
+    addSourceText: async (_notebookId, title) => ({ ok: true, value: `text-src-${title}` }),
     addYouTubeSource: async (_notebookId, url) => ({ ok: true, value: `yt-src-${url.split('=').pop()}` }),
     waitForProcessing: async () => ({ ok: true, value: undefined }),
     chat: async (_notebookId, question) => ({

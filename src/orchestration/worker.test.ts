@@ -96,6 +96,7 @@ describe('createWorkers', () => {
   let reminderHandler: ReturnType<typeof vi.fn>;
   let recurringReminderHandler: ReturnType<typeof vi.fn>;
   let researchHandler: ReturnType<typeof vi.fn>;
+  let podcastHandler: ReturnType<typeof vi.fn>;
   let mockTelegram: TelegramAdapter;
   let fakeFactory: ReturnType<typeof makeFakeWorkerFactory>;
 
@@ -105,6 +106,7 @@ describe('createWorkers', () => {
     reminderHandler = vi.fn().mockResolvedValue({ ok: true, response: 'reminder response' } as JobResult);
     recurringReminderHandler = vi.fn().mockResolvedValue({ ok: true, response: 'recurring response' } as JobResult);
     researchHandler = vi.fn().mockResolvedValue({ hubPath: '/vault/ai-agents/_index.md', topic: 'AI agents' });
+    podcastHandler = vi.fn().mockResolvedValue({ ok: true, response: 'podcast response' } as JobResult);
     mockTelegram = {
       start: vi.fn().mockResolvedValue(undefined),
       stop: vi.fn().mockResolvedValue(undefined),
@@ -128,6 +130,7 @@ describe('createWorkers', () => {
       reminderHandler,
       recurringReminderHandler,
       researchHandler,
+      podcastHandler,
       telegram: mockTelegram,
       config: mockConfig,
       workerFactory: fakeFactory.factory,
@@ -175,6 +178,7 @@ describe('createWorkers', () => {
       reminderHandler,
       recurringReminderHandler,
       researchHandler,
+      podcastHandler,
       telegram: mockTelegram,
       config: mockConfig,
       workerFactory: fakeFactory.factory,
@@ -231,6 +235,7 @@ describe('createWorkers', () => {
       reminderHandler,
       recurringReminderHandler,
       researchHandler,
+      podcastHandler,
       telegram: mockTelegram,
       config: mockConfig,
       workerFactory: fakeFactory.factory,
@@ -257,6 +262,7 @@ describe('createWorkers', () => {
       reminderHandler,
       recurringReminderHandler,
       researchHandler,
+      podcastHandler,
       telegram: mockTelegram,
       config: mockConfig,
       workerFactory: fakeFactory.factory,

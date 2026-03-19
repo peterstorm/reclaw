@@ -16,6 +16,7 @@ import type { handleChatJob } from './orchestration/chat-handler.js';
 import type { handleScheduledJob } from './orchestration/scheduled-handler.js';
 import type { handleReminderJob, handleRecurringReminderJob } from './orchestration/reminder-handler.js';
 import type { handleResearchJob } from './orchestration/research-handler.js';
+import type { handlePodcastJob } from './orchestration/podcast-handler.js';
 import type { ResearchDeps } from './orchestration/research-states.js';
 
 // ─── Injectable deps (for testability) ───────────────────────────────────────
@@ -35,6 +36,7 @@ export type BootstrapDeps = {
     researchHandler: (job: ResearchJobLike) => Promise<{ hubPath: string | null; topic: string }>;
     reminderHandler: (job: import('./core/types.js').ReminderJob) => Promise<JobResult>;
     recurringReminderHandler: (job: import('./core/types.js').RecurringReminderJob) => Promise<JobResult>;
+    podcastHandler: (job: import('./core/types.js').PodcastJob) => Promise<JobResult>;
   }) => Workers;
   readonly runClaudeFn?: typeof runClaude;
   readonly runClaudeStreamingFn?: typeof runClaudeStreaming;
@@ -43,6 +45,7 @@ export type BootstrapDeps = {
   readonly handleReminderJobFn?: typeof handleReminderJob;
   readonly handleRecurringReminderJobFn?: typeof handleRecurringReminderJob;
   readonly handleResearchJobFn?: typeof handleResearchJob;
+  readonly handlePodcastJobFn?: typeof handlePodcastJob;
   readonly createSessionStoreFn?: (redis: { host: string; port: number }) => {
     sessionStore: SessionStore;
     disconnect: () => Promise<void>;
@@ -124,6 +127,10 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
   const handleResearchJobFn: typeof handleResearchJob =
     injected.handleResearchJobFn ??
     (await import('./orchestration/research-handler.js').then((m) => m.handleResearchJob));
+
+  const handlePodcastJobFn: typeof handlePodcastJob =
+    injected.handlePodcastJobFn ??
+    (await import('./orchestration/podcast-handler.js').then((m) => m.handlePodcastJob));
 
   // ── 1. Load config — exit on failure ─────────────────────────────────────
   const configResult = loadConfigFn();
@@ -328,6 +335,13 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
       };
       return handleResearchJobFn(job, researchDeps);
     },
+    podcastHandler: async (job) => {
+      const notebookLM = await getOrCreateNotebookLMAdapter();
+      if (!notebookLM) {
+        throw new Error('NotebookLM adapter not configured: set NOTEBOOKLM_AUTH_TOKEN + NOTEBOOKLM_COOKIES, or GOOGLE_EMAIL + GOOGLE_PASSWORD');
+      }
+      return handlePodcastJobFn(job, { notebookLM, telegram });
+    },
     telegram,
     config,
   });
@@ -394,7 +408,7 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
       skillWatcher.stop(),
       telegram.stop(),
     ]);
-    await Promise.all([queues.chat.close(), queues.scheduled.close(), queues.reminder.close(), queues.research.close()]);
+    await Promise.all([queues.chat.close(), queues.scheduled.close(), queues.reminder.close(), queues.research.close(), queues.podcast.close()]);
     await Promise.all([
       disconnectRedis(),
       quotaTracker.disconnect(),

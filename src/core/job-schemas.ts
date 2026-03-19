@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { ChatJob, RecurringReminderJob, ReminderJob, ScheduledJob } from './types.js';
+import type { ChatJob, PodcastJob, RecurringReminderJob, ReminderJob, ScheduledJob } from './types.js';
 import type { ResearchJobData } from './research-types.js';
 import { type Result, err, ok } from './types.js';
 
@@ -46,6 +46,16 @@ const RecurringReminderJobSchema = z.object({
   schedulerId: z.string().min(1),
 });
 
+const PodcastJobSchema = z.object({
+  kind: z.literal('podcast'),
+  id: z.string().min(1),
+  chatId: z.number().int(),
+  notePath: z.string().min(1),
+  audioFormat: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]),
+  audioLength: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+  enqueuedAt: z.string().min(1),
+});
+
 // Research jobs have deeply nested state/context — validate top-level shape only.
 // The research pipeline validates its own invariants.
 const ResearchJobDataSchema = z.object({
@@ -88,4 +98,10 @@ export function parseResearchJobData(data: unknown): Result<ResearchJobData, str
   const result = ResearchJobDataSchema.safeParse(data);
   if (!result.success) return err(`Invalid research job: ${result.error.message}`);
   return ok(result.data as unknown as ResearchJobData);
+}
+
+export function parsePodcastJob(data: unknown): Result<PodcastJob, string> {
+  const result = PodcastJobSchema.safeParse(data);
+  if (!result.success) return err(`Invalid podcast job: ${result.error.message}`);
+  return ok(result.data as unknown as PodcastJob);
 }

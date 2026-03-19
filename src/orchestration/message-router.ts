@@ -1,8 +1,9 @@
 import { match } from 'ts-pattern';
-import { makeTelegramUserId, makeChatJob, makeJobId, makeReminderJob, makeRecurringReminderJob } from '../core/types.js';
+import { makeTelegramUserId, makeChatJob, makeJobId, makePodcastJob, makeReminderJob, makeRecurringReminderJob } from '../core/types.js';
 import { parseRemindCommand, isRemindListCommand, parseRemindCancelCommand, formatReminderList, formatReminderConfirmation } from '../core/reminder.js';
 import { parseResearchCommand } from '../core/research-request.js';
 import { makeResearchJobData } from '../core/research-types.js';
+import { parsePodcastCommand, audioFormatToCode, audioLengthToCode } from '../core/podcast-request.js';
 import type { TelegramAdapter } from '../infra/telegram.js';
 import type { Queues } from '../infra/queue.js';
 import type { SessionStore } from '../infra/session-store.js';
@@ -31,6 +32,8 @@ type Command =
   | { readonly kind: 'remind' }
   | { readonly kind: 'research-status' }
   | { readonly kind: 'research' }
+  | { readonly kind: 'podcast' }
+  | { readonly kind: 'help' }
   | { readonly kind: 'chat' };
 
 /** Parse raw message text into a Command for exhaustive routing. */
@@ -39,8 +42,10 @@ export function parseCommandKind(text: string): Command {
   if (trimmed === '/new') return { kind: 'new' };
   if (trimmed.startsWith('/remind')) return { kind: 'remind' };
   const lower = trimmed.toLowerCase();
+  if (lower === '/help') return { kind: 'help' };
   if (lower === '/research-status') return { kind: 'research-status' };
   if (lower.startsWith('/research')) return { kind: 'research' };
+  if (lower.startsWith('/podcast')) return { kind: 'podcast' };
   return { kind: 'chat' };
 }
 
@@ -65,9 +70,11 @@ export function routeMessage(msg: IncomingMessage, deps: MessageRouterDeps): voi
         console.error('[router] Failed to handle /new command:', err);
       });
     })
+    .with({ kind: 'help' }, () => routeHelpCommand(msg, deps))
     .with({ kind: 'remind' }, () => routeRemindCommand(msg, deps))
     .with({ kind: 'research-status' }, () => routeResearchStatus(msg, deps))
     .with({ kind: 'research' }, () => routeResearchCommand(msg, deps))
+    .with({ kind: 'podcast' }, () => routePodcastCommand(msg, deps))
     .with({ kind: 'chat' }, () => {
       const replyRouting = msg.replyToMessageId !== undefined
         ? deps.sessionStore.getMessageSession(msg.replyToMessageId).then((sessionId) => {
@@ -308,4 +315,86 @@ function routeResearchCommand(msg: IncomingMessage, deps: MessageRouterDeps): vo
       console.error('[router] Failed to send research error notification:', e);
     });
   });
+}
+
+// ─── /help ──────────────────────────────────────────────────────────────────
+
+const HELP_TEXT = [
+  'Available commands:',
+  '',
+  '/help — Show this message',
+  '/new — Clear session, start fresh conversation',
+  '',
+  '/remind <duration|time> <message> — Set a one-shot reminder',
+  '/remind every <interval|day> [at <time>] <message> — Recurring reminder',
+  '/remind list — List active recurring reminders',
+  '/remind cancel <id> — Cancel a recurring reminder',
+  '',
+  '/research <topic> [--audio] [--video] [--link <url>] [| <prompt>]',
+  '  Deep research with NotebookLM + Claude',
+  '/research-status — Check research job progress',
+  '',
+  '/podcast <vault-path> [--format deep-dive|brief|critique|debate] [--length short|default|long]',
+  '  Generate audio podcast from a vault note',
+  '  Vault path: use Obsidian "Copy vault path" (e.g. reclaw/architecture)',
+  '  Defaults: --format deep-dive --length default',
+].join('\n');
+
+function routeHelpCommand(msg: IncomingMessage, deps: MessageRouterDeps): void {
+  deps.telegram.sendMessage(msg.chatId, HELP_TEXT).catch((err: unknown) => {
+    console.error('[router] Failed to send /help response:', err);
+  });
+}
+
+// ─── /podcast <vault-path> ──────────────────────────────────────────────────
+
+function routePodcastCommand(msg: IncomingMessage, deps: MessageRouterDeps): void {
+  const parseResult = parsePodcastCommand(msg.text);
+
+  if (!parseResult.ok) {
+    deps.telegram.sendMessage(msg.chatId, parseResult.error).catch((parseErr: unknown) => {
+      console.error('[router] Failed to send /podcast parse error:', parseErr);
+    });
+    return;
+  }
+
+  const { notePath, format, length } = parseResult.value;
+  const jobIdRaw = `podcast:${msg.userId}:${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+  const jobIdResult = makeJobId(jobIdRaw);
+  if (!jobIdResult.ok) {
+    console.error(`[router] Failed to create podcast jobId: ${jobIdResult.error}`);
+    return;
+  }
+
+  const podcastJobResult = makePodcastJob({
+    id: jobIdResult.value,
+    chatId: msg.chatId,
+    notePath,
+    audioFormat: audioFormatToCode(format),
+    audioLength: audioLengthToCode(length),
+    enqueuedAt: new Date().toISOString(),
+  });
+
+  if (!podcastJobResult.ok) {
+    console.error(`[router] Failed to create PodcastJob: ${podcastJobResult.error}`);
+    deps.telegram.sendMessage(msg.chatId, 'Failed to create podcast job. Please try again.').catch((e: unknown) => {
+      console.error('[router] Failed to send podcast error:', e);
+    });
+    return;
+  }
+
+  deps.queues.enqueuePodcast(podcastJobResult.value)
+    .then(async () => {
+      const formatLabel = format === 'deep-dive' ? 'Deep Dive' : format.charAt(0).toUpperCase() + format.slice(1);
+      await deps.telegram.sendMessage(
+        msg.chatId,
+        `Podcast enqueued: "${notePath}"\nFormat: ${formatLabel}\n\nStarting now. This may take up to 15 minutes.`,
+      );
+    })
+    .catch((enqErr: unknown) => {
+      console.error('[router] Failed to enqueue podcast job:', enqErr);
+      deps.telegram.sendMessage(msg.chatId, 'Failed to enqueue podcast job. Please try again.').catch((e: unknown) => {
+        console.error('[router] Failed to send podcast error notification:', e);
+      });
+    });
 }

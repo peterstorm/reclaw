@@ -29,6 +29,14 @@ export type AdapterError = {
   readonly retriable: boolean;
 };
 
+/** Audio overview customization options. */
+export type AudioCustomization = {
+  /** 0=Deep Dive, 1=Brief, 2=Critique, 3=Debate */
+  readonly format?: 0 | 1 | 2 | 3;
+  /** 1=Short, 2=Default, 3=Long */
+  readonly length?: 1 | 2 | 3;
+};
+
 /** The public adapter interface over the NotebookLM SDK. */
 export type NotebookLMAdapter = {
   /** Create a new notebook and return its project ID. */
@@ -60,6 +68,13 @@ export type NotebookLMAdapter = {
    */
   readonly addSourceUrl: (notebookId: string, url: string) => Promise<Result<string, AdapterError>>;
 
+  /** Add raw text as a source (e.g. an Obsidian note). */
+  readonly addSourceText: (
+    notebookId: string,
+    title: string,
+    content: string,
+  ) => Promise<Result<string, AdapterError>>;
+
   /**
    * Add a YouTube URL as a source.
    * FR-014: support YouTube URLs.
@@ -84,7 +99,7 @@ export type NotebookLMAdapter = {
   /** Create an audio overview artifact. Returns the artifact ID. */
   readonly createAudioOverview: (
     notebookId: string,
-    options?: { instructions?: string },
+    options?: { instructions?: string; customization?: AudioCustomization },
   ) => Promise<Result<string, AdapterError>>;
 
   /** Create a video overview artifact. Returns the artifact ID. */
@@ -288,6 +303,25 @@ export async function createNotebookLMAdapter(
     return result;
   };
 
+  // ─── addSourceText ───────────────────────────────────────────────────────
+
+  const addSourceText = async (
+    notebookId: string,
+    title: string,
+    content: string,
+  ): Promise<Result<string, AdapterError>> => {
+    const result = await safeCall(() =>
+      sdk.sources.addFromText(notebookId, { title, content }),
+    );
+    if (!result.ok) return result;
+    const raw = result.value as { sourceId?: string; sourceIds?: string[] };
+    const sourceId = raw.sourceId ?? raw.sourceIds?.[0] ?? '';
+    if (!sourceId) {
+      return { ok: false, error: { message: 'addFromText returned no sourceId', retriable: false } };
+    }
+    return { ok: true, value: sourceId };
+  };
+
   // ─── addYouTubeSource ──────────────────────────────────────────────────────
 
   const addYouTubeSource = async (
@@ -347,9 +381,10 @@ export async function createNotebookLMAdapter(
 
   const createAudioOverview = async (
     notebookId: string,
-    options?: { instructions?: string },
+    options?: { instructions?: string; customization?: AudioCustomization },
   ): Promise<Result<string, AdapterError>> => {
-    const createOpts: Record<string, unknown> = { customization: { format: 0 } };
+    const customization = { format: 0, ...options?.customization };
+    const createOpts: Record<string, unknown> = { customization };
     if (options?.instructions) createOpts.instructions = options.instructions;
     const result = await safeCall(() =>
       sdk.artifacts.audio.create(notebookId, createOpts),
@@ -433,6 +468,7 @@ export async function createNotebookLMAdapter(
     searchWeb,
     addDiscoveredSources,
     addSourceUrl,
+    addSourceText,
     addYouTubeSource,
     waitForProcessing,
     chat,

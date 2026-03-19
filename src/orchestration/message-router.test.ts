@@ -36,6 +36,7 @@ const makeQueues = (): Queues => ({
   scheduled: {} as Queues['scheduled'],
   reminder: {} as Queues['reminder'],
   research: {} as Queues['research'],
+  podcast: {} as Queues['podcast'],
   enqueueChat: vi.fn().mockResolvedValue(undefined),
   enqueueScheduled: vi.fn().mockResolvedValue(undefined),
   isScheduledJobKnown: vi.fn().mockResolvedValue(false),
@@ -46,6 +47,7 @@ const makeQueues = (): Queues => ({
   enqueueResearch: vi.fn().mockResolvedValue(undefined),
   getResearchQueuePosition: vi.fn().mockResolvedValue(1),
   getResearchStatus: vi.fn().mockResolvedValue({ active: null, waiting: 0 }),
+  enqueuePodcast: vi.fn().mockResolvedValue(undefined),
 });
 
 const makeQuotaTracker = (): QuotaTracker => ({

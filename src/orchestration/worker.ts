@@ -1,10 +1,10 @@
 import { match } from 'ts-pattern';
 import type { AppConfig } from '../infra/config.js';
 import type { TelegramAdapter } from '../infra/telegram.js';
-import type { ChatJob, JobResult, RecurringReminderJob, ReminderJob, ScheduledJob } from '../core/types.js';
+import type { ChatJob, JobResult, PodcastJob, RecurringReminderJob, ReminderJob, ScheduledJob } from '../core/types.js';
 import type { ResearchJobData } from '../core/research-types.js';
 import type { ResearchJobLike } from './research-handler.js';
-import { parseChatJob, parseScheduledJob, parseReminderJob, parseRecurringReminderJob, parseResearchJobData } from '../core/job-schemas.js';
+import { parseChatJob, parsePodcastJob, parseScheduledJob, parseReminderJob, parseRecurringReminderJob, parseResearchJobData } from '../core/job-schemas.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -40,6 +40,7 @@ type WorkerDeps = {
   readonly reminderHandler: (job: ReminderJob) => Promise<JobResult>;
   readonly recurringReminderHandler: (job: RecurringReminderJob) => Promise<JobResult>;
   readonly researchHandler: (job: ResearchJobLike) => Promise<{ hubPath: string | null; topic: string }>;
+  readonly podcastHandler: (job: PodcastJob) => Promise<JobResult>;
   readonly telegram: TelegramAdapter;
   readonly config: AppConfig;
   /** Injected for testing. Defaults to BullMQ Worker constructor. */
@@ -136,6 +137,7 @@ export function createWorkers(deps: WorkerDeps): Workers {
     reminderHandler,
     recurringReminderHandler,
     researchHandler,
+    podcastHandler,
     telegram,
     config,
     workerFactory = defaultWorkerFactory,
@@ -274,6 +276,31 @@ export function createWorkers(deps: WorkerDeps): Workers {
     defaultMaxAttempts: 1,
   });
 
+  // ── Podcast worker (concurrency=1, long lock for artifact generation) ───
+  const podcastLockMs = 20 * 60 * 1000; // 20 minutes
+
+  const podcastWorker = workerFactory(
+    'reclaw-podcast',
+    async (job) => {
+      const parsed = parsePodcastJob(job.data);
+      if (!parsed.ok) throw new Error(parsed.error);
+      const podcastJob = parsed.value;
+      console.log(`[worker:podcast] Processing job ${job.id ?? 'unknown'} note="${podcastJob.notePath}"`);
+      const result = await podcastHandler(podcastJob);
+      if (!result.ok) throw new Error(result.error);
+      return result;
+    },
+    { connection, concurrency: 1, lockDuration: podcastLockMs, stalledInterval: podcastLockMs },
+  );
+
+  attachDeadLetterHandler({
+    worker: podcastWorker,
+    jobKind: 'podcast',
+    telegram,
+    getChatIds: (data) => [(data as PodcastJob).chatId],
+    defaultMaxAttempts: 1,
+  });
+
   // ─── Public API ───────────────────────────────────────────────────────────
 
   /**
@@ -288,7 +315,7 @@ export function createWorkers(deps: WorkerDeps): Workers {
    * Gracefully close both workers, draining any in-progress jobs.
    */
   const stop = async (): Promise<void> => {
-    await Promise.all([chatWorker.close(), scheduledWorker.close(), reminderWorker.close(), researchWorker.close()]);
+    await Promise.all([chatWorker.close(), scheduledWorker.close(), reminderWorker.close(), researchWorker.close(), podcastWorker.close()]);
   };
 
   return { start, stop } as const;

@@ -69,6 +69,7 @@ function makeMockDeps(overrides: Partial<ResearchDeps> = {}): ResearchDeps {
     }),
     addDiscoveredSources: vi.fn().mockResolvedValue({ ok: true, value: ['id-1'] }),
     addSourceUrl: vi.fn().mockResolvedValue({ ok: true, value: 'id-hint-1' }),
+    addSourceText: vi.fn().mockResolvedValue({ ok: true, value: 'id-text-1' }),
     addYouTubeSource: vi.fn().mockResolvedValue({ ok: true, value: 'id-yt-1' }),
     waitForProcessing: vi.fn().mockResolvedValue({ ok: true, value: undefined }),
     chat: vi.fn().mockResolvedValue({ ok: true, value: makeMockChatResponse() }),

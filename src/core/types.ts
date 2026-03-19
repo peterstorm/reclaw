@@ -144,8 +144,19 @@ export type ResearchJob = {
   readonly enqueuedAt: string; // ISO 8601
 };
 
+/** A podcast job: triggered by /podcast Telegram command. */
+export type PodcastJob = {
+  readonly kind: 'podcast';
+  readonly id: JobId;
+  readonly chatId: number;
+  readonly notePath: string;
+  readonly audioFormat: 0 | 1 | 2 | 3;
+  readonly audioLength: 1 | 2 | 3;
+  readonly enqueuedAt: string; // ISO 8601
+};
+
 /** All job variants. */
-export type Job = ChatJob | ScheduledJob | ReminderJob | RecurringReminderJob | ResearchJob;
+export type Job = ChatJob | ScheduledJob | ReminderJob | RecurringReminderJob | ResearchJob | PodcastJob;
 
 // ─── Job Type Guards ───────────────────────────────────────────────────────────
 
@@ -167,6 +178,10 @@ export function isRecurringReminderJob(job: Job): job is RecurringReminderJob {
 
 export function isResearchJob(job: Job): job is ResearchJob {
   return job.kind === 'research';
+}
+
+export function isPodcastJob(job: Job): job is PodcastJob {
+  return job.kind === 'podcast';
 }
 
 // ─── Job Factory Functions ─────────────────────────────────────────────────────
@@ -322,6 +337,34 @@ export function makeResearchJob(params: {
     chatId: params.chatId,
     topic: params.topic,
     sourceHints: params.sourceHints,
+    enqueuedAt: params.enqueuedAt,
+  });
+}
+
+export function makePodcastJob(params: {
+  id: JobId;
+  chatId: number;
+  notePath: string;
+  audioFormat: 0 | 1 | 2 | 3;
+  audioLength: 1 | 2 | 3;
+  enqueuedAt: string;
+}): Result<PodcastJob, string> {
+  if (params.notePath.trim().length === 0) {
+    return err('Podcast note path must not be empty.');
+  }
+  if (!Number.isInteger(params.chatId)) {
+    return err(`chatId must be an integer, got: ${params.chatId}`);
+  }
+  if (!isIso8601(params.enqueuedAt)) {
+    return err(`enqueuedAt must be ISO 8601, got: ${params.enqueuedAt}`);
+  }
+  return ok({
+    kind: 'podcast',
+    id: params.id,
+    chatId: params.chatId,
+    notePath: params.notePath,
+    audioFormat: params.audioFormat,
+    audioLength: params.audioLength,
     enqueuedAt: params.enqueuedAt,
   });
 }
