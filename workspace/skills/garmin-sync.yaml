@@ -104,11 +104,17 @@ promptTemplate: |
     - Is pace improving at the same HR? (aerobic development)
     - Is HR drift increasing during runs? (potential fatigue)
     - Are training effects appropriate for the training phase?
-  - **Commentary**: Brief, honest training advice:
-    - If consecutive hard days: suggest recovery
-    - If pace/HR ratio improving: note fitness gains
-    - If resting HR is elevated: flag potential overtraining or illness
-    - If training status is "Unproductive" or "Overreaching": note it prominently
+  - **Commentary**: Comprehensive, honest training analysis — don't hold back on detail:
+    - Classify the run type based on HR zones and pace (easy/recovery, tempo, threshold, intervals, long run)
+    - Evaluate whether the effort matched the likely training intent — e.g. was an "easy run" actually easy? Did HR stay in zone 2?
+    - Assess aerobic development: is pace improving at the same HR over weeks? Calculate and compare pace:HR ratios across recent runs
+    - Flag fatigue signals: elevated resting HR, declining HRV, increasing HR drift during runs, or worsening pace:HR ratio
+    - If consecutive hard days (high training effect or zone 4-5 time): recommend recovery and explain why
+    - If training status is "Unproductive", "Overreaching", or "Detraining": explain what it means and suggest corrective action
+    - Note positive trends explicitly — fitness gains deserve recognition (e.g. "VO2 max up 0.5 over 2 weeks", "aerobic efficiency improving")
+    - Consider the weekly training load balance: too much intensity? Not enough volume? Good mix?
+    - If sleep score or HRV is notably poor, connect it to training context (recovery debt, potential illness, life stress)
+    - Suggest what the next run should look like based on current recovery state and recent training load
 
   If there are no activities, skip the Activities section entirely — don't include an empty heading.
 
