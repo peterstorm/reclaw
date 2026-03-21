@@ -12,6 +12,7 @@
     "format": "biome format --write ."
   },
   "dependencies": {
+    "@gooin/garmin-connect": "^1.7.6",
     "bullmq": "^5.7.0",
     "chokidar": "^3.6.0",
     "chrono-node": "^2.9.0",

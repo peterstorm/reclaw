@@ -1,6 +1,6 @@
 id: morning-briefing
 name: Morning Briefing
-schedule: "30 6 * * 1-5"
+schedule: "15 7 * * 1-5"
 permissionProfile: scheduled
 validityWindowMinutes: 60
 timeout: 300
@@ -31,7 +31,20 @@ promptTemplate: |
   - Wind speed and gusts
   - Clear recommendation: what to wear, whether to bring rain gear
 
-  **Step 2 — Calendar:** Read today's events from the shared "J & P" iCloud calendar:
+  **Step 2 — Fitness:** Read the Garmin daily data:
+  ```
+  cat ~/.cache/garmin/latest.json 2>/dev/null
+  ```
+  If the file exists and is from yesterday or today, include a compact fitness block (3-4 lines max):
+  - Last night's sleep: score and duration (e.g. "Sleep: 7h42m (score 81)")
+  - Resting HR and trend if notable (e.g. "RHR: 52 bpm — stable")
+  - Yesterday's steps
+  - If there was an activity: one-line summary (e.g. "5k run: 5:12/km avg, zone 2")
+  - Training status if available (e.g. "Training: Productive, VO2 max 52.3")
+
+  If the file doesn't exist, is stale, or the fetch errored, skip this section silently.
+
+  **Step 3 — Calendar:** Read today's events from the shared "J & P" iCloud calendar:
   - Calendar directory: ~/.local/share/calendars/icloud/D8C2180E-3AD0-406E-9B55-23DA5F2CC674/
   - Each .ics file is an event
   - Parse the VEVENT blocks: look for DTSTART/DTEND matching today ({{date}})
@@ -40,7 +53,7 @@ promptTemplate: |
   - Flag any early morning meetings that would affect the 07:30 commute
   - If no calendar files exist yet, just note that calendar sync is pending
 
-  **Step 3 — Day overview:** Include:
+  **Step 4 — Day overview:** Include:
   - The calendar events from step 2
   - Key priorities or tasks from the Obsidian vault
   - Any open items from the reclaw todo at ~/dev/notes/remotevault/reclaw/todo.md
