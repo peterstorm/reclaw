@@ -1,0 +1,150 @@
+id: garmin-sync
+name: Garmin Daily Sync
+schedule: "5 7 * * *"
+permissionProfile: scheduled
+validityWindowMinutes: 60
+timeout: 300
+promptTemplate: |
+  {{personality}}
+
+  Today is {{dayOfWeek}}, {{date}}.
+
+  You are syncing daily fitness data from Garmin Connect and writing it to the Obsidian vault.
+
+  ## Step 1 — Fetch Garmin data
+
+  Run the Garmin fetch script:
+  ```
+  bun /home/peterstorm/dev/claude-plugins/reclaw/scripts/garmin-fetch.ts
+  ```
+
+  If it fails with an auth error, report the failure and stop — don't write a vault note with no data.
+  If it fails on individual metrics (partial failure), continue — the JSON will have nulls for missing sections.
+
+  ## Step 2 — Parse the data
+
+  The script outputs JSON to stdout. Parse it and extract:
+  - `date` — the date this data covers (yesterday)
+  - `sleep` — score, duration, deep/light/REM/awake stages
+  - `steps` — step count
+  - `heartRate` — resting, max, min
+  - `activities` — list of activities with type, duration, distance, HR, pace, training effect, HR zones, splits
+  - `vo2Max` — running and cycling VO2 max values
+  - `trainingStatus` — current training status and related metrics
+  - `hrv` — heart rate variability (weekly avg and last night)
+  - `errors` — any fetch failures (note them but don't let them block the vault note)
+
+  ## Step 3 — Check for recent fitness notes
+
+  Look for the last 5 fitness notes for trend comparison:
+  ```
+  ls -t ~/dev/notes/remotevault/personal/fitness/ 2>/dev/null | head -10
+  ```
+  If the fitness directory uses year/month structure, also check:
+  ```
+  find ~/dev/notes/remotevault/personal/fitness/ -name "*.md" -not -name "MOC.md" | sort -r | head -5
+  ```
+
+  Read the most recent 3 notes (if they exist) to extract recent metrics for comparison.
+
+  ## Step 4 — Write the daily fitness note
+
+  Create the note at: `~/dev/notes/remotevault/personal/fitness/YYYY/MM/YYYY-MM-DD.md`
+  where YYYY-MM-DD is the **data date** (yesterday), not today.
+  Create year/month directories if needed.
+
+  **Frontmatter:**
+  ```yaml
+  ---
+  title: "Fitness — YYYY-MM-DD"
+  date: YYYY-MM-DD
+  tags: [fitness, garmin, daily]
+  up: "[[personal/fitness/MOC|Fitness]]"
+  ---
+  ```
+
+  **Note structure:**
+
+  ### Overview
+  A quick-glance summary table:
+  | Metric | Value |
+  |--------|-------|
+  | Steps | X,XXX |
+  | Resting HR | XX bpm |
+  | Sleep Score | XX/100 |
+  | Sleep Duration | Xh XXm |
+  | VO2 Max | XX.X |
+  | Training Status | [status] |
+  | HRV | XX ms |
+
+  Skip any row where the data is null.
+
+  ### Sleep
+  - Score, total duration
+  - Stage breakdown: deep, light, REM, awake — both duration and percentage
+  - Brief comparison to recent notes if available (e.g. "sleep score trending up this week")
+
+  ### Activities
+  For each activity logged that day:
+  - Type, name, duration, distance
+  - Average/max HR, HR zone time distribution
+  - Calories, elevation gain (if applicable)
+  - Training effect (aerobic + anaerobic)
+
+  **If there are running activities, add a detailed Run Analysis subsection:**
+
+  #### Run Analysis
+  - **Pace**: Overall average pace (min/km), and per-km splits if available
+  - **HR zones**: Time in each zone — was it an easy run, tempo, threshold, or intervals?
+  - **Aerobic efficiency**: Pace vs HR ratio — lower HR for same pace = better fitness
+  - **Cadence**: Steps per minute if available
+  - **Training effect**: Aerobic and anaerobic values and what they indicate
+  - **VO2 max impact**: Did this run contribute to VO2 max estimation?
+  - **Trend comparison**: Compare pace, HR, and efficiency to recent runs from previous fitness notes:
+    - Is pace improving at the same HR? (aerobic development)
+    - Is HR drift increasing during runs? (potential fatigue)
+    - Are training effects appropriate for the training phase?
+  - **Commentary**: Brief, honest training advice:
+    - If consecutive hard days: suggest recovery
+    - If pace/HR ratio improving: note fitness gains
+    - If resting HR is elevated: flag potential overtraining or illness
+    - If training status is "Unproductive" or "Overreaching": note it prominently
+
+  If there are no activities, skip the Activities section entirely — don't include an empty heading.
+
+  ### Training Status
+  - Current status (Productive, Maintaining, Detraining, Peaking, Recovery, etc.)
+  - VO2 max (running + cycling if available) with trend vs recent notes
+  - HRV weekly average and last night value
+
+  ## Step 5 — Maintain the Fitness MOC
+
+  Check if `~/dev/notes/remotevault/personal/fitness/MOC.md` exists.
+  If not, create it:
+  ```yaml
+  ---
+  title: Fitness
+  tags: [moc, fitness, garmin]
+  up: "[[personal/MOC]]"
+  ---
+  ```
+  ```
+  # Fitness
+
+  Daily fitness tracking from Garmin Connect.
+
+  ## Daily Notes
+  ```
+
+  Append a link to today's note:
+  `- [[personal/fitness/YYYY/MM/YYYY-MM-DD|YYYY-MM-DD]] — [1-line summary]`
+
+  The 1-line summary should be like: "8.2k steps, 7h12m sleep (82), 5k run 5:15/km"
+
+  ## Step 6 — Store in cortex
+
+  Run `/remember`: "Fitness [date]: [concise summary of key metrics and any notable activities or trends]"
+
+  ## Output
+
+  Respond with exactly `ALL_CLEAR` — this is a background data sync, not a user-facing notification.
