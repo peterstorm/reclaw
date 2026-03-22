@@ -1,6 +1,6 @@
 id: garmin-sync
 name: Garmin Daily Sync
-schedule: "10 7 * * *"
+schedule: "0 22 * * *"
 permissionProfile: scheduled
 validityWindowMinutes: 60
 timeout: 300
