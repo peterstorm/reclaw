@@ -89,6 +89,15 @@ type HrTimeSeriesPoint = {
   readonly heartRate: number;
 };
 
+type ScheduledWorkout = {
+  readonly title: string | null;
+  readonly date: string;
+  readonly duration: number | null;
+  readonly distance: number | null;
+  readonly sportTypeKey: string | null;
+  readonly itemType: string;
+};
+
 type GarminDailyData = {
   readonly date: string;
   readonly fetchedAt: string;
@@ -100,6 +109,7 @@ type GarminDailyData = {
   readonly trainingStatus: TrainingStatusSummary | null;
   readonly trainingReadiness: TrainingReadinessSummary | null;
   readonly hrv: HrvSummary | null;
+  readonly scheduledWorkouts: readonly ScheduledWorkout[];
   readonly errors: readonly string[];
 };
 
@@ -372,6 +382,27 @@ async function main(): Promise<void> {
     };
   }, errors);
 
+  // Scheduled workouts from calendar
+  const scheduledWorkouts: ScheduledWorkout[] = [];
+  await tryFetch("scheduledWorkouts", async () => {
+    const cal = await client.getCalendar(date.getFullYear(), date.getMonth()) as unknown as Record<string, unknown>;
+    const items = cal.calendarItems as Array<Record<string, unknown>> | undefined;
+    if (items?.length) {
+      for (const item of items) {
+        if (item.itemType !== "workout") continue;
+        if ((item.date as string) !== dateStr) continue;
+        scheduledWorkouts.push({
+          title: item.title as string ?? null,
+          date: item.date as string,
+          duration: item.duration as number ?? null,
+          distance: item.distance as number ?? null,
+          sportTypeKey: item.sportTypeKey as string ?? null,
+          itemType: item.itemType as string,
+        });
+      }
+    }
+  }, errors);
+
   // Build output
   const data: GarminDailyData = {
     date: dateStr,
@@ -384,6 +415,7 @@ async function main(): Promise<void> {
     trainingStatus,
     trainingReadiness,
     hrv,
+    scheduledWorkouts,
     errors,
   };
 
