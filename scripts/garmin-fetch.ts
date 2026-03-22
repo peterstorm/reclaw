@@ -42,6 +42,7 @@ type ActivitySummary = {
   readonly vo2MaxValue: number | null;
   readonly hrZones: readonly HrZone[] | null;
   readonly splits: readonly Split[] | null;
+  readonly hrTimeSeries: readonly HrTimeSeriesPoint[] | null;
   readonly raw: Record<string, unknown>;
 };
 
@@ -74,6 +75,20 @@ type HrvSummary = {
   readonly raw: unknown;
 };
 
+type TrainingReadinessSummary = {
+  readonly score: number | null;
+  readonly level: string | null;
+  readonly sleepScore: number | null;
+  readonly recoveryTime: number | null;
+  readonly hrvStatus: string | null;
+  readonly raw: unknown;
+};
+
+type HrTimeSeriesPoint = {
+  readonly timestamp: number;
+  readonly heartRate: number;
+};
+
 type GarminDailyData = {
   readonly date: string;
   readonly fetchedAt: string;
@@ -83,6 +98,7 @@ type GarminDailyData = {
   readonly activities: readonly ActivitySummary[];
   readonly vo2Max: Vo2MaxSummary | null;
   readonly trainingStatus: TrainingStatusSummary | null;
+  readonly trainingReadiness: TrainingReadinessSummary | null;
   readonly hrv: HrvSummary | null;
   readonly errors: readonly string[];
 };
@@ -155,6 +171,7 @@ const extractActivity = (raw: Record<string, unknown>): ActivitySummary => ({
   vo2MaxValue: raw.vO2MaxValue as number ?? null,
   hrZones: extractHrZones(raw),
   splits: extractSplits(raw),
+  hrTimeSeries: null,
   raw: raw as Record<string, unknown>,
 });
 
@@ -177,6 +194,26 @@ const extractSplits = (raw: Record<string, unknown>): readonly Split[] | null =>
       duration: s.duration as number ?? 0,
       averageHR: s.averageHR as number ?? null,
       averageSpeed: s.averageSpeed as number ?? null,
+    }));
+};
+
+const extractTrainingReadiness = (raw: Record<string, unknown>): TrainingReadinessSummary => ({
+  score: raw.score as number ?? null,
+  level: raw.level as string ?? null,
+  sleepScore: raw.sleepScore as number ?? null,
+  recoveryTime: raw.recoveryTimeInHours as number ?? null,
+  hrvStatus: raw.hrvStatus as string ?? null,
+  raw,
+});
+
+const extractHrTimeSeries = (raw: Record<string, unknown>): readonly HrTimeSeriesPoint[] | null => {
+  const metrics = raw.activityDetailMetrics as Array<Record<string, unknown>> | undefined;
+  if (!metrics?.length) return null;
+  return metrics
+    .filter((m) => m.directHeartRate != null || m.heartRate != null)
+    .map((m) => ({
+      timestamp: m.metricsIndex as number ?? 0,
+      heartRate: (m.directHeartRate as number) ?? (m.heartRate as number) ?? 0,
     }));
 };
 
@@ -263,7 +300,23 @@ async function main(): Promise<void> {
         const detail = await client.getActivity({
           activityId: act.activityId as number,
         }) as unknown as Record<string, unknown>;
-        activities.push(extractActivity(detail));
+        const activity = extractActivity(detail);
+
+        // Fetch HR time series from activity details endpoint
+        let hrTimeSeries: readonly HrTimeSeriesPoint[] | null = null;
+        try {
+          await delay(300);
+          const detailsUrl = `${client.url.ACTIVITY}${act.activityId as number}/details`;
+          const detailsRaw = await client.get<Record<string, unknown>>(detailsUrl, {
+            params: { maxChartSize: 1000, maxPolylineSize: 1000 },
+          });
+          hrTimeSeries = extractHrTimeSeries(detailsRaw);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.error(`[WARN] Failed to fetch HR time series for activity ${act.activityId}: ${msg}`);
+        }
+
+        activities.push({ ...activity, hrTimeSeries });
       } catch {
         // Fall back to summary data
         activities.push(extractActivity(act));
@@ -299,6 +352,15 @@ async function main(): Promise<void> {
 
   await delay(300);
 
+  // Training readiness
+  const trainingReadiness = await tryFetch("trainingReadiness", async () => {
+    const readinessUrl = `${client.url.GC_API}/metrics-service/metrics/trainingreadiness/daily/${dateStr}`;
+    const raw = await client.get<Record<string, unknown>>(readinessUrl);
+    return extractTrainingReadiness(raw);
+  }, errors);
+
+  await delay(300);
+
   // HRV
   const hrv = await tryFetch("hrv", async () => {
     const raw = await client.getHRVData(date) as unknown as Record<string, unknown>;
@@ -320,6 +382,7 @@ async function main(): Promise<void> {
     activities,
     vo2Max,
     trainingStatus,
+    trainingReadiness,
     hrv,
     errors,
   };

@@ -28,11 +28,14 @@ promptTemplate: |
   - `sleep` — score, duration, deep/light/REM/awake stages
   - `steps` — step count
   - `heartRate` — resting, max, min
-  - `activities` — list of activities with type, duration, distance, HR, pace, training effect, HR zones, splits
+  - `activities` — list of activities with type, duration, distance, HR, pace, training effect, HR zones, splits, hrTimeSeries
   - `vo2Max` — running and cycling VO2 max values
   - `trainingStatus` — current training status and related metrics
+  - `trainingReadiness` — score (0-100), level, sleepScore, recoveryTime (hours), hrvStatus
   - `hrv` — heart rate variability (weekly avg and last night)
   - `errors` — any fetch failures (note them but don't let them block the vault note)
+
+  Each activity includes `hrTimeSeries` — array of `{timestamp, heartRate}` points sampled throughout the activity (up to 1000 points). Use for interval analysis.
 
   ## Step 3 — Check for recent fitness notes
 
@@ -76,6 +79,7 @@ promptTemplate: |
   | VO2 Max | XX.X |
   | Training Status | [status] |
   | HRV | XX ms |
+  | Training Readiness | XX/100 ([level]) |
 
   Skip any row where the data is null.
 
@@ -83,6 +87,15 @@ promptTemplate: |
   - Score, total duration
   - Stage breakdown: deep, light, REM, awake — both duration and percentage
   - Brief comparison to recent notes if available (e.g. "sleep score trending up this week")
+
+  ### Training Readiness
+  If trainingReadiness data exists:
+  - Overall readiness score and level
+  - Sleep score component (from readiness, not the separate sleep section)
+  - Recovery time remaining (hours)
+  - HRV status
+
+  Brief interpretation: was the body ready for training? If a run was done, note whether the readiness score supported the effort level.
 
   ### Activities
   For each activity logged that day:
@@ -94,8 +107,13 @@ promptTemplate: |
   **If there are running activities, add a detailed Run Analysis subsection:**
 
   #### Run Analysis
+  - **Pre-run readiness**: If trainingReadiness data exists, summarize the body's state going into the run — readiness score, sleep quality, recovery time, HRV status. Frame the run performance in this context (e.g. "solid effort despite low readiness of 38" or "good conditions — readiness was 72 with full recovery")
   - **Pace**: Overall average pace (min/km), and per-km splits if available
   - **HR zones**: Time in each zone — was it an easy run, tempo, threshold, or intervals?
+  - **HR timeline**: If hrTimeSeries data exists, analyze HR progression through the run:
+    - For **intervals**: identify work/rest segments by HR spikes and valleys. Report peak HR during intervals, recovery HR between intervals, and recovery speed (how quickly HR drops)
+    - For **steady runs**: report HR drift — did HR climb significantly at the same pace? (cardiac drift > 5% suggests fatigue or dehydration)
+    - For **any run**: note warm-up HR ramp, peak HR and when it occurred, and cooldown pattern
   - **Aerobic efficiency**: Pace vs HR ratio — lower HR for same pace = better fitness
   - **Cadence**: Steps per minute if available
   - **Training effect**: Aerobic and anaerobic values and what they indicate
@@ -114,6 +132,8 @@ promptTemplate: |
     - Note positive trends explicitly — fitness gains deserve recognition (e.g. "VO2 max up 0.5 over 2 weeks", "aerobic efficiency improving")
     - Consider the weekly training load balance: too much intensity? Not enough volume? Good mix?
     - If sleep score or HRV is notably poor, connect it to training context (recovery debt, potential illness, life stress)
+    - If training readiness was low but the run was still strong — note the resilience but flag recovery cost
+    - If training readiness was high and performance was poor — flag possible external factors (nutrition, hydration, weather)
     - Suggest what the next run should look like based on current recovery state and recent training load
 
   If there are no activities, skip the Activities section entirely — don't include an empty heading.
