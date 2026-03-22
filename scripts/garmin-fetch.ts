@@ -270,7 +270,8 @@ async function main(): Promise<void> {
     console.error("[INFO] Login successful, tokens cached");
   }
 
-  const date = yesterday();
+  const dateArg = process.argv[2];
+  const date = dateArg ? new Date(dateArg + "T00:00:00") : yesterday();
   const dateStr = formatDate(date);
   const errors: string[] = [];
 
