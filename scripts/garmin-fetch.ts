@@ -476,14 +476,16 @@ async function main(): Promise<void> {
 
   const json = JSON.stringify(data, null, 2);
 
-  // Write daily file and latest
+  // Write daily file (always) and latest (only for default yesterday mode)
   const dailyPath = join(dataDir, `${dateStr}.json`);
-  const latestPath = join(tokenDir, "latest.json");
   await writeFile(dailyPath, json);
-  await writeFile(latestPath, json);
-
   console.error(`[INFO] Data written to ${dailyPath}`);
-  console.error(`[INFO] Latest symlink at ${latestPath}`);
+
+  if (!dateArg) {
+    const latestPath = join(tokenDir, "latest.json");
+    await writeFile(latestPath, json);
+    console.error(`[INFO] Latest updated at ${latestPath}`);
+  }
 
   if (errors.length > 0) {
     console.error(`[WARN] ${errors.length} fetch error(s): ${errors.join("; ")}`);

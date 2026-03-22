@@ -39,10 +39,11 @@ promptTemplate: |
   ```
   cat ~/.cache/garmin/daily/{{date}}.json 2>/dev/null
   ```
-  Also read yesterday's data for steps and activity summaries:
+  Also read yesterday's data for steps and activity summaries (compute yesterday's date from {{date}}):
   ```
-  cat ~/.cache/garmin/latest.json 2>/dev/null
+  cat ~/.cache/garmin/daily/YYYY-MM-DD.json 2>/dev/null
   ```
+  where YYYY-MM-DD is yesterday's date. For example if {{date}} is 2026-03-22, read 2026-03-21.
 
   From today's fetch, include a compact fitness block (4-5 lines max):
   - Last night's sleep: score and duration (e.g. "Sleep: 7h42m (score 81)")
