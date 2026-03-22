@@ -28,7 +28,7 @@ promptTemplate: |
   - `sleep` — score, duration, deep/light/REM/awake stages
   - `steps` — step count
   - `heartRate` — resting, max, min
-  - `activities` — list of activities with type, duration, distance, HR, pace, training effect, HR zones, splits, hrTimeSeries
+  - `activities` — list of activities with type, duration, distance, HR, pace, training effect, HR zones, splits, hrTimeSeries, perceivedExertion (0-100 scale, display as 1-10), feelScore (1-5: awful to amazing)
   - `vo2Max` — running and cycling VO2 max values
   - `trainingStatus` — current training status and related metrics
   - `trainingReadiness` — score (0-100), level, sleepScore, recoveryTime (hours), hrvStatus
@@ -108,6 +108,7 @@ promptTemplate: |
   - Average/max HR, HR zone time distribution
   - Calories, elevation gain (if applicable)
   - Training effect (aerobic + anaerobic)
+  - Perceived exertion (show as X/10 from the 0-100 raw value) and feel (1-5 scale) if present
 
   **If there are running activities, add a detailed Run Analysis subsection:**
 
@@ -139,6 +140,7 @@ promptTemplate: |
     - If sleep score or HRV is notably poor, connect it to training context (recovery debt, potential illness, life stress)
     - If training readiness was low but the run was still strong — note the resilience but flag recovery cost
     - If training readiness was high and performance was poor — flag possible external factors (nutrition, hydration, weather)
+    - **Subjective effort vs objective data**: If perceivedExertion or feelScore is present, compare them against what the HR/pace data shows. A high RPE with low HR could indicate fatigue, poor sleep, or heat; a low RPE with high HR suggests strong fitness or flow state. If feel was poor (1-2) despite decent metrics, flag possible external stressors. If feel was great (4-5) with strong data, highlight the positive session quality. These subjective signals are valuable context that pure metrics miss.
     - Suggest what the next run should look like based on current recovery state and recent training load
 
   If there are no activities, skip the Activities section entirely — don't include an empty heading.
