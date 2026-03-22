@@ -64,14 +64,14 @@ promptTemplate: |
   - Frame it against the training readiness: if readiness is low, note it (e.g. "Readiness is 51 — listen to your body on those progression paces")
   If no scheduled workouts, skip this section silently.
 
-  **Step 3 — Calendar:** Read today's events from the shared "J & P" iCloud calendar:
-  - Calendar directory: ~/.local/share/calendars/icloud/D8C2180E-3AD0-406E-9B55-23DA5F2CC674/
-  - Each .ics file is an event
-  - Parse the VEVENT blocks: look for DTSTART/DTEND matching today ({{date}})
-  - For recurring events (RRULE), check if today matches the recurrence pattern
-  - List each event with: time, title (SUMMARY), location (LOCATION if present)
-  - Flag any early morning meetings that would affect the 07:30 commute
-  - If no calendar files exist yet, just note that calendar sync is pending
+  **Step 3 — Calendar:** Fetch today's events:
+  ```
+  bun /home/peterstorm/dev/claude-plugins/reclaw/scripts/calendar-events.ts {{date}}
+  ```
+  This returns JSON: `[{date, startTime, endTime, title, location, isAllDay}]`.
+  List each event with time, title, and location (if present).
+  Flag any early morning meetings that would affect the 07:30 commute.
+  If the result is empty `[]`, skip this section silently.
 
   **Step 4 — Day overview:** Include:
   - The calendar events from step 2

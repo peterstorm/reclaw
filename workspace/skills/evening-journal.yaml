@@ -37,7 +37,9 @@ promptTemplate: |
   ```
 
   **Calendar events (today):**
-  Check `~/.local/share/calendars/icloud/D8C2180E-3AD0-406E-9B55-23DA5F2CC674/` for events that occurred today ({{date}}).
+  ```
+  bun /home/peterstorm/dev/claude-plugins/reclaw/scripts/calendar-events.ts {{date}}
+  ```
 
   **Present the recap:**
   Summarize the day in 3-5 bullet points covering what actually happened — coding work, meetings, decisions, anything notable. Be specific, not generic. If it was a quiet day, say so briefly.
@@ -47,7 +49,11 @@ promptTemplate: |
   **Calculate tomorrow's date** from {{date}} and use it for all lookups below.
 
   **Tomorrow's calendar:**
-  Check the same calendar directory for events matching tomorrow's date. List each with time and title. If nothing's on, say "Calendar is clear."
+  Compute tomorrow's date from {{date}}, then:
+  ```
+  bun /home/peterstorm/dev/claude-plugins/reclaw/scripts/calendar-events.ts YYYY-MM-DD
+  ```
+  (replace YYYY-MM-DD with tomorrow's date). List each with time and title. If empty, say "Calendar is clear."
 
   **Commute weather (weekdays only):**
   If tomorrow is a weekday (Mon-Fri), fetch the forecast:

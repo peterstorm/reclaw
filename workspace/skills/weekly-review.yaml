@@ -46,7 +46,11 @@ promptTemplate: |
   Run these for each repo found in the first step. Include PR branch work in the summary — it represents real effort even if not yet merged.
 
   **Calendar events this week:**
-  Check `~/.local/share/calendars/icloud/D8C2180E-3AD0-406E-9B55-23DA5F2CC674/` for events from the past 7 days.
+  Compute the date 7 days ago from {{date}}, then:
+  ```
+  bun /home/peterstorm/dev/claude-plugins/reclaw/scripts/calendar-events.ts YYYY-MM-DD {{date}}
+  ```
+  (replace first YYYY-MM-DD with 7 days ago). Returns JSON array of events for the range.
 
   ## Step 2 — Write the weekly review note
 
