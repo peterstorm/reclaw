@@ -33,7 +33,7 @@ promptTemplate: |
   - `trainingStatus` — current training status and related metrics
   - `trainingReadiness` — score (0-100), level, sleepScore, recoveryTime (hours), hrvStatus
   - `hrv` — heart rate variability (weekly avg and last night)
-  - `scheduledWorkouts` — workouts scheduled for the day (title, duration, distance, sport type). May be empty.
+  - `scheduledWorkouts` — workouts scheduled for the day (title, description with workout structure, steps with pace targets, provider). May be empty.
   - `errors` — any fetch failures (note them but don't let them block the vault note)
 
   Each activity includes `hrTimeSeries` — array of `{timestamp, heartRate}` points sampled throughout the activity (up to 1000 points). Use for interval analysis.

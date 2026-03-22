@@ -37,12 +37,24 @@ promptTemplate: |
   ```
   If the file exists and is from yesterday or today, include a compact fitness block (3-4 lines max):
   - Last night's sleep: score and duration (e.g. "Sleep: 7h42m (score 81)")
+  - Training readiness: score and level (e.g. "Readiness: 60/100 (Moderate)")
   - Resting HR and trend if notable (e.g. "RHR: 52 bpm — stable")
   - Yesterday's steps
   - If there was an activity: one-line summary (e.g. "5k run: 5:12/km avg, zone 2")
   - Training status if available (e.g. "Training: Productive, VO2 max 52.3")
 
   If the file doesn't exist, is stale, or the fetch errored, skip this section silently.
+
+  **Step 2b — Today's scheduled workouts:** Fetch today's Garmin data to check for scheduled workouts:
+  ```
+  bun /home/peterstorm/dev/claude-plugins/reclaw/scripts/garmin-fetch.ts {{date}}
+  ```
+  If there are scheduled workouts, include them in a compact block:
+  - Workout name and sport type
+  - Description (the actual workout structure, e.g. "3km at 6:00/km → 3km at 5:50/km → 3km at 5:40/km → 2km easy")
+  - Provider if available (e.g. Runna)
+  - Frame it against the training readiness: if readiness is low, note it (e.g. "Readiness is 51 — listen to your body on those progression paces")
+  If no scheduled workouts, skip this section silently.
 
   **Step 3 — Calendar:** Read today's events from the shared "J & P" iCloud calendar:
   - Calendar directory: ~/.local/share/calendars/icloud/D8C2180E-3AD0-406E-9B55-23DA5F2CC674/

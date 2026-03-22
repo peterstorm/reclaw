@@ -89,6 +89,13 @@ type HrTimeSeriesPoint = {
   readonly heartRate: number;
 };
 
+type WorkoutStep = {
+  readonly description: string | null;
+  readonly stepType: string;
+  readonly distance: number | null;
+  readonly duration: number | null;
+};
+
 type ScheduledWorkout = {
   readonly title: string | null;
   readonly date: string;
@@ -96,6 +103,10 @@ type ScheduledWorkout = {
   readonly distance: number | null;
   readonly sportTypeKey: string | null;
   readonly itemType: string;
+  readonly workoutId: number | null;
+  readonly description: string | null;
+  readonly provider: string | null;
+  readonly steps: readonly WorkoutStep[];
 };
 
 type GarminDailyData = {
@@ -396,6 +407,41 @@ async function main(): Promise<void> {
       for (const item of items) {
         if (item.itemType !== "workout") continue;
         if ((item.date as string) !== dateStr) continue;
+
+        let description: string | null = null;
+        let provider: string | null = null;
+        let steps: WorkoutStep[] = [];
+        const workoutId = item.workoutId as number | null;
+
+        // Fetch workout detail for description and steps
+        if (workoutId) {
+          try {
+            await delay(300);
+            const detail = await client.getWorkoutDetail({ workoutId: String(workoutId) }) as unknown as Record<string, unknown>;
+            description = detail.description as string ?? null;
+            provider = detail.workoutProvider as string ?? null;
+            const segments = detail.workoutSegments as Array<Record<string, unknown>> | undefined;
+            if (segments?.length) {
+              for (const seg of segments) {
+                const segSteps = seg.workoutSteps as Array<Record<string, unknown>> | undefined;
+                if (segSteps?.length) {
+                  for (const s of segSteps) {
+                    steps.push({
+                      description: s.description as string ?? null,
+                      stepType: (s.stepType as Record<string, unknown>)?.stepTypeKey as string ?? "unknown",
+                      distance: s.endConditionValue as number ?? null,
+                      duration: s.endConditionValue as number ?? null,
+                    });
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            console.error(`[WARN] Failed to fetch workout detail ${workoutId}: ${msg}`);
+          }
+        }
+
         scheduledWorkouts.push({
           title: item.title as string ?? null,
           date: item.date as string,
@@ -403,6 +449,10 @@ async function main(): Promise<void> {
           distance: item.distance as number ?? null,
           sportTypeKey: item.sportTypeKey as string ?? null,
           itemType: item.itemType as string,
+          workoutId,
+          description,
+          provider,
+          steps,
         });
       }
     }
