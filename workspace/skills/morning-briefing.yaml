@@ -1,6 +1,6 @@
 id: morning-briefing
 name: Morning Briefing
-schedule: "15 7 * * 1-5"
+schedule: "20 7 * * 1-5"
 permissionProfile: scheduled
 validityWindowMinutes: 60
 timeout: 300
