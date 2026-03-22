@@ -56,6 +56,7 @@ type Split = {
   readonly duration: number;
   readonly averageHR: number | null;
   readonly averageSpeed: number | null;
+  readonly splitType: string;
 };
 
 type TrainingStatusSummary = {
@@ -174,27 +175,34 @@ const extractHeartRate = (raw: Record<string, unknown>): HeartRateSummary => ({
   minHeartRate: raw.minHeartRate as number ?? null,
 });
 
-const extractActivity = (raw: Record<string, unknown>): ActivitySummary => ({
-  activityId: raw.activityId as number,
-  activityName: raw.activityName as string ?? "Unknown",
-  activityType: (raw.activityType as Record<string, unknown>)?.typeKey as string ?? "unknown",
-  startTime: raw.startTimeLocal as string ?? "",
-  durationSeconds: raw.duration as number ?? 0,
-  distance: raw.distance as number ?? null,
-  averageHR: raw.averageHR as number ?? null,
-  maxHR: raw.maxHR as number ?? null,
-  calories: raw.calories as number ?? null,
-  averageSpeed: raw.averageSpeed as number ?? null,
-  elevationGain: raw.elevationGain as number ?? null,
-  averageRunningCadence: raw.averageRunningCadenceInStepsPerMinute as number ?? null,
-  aerobicTrainingEffect: raw.aerobicTrainingEffect as number ?? null,
-  anaerobicTrainingEffect: raw.anaerobicTrainingEffect as number ?? null,
-  vo2MaxValue: raw.vO2MaxValue as number ?? null,
-  hrZones: extractHrZones(raw),
-  splits: extractSplits(raw),
-  hrTimeSeries: null,
-  raw: raw as Record<string, unknown>,
-});
+const extractActivity = (raw: Record<string, unknown>): ActivitySummary => {
+  // Detail endpoint nests metrics under summaryDTO; list endpoint uses flat fields
+  const summary = (raw.summaryDTO as Record<string, unknown>) ?? raw;
+  // Detail uses activityTypeDTO; list uses activityType
+  const typeDto = (raw.activityTypeDTO ?? raw.activityType) as Record<string, unknown> | undefined;
+
+  return {
+    activityId: raw.activityId as number,
+    activityName: raw.activityName as string ?? "Unknown",
+    activityType: typeDto?.typeKey as string ?? "unknown",
+    startTime: summary.startTimeLocal as string ?? "",
+    durationSeconds: summary.duration as number ?? 0,
+    distance: summary.distance as number ?? null,
+    averageHR: summary.averageHR as number ?? null,
+    maxHR: summary.maxHR as number ?? null,
+    calories: summary.calories as number ?? null,
+    averageSpeed: summary.averageSpeed as number ?? null,
+    elevationGain: summary.elevationGain as number ?? null,
+    averageRunningCadence: (summary.averageRunCadence ?? summary.averageRunningCadenceInStepsPerMinute) as number ?? null,
+    aerobicTrainingEffect: (summary.trainingEffect ?? summary.aerobicTrainingEffect) as number ?? null,
+    anaerobicTrainingEffect: summary.anaerobicTrainingEffect as number ?? null,
+    vo2MaxValue: summary.vO2MaxValue as number ?? null,
+    hrZones: extractHrZones(raw),
+    splits: extractSplits(raw),
+    hrTimeSeries: null,
+    raw,
+  };
+};
 
 const extractHrZones = (raw: Record<string, unknown>): readonly HrZone[] | null => {
   const zones = raw.hrZones as Array<Record<string, unknown>> | undefined;
@@ -208,14 +216,13 @@ const extractHrZones = (raw: Record<string, unknown>): readonly HrZone[] | null 
 const extractSplits = (raw: Record<string, unknown>): readonly Split[] | null => {
   const splits = raw.splitSummaries as Array<Record<string, unknown>> | undefined;
   if (!splits?.length) return null;
-  return splits
-    .filter((s) => s.splitType === "RUN_LAP" || s.splitType === "LAP")
-    .map((s) => ({
-      distance: s.distance as number ?? 0,
-      duration: s.duration as number ?? 0,
-      averageHR: s.averageHR as number ?? null,
-      averageSpeed: s.averageSpeed as number ?? null,
-    }));
+  return splits.map((s) => ({
+    distance: s.distance as number ?? 0,
+    duration: s.duration as number ?? 0,
+    averageHR: s.averageHR as number ?? null,
+    averageSpeed: s.averageSpeed as number ?? null,
+    splitType: s.splitType as string ?? "unknown",
+  }));
 };
 
 const extractTrainingReadiness = (raw: Record<string, unknown>): TrainingReadinessSummary => ({
@@ -228,14 +235,27 @@ const extractTrainingReadiness = (raw: Record<string, unknown>): TrainingReadine
 });
 
 const extractHrTimeSeries = (raw: Record<string, unknown>): readonly HrTimeSeriesPoint[] | null => {
+  const descriptors = raw.metricDescriptors as Array<Record<string, unknown>> | undefined;
   const metrics = raw.activityDetailMetrics as Array<Record<string, unknown>> | undefined;
-  if (!metrics?.length) return null;
+  if (!descriptors?.length || !metrics?.length) return null;
+
+  // Find positional indices from metric descriptors
+  const hrIdx = descriptors.findIndex((d) => d.key === "directHeartRate");
+  const tsIdx = descriptors.findIndex((d) => d.key === "directTimestamp");
+  if (hrIdx === -1) return null;
+
   return metrics
-    .filter((m) => m.directHeartRate != null || m.heartRate != null)
-    .map((m) => ({
-      timestamp: m.metricsIndex as number ?? 0,
-      heartRate: (m.directHeartRate as number) ?? (m.heartRate as number) ?? 0,
-    }));
+    .map((m) => {
+      const values = m.metrics as number[];
+      if (!values) return null;
+      const hr = values[hrIdx];
+      if (hr == null || hr === 0) return null;
+      return {
+        timestamp: tsIdx !== -1 ? values[tsIdx] : 0,
+        heartRate: hr,
+      };
+    })
+    .filter((p): p is HrTimeSeriesPoint => p !== null);
 };
 
 // --- Main ---
