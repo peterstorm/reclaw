@@ -211,8 +211,8 @@ const extractTrainingReadiness = (raw: Record<string, unknown>): TrainingReadine
   score: raw.score as number ?? null,
   level: raw.level as string ?? null,
   sleepScore: raw.sleepScore as number ?? null,
-  recoveryTime: raw.recoveryTimeInHours as number ?? null,
-  hrvStatus: raw.hrvStatus as string ?? null,
+  recoveryTime: raw.recoveryTime != null ? Math.round((raw.recoveryTime as number) / 60 * 10) / 10 : null,
+  hrvStatus: raw.hrvFactorFeedback as string ?? null,
   raw,
 });
 
@@ -364,9 +364,13 @@ async function main(): Promise<void> {
 
   // Training readiness
   const trainingReadiness = await tryFetch("trainingReadiness", async () => {
-    const readinessUrl = `${client.url.GC_API}/metrics-service/metrics/trainingreadiness/daily/${dateStr}`;
-    const raw = await client.get<Record<string, unknown>>(readinessUrl);
-    return extractTrainingReadiness(raw);
+    const readinessUrl = `${client.url.GC_API}/metrics-service/metrics/trainingreadiness/${dateStr}`;
+    const raw = await client.get<unknown>(readinessUrl);
+    const items = Array.isArray(raw) ? raw : [raw];
+    // Prefer the after-wakeup entry if available
+    const entry = (items.find((i: Record<string, unknown>) => i.inputContext === "AFTER_WAKEUP_RESET") ?? items[0]) as Record<string, unknown> | undefined;
+    if (!entry) return null;
+    return extractTrainingReadiness(entry);
   }, errors);
 
   await delay(300);
