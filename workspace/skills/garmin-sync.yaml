@@ -13,9 +13,9 @@ promptTemplate: |
 
   ## Step 1 — Fetch Garmin data
 
-  Run the Garmin fetch script:
+  Run the Garmin fetch script with today's date (since this runs at 22:00, we want the day that's wrapping up, not yesterday):
   ```
-  bun /home/peterstorm/dev/claude-plugins/reclaw/scripts/garmin-fetch.ts
+  bun /home/peterstorm/dev/claude-plugins/reclaw/scripts/garmin-fetch.ts {{date}}
   ```
 
   If it fails with an auth error, report the failure and stop — don't write a vault note with no data.
@@ -24,7 +24,7 @@ promptTemplate: |
   ## Step 2 — Parse the data
 
   The script outputs JSON to stdout. Parse it and extract:
-  - `date` — the date this data covers (yesterday)
+  - `date` — the date this data covers (today, since the sync runs at 22:00)
   - `sleep` — score, duration, deep/light/REM/awake stages
   - `steps` — step count
   - `heartRate` — resting, max, min
