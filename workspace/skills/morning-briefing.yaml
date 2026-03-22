@@ -31,24 +31,31 @@ promptTemplate: |
   - Wind speed and gusts
   - Clear recommendation: what to wear, whether to bring rain gear
 
-  **Step 2 — Fitness:** Read the Garmin daily data:
-  ```
-  cat ~/.cache/garmin/latest.json 2>/dev/null
-  ```
-  If the file exists and is from yesterday or today, include a compact fitness block (3-4 lines max):
-  - Last night's sleep: score and duration (e.g. "Sleep: 7h42m (score 81)")
-  - Training readiness: score and level (e.g. "Readiness: 60/100 (Moderate)")
-  - Resting HR and trend if notable (e.g. "RHR: 52 bpm — stable")
-  - Yesterday's steps
-  - If there was an activity: one-line summary (e.g. "5k run: 5:12/km avg, zone 2")
-  - Training status if available (e.g. "Training: Productive, VO2 max 52.3")
-
-  If the file doesn't exist, is stale, or the fetch errored, skip this section silently.
-
-  **Step 2b — Today's scheduled workouts:** Fetch today's Garmin data to check for scheduled workouts:
+  **Step 2 — Fitness:** Fetch today's Garmin data (this gets last night's sleep, this morning's readiness, and today's scheduled workouts):
   ```
   bun /home/peterstorm/dev/claude-plugins/reclaw/scripts/garmin-fetch.ts {{date}}
   ```
+  Then read the result:
+  ```
+  cat ~/.cache/garmin/daily/{{date}}.json 2>/dev/null
+  ```
+  Also read yesterday's data for steps and activity summaries:
+  ```
+  cat ~/.cache/garmin/latest.json 2>/dev/null
+  ```
+
+  From today's fetch, include a compact fitness block (4-5 lines max):
+  - Last night's sleep: score and duration (e.g. "Sleep: 7h42m (score 81)")
+  - Training readiness: score and level (e.g. "Readiness: 60/100 (Moderate)")
+  - Resting HR (from today's data) and trend if notable (e.g. "RHR: 52 bpm — stable")
+  From yesterday's data (latest.json):
+  - Yesterday's steps
+  - If there was an activity yesterday: one-line summary (e.g. "5k run: 5:12/km avg, zone 2")
+  - Training status if available (e.g. "Training: Productive, VO2 max 52.3")
+
+  If fetch fails or data is missing, skip this section silently.
+
+  **Step 2b — Today's scheduled workouts:** From today's fetch above, check scheduledWorkouts.
   If there are scheduled workouts, include them in a compact block:
   - Workout name and sport type
   - Description (the actual workout structure, e.g. "3km at 6:00/km → 3km at 5:50/km → 3km at 5:40/km → 2km easy")
