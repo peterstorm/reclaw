@@ -45,6 +45,7 @@ type ActivitySummary = {
   readonly hrZones: readonly HrZone[] | null;
   readonly splits: readonly Split[] | null;
   readonly hrTimeSeries: readonly HrTimeSeriesPoint[] | null;
+  readonly lapSplits: readonly LapSplit[] | null;
   readonly raw: Record<string, unknown>;
 };
 
@@ -90,6 +91,20 @@ type TrainingReadinessSummary = {
 type HrTimeSeriesPoint = {
   readonly timestamp: number;
   readonly heartRate: number;
+};
+
+type LapSplit = {
+  readonly lapIndex: number;
+  readonly distance: number;
+  readonly duration: number;
+  readonly movingDuration: number | null;
+  readonly averageSpeed: number | null;
+  readonly averageHR: number | null;
+  readonly maxHR: number | null;
+  readonly averageRunCadence: number | null;
+  readonly elevationGain: number | null;
+  readonly elevationLoss: number | null;
+  readonly averagePower: number | null;
 };
 
 type WorkoutStep = {
@@ -204,6 +219,7 @@ const extractActivity = (raw: Record<string, unknown>): ActivitySummary => {
     hrZones: extractHrZones(raw),
     splits: extractSplits(raw),
     hrTimeSeries: null,
+    lapSplits: null,
     raw,
   };
 };
@@ -260,6 +276,24 @@ const extractHrTimeSeries = (raw: Record<string, unknown>): readonly HrTimeSerie
       };
     })
     .filter((p): p is HrTimeSeriesPoint => p !== null);
+};
+
+const extractLapSplits = (raw: Record<string, unknown>): readonly LapSplit[] | null => {
+  const laps = raw.lapDTOs as Array<Record<string, unknown>> | undefined;
+  if (!laps?.length) return null;
+  return laps.map((lap, i) => ({
+    lapIndex: i + 1,
+    distance: lap.distance as number ?? 0,
+    duration: lap.duration as number ?? 0,
+    movingDuration: lap.movingDuration as number ?? null,
+    averageSpeed: lap.averageSpeed as number ?? null,
+    averageHR: lap.averageHR as number ?? null,
+    maxHR: lap.maxHR as number ?? null,
+    averageRunCadence: lap.averageRunCadence as number ?? null,
+    elevationGain: lap.elevationGain as number ?? null,
+    elevationLoss: lap.elevationLoss as number ?? null,
+    averagePower: lap.averagePower as number ?? null,
+  }));
 };
 
 // --- Main ---
@@ -362,7 +396,19 @@ async function main(): Promise<void> {
           console.error(`[WARN] Failed to fetch HR time series for activity ${act.activityId}: ${msg}`);
         }
 
-        activities.push({ ...activity, hrTimeSeries });
+        // Fetch per-km lap splits
+        let lapSplits: readonly LapSplit[] | null = null;
+        try {
+          await delay(300);
+          const splitsUrl = `${client.url.ACTIVITY}${act.activityId as number}/splits`;
+          const splitsRaw = await client.get<Record<string, unknown>>(splitsUrl);
+          lapSplits = extractLapSplits(splitsRaw);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.error(`[WARN] Failed to fetch lap splits for activity ${act.activityId}: ${msg}`);
+        }
+
+        activities.push({ ...activity, hrTimeSeries, lapSplits });
       } catch {
         // Fall back to summary data
         activities.push(extractActivity(act));

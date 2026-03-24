@@ -13,7 +13,7 @@ promptTemplate: |
 
   ## Step 1 — Fetch Garmin data
 
-  Run the Garmin fetch script with today's date (since this runs at 22:00, we want the day that's wrapping up, not yesterday):
+  Run the Garmin fetch script with today's date (this runs at 22:00, capturing the full day including evening activities):
   ```
   bun /home/peterstorm/dev/claude-plugins/reclaw/scripts/garmin-fetch.ts {{date}}
   ```
@@ -50,6 +50,11 @@ promptTemplate: |
   ```
 
   Read the most recent 3 notes (if they exist) to extract recent metrics for comparison.
+
+  ## Step 3.5 — Check if today's note already exists
+
+  Check if the target note already exists at `~/dev/notes/remotevault/personal/fitness/YYYY/MM/YYYY-MM-DD.md`.
+  If it does, respond with `ALL_CLEAR` and stop — the day has already been synced.
 
   ## Step 4 — Write the daily fitness note
 
