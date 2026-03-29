@@ -1,10 +1,20 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   type NotebookLMAdapter,
   type AdapterError,
   mapSourceType,
   isRetriableError,
+  fetchCurrentBuildLabel,
+  FALLBACK_BL,
 } from './notebooklm-client.js';
+import {
+  APIError,
+  NotebookLMNetworkError,
+  NotebookLMAuthError,
+  NotebookLMParseError,
+  ErrorType,
+  type ErrorCode,
+} from 'notebooklm-kit';
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────
 //
@@ -105,6 +115,189 @@ describe('isRetriableError', () => {
     expect(isRetriableError('string error')).toBe(false);
     expect(isRetriableError({ code: 500 })).toBe(false);
     expect(isRetriableError(null)).toBe(false);
+  });
+});
+
+// ─── isRetriableError — SDK error types ───────────────────────────────────────
+
+describe('isRetriableError — SDK error types', () => {
+  it('returns true for NotebookLMNetworkError', () => {
+    const err = new NotebookLMNetworkError('connection failed');
+    expect(isRetriableError(err)).toBe(true);
+  });
+
+  it('returns false for NotebookLMAuthError', () => {
+    const err = new NotebookLMAuthError('invalid credentials');
+    expect(isRetriableError(err)).toBe(false);
+  });
+
+  it('returns false for NotebookLMParseError', () => {
+    const err = new NotebookLMParseError('invalid JSON');
+    expect(isRetriableError(err)).toBe(false);
+  });
+
+  it('returns true for APIError with retryable errorCode (gRPC 14 Unavailable)', () => {
+    const errorCode: ErrorCode = {
+      code: 14,
+      type: ErrorType.UNAVAILABLE,
+      message: 'Unavailable',
+      description: 'The service is currently unavailable.',
+      retryable: true,
+    };
+    const err = new APIError('Unavailable', errorCode);
+    expect(isRetriableError(err)).toBe(true);
+  });
+
+  it('returns false for APIError with non-retryable errorCode (gRPC 7 PermissionDenied)', () => {
+    const errorCode: ErrorCode = {
+      code: 7,
+      type: ErrorType.PERMISSION_DENIED,
+      message: 'Permission denied',
+      description: 'The caller does not have permission.',
+      retryable: false,
+    };
+    const err = new APIError('Permission denied', errorCode);
+    expect(isRetriableError(err)).toBe(false);
+  });
+
+  it('returns true for APIError with httpStatus 503 and no errorCode', () => {
+    const err = new APIError('Service unavailable', undefined, 503);
+    expect(isRetriableError(err)).toBe(true);
+  });
+
+  it('returns true for APIError with httpStatus 429 (rate limit)', () => {
+    const err = new APIError('Too many requests', undefined, 429);
+    expect(isRetriableError(err)).toBe(true);
+  });
+
+  it('returns false for APIError with httpStatus 400 and no errorCode', () => {
+    const err = new APIError('Bad request', undefined, 400);
+    expect(isRetriableError(err)).toBe(false);
+  });
+
+  it('returns true for APIError with rate limit errorCode', () => {
+    const errorCode: ErrorCode = {
+      code: 324934,
+      type: ErrorType.RATE_LIMIT,
+      message: 'Rate limit exceeded',
+      description: 'Too many requests.',
+      retryable: true,
+    };
+    const err = new APIError('Rate limit exceeded', errorCode);
+    expect(isRetriableError(err)).toBe(true);
+  });
+
+  it('returns true for APIError with gRPC 2 (Internal server error)', () => {
+    const errorCode: ErrorCode = {
+      code: 2,
+      type: ErrorType.SERVER_ERROR,
+      message: 'Internal server error',
+      description: 'An internal server error occurred.',
+      retryable: true,
+    };
+    const err = new APIError('Internal server error', errorCode);
+    expect(isRetriableError(err)).toBe(true);
+  });
+
+  it('returns false for APIError with gRPC 5 (Not found)', () => {
+    const errorCode: ErrorCode = {
+      code: 5,
+      type: ErrorType.NOT_FOUND,
+      message: 'Not found',
+      description: 'The requested item was not found.',
+      retryable: false,
+    };
+    const err = new APIError('Not found', errorCode);
+    expect(isRetriableError(err)).toBe(false);
+  });
+});
+
+// ─── isRetriableError — extended string heuristics ───────────────────────────
+
+describe('isRetriableError — extended string heuristics', () => {
+  it('returns true for "timed out" (not just "etimedout")', () => {
+    expect(isRetriableError(new Error('The operation timed out'))).toBe(true);
+  });
+
+  it('returns true for ECONNRESET', () => {
+    expect(isRetriableError(new Error('read ECONNRESET'))).toBe(true);
+  });
+
+  it('returns true for "socket hang up"', () => {
+    expect(isRetriableError(new Error('socket hang up'))).toBe(true);
+  });
+
+  it('returns true for ENOTFOUND', () => {
+    expect(isRetriableError(new Error('getaddrinfo ENOTFOUND notebooklm.google.com'))).toBe(true);
+  });
+
+  it('returns true for "fetch failed"', () => {
+    expect(isRetriableError(new Error('fetch failed'))).toBe(true);
+  });
+
+  it('returns true for 429 status in message', () => {
+    expect(isRetriableError(new Error('429 Too Many Requests'))).toBe(true);
+  });
+
+  it('returns true for duck-typed isRetryable() returning true', () => {
+    const err = new Error('custom error');
+    (err as any).isRetryable = () => true;
+    expect(isRetriableError(err)).toBe(true);
+  });
+
+  it('returns false for duck-typed isRetryable() returning false', () => {
+    const err = new Error('custom error');
+    (err as any).isRetryable = () => false;
+    expect(isRetriableError(err)).toBe(false);
+  });
+});
+
+// ─── fetchCurrentBuildLabel tests ────────────────────────────────────────────
+
+describe('fetchCurrentBuildLabel', () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('extracts bl from page HTML containing the pattern', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      text: () => Promise.resolve(
+        '<script>var cfg = {"bl":"boq_labs-tailwind-frontend_20260327.15_p0"}</script>',
+      ),
+    }) as any;
+
+    const bl = await fetchCurrentBuildLabel();
+    expect(bl).toBe('boq_labs-tailwind-frontend_20260327.15_p0');
+  });
+
+  it('returns fallback when page does not contain bl pattern', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      text: () => Promise.resolve('<html><body>No build label here</body></html>'),
+    }) as any;
+
+    const bl = await fetchCurrentBuildLabel();
+    expect(bl).toBe(FALLBACK_BL);
+  });
+
+  it('returns fallback when fetch fails', async () => {
+    globalThis.fetch = vi.fn().mockRejectedValue(new Error('Network error')) as any;
+
+    const bl = await fetchCurrentBuildLabel();
+    expect(bl).toBe(FALLBACK_BL);
+  });
+
+  it('returns fallback when response is not ok', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 403,
+    }) as any;
+
+    const bl = await fetchCurrentBuildLabel();
+    expect(bl).toBe(FALLBACK_BL);
   });
 });
 

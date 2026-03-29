@@ -149,9 +149,9 @@ describe('createWorkers', () => {
     expect(typeof workers.stop).toBe('function');
   });
 
-  it('creates four workers', () => {
+  it('creates five workers', () => {
     makeWorkers();
-    expect(fakeFactory.createdWorkers).toHaveLength(4);
+    expect(fakeFactory.createdWorkers).toHaveLength(5);
   });
 
   it('creates workers for correct queue names', () => {
@@ -161,6 +161,7 @@ describe('createWorkers', () => {
     expect(queueNames).toContain('reclaw-scheduled');
     expect(queueNames).toContain('reclaw-reminder');
     expect(queueNames).toContain('reclaw-research');
+    expect(queueNames).toContain('reclaw-podcast');
   });
 
   it('sets concurrency=1 for both workers (AD-4, FR-015)', () => {
@@ -593,7 +594,7 @@ describe('createWorkers', () => {
     };
 
     await failedHandler!(
-      { data: researchJobData, id: 'research-job-001', opts: { attempts: 1 }, attemptsMade: 1 },
+      { data: researchJobData, id: 'research-job-001', opts: { attempts: 3 }, attemptsMade: 3 },
       new Error('research pipeline failed'),
     );
 

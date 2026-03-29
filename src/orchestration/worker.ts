@@ -262,18 +262,26 @@ export function createWorkers(deps: WorkerDeps): Workers {
           ? (p: number) => job.updateProgress!(p)
           : async () => {},
       };
-      return researchHandler(jobLike);
+      const startMs = Date.now();
+      try {
+        const result = await researchHandler(jobLike);
+        console.log(`[worker:research] Job ${job.id ?? 'unknown'} completed in ${Math.round((Date.now() - startMs) / 1000)}s — hubPath=${result.hubPath}`);
+        return result;
+      } catch (err) {
+        const elapsed = Math.round((Date.now() - startMs) / 1000);
+        console.error(`[worker:research] Job ${job.id ?? 'unknown'} failed after ${elapsed}s:`, err instanceof Error ? err.message : err);
+        throw err;
+      }
     },
     { connection, concurrency: 1, lockDuration: researchLockMs, stalledInterval: researchLockMs },
   );
 
-  // Research queue has no retry — any failure is final
   attachDeadLetterHandler({
     worker: researchWorker,
     jobKind: 'research',
     telegram,
     getChatIds: (data) => [(data as ResearchJobData).chatId],
-    defaultMaxAttempts: 1,
+    defaultMaxAttempts: 3,
   });
 
   // ── Podcast worker (concurrency=1, long lock for artifact generation) ───

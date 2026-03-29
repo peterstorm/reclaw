@@ -193,14 +193,16 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
   });
 
   // ── 4. Create shared Redis connection for session store + quota tracker ────
-  //    Tests inject their own createSessionStoreFn/createQuotaTrackerFn.
-  //    Production uses a single ioredis connection for both.
-  let sharedRedis: { quit: () => Promise<string> } | null = null;
+  //    Production creates one ioredis connection eagerly, shared by both.
+  //    Tests inject their own createSessionStoreFn/createQuotaTrackerFn and skip this.
+  const needsSharedRedis = !injected.createSessionStoreFn || !injected.createQuotaTrackerFn;
+  const sharedRedis = needsSharedRedis
+    ? await import('ioredis').then(({ default: Redis }) =>
+        new Redis({ host: config.redisHost, port: config.redisPort, maxRetriesPerRequest: null }))
+    : null;
 
-  const createSessionStoreFn = injected.createSessionStoreFn ?? (async (redis: { host: string; port: number }) => {
-    const { default: Redis } = await import('ioredis');
-    const ioredis = new Redis({ host: redis.host, port: redis.port, maxRetriesPerRequest: null });
-    sharedRedis = ioredis;
+  const createSessionStoreFn = injected.createSessionStoreFn ?? (async (_redis: { host: string; port: number }) => {
+    const ioredis = sharedRedis!; // guaranteed non-null when default is used
     const { createSessionStore } = await import('./infra/session-store.js');
     const client: import('./infra/session-store.js').RedisClient = {
       get: (key) => ioredis.get(key),
@@ -247,10 +249,12 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
     const hasToken = config.notebooklmAuthToken && config.notebooklmCookies;
     const hasGoogle = config.googleEmail && config.googlePassword;
     if (hasToken) {
+      console.log('[main] Initializing NotebookLM adapter with token auth...');
       notebookLMAdapter = await createNotebookLMAdapter({
         kind: 'token', authToken: config.notebooklmAuthToken!, cookies: config.notebooklmCookies!,
       });
     } else if (hasGoogle) {
+      console.log('[main] Initializing NotebookLM adapter with Google auto-login...');
       notebookLMAdapter = await createNotebookLMAdapter({
         kind: 'google', email: config.googleEmail!, password: config.googlePassword!,
       });
@@ -258,20 +262,13 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
       console.warn('[main] NotebookLM credentials not configured — research jobs will fail');
       return null;
     }
+    console.log('[main] NotebookLM adapter initialized successfully');
     return notebookLMAdapter;
   };
 
   // ── 8b. Create quota tracker using shared Redis connection ─────────────────
-  const createQuotaTrackerFn = injected.createQuotaTrackerFn ?? (async (redis: { host: string; port: number }) => {
-    // Reuse the shared ioredis connection from session store when available
-    const ioredis = sharedRedis as import('ioredis').default | null;
-    let quotaRedis: import('ioredis').default;
-    if (ioredis) {
-      quotaRedis = ioredis;
-    } else {
-      const { default: Redis } = await import('ioredis');
-      quotaRedis = new Redis({ host: redis.host, port: redis.port, maxRetriesPerRequest: null });
-    }
+  const createQuotaTrackerFn = injected.createQuotaTrackerFn ?? (async (_redis: { host: string; port: number }) => {
+    const quotaRedis = sharedRedis!; // guaranteed non-null when default is used
     const { createQuotaTracker } = await import('./infra/quota-tracker.js');
     const qtClient: import('./infra/quota-tracker.js').QuotaRedisClient = {
       get: (key) => quotaRedis.get(key),

@@ -1,6 +1,6 @@
 id: garmin-sync
 name: Garmin Daily Sync
-schedule: "0 22 * * *"
+schedule: "0 20 * * *"
 permissionProfile: scheduled
 validityWindowMinutes: 60
 timeout: 300
@@ -13,7 +13,7 @@ promptTemplate: |
 
   ## Step 1 — Fetch Garmin data
 
-  Run the Garmin fetch script with today's date (this runs at 22:00, capturing the full day including evening activities):
+  Run the Garmin fetch script with today's date (this runs at 20:00, capturing the day's data):
   ```
   bun /home/peterstorm/dev/claude-plugins/reclaw/scripts/garmin-fetch.ts {{date}}
   ```
@@ -24,7 +24,7 @@ promptTemplate: |
   ## Step 2 — Parse the data
 
   The script outputs JSON to stdout. Parse it and extract:
-  - `date` — the date this data covers (today, since the sync runs at 22:00)
+  - `date` — the date this data covers (today, since the sync runs at 20:00)
   - `sleep` — score, duration, deep/light/REM/awake stages
   - `steps` — step count
   - `heartRate` — resting, max, min

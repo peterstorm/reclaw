@@ -83,16 +83,17 @@ describe('createQueues', () => {
     expect(queues.getResearchQueuePosition).toBeTypeOf('function');
   });
 
-  it('creates four queues with correct names', () => {
+  it('creates five queues with correct names', () => {
     createQueues(redisConnection);
 
-    expect(MockQueue).toHaveBeenCalledTimes(4);
+    expect(MockQueue).toHaveBeenCalledTimes(5);
     const calls = MockQueue.mock.calls;
     const names = calls.map((c) => c[0]);
     expect(names).toContain('reclaw-chat');
     expect(names).toContain('reclaw-scheduled');
     expect(names).toContain('reclaw-reminder');
     expect(names).toContain('reclaw-research');
+    expect(names).toContain('reclaw-podcast');
   });
 
   it('passes redis connection to both queues', () => {
@@ -111,15 +112,16 @@ describe('createQueues', () => {
     expect(retryOptions.backoff.delay).toBe(30_000);
   });
 
-  it('sets defaultJobOptions with retry config on chat, scheduled, and reminder queues (not research)', () => {
+  it('sets defaultJobOptions with retry config on chat, scheduled, reminder, and research queues (not podcast)', () => {
     createQueues(redisConnection);
 
-    const retryQueues = MockQueue.mock.calls.filter((c) => c[0] !== 'reclaw-research');
-    expect(retryQueues.length).toBe(3);
+    const retryQueues = MockQueue.mock.calls.filter(
+      (c) => c[0] !== 'reclaw-podcast',
+    );
+    expect(retryQueues.length).toBe(4);
     for (const call of retryQueues) {
-      const opts = call[1] as { defaultJobOptions: typeof retryOptions };
+      const opts = call[1] as { defaultJobOptions: { attempts: number; backoff: { delay: number } } };
       expect(opts.defaultJobOptions.attempts).toBe(3);
-      expect(opts.defaultJobOptions.backoff.delay).toBe(30_000);
     }
   });
 
@@ -260,11 +262,15 @@ describe('createQueues', () => {
     expect(position).toBe(0);
   });
 
-  it('research queue does not have defaultJobOptions with retry (state machine handles retries)', () => {
+  it('research queue has BullMQ retry with exponential backoff (SC-003)', () => {
     createQueues(redisConnection);
     const researchQueueCall = MockQueue.mock.calls.find((c) => c[0] === 'reclaw-research');
     expect(researchQueueCall).toBeDefined();
     const opts = researchQueueCall![1] as Record<string, unknown>;
-    expect(opts.defaultJobOptions).toBeUndefined();
+    const jobOpts = opts.defaultJobOptions as { attempts: number; backoff: { type: string; delay: number } };
+    expect(jobOpts).toBeDefined();
+    expect(jobOpts.attempts).toBe(3);
+    expect(jobOpts.backoff.type).toBe('exponential');
+    expect(jobOpts.backoff.delay).toBe(120_000);
   });
 });

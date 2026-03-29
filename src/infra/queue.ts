@@ -154,11 +154,17 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
   };
 
   // ── Research queue (AD-1: dedicated reclaw-research queue) ───────────────
-  // NOTE: research queue does NOT use retryOptions — the state machine has its
-  // own retry logic per state.
+  // BullMQ retries with long backoff complement the state machine's per-state
+  // retries. On failure, the handler skips checkpointing the 'failed' state so
+  // BullMQ retries resume from the last successful checkpoint (SC-003).
+  // Backoff: 2min → 4min → 8min — gives transient issues time to resolve.
 
   const research = new Queue('reclaw-research', {
     connection,
+    defaultJobOptions: {
+      attempts: 3,
+      backoff: { type: 'exponential' as const, delay: 120_000 },
+    },
   });
   research.on('error', (err) => {
     console.error('[queue:research] error', err);

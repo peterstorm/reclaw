@@ -64,6 +64,16 @@ export async function handleResearchJob(
 ): Promise<{ hubPath: string | null; topic: string }> {
   let { state, context } = job.data;
 
+  // SC-003: On BullMQ retry of a checkpointed job, clear the retry counter
+  // for the current state so each BullMQ attempt gets fresh per-state retries.
+  if (!isTerminal(state)) {
+    const stateKey = state.kind;
+    if (stateKey in context.retries) {
+      const { [stateKey]: _, ...rest } = context.retries;
+      context = { ...context, retries: rest, lastError: null };
+    }
+  }
+
   // Loop until we reach a terminal state (done or failed)
   while (!isTerminal(state)) {
     const startTime = Date.now();
@@ -120,13 +130,17 @@ export async function handleResearchJob(
     state = nextState;
     context = contextWithTrace;
 
-    // FR-005: Checkpoint — persist updated state+context to Redis via BullMQ
-    const checkpointData: ResearchJobData = {
-      ...job.data,
-      state,
-      context,
-    };
-    await job.updateData(checkpointData);
+    // FR-005: Checkpoint — persist updated state+context to Redis via BullMQ.
+    // SC-003: Do NOT checkpoint terminal 'failed' states — preserve the last
+    // successful checkpoint so BullMQ retries resume from the pre-failure state.
+    if (state.kind !== 'failed') {
+      const checkpointData: ResearchJobData = {
+        ...job.data,
+        state,
+        context,
+      };
+      await job.updateData(checkpointData);
+    }
 
     // FR-081: Report progress as a 0-100 percentage
     await job.updateProgress(stateProgress(state));

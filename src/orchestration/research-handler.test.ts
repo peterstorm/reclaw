@@ -420,6 +420,57 @@ describe('handleResearchJob', () => {
     expect(result.topic).toBe('AI agents');
   });
 
+  it('does NOT checkpoint failed terminal state (SC-003)', async () => {
+    const jobData = makeInitialJobData();
+    const job = makeMockJob(jobData);
+    const deps = makeMockDeps({
+      notebookLM: {
+        ...makeMockDeps().notebookLM,
+        createNotebook: vi.fn().mockResolvedValue({
+          ok: false,
+          error: { message: 'Permission denied', retriable: false },
+        }),
+      },
+    });
+
+    await expect(handleResearchJob(job, deps)).rejects.toThrow();
+
+    // updateData should NOT have been called with a failed state —
+    // the only checkpoint would be a non-terminal state.
+    for (const call of job.updateData.mock.calls) {
+      const data = call[0] as ResearchJobData;
+      expect(data.state.kind).not.toBe('failed');
+    }
+  });
+
+  it('resets retry counters for current state on BullMQ resume (SC-003)', async () => {
+    // Simulate a job that was checkpointed at searching_sources with
+    // exhausted retries — as if the previous BullMQ attempt failed there.
+    const baseData = makeInitialJobData();
+    const checkpointContext: ResearchContext = {
+      ...baseData.context,
+      notebookId: 'nb-001',
+      retries: { searching_sources: 2 },
+      lastError: 'Previous failure',
+    };
+
+    const checkpointData: ResearchJobData = {
+      ...baseData,
+      state: { kind: 'searching_sources' },
+      context: checkpointContext,
+    };
+
+    const job = makeMockJob(checkpointData);
+    const deps = makeMockDeps();
+
+    const result = await handleResearchJob(job, deps);
+
+    expect(result.topic).toBe('AI agents');
+    // Should have called searchWeb — meaning the retries were cleared and
+    // the state was re-executed instead of immediately failing.
+    expect(deps.notebookLM.searchWeb).toHaveBeenCalled();
+  });
+
   it('sends Telegram notification via sendMessage (FR-060)', async () => {
     const jobData = makeInitialJobData();
     const job = makeMockJob(jobData);

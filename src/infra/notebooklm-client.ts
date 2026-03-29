@@ -13,7 +13,13 @@
 // FR-070: Auth via NOTEBOOKLM_AUTH_TOKEN + NOTEBOOKLM_COOKIES env vars,
 //         or GOOGLE_EMAIL + GOOGLE_PASSWORD for auto browser login (no 2FA).
 
-import { NotebookLMClient } from 'notebooklm-kit';
+import {
+  NotebookLMClient,
+  APIError,
+  NotebookLMNetworkError,
+  NotebookLMAuthError,
+  NotebookLMParseError,
+} from 'notebooklm-kit';
 import type { Result } from '../core/types.js';
 import type { SourceMeta, ChatResponse, WebSource } from '../core/research-types.js';
 
@@ -142,25 +148,54 @@ export function mapSourceType(
 
 /**
  * Classify an error as retriable or not.
- * Network errors and 5xx codes are retriable; 4xx are permanent.
+ *
+ * Layered strategy (most specific → least specific):
+ *   1. SDK typed subclasses (NotebookLMNetworkError, AuthError, ParseError)
+ *   2. SDK APIError with isRetryable() (checks errorCode.retryable → httpStatus)
+ *   3. Duck-type fallback — any error with an isRetryable() method
+ *   4. String heuristics for non-SDK errors (Node.js system errors, etc.)
+ *
  * Unknown errors default to NON-retriable (safe default — do not retry blindly).
  */
 export function isRetriableError(error: unknown): boolean {
-  if (error instanceof Error) {
-    const msg = error.message.toLowerCase();
-    if (msg.includes('network') || msg.includes('econnrefused') || msg.includes('etimedout')) {
-      return true;
-    }
-    // Check for status codes in message
-    const match = msg.match(/\b(4\d{2}|5\d{2})\b/);
-    if (match) {
-      const code = parseInt(match[1]!, 10);
-      return code >= 500;
-    }
-    // Default: do NOT retry unknown errors
-    return false;
+  if (!(error instanceof Error)) return false;
+
+  // Layer 1: SDK typed error subclasses (most specific)
+  if (error instanceof NotebookLMNetworkError) return true;
+  if (error instanceof NotebookLMAuthError) return false;
+  if (error instanceof NotebookLMParseError) return false;
+
+  // Layer 2: APIError with rich metadata
+  // isRetryable() checks errorCode.retryable first, then falls back to
+  // httpStatus in [429, 500, 502, 503, 504]
+  if (error instanceof APIError) {
+    return error.isRetryable();
   }
-  // Non-Error throwables: do NOT retry
+
+  // Layer 3: Duck-type fallback for future SDK versions or other libraries
+  if ('isRetryable' in error && typeof (error as any).isRetryable === 'function') {
+    return (error as any).isRetryable();
+  }
+
+  // Layer 4: String heuristics for non-SDK errors (Node.js system errors, etc.)
+  const msg = error.message.toLowerCase();
+
+  if (
+    msg.includes('network') || msg.includes('econnrefused') || msg.includes('etimedout') ||
+    msg.includes('econnreset') || msg.includes('socket hang up') || msg.includes('epipe') ||
+    msg.includes('enotfound') || msg.includes('timed out') || msg.includes('fetch failed')
+  ) {
+    return true;
+  }
+
+  // HTTP status codes embedded in message text
+  const match = msg.match(/\b(4\d{2}|5\d{2})\b/);
+  if (match) {
+    const code = parseInt(match[1]!, 10);
+    return code === 429 || code >= 500;
+  }
+
+  // Default: do NOT retry unknown errors
   return false;
 }
 
@@ -171,6 +206,14 @@ async function safeCall<T>(fn: () => Promise<T>): Promise<Result<T, AdapterError
     return { ok: true, value };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    // Log full error details for debugging SDK failures (e.g. gRPC error codes)
+    const extras: Record<string, unknown> = {};
+    if (err instanceof Error) {
+      if ('errorCode' in err) extras.errorCode = (err as any).errorCode;
+      if ('httpStatus' in err) extras.httpStatus = (err as any).httpStatus;
+      if ('rawResponse' in err) extras.rawResponse = (err as any).rawResponse;
+    }
+    console.error('[notebooklm:safeCall] SDK error:', message, Object.keys(extras).length > 0 ? extras : '');
     return { ok: false, error: { message, retriable: isRetriableError(err) } };
   }
 }
@@ -224,6 +267,45 @@ export type NotebookLMCredentials =
   | { readonly kind: 'token'; readonly authToken: string; readonly cookies: string }
   | { readonly kind: 'google'; readonly email: string; readonly password: string };
 
+/** Default timeout for sdk.connect() — Google auto-login via Playwright can hang indefinitely. */
+const CONNECT_TIMEOUT_MS = 60_000;
+
+/** Hardcoded fallback build label — update periodically when Google rotates. */
+export const FALLBACK_BL = 'boq_labs-tailwind-frontend_20260325.12_p0';
+
+/**
+ * Fetch the current build label from the NotebookLM page HTML.
+ * Google embeds the `bl` string in the page source; we extract it to avoid
+ * stale-version PermissionDenied errors from searchWebAndWait.
+ * Returns FALLBACK_BL if fetching or parsing fails.
+ */
+export async function fetchCurrentBuildLabel(): Promise<string> {
+  try {
+    const response = await fetch('https://notebooklm.google.com/', {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
+        'Accept': 'text/html',
+      },
+      redirect: 'follow',
+    });
+    if (!response.ok) {
+      console.warn(`[notebooklm:bl] Page fetch returned ${response.status}, using fallback`);
+      return FALLBACK_BL;
+    }
+    const html = await response.text();
+    const match = html.match(/boq_labs-tailwind-frontend_\d{8}\.\d+_p\d+/);
+    if (match) {
+      console.log(`[notebooklm:bl] Detected build label: ${match[0]}`);
+      return match[0];
+    }
+    console.warn('[notebooklm:bl] Build label not found in HTML, using fallback');
+    return FALLBACK_BL;
+  } catch (err) {
+    console.warn('[notebooklm:bl] Fetch failed:', err instanceof Error ? err.message : err);
+    return FALLBACK_BL;
+  }
+}
+
 /**
  * Create a NotebookLM adapter.
  *
@@ -236,14 +318,45 @@ export type NotebookLMCredentials =
 export async function createNotebookLMAdapter(
   credentials: NotebookLMCredentials,
 ): Promise<NotebookLMAdapter> {
+  console.log(`[notebooklm] Creating adapter with auth method: ${credentials.kind}`);
+
+  // Fetch the current build label from NotebookLM page (falls back to FALLBACK_BL)
+  const bl = await fetchCurrentBuildLabel();
+
   const sdk = new NotebookLMClient({
     ...(credentials.kind === 'token'
       ? { authToken: credentials.authToken, cookies: credentials.cookies }
       : { auth: { email: credentials.email, password: credentials.password, headless: true } }),
     autoRefresh: { enabled: true, interval: 10 * 60 * 1000 },
+    urlParams: { bl },
   });
 
-  await sdk.connect();
+  console.log('[notebooklm] Calling sdk.connect()...');
+  const connectStart = Date.now();
+  await Promise.race([
+    sdk.connect(),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(
+        `sdk.connect() timed out after ${CONNECT_TIMEOUT_MS}ms — ` +
+        (credentials.kind === 'google'
+          ? 'Google auto-login likely blocked by captcha. Switch to token auth (NOTEBOOKLM_AUTH_TOKEN + NOTEBOOKLM_COOKIES).'
+          : 'token auth failed to connect.'),
+      )), CONNECT_TIMEOUT_MS),
+    ),
+  ]);
+  console.log(`[notebooklm] sdk.connect() succeeded in ${Date.now() - connectStart}ms`);
+
+  // Health check: verify auth by listing notebooks (fast, lightweight call)
+  console.log('[notebooklm] Running auth health check (notebooks.list)...');
+  try {
+    await sdk.notebooks.list();
+    console.log('[notebooklm] Auth health check passed — adapter ready');
+  } catch (healthErr) {
+    const msg = healthErr instanceof Error ? healthErr.message : String(healthErr);
+    console.error(`[notebooklm] Auth health check FAILED: ${msg}`);
+    sdk.dispose();
+    throw new Error(`NotebookLM auth health check failed: ${msg}`);
+  }
 
   // ─── createNotebook ────────────────────────────────────────────────────────
 
