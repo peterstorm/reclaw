@@ -43,6 +43,7 @@ const makeContext = (overrides: Partial<ResearchContext> = {}): ResearchContext 
   notebookId: 'notebook-abc',
   searchSessionId: null,
   discoveredWebSources: [],
+  claudeDiscoveredUrls: [],
   sourceUrlById: {},
   sources,
   questions: ['What is AI?', 'How does ML work?'],

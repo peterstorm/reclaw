@@ -29,6 +29,7 @@ function makeContext(overrides: Partial<ResearchContext> = {}): ResearchContext 
     notebookId: 'nb-1',
     searchSessionId: null,
     discoveredWebSources: [],
+    claudeDiscoveredUrls: [],
     sourceUrlById: {},
     sources: [],
     questions: [],

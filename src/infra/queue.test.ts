@@ -220,6 +220,7 @@ describe('createQueues', () => {
         notebookId: null,
         searchSessionId: null,
         discoveredWebSources: [] as never[],
+        claudeDiscoveredUrls: [] as readonly string[],
         sourceUrlById: {},
         sources: [] as never[],
         questions: [] as readonly string[],
