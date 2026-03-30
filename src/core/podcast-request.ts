@@ -67,7 +67,7 @@ export function parsePodcastCommand(text: string): Result<PodcastRequest, string
   }
 
   // Extract --length flag
-  let length: AudioLength = 'default';
+  let length: AudioLength = 'long';
   const lengthMatch = rawRemainder.match(/(?:^|\s)--length\s+(\S+)/i);
   if (lengthMatch) {
     const raw = lengthMatch[1]!.toLowerCase() as AudioLength;
