@@ -40,6 +40,7 @@ type ActivitySummary = {
   readonly aerobicTrainingEffect: number | null;
   readonly anaerobicTrainingEffect: number | null;
   readonly vo2MaxValue: number | null;
+  readonly description: string | null;
   readonly perceivedExertion: number | null;
   readonly feelScore: number | null;
   readonly hrZones: readonly HrZone[] | null;
@@ -209,6 +210,7 @@ const extractActivity = (raw: Record<string, unknown>): ActivitySummary => {
     maxHR: summary.maxHR as number ?? null,
     calories: summary.calories as number ?? null,
     averageSpeed: summary.averageSpeed as number ?? null,
+    description: raw.description as string ?? null,
     elevationGain: summary.elevationGain as number ?? null,
     averageRunningCadence: (summary.averageRunCadence ?? summary.averageRunningCadenceInStepsPerMinute) as number ?? null,
     aerobicTrainingEffect: (summary.trainingEffect ?? summary.aerobicTrainingEffect) as number ?? null,

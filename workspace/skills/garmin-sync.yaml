@@ -28,7 +28,7 @@ promptTemplate: |
   - `sleep` — score, duration, deep/light/REM/awake stages
   - `steps` — step count
   - `heartRate` — resting, max, min
-  - `activities` — list of activities with type, duration, distance, HR, pace, training effect, HR zones, splits, hrTimeSeries, perceivedExertion (0-100 scale, display as 1-10), feelScore (1-5: awful to amazing)
+  - `activities` — list of activities with type, duration, distance, HR, pace, training effect, HR zones, splits, hrTimeSeries, perceivedExertion (0-100 scale, display as 1-10), feelScore (1-5: awful to amazing), description (user-written notes from the Garmin app)
   - `vo2Max` — running and cycling VO2 max values
   - `trainingStatus` — current training status and related metrics
   - `trainingReadiness` — score (0-100), level, sleepScore, recoveryTime (hours), hrvStatus
@@ -114,6 +114,7 @@ promptTemplate: |
   - Calories, elevation gain (if applicable)
   - Training effect (aerobic + anaerobic)
   - Perceived exertion (show as X/10 from the 0-100 raw value) and feel (1-5 scale) if present
+  - User notes (if `description` is non-null, include it as a blockquote under the activity — these are the user's own thoughts from the Garmin app)
 
   **If there are running activities, add a detailed Run Analysis subsection:**
 
