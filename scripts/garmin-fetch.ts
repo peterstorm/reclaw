@@ -63,15 +63,31 @@ type Split = {
   readonly splitType: string;
 };
 
+type AcuteTrainingLoad = {
+  readonly acwrPercent: number | null;
+  readonly acwrStatus: string | null;
+  readonly dailyAcuteChronicWorkloadRatio: number | null;
+  readonly dailyTrainingLoadAcute: number | null;
+  readonly dailyTrainingLoadChronic: number | null;
+};
+
 type TrainingStatusSummary = {
   readonly trainingStatus: string | null;
-  readonly trainingLoadBalance: unknown | null;
+  readonly fitnessTrend: string | null;
+  readonly acuteTrainingLoad: AcuteTrainingLoad | null;
   readonly raw: unknown;
 };
 
 type Vo2MaxSummary = {
   readonly running: number | null;
   readonly cycling: number | null;
+};
+
+type LactateThreshold = {
+  readonly heartRate: number | null;
+  readonly speedMps: number | null;
+  readonly pacePerKm: string | null;
+  readonly autoDetected: boolean;
 };
 
 type HrvSummary = {
@@ -136,6 +152,7 @@ type GarminDailyData = {
   readonly heartRate: HeartRateSummary | null;
   readonly activities: readonly ActivitySummary[];
   readonly vo2Max: Vo2MaxSummary | null;
+  readonly lactateThreshold: LactateThreshold | null;
   readonly trainingStatus: TrainingStatusSummary | null;
   readonly trainingReadiness: TrainingReadinessSummary | null;
   readonly hrv: HrvSummary | null;
@@ -421,7 +438,7 @@ async function main(): Promise<void> {
 
   await delay(300);
 
-  // VO2 Max from personal info
+  // VO2 Max + Lactate Threshold from personal info
   const vo2Max = await tryFetch("vo2Max", async () => {
     const info = await client.getPersonalInfo() as unknown as Record<string, unknown>;
     const bio = info.biometricProfile as Record<string, unknown> | undefined;
@@ -431,17 +448,50 @@ async function main(): Promise<void> {
     };
   }, errors);
 
+  // Lactate threshold from user settings (same login, separate call)
+  await delay(300);
+  const lactateThreshold = await tryFetch("lactateThreshold", async () => {
+    const settings = await client.getUserSettings() as unknown as Record<string, unknown>;
+    const ud = settings.userData as Record<string, unknown> | undefined;
+    const lthr = ud?.lactateThresholdHeartRate as number | undefined ?? null;
+    const ltSpeedRaw = ud?.lactateThresholdSpeed as number | undefined ?? null;
+    const autoDetected = ud?.thresholdHeartRateAutoDetected as boolean ?? false;
+
+    // Garmin stores lactateThresholdSpeed with a ×0.1 scaling factor
+    const ltSpeedMps = ltSpeedRaw != null ? ltSpeedRaw * 10 : null;
+    const pacePerKm = ltSpeedMps != null && ltSpeedMps > 0
+      ? `${Math.floor(1000 / ltSpeedMps / 60)}:${String(Math.round((1000 / ltSpeedMps) % 60)).padStart(2, "0")}`
+      : null;
+
+    return { heartRate: lthr, speedMps: ltSpeedMps, pacePerKm, autoDetected };
+  }, errors);
+
   await delay(300);
 
-  // Training status
+  // Training status with ACWR
   const trainingStatus = await tryFetch("trainingStatus", async () => {
     const raw = await client.getTrainingStatus(date) as unknown as Record<string, unknown>;
-    const mostRecent = (raw.mostRecentTrainingStatus ?? raw) as Record<string, unknown>;
-    return {
-      trainingStatus: mostRecent.trainingStatus as string ?? null,
-      trainingLoadBalance: null as unknown,
-      raw: mostRecent,
-    };
+    const latestData = raw.latestTrainingStatusData as Record<string, Record<string, unknown>> | undefined;
+    // Get the first (usually only) device's status
+    const deviceEntry = latestData ? Object.values(latestData)[0] : (raw.mostRecentTrainingStatus ?? raw) as Record<string, unknown>;
+
+    const acuteDto = deviceEntry?.acuteTrainingLoadDTO as Record<string, unknown> | undefined;
+    const acuteTrainingLoad: AcuteTrainingLoad | null = acuteDto ? {
+      acwrPercent: acuteDto.acwrPercent as number ?? null,
+      acwrStatus: acuteDto.acwrStatus as string ?? null,
+      dailyAcuteChronicWorkloadRatio: acuteDto.dailyAcuteChronicWorkloadRatio as number ?? null,
+      dailyTrainingLoadAcute: acuteDto.dailyTrainingLoadAcute as number ?? null,
+      dailyTrainingLoadChronic: acuteDto.dailyTrainingLoadChronic as number ?? null,
+    } : null;
+
+    const statusCode = deviceEntry?.trainingStatus as number | string | null ?? null;
+    const statusMap: Record<number, string> = { 0: "NOT_APPLICABLE", 1: "DETRAINING", 2: "RECOVERY", 3: "MAINTAINING", 4: "PRODUCTIVE", 5: "PEAKING", 6: "OVERREACHING", 7: "UNPRODUCTIVE" };
+    const trainingStatusStr = typeof statusCode === "number" ? (statusMap[statusCode] ?? String(statusCode)) : statusCode;
+    const fitnessTrendCode = deviceEntry?.fitnessTrend as number | string | null ?? null;
+    const trendMap: Record<number, string> = { 0: "DECLINING", 1: "STEADY", 2: "IMPROVING" };
+    const fitnessTrend = typeof fitnessTrendCode === "number" ? (trendMap[fitnessTrendCode] ?? String(fitnessTrendCode)) : fitnessTrendCode;
+
+    return { trainingStatus: trainingStatusStr, fitnessTrend, acuteTrainingLoad, raw: deviceEntry };
   }, errors);
 
   await delay(300);
@@ -539,6 +589,7 @@ async function main(): Promise<void> {
     heartRate,
     activities,
     vo2Max,
+    lactateThreshold,
     trainingStatus,
     trainingReadiness,
     hrv,

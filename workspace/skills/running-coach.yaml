@@ -25,11 +25,16 @@ promptTemplate: |
   1. Find the most recent interval or tempo session in the last 14 days of fitness notes
   2. Extract: fast interval paces, HR during intervals, RPE, recovery HR response
   3. Estimate threshold pace = the pace sustained at HR 168-175 for repeated efforts
-  4. Estimate 5K race pace = threshold pace minus 10-15s/km (for this fitness level)
-  5. Calculate estimated 5K time = 5 × race pace
-  6. Cross-reference with Garmin VO2 Max (if available) via Jack Daniels VDOT tables:
+  4. Cross-reference with Garmin's auto-detected `lactateThreshold` from the cached JSON:
+     - `lactateThreshold.pacePerKm` = Garmin's estimate of threshold pace
+     - `lactateThreshold.heartRate` = Garmin's LTHR estimate
+     - If Garmin's threshold pace is >20s/km slower than your data-derived estimate, Garmin is lagging — trust the data
+     - If they agree (within 10s/km), high confidence in the estimate
+  5. Estimate 5K race pace = threshold pace minus 10-15s/km (for this fitness level)
+  6. Calculate estimated 5K time = 5 × race pace
+  7. Cross-reference with Garmin VO2 Max (if available) via Jack Daniels VDOT tables:
      - VO2Max 44 → ~25:30 | 45 → ~24:50 | 46 → ~24:10 | 47 → ~23:35 | 48 → ~23:00
-  7. Use the faster of the two estimates (data-derived vs VO2Max-derived) — the data is more reliable than Garmin's VO2Max which updates slowly
+  8. Use the faster of the estimates (data-derived vs VO2Max-derived) — the data is more reliable than Garmin's VO2Max which updates slowly
 
   **Current anchor (as of April 2026):** Data suggests ~24:00-24:30 5K (4:48-4:54/km). Threshold at ~5:00/km based on March 26 rolling tempo (4:59/km at HR 175, RPE 4/10).
 
@@ -57,7 +62,7 @@ promptTemplate: |
   | Interval | 4:45-4:55/km |
   | Repetition | 4:20-4:40/km |
 
-  **Validate zones against HR data:** If recent easy runs show HR < 135 at easy pace → tighten. If intervals hit with HR < 175 → increase interval pace by 5s/km. If tempo shows improving efficiency → tighten. The data is the authority, not the formula.
+  **Validate zones against HR data:** If recent easy runs show HR < 135 at easy pace → tighten. If intervals hit with HR < 175 → increase interval pace by 5s/km. If tempo shows improving efficiency → tighten. Also compare tempo HR targets against Garmin's `lactateThreshold.heartRate` — tempo zone should be ~5-10 bpm below LTHR. The data is the authority, not the formula.
 
   **Pace target encoding for Garmin:**
   - Pace targets use m/s: `1000 / (minutes * 60 + seconds)`
@@ -85,7 +90,7 @@ promptTemplate: |
   cat ~/.cache/garmin/daily/{{date}}.json
   ```
 
-  From the JSON, extract: trainingReadiness (score, level, sleepScore, recoveryTime, hrvStatus, acwrFactor), sleep (score, duration, stages), hrv (lastNight, weeklyAvg, baseline), heartRate (resting), trainingStatus, vo2Max, scheduledWorkouts.
+  From the JSON, extract: trainingReadiness (score, level, sleepScore, recoveryTime, hrvStatus, acwrFactor), sleep (score, duration, stages), hrv (lastNight, weeklyAvg, baseline), heartRate (resting), trainingStatus (including acuteTrainingLoad for ACWR), vo2Max, lactateThreshold (HR, pace, autoDetected), scheduledWorkouts.
 
   ### 1b. Yesterday's fitness note (full analysis from garmin-sync)
   Yesterday's note was written by garmin-sync at 20:00. Calculate yesterday's date from {{date}} and read it:
@@ -169,7 +174,7 @@ promptTemplate: |
   **Red light (mandatory easy/rest):**
   - Training readiness < 50, OR sleep < 60, OR HRV significantly below baseline
   - OR illness mentioned in journal (cold, flu, fever, sore throat)
-  - OR ACWR > 1.4
+  - OR ACWR > 1.4 (check `trainingStatus.acuteTrainingLoad.dailyAcuteChronicWorkloadRatio` from cached JSON)
   - OR recovery time > 24 hours
   - → Regardless of day type, prescribe an easy recovery run (30-40min, strict Z2) or complete rest
   - → If illness: strongly recommend rest, do not schedule a workout
