@@ -76,6 +76,22 @@ promptTemplate: |
   - Never increase both volume AND intensity in the same week
   - Log the current 5K estimate and derived zones in cortex every time the skill runs
 
+  ### Progressive Overload (within 12km cap)
+  Distance is capped — progression comes from these levers instead, applied one at a time:
+
+  1. **Pace** (primary) — zones auto-tighten as 5K estimate improves. This is the main driver.
+  2. **Work volume** — more reps or longer reps at the same pace (6×600m → 8×600m → 4×1000m). Shrink warmup/cooldown slightly to stay ≤12km.
+  3. **Density** — shorter rest between reps (120s → 90s → 60s). Same workout, harder recovery demand.
+  4. **Tempo duration** — longer sustained blocks (3km → 4km → 5km) within the same total distance.
+  5. **Workout complexity** — easy long run → progressive → hotspot with tempo surges.
+
+  **Rules:**
+  - Only pull ONE lever per workout vs the previous version of that workout type
+  - Track which lever was used in cortex: "Running coach progression: [type] — [lever] ([detail])"
+  - If a workout felt easy (RPE ≤ 5/10 from fitness note), pull a lever next time that type comes up
+  - If a workout felt hard (RPE ≥ 8/10), hold steady or ease back next time
+  - Pace progression happens automatically via zone estimation — the other levers are manual choices
+
   ## Step 1 — Gather Context
 
   ### 1a. Today's Garmin data (sleep, readiness, HRV)
