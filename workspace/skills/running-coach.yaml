@@ -180,7 +180,8 @@ promptTemplate: |
   - Every 4th week should be a deload: reduce volume by 20-30%, keep intensity moderate
   - Track the current training "week" via cortex memory
   - If total weekly volume was < 20km last week, don't exceed 25km this week
-  - If total weekly volume was > 35km, consider whether the athlete is ready for that load
+  - Weekly volume should typically land between 25-33km (Tue ~8km + Thu ~10km + Sun ~12km)
+  - Hard cap: no single run over 12km (time constraints)
 
   ## Step 3 — Design the Workout
 
@@ -189,7 +190,7 @@ promptTemplate: |
   **Purpose:** Active recovery, aerobic base building. This is NOT a workout — it's easy running.
 
   **Prescription:**
-  - Distance: 7-10km (scale with current weekly volume)
+  - Distance: 7-9km (scale with current weekly volume)
   - Pace: Easy zone (6:10-6:40/km), no pace target on Garmin (use `no.target`)
   - HR cap: 145 bpm
   - Single step: one `interval` step with distance end condition
@@ -243,7 +244,7 @@ promptTemplate: |
 
   **Purpose:** The key training stimulus of the week. Rotate through these types to target different energy systems.
 
-  **Rotation (cycle through, check cortex for last used):**
+  **Available workout types (do NOT follow a fixed rotation — see selection logic below):**
 
   1. **Classic Intervals** — VO2max development
      - 2km warmup + 90s rest + N × (distance @ interval pace + rest) + 2km cooldown
@@ -273,22 +274,54 @@ promptTemplate: |
      - E.g., 8 × (90s fast + 90s easy)
      - Good for weeks with moderate readiness (gentler than structured intervals)
 
+  6. **Hill Repeats** — Running economy + neuromuscular power
+     - 2km warmup + 90s rest + N × (60-90s uphill @ hard effort + jog-down recovery) + 2km cooldown
+     - No pace target on the uphill — use `no.target` (hill grade determines intensity)
+     - Recovery: walk/jog down (use time-based rest: 90-120s)
+     - Formats: 8×60s hills, 6×90s hills
+     - Description should say "find a moderate hill (4-8% grade), run hard uphill, jog back down"
+     - Builds power and running economy without the joint stress of flat speed work
+
+  7. **Cruise Intervals** — Broken threshold
+     - 2km warmup + 90s rest + N × (longer reps @ tempo pace + short rest) + 2km cooldown
+     - Formats: 4×2km, 3×2.5km, 5×1.5km — all at tempo pace
+     - Rest: 60-90s (shorter than VO2max intervals — keeps lactate elevated)
+     - Use RepeatGroupDTO for identical reps
+     - More sustainable than a 25-min sustained tempo block, better for building threshold duration
+
+  **Selection logic (NOT a fixed rotation):**
+  Check cortex for the last 2-3 Thursday types. Then choose based on:
+
+  1. **Don't repeat** — never use the same type as last week
+  2. **Respond to last session's data:**
+     - If last hard session showed high HR at interval pace → threshold work this week (tempo, cruise, rolling tempo) to build aerobic base under the speed
+     - If last hard session was comfortable at tempo → VO2max work this week (classic intervals, pyramid) to sharpen top end
+     - If last session had high cardiac drift or poor recovery → fartlek or hill repeats (lower metabolic stress)
+  3. **Energy system balance over 3-4 weeks:**
+     - Aim for roughly: 2 VO2max sessions (classic intervals, pyramid) + 1 threshold session (tempo, cruise, rolling) + 1 neuromuscular/variety session (fartlek, hills) per 4-week block
+     - If cortex shows 2 straight weeks of intervals → pick tempo/cruise next
+     - If cortex shows 2 straight weeks of threshold → pick intervals/pyramid next
+  4. **Readiness tiebreaker:**
+     - Yellow light → prefer fartlek or hill repeats (easier to scale down, more recovery-friendly)
+     - Strong green → prefer classic intervals or pyramid (maximise stimulus)
+  5. **Log the choice and reasoning** in cortex every week
+
   **General structure for hard sessions:**
-  - Always include warmup (1.5-2.5km at easy pace, no target)
+  - Always include warmup (1.5-2km at easy pace, no target)
   - 90s walking rest after warmup
   - Main set (intervals, tempo, etc.)
-  - 1.5-2.5km cooldown (lap.button end condition — let them jog until ready)
-  - Total distance: 7-11km depending on format
+  - 1.5-2km cooldown (lap.button end condition — let them jog until ready)
+  - Total distance: 7-12km depending on format (hard cap at 12km)
 
   ### Sunday — Long Run
 
   **Purpose:** Aerobic endurance, fat oxidation, mental toughness. The longest run of the week.
 
-  **Rotation (cycle through, check cortex for last used):**
+  **Available types (same intelligent selection as Thursday — check cortex, don't repeat, respond to data):**
 
   1. **Steady Long Run** — constant easy-to-steady pace
      - Single interval step at easy pace (no target or steady pace target)
-     - Distance: 12-16km (scale with training phase)
+     - Distance: 10-12km
 
   2. **Progressive Long Run** — negative split
      - 3-4 segments of equal distance, each faster:
@@ -296,22 +329,23 @@ promptTemplate: |
        - Second third: steady pace target
        - Final third: tempo-ish pace target
      - E.g., 4km easy + 4km at 5:50/km + 4km at 5:20/km
+     - Total: 10-12km
 
   3. **Hotspot Long Run** — easy with tempo surges
      - Alternating easy and tempo segments:
-       - E.g., 4km easy + 1km at 5:10/km + 3km easy + 1km at 5:10/km + 3km easy
+       - E.g., 4km easy + 1km at 5:10/km + 3km easy + 1km at 5:10/km + 2km easy
      - Tests the ability to change gears mid-run
+     - Total: 10-12km
 
   4. **Easy Long Run** — pure aerobic
      - Single step, no pace target, just distance
      - Use every 3-4 weeks or after a hard training week
      - HR cap conversation — describe in the description field
+     - Distance: 8-10km
 
-  **Long run distance progression:**
-  - Start: 10-12km
-  - Build: add 1-2km every 2 weeks
-  - Cap: 16-18km for 5K training (no need for marathon-length)
-  - Deload weeks: drop back to 10-12km
+  **Distance cap: 12km maximum for all long runs.** No exceptions — the athlete has time constraints.
+  - Deload weeks: drop to 8-10km
+  - Don't build volume here — use Thursday intensity as the primary stimulus
 
   ## Step 4 — Build Workout JSON
 
