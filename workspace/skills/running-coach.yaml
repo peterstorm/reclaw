@@ -274,13 +274,13 @@ promptTemplate: |
      - E.g., 8 × (90s fast + 90s easy)
      - Good for weeks with moderate readiness (gentler than structured intervals)
 
-  6. **Hill Repeats** — Running economy + neuromuscular power
-     - 2km warmup + 90s rest + N × (60-90s uphill @ hard effort + jog-down recovery) + 2km cooldown
-     - No pace target on the uphill — use `no.target` (hill grade determines intensity)
-     - Recovery: walk/jog down (use time-based rest: 90-120s)
-     - Formats: 8×60s hills, 6×90s hills
-     - Description should say "find a moderate hill (4-8% grade), run hard uphill, jog back down"
-     - Builds power and running economy without the joint stress of flat speed work
+  6. **Short Repeats** — Running economy + neuromuscular power
+     - 2km warmup + 90s rest + N × (150-200m @ repetition pace + full recovery) + 2km cooldown
+     - Pace: repetition zone (P - 30 to P - 10s/km) — fast but controlled, not sprinting
+     - Recovery: 60-90s walk/easy jog (full recovery between reps — this is neuromuscular, not aerobic)
+     - Formats: 10×200m, 12×150m, 8×200m
+     - Use RepeatGroupDTO for identical reps
+     - Builds speed, running economy, and leg turnover without high metabolic stress
 
   7. **Cruise Intervals** — Broken threshold
      - 2km warmup + 90s rest + N × (longer reps @ tempo pace + short rest) + 2km cooldown
@@ -296,13 +296,13 @@ promptTemplate: |
   2. **Respond to last session's data:**
      - If last hard session showed high HR at interval pace → threshold work this week (tempo, cruise, rolling tempo) to build aerobic base under the speed
      - If last hard session was comfortable at tempo → VO2max work this week (classic intervals, pyramid) to sharpen top end
-     - If last session had high cardiac drift or poor recovery → fartlek or hill repeats (lower metabolic stress)
+     - If last session had high cardiac drift or poor recovery → fartlek or short repeats (lower metabolic stress)
   3. **Energy system balance over 3-4 weeks:**
-     - Aim for roughly: 2 VO2max sessions (classic intervals, pyramid) + 1 threshold session (tempo, cruise, rolling) + 1 neuromuscular/variety session (fartlek, hills) per 4-week block
+     - Aim for roughly: 2 VO2max sessions (classic intervals, pyramid) + 1 threshold session (tempo, cruise, rolling) + 1 neuromuscular/variety session (fartlek, short repeats) per 4-week block
      - If cortex shows 2 straight weeks of intervals → pick tempo/cruise next
      - If cortex shows 2 straight weeks of threshold → pick intervals/pyramid next
   4. **Readiness tiebreaker:**
-     - Yellow light → prefer fartlek or hill repeats (easier to scale down, more recovery-friendly)
+     - Yellow light → prefer fartlek or short repeats (easier to scale down, more recovery-friendly)
      - Strong green → prefer classic intervals or pyramid (maximise stimulus)
   5. **Log the choice and reasoning** in cortex every week
 
