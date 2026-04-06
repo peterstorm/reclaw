@@ -1,4 +1,4 @@
-import { Queue } from 'bullmq';
+import { FlowProducer, Queue } from 'bullmq';
 import type { ChatJob, Job, PodcastJob, ReminderJob, RecurringReminderJob, ScheduledJob } from '../core/types.js';
 import type { ResearchJobData } from '../core/research-types.js';
 import { stateProgress } from '../core/research-types.js';
@@ -25,8 +25,10 @@ export type Queues = {
   readonly reminder: Queue;
   readonly research: Queue;
   readonly podcast: Queue;
+  readonly flowProducer: FlowProducer;
   readonly enqueueChat: (job: Extract<Job, { kind: 'chat' }>) => Promise<void>;
   readonly enqueueScheduled: (job: Extract<Job, { kind: 'scheduled' }>) => Promise<void>;
+  readonly enqueueScheduledFlow: (triggerJob: ScheduledJob, dependentJob: ScheduledJob) => Promise<void>;
   readonly isScheduledJobKnown: (jobId: string) => Promise<boolean>;
   readonly enqueueReminder: (job: ReminderJob) => Promise<void>;
   readonly enqueueRecurringReminder: (job: RecurringReminderJob) => Promise<string>;
@@ -97,6 +99,47 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
     // TTL of 7 days is well beyond any validity window.
     const client = await scheduled.client;
     await client.set(`reclaw:sched-fired:${job.id}`, '1', 'EX', 604800);
+  };
+
+  // ── FlowProducer for job dependency chains ──────────────────────────────
+
+  const flowProducer = new FlowProducer({ connection });
+  flowProducer.on('error', (err) => {
+    console.error('[queue:flow] error', err);
+  });
+
+  /**
+   * Enqueue a trigger→dependent job chain via FlowProducer.
+   * BullMQ semantics: child (triggerJob) runs first, parent (dependentJob) waits.
+   * Note: FlowProducer strips `deduplication` from opts; dedup relies on jobId uniqueness.
+   */
+  const enqueueScheduledFlow = async (triggerJob: ScheduledJob, dependentJob: ScheduledJob): Promise<void> => {
+    try {
+      await flowProducer.add({
+        name: dependentJob.id,
+        queueName: 'reclaw-scheduled',
+        data: dependentJob,
+        opts: { jobId: dependentJob.id },
+        children: [
+          {
+            name: triggerJob.id,
+            queueName: 'reclaw-scheduled',
+            data: triggerJob,
+            opts: { jobId: triggerJob.id },
+          },
+        ],
+      });
+    } catch (e) {
+      // If child jobId already exists (flow already in flight), log and skip.
+      console.warn(`[queue:flow] Flow add failed (likely duplicate): ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
+
+    const client = await scheduled.client;
+    await Promise.all([
+      client.set(`reclaw:sched-fired:${triggerJob.id}`, '1', 'EX', 604800),
+      client.set(`reclaw:sched-fired:${dependentJob.id}`, '1', 'EX', 604800),
+    ]);
   };
 
   const isScheduledJobKnown = async (jobId: string): Promise<boolean> => {
@@ -223,11 +266,11 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
   };
 
   return {
-    chat, scheduled, reminder, research, podcast,
-    enqueueChat, enqueueScheduled, isScheduledJobKnown, enqueueReminder,
-    enqueueRecurringReminder, listRecurringReminders, cancelRecurringReminder,
-    enqueueResearch, getResearchQueuePosition, getResearchStatus,
-    enqueuePodcast,
+    chat, scheduled, reminder, research, podcast, flowProducer,
+    enqueueChat, enqueueScheduled, enqueueScheduledFlow, isScheduledJobKnown,
+    enqueueReminder, enqueueRecurringReminder, listRecurringReminders,
+    cancelRecurringReminder, enqueueResearch, getResearchQueuePosition,
+    getResearchStatus, enqueuePodcast,
   } as const;
 }
 

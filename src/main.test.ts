@@ -51,8 +51,11 @@ function makeMockQueues() {
       on: vi.fn(),
       add: vi.fn().mockResolvedValue(undefined),
     },
+    podcast: { close: vi.fn().mockResolvedValue(undefined), on: vi.fn() },
+    flowProducer: { close: vi.fn().mockResolvedValue(undefined), on: vi.fn() },
     enqueueChat: vi.fn().mockResolvedValue(undefined),
     enqueueScheduled: vi.fn().mockResolvedValue(undefined),
+    enqueueScheduledFlow: vi.fn().mockResolvedValue(undefined),
     isScheduledJobKnown: vi.fn().mockResolvedValue(false),
     enqueueReminder: vi.fn().mockResolvedValue(undefined),
     enqueueRecurringReminder: vi.fn().mockResolvedValue('recur:123'),
@@ -227,9 +230,13 @@ describe('bootstrap', () => {
     expect(createSkillWatcherMock).toHaveBeenCalledWith(mockConfig.skillsDir);
   });
 
-  it('creates scheduler with enqueueScheduled', async () => {
+  it('creates scheduler with enqueueScheduled, enqueueScheduledFlow, and isJobKnown', async () => {
     await bootstrap(makeDeps());
-    expect(createSchedulerMock).toHaveBeenCalledWith(mockQueues.enqueueScheduled, mockQueues.isScheduledJobKnown);
+    expect(createSchedulerMock).toHaveBeenCalledWith(
+      mockQueues.enqueueScheduled,
+      mockQueues.enqueueScheduledFlow,
+      mockQueues.isScheduledJobKnown,
+    );
   });
 
   it('creates workers', async () => {

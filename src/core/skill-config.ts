@@ -5,29 +5,35 @@ import { type Result, type SkillConfig, err, makeSkillId, ok } from './types.js'
 
 // ─── Zod Schema ───────────────────────────────────────────────────────────────
 
-export const SkillConfigSchema = z.object({
-  name: z.string().min(1, 'name must not be empty'),
-  schedule: z
-    .string()
-    .nullable()
-    .default(null)
-    .refine(
-      (v) => {
-        if (v === null) return true;
-        try {
-          parseExpression(v);
-          return true;
-        } catch {
-          return false;
-        }
-      },
-      { message: 'schedule must be a valid cron expression' },
-    ),
-  promptTemplate: z.string().min(1, 'promptTemplate must not be empty'),
-  permissionProfile: z.enum(['chat', 'scheduled']),
-  validityWindowMinutes: z.number().int().positive().default(30),
-  timeout: z.number().int().positive().default(120),
-});
+export const SkillConfigSchema = z
+  .object({
+    name: z.string().min(1, 'name must not be empty'),
+    schedule: z
+      .string()
+      .nullable()
+      .default(null)
+      .refine(
+        (v) => {
+          if (v === null) return true;
+          try {
+            parseExpression(v);
+            return true;
+          } catch {
+            return false;
+          }
+        },
+        { message: 'schedule must be a valid cron expression' },
+      ),
+    promptTemplate: z.string().min(1, 'promptTemplate must not be empty'),
+    permissionProfile: z.enum(['chat', 'scheduled']),
+    validityWindowMinutes: z.number().int().positive().default(30),
+    timeout: z.number().int().positive().default(120),
+    dependsOn: z.string().min(1).nullable().default(null),
+  })
+  .refine((data) => !(data.dependsOn !== null && data.schedule !== null), {
+    message: 'A skill with dependsOn must not have its own schedule',
+    path: ['dependsOn'],
+  });
 
 // ─── Parsers (pure) ───────────────────────────────────────────────────────────
 
@@ -63,6 +69,16 @@ export function parseSkillConfig(yamlContent: string, filePath: string): Result<
     return err(`Skill config validation failed in "${filePath}": ${msg}`);
   }
 
+  // Validate dependsOn as a SkillId if present
+  let dependsOnId: SkillConfig['dependsOn'] = null;
+  if (result.data.dependsOn !== null) {
+    const depResult = makeSkillId(result.data.dependsOn);
+    if (!depResult.ok) {
+      return err(`dependsOn in "${filePath}" is invalid: ${depResult.error}`);
+    }
+    dependsOnId = depResult.value;
+  }
+
   return ok({
     id: idResult.value,
     name: result.data.name,
@@ -71,6 +87,7 @@ export function parseSkillConfig(yamlContent: string, filePath: string): Result<
     permissionProfile: result.data.permissionProfile,
     validityWindowMinutes: result.data.validityWindowMinutes,
     timeout: result.data.timeout,
+    dependsOn: dependsOnId,
   } satisfies SkillConfig);
 }
 

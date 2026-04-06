@@ -14,6 +14,7 @@ function makeSkillConfig(
   id: string,
   schedule: string | null = '0 6 * * *',
   validityWindowMinutes = 30,
+  dependsOn: string | null = null,
 ): SkillConfig {
   return {
     id: id as SkillId,
@@ -23,6 +24,7 @@ function makeSkillConfig(
     permissionProfile: 'scheduled',
     validityWindowMinutes,
     timeout: 120,
+    dependsOn: dependsOn as SkillId | null,
   };
 }
 
@@ -30,10 +32,12 @@ function makeSkillConfig(
 
 describe('createScheduler', () => {
   let enqueueScheduled: ReturnType<typeof vi.fn>;
+  let enqueueScheduledFlow: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     vi.useFakeTimers();
     enqueueScheduled = vi.fn().mockResolvedValue(undefined);
+    enqueueScheduledFlow = vi.fn().mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -42,26 +46,26 @@ describe('createScheduler', () => {
   });
 
   it('returns object with reconcile, stop, getActiveJobs', () => {
-    const scheduler = createScheduler(enqueueScheduled);
+    const scheduler = createScheduler(enqueueScheduled, enqueueScheduledFlow);
     expect(scheduler.reconcile).toBeTypeOf('function');
     expect(scheduler.stop).toBeTypeOf('function');
     expect(scheduler.getActiveJobs).toBeTypeOf('function');
   });
 
   it('starts with no active jobs', () => {
-    const scheduler = createScheduler(enqueueScheduled);
+    const scheduler = createScheduler(enqueueScheduled, enqueueScheduledFlow);
     expect(scheduler.getActiveJobs()).toHaveLength(0);
   });
 
   it('getActiveJobs returns empty array when no skills have been reconciled', () => {
-    const scheduler = createScheduler(enqueueScheduled);
+    const scheduler = createScheduler(enqueueScheduled, enqueueScheduledFlow);
     const result = scheduler.getActiveJobs();
     expect(Array.isArray(result)).toBe(true);
     expect(result).toHaveLength(0);
   });
 
   it('reconcile adds cron jobs for skills with schedules', () => {
-    const scheduler = createScheduler(enqueueScheduled);
+    const scheduler = createScheduler(enqueueScheduled, enqueueScheduledFlow);
     const skill = makeSkillConfig('morning-briefing', '0 6 * * *');
     const registry = skillRegistryFromList([skill]);
 
@@ -72,7 +76,7 @@ describe('createScheduler', () => {
   });
 
   it('reconcile does NOT add cron jobs for skills with null schedule', () => {
-    const scheduler = createScheduler(enqueueScheduled);
+    const scheduler = createScheduler(enqueueScheduled, enqueueScheduledFlow);
     const skill = makeSkillConfig('on-demand-skill', null);
     const registry = skillRegistryFromList([skill]);
 
@@ -84,7 +88,7 @@ describe('createScheduler', () => {
   });
 
   it('reconcile removes cron jobs for skills no longer in registry', () => {
-    const scheduler = createScheduler(enqueueScheduled);
+    const scheduler = createScheduler(enqueueScheduled, enqueueScheduledFlow);
     const skill = makeSkillConfig('morning-briefing', '0 6 * * *');
     const registry = skillRegistryFromList([skill]);
 
@@ -99,7 +103,7 @@ describe('createScheduler', () => {
   });
 
   it('reconcile updates cron when skill schedule changes', () => {
-    const scheduler = createScheduler(enqueueScheduled);
+    const scheduler = createScheduler(enqueueScheduled, enqueueScheduledFlow);
     const skill1 = makeSkillConfig('briefing', '0 6 * * *');
     const registry1 = skillRegistryFromList([skill1]);
     scheduler.reconcile(registry1);
@@ -114,7 +118,7 @@ describe('createScheduler', () => {
   });
 
   it('reconcile keeps existing job when schedule is unchanged', () => {
-    const scheduler = createScheduler(enqueueScheduled);
+    const scheduler = createScheduler(enqueueScheduled, enqueueScheduledFlow);
     const skill = makeSkillConfig('briefing', '0 6 * * *');
     const registry = skillRegistryFromList([skill]);
 
@@ -127,7 +131,7 @@ describe('createScheduler', () => {
   });
 
   it('stop cancels all active timers and clears active jobs', () => {
-    const scheduler = createScheduler(enqueueScheduled);
+    const scheduler = createScheduler(enqueueScheduled, enqueueScheduledFlow);
     const skill1 = makeSkillConfig('skill-a', '0 6 * * *');
     const skill2 = makeSkillConfig('skill-b', '0 8 * * *');
     const registry = skillRegistryFromList([skill1, skill2]);
@@ -140,7 +144,7 @@ describe('createScheduler', () => {
   });
 
   it('getActiveJobs returns current skill IDs', () => {
-    const scheduler = createScheduler(enqueueScheduled);
+    const scheduler = createScheduler(enqueueScheduled, enqueueScheduledFlow);
     const skill1 = makeSkillConfig('skill-a', '0 6 * * *');
     const skill2 = makeSkillConfig('skill-b', '0 8 * * *');
     const registry = skillRegistryFromList([skill1, skill2]);
@@ -156,7 +160,7 @@ describe('createScheduler', () => {
 
   it('cron fire enqueues a ScheduledJob', async () => {
     // Use a cron that fires every minute: "* * * * *"
-    const scheduler = createScheduler(enqueueScheduled);
+    const scheduler = createScheduler(enqueueScheduled, enqueueScheduledFlow);
     const skill = makeSkillConfig('minute-skill', '* * * * *', 60);
     const registry = skillRegistryFromList([skill]);
 
@@ -179,7 +183,7 @@ describe('createScheduler', () => {
   });
 
   it('cron enqueues ScheduledJob with correct validUntil based on validityWindowMinutes', async () => {
-    const scheduler = createScheduler(enqueueScheduled);
+    const scheduler = createScheduler(enqueueScheduled, enqueueScheduledFlow);
     // Every minute, 15-minute window
     const skill = makeSkillConfig('short-window', '* * * * *', 15);
     const registry = skillRegistryFromList([skill]);
@@ -200,7 +204,7 @@ describe('createScheduler', () => {
   });
 
   it('cron fires multiple times as expected', async () => {
-    const scheduler = createScheduler(enqueueScheduled);
+    const scheduler = createScheduler(enqueueScheduled, enqueueScheduledFlow);
     const skill = makeSkillConfig('multi-fire', '* * * * *', 60);
     const registry = skillRegistryFromList([skill]);
 
@@ -216,7 +220,7 @@ describe('createScheduler', () => {
   });
 
   it('stop prevents further cron firings', async () => {
-    const scheduler = createScheduler(enqueueScheduled);
+    const scheduler = createScheduler(enqueueScheduled, enqueueScheduledFlow);
     const skill = makeSkillConfig('stoppable', '* * * * *', 60);
     const registry = skillRegistryFromList([skill]);
 
@@ -237,7 +241,7 @@ describe('createScheduler', () => {
   });
 
   it('handles multiple skills independently', () => {
-    const scheduler = createScheduler(enqueueScheduled);
+    const scheduler = createScheduler(enqueueScheduled, enqueueScheduledFlow);
     const skill1 = makeSkillConfig('s1', '0 6 * * *');
     const skill2 = makeSkillConfig('s2', null); // no schedule
     const skill3 = makeSkillConfig('s3', '0 20 * * *');
@@ -255,7 +259,7 @@ describe('createScheduler', () => {
   });
 
   it('reconcile can be called with empty registry to clear all', () => {
-    const scheduler = createScheduler(enqueueScheduled);
+    const scheduler = createScheduler(enqueueScheduled, enqueueScheduledFlow);
     const skill = makeSkillConfig('to-remove', '* * * * *');
     scheduler.reconcile(skillRegistryFromList([skill]));
     expect(scheduler.getActiveJobs()).toHaveLength(1);
@@ -269,7 +273,7 @@ describe('createScheduler', () => {
     const failingEnqueue = vi.fn().mockRejectedValue(new Error('Redis down'));
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
-    const scheduler = createScheduler(failingEnqueue);
+    const scheduler = createScheduler(failingEnqueue, enqueueScheduledFlow);
     const skill = makeSkillConfig('risky-skill', '* * * * *', 60);
     scheduler.reconcile(skillRegistryFromList([skill]));
 
@@ -292,7 +296,7 @@ describe('createScheduler', () => {
       const consoleSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
 
       // Skill fires every minute with 60min window — last trigger is always within window
-      const scheduler = createScheduler(enqueueScheduled, isJobKnown);
+      const scheduler = createScheduler(enqueueScheduled, enqueueScheduledFlow, isJobKnown);
       const skill = makeSkillConfig('dedup-test', '* * * * *', 60);
       scheduler.reconcile(skillRegistryFromList([skill]));
 
@@ -315,7 +319,7 @@ describe('createScheduler', () => {
       const isJobKnown = vi.fn().mockResolvedValue(false);
       const consoleSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
 
-      const scheduler = createScheduler(enqueueScheduled, isJobKnown);
+      const scheduler = createScheduler(enqueueScheduled, enqueueScheduledFlow, isJobKnown);
       const skill = makeSkillConfig('dedup-test', '* * * * *', 60);
       scheduler.reconcile(skillRegistryFromList([skill]));
 
@@ -325,6 +329,116 @@ describe('createScheduler', () => {
       expect(enqueueScheduled).toHaveBeenCalledOnce();
       const job: ScheduledJob = enqueueScheduled.mock.calls[0]?.[0];
       expect(job.skillId).toBe('dedup-test');
+
+      scheduler.stop();
+      consoleSpy.mockRestore();
+    });
+  });
+
+  describe('job dependencies (FlowProducer)', () => {
+    it('cron fire enqueues a flow when trigger has dependents', async () => {
+      const scheduler = createScheduler(enqueueScheduled, enqueueScheduledFlow);
+      const trigger = makeSkillConfig('cortex-prune', '* * * * *', 60);
+      const dependent = makeSkillConfig('memory-librarian', null, 60, 'cortex-prune');
+      scheduler.reconcile(skillRegistryFromList([trigger, dependent]));
+
+      vi.advanceTimersByTime(61_000);
+      await Promise.resolve();
+
+      expect(enqueueScheduledFlow).toHaveBeenCalled();
+      expect(enqueueScheduled).not.toHaveBeenCalled();
+
+      const [triggerJob, depJob] = enqueueScheduledFlow.mock.calls[0] as [ScheduledJob, ScheduledJob];
+      expect(triggerJob.skillId).toBe('cortex-prune');
+      expect(depJob.skillId).toBe('memory-librarian');
+
+      scheduler.stop();
+    });
+
+    it('cron fire uses standalone enqueue when trigger has no dependents', async () => {
+      const scheduler = createScheduler(enqueueScheduled, enqueueScheduledFlow);
+      const skill = makeSkillConfig('standalone', '* * * * *', 60);
+      scheduler.reconcile(skillRegistryFromList([skill]));
+
+      vi.advanceTimersByTime(61_000);
+      await Promise.resolve();
+
+      expect(enqueueScheduled).toHaveBeenCalled();
+      expect(enqueueScheduledFlow).not.toHaveBeenCalled();
+
+      scheduler.stop();
+    });
+
+    it('reconcile warns when dependsOn references non-existent skill', () => {
+      const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const scheduler = createScheduler(enqueueScheduled, enqueueScheduledFlow);
+      const dependent = makeSkillConfig('orphan', null, 60, 'missing-skill');
+      scheduler.reconcile(skillRegistryFromList([dependent]));
+
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining('depends on "missing-skill" which is not in the registry'),
+      );
+
+      scheduler.stop();
+      consoleSpy.mockRestore();
+    });
+
+    it('reconcile detects circular dependency and ignores it', () => {
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const scheduler = createScheduler(enqueueScheduled, enqueueScheduledFlow);
+      const a = makeSkillConfig('skill-a', '* * * * *', 60, 'skill-b');
+      const b = makeSkillConfig('skill-b', '* * * * *', 60, 'skill-a');
+      scheduler.reconcile(skillRegistryFromList([a, b]));
+
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Circular dependency'),
+      );
+
+      scheduler.stop();
+      consoleSpy.mockRestore();
+    });
+
+    it('catch-up enqueues flow when trigger missed and has dependents', async () => {
+      vi.useRealTimers();
+
+      const isJobKnown = vi.fn().mockResolvedValue(false);
+      const consoleSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+
+      const scheduler = createScheduler(enqueueScheduled, enqueueScheduledFlow, isJobKnown);
+      const trigger = makeSkillConfig('prune', '* * * * *', 60);
+      const dependent = makeSkillConfig('librarian', null, 60, 'prune');
+      scheduler.reconcile(skillRegistryFromList([trigger, dependent]));
+
+      await new Promise((r) => globalThis.setTimeout(r, 50));
+
+      expect(enqueueScheduledFlow).toHaveBeenCalledOnce();
+      expect(enqueueScheduled).not.toHaveBeenCalled();
+
+      scheduler.stop();
+      consoleSpy.mockRestore();
+    });
+
+    it('catch-up enqueues standalone dependent when trigger already known but dependent is not', async () => {
+      vi.useRealTimers();
+
+      // First call (trigger): known. Second call (dependent): unknown.
+      const isJobKnown = vi.fn()
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(false);
+      const consoleSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+
+      const scheduler = createScheduler(enqueueScheduled, enqueueScheduledFlow, isJobKnown);
+      const trigger = makeSkillConfig('prune', '* * * * *', 60);
+      const dependent = makeSkillConfig('librarian', null, 60, 'prune');
+      scheduler.reconcile(skillRegistryFromList([trigger, dependent]));
+
+      await new Promise((r) => globalThis.setTimeout(r, 50));
+
+      // Should enqueue dependent standalone (trigger already ran)
+      expect(enqueueScheduled).toHaveBeenCalledOnce();
+      expect(enqueueScheduledFlow).not.toHaveBeenCalled();
+      const job: ScheduledJob = enqueueScheduled.mock.calls[0]?.[0];
+      expect(job.skillId).toBe('librarian');
 
       scheduler.stop();
       consoleSpy.mockRestore();

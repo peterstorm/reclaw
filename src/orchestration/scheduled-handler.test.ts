@@ -41,6 +41,7 @@ const makeSkillConfig = (overrides: Partial<SkillConfig> = {}): SkillConfig => (
   permissionProfile: 'scheduled',
   validityWindowMinutes: 60,
   timeout: 300,
+  dependsOn: null,
   ...overrides,
 });
 

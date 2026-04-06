@@ -162,6 +162,37 @@ describe('parseSkillConfig', () => {
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.value.schedule).toBe('0 8 * * *');
   });
+
+  it('defaults dependsOn to null when omitted', () => {
+    const yaml = validYaml();
+    const result = parseSkillConfig(yaml, '/skills/no-dep.yaml');
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.dependsOn).toBeNull();
+  });
+
+  it('parses valid dependsOn with null schedule', () => {
+    const yaml = validYaml({ schedule: null, dependsOn: 'cortex-prune' });
+    const result = parseSkillConfig(yaml, '/skills/librarian.yaml');
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.dependsOn).toBe('cortex-prune');
+      expect(result.value.schedule).toBeNull();
+    }
+  });
+
+  it('rejects skill with both schedule and dependsOn', () => {
+    const yaml = validYaml({ schedule: '0 8 * * *', dependsOn: 'cortex-prune' });
+    const result = parseSkillConfig(yaml, '/skills/both.yaml');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('dependsOn');
+  });
+
+  it('rejects dependsOn with path separators', () => {
+    const yaml = validYaml({ schedule: null, dependsOn: 'bad/path' });
+    const result = parseSkillConfig(yaml, '/skills/badpath.yaml');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('path separator');
+  });
 });
 
 // ─── parseSkillDirectory ──────────────────────────────────────────────────────
