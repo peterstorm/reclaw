@@ -407,6 +407,7 @@ export type SkillConfig = {
   readonly permissionProfile: 'chat' | 'scheduled';
   readonly validityWindowMinutes: number;
   readonly timeout: number; // seconds
+  readonly dependsOn: SkillId | null; // skill that must complete before this one runs
 };
 
 // ─── Skill Registry ────────────────────────────────────────────────────────────

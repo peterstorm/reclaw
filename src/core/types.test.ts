@@ -390,6 +390,7 @@ describe('skillRegistryFromList', () => {
       permissionProfile: 'chat',
       validityWindowMinutes: 30,
       timeout: 120,
+      dependsOn: null,
     };
   }
 

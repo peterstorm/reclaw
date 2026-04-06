@@ -26,7 +26,11 @@ export type BootstrapDeps = {
   readonly createTelegramAdapterFn?: typeof createTelegramAdapter;
   readonly createQueuesFn?: (conn: { host: string; port: number }) => Queues;
   readonly createSkillWatcherFn?: (dir: string) => SkillWatcher;
-  readonly createSchedulerFn?: (enq: (job: ScheduledJob) => Promise<void>, isJobKnown: (jobId: string) => Promise<boolean>) => CronScheduler;
+  readonly createSchedulerFn?: (
+    enq: (job: ScheduledJob) => Promise<void>,
+    isJobKnown: (jobId: string) => Promise<boolean>,
+    isJobCompleted: (jobId: string) => Promise<boolean>,
+  ) => CronScheduler;
   readonly createWorkersFn?: (deps: {
     redisConnection: { host: string; port: number };
     chatHandler: (job: ChatJob) => Promise<JobResult>;
@@ -37,6 +41,8 @@ export type BootstrapDeps = {
     reminderHandler: (job: import('./core/types.js').ReminderJob) => Promise<JobResult>;
     recurringReminderHandler: (job: import('./core/types.js').RecurringReminderJob) => Promise<JobResult>;
     podcastHandler: (job: import('./core/types.js').PodcastJob) => Promise<JobResult>;
+    onScheduledJobCompleted: (job: ScheduledJob) => void;
+    markScheduledJobCompleted: (jobId: string) => Promise<void>;
   }) => Workers;
   readonly runClaudeFn?: typeof runClaude;
   readonly runClaudeStreamingFn?: typeof runClaudeStreaming;
@@ -91,7 +97,11 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
     injected.createSkillWatcherFn ??
     (await import('./infra/skill-watcher.js').then((m) => m.createSkillWatcher));
 
-  const createSchedulerFn: (enq: (job: ScheduledJob) => Promise<void>, isJobKnown: (jobId: string) => Promise<boolean>) => CronScheduler =
+  const createSchedulerFn: (
+    enq: (job: ScheduledJob) => Promise<void>,
+    isJobKnown: (jobId: string) => Promise<boolean>,
+    isJobCompleted: (jobId: string) => Promise<boolean>,
+  ) => CronScheduler =
     injected.createSchedulerFn ??
     (await import('./orchestration/scheduler.js').then((m) => m.createScheduler));
 
@@ -230,7 +240,7 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
   const skillWatcher: SkillWatcher = createSkillWatcherFn(config.skillsDir);
 
   // ── 6. Create scheduler ────────────────────────────────────────────────────
-  const scheduler: CronScheduler = createSchedulerFn(queues.enqueueScheduled, queues.isScheduledJobKnown);
+  const scheduler: CronScheduler = createSchedulerFn(queues.enqueueScheduled, queues.isScheduledJobKnown, queues.isScheduledJobCompleted);
 
   // ── 7. Wire skill watcher onChange to scheduler.reconcile ─────────────────
   skillWatcher.onRegistryChange((registry) => {
@@ -343,6 +353,8 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
     },
     telegram,
     config,
+    onScheduledJobCompleted: (job) => scheduler.resolveDependents(job.skillId, job.triggeredAt),
+    markScheduledJobCompleted: (jobId) => queues.markScheduledJobCompleted(jobId),
   });
 
   // ── 9. Wire Telegram onMessage → message router ────────────────────────────

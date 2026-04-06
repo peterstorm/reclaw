@@ -69,7 +69,7 @@ describe('createQueues', () => {
     vi.clearAllMocks();
   });
 
-  it('returns an object with chat, scheduled, reminder, and research queue instances', () => {
+  it('returns an object with queue instances and completion marker functions', () => {
     const queues = createQueues(redisConnection);
 
     expect(queues.chat).toBeDefined();
@@ -78,9 +78,14 @@ describe('createQueues', () => {
     expect(queues.research).toBeDefined();
     expect(queues.enqueueChat).toBeTypeOf('function');
     expect(queues.enqueueScheduled).toBeTypeOf('function');
+    expect(queues.markScheduledJobCompleted).toBeTypeOf('function');
+    expect(queues.isScheduledJobCompleted).toBeTypeOf('function');
     expect(queues.enqueueReminder).toBeTypeOf('function');
     expect(queues.enqueueResearch).toBeTypeOf('function');
     expect(queues.getResearchQueuePosition).toBeTypeOf('function');
+    // FlowProducer should not exist
+    expect((queues as Record<string, unknown>).flowProducer).toBeUndefined();
+    expect((queues as Record<string, unknown>).enqueueScheduledFlow).toBeUndefined();
   });
 
   it('creates five queues with correct names', () => {
@@ -273,5 +278,33 @@ describe('createQueues', () => {
     expect(jobOpts.attempts).toBe(3);
     expect(jobOpts.backoff.type).toBe('exponential');
     expect(jobOpts.backoff.delay).toBe(120_000);
+  });
+
+  // ── Completion markers ─────────────────────────────────────────────────────
+
+  it('markScheduledJobCompleted sets Redis completion marker with 7-day TTL', async () => {
+    const queues = createQueues(redisConnection);
+    await queues.markScheduledJobCompleted('job-123');
+    expect(mockRedisSet).toHaveBeenCalledWith(
+      'reclaw:sched-completed:job-123',
+      '1',
+      'EX',
+      604800,
+    );
+  });
+
+  it('isScheduledJobCompleted returns true when completion marker exists', async () => {
+    mockRedisExists.mockResolvedValueOnce(1);
+    const queues = createQueues(redisConnection);
+    const completed = await queues.isScheduledJobCompleted('job-123');
+    expect(completed).toBe(true);
+    expect(mockRedisExists).toHaveBeenCalledWith('reclaw:sched-completed:job-123');
+  });
+
+  it('isScheduledJobCompleted returns false when completion marker absent', async () => {
+    mockRedisExists.mockResolvedValueOnce(0);
+    const queues = createQueues(redisConnection);
+    const completed = await queues.isScheduledJobCompleted('unknown');
+    expect(completed).toBe(false);
   });
 });

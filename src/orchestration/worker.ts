@@ -45,6 +45,10 @@ type WorkerDeps = {
   readonly config: AppConfig;
   /** Injected for testing. Defaults to BullMQ Worker constructor. */
   readonly workerFactory?: WorkerFactory;
+  /** Called when a scheduled job completes successfully — triggers dependent resolution. */
+  readonly onScheduledJobCompleted: (job: ScheduledJob) => void;
+  /** Sets a Redis completion marker for catch-up crash recovery. */
+  readonly markScheduledJobCompleted: (jobId: string) => Promise<void>;
 };
 
 // ─── Dead letter notification (pure helper for testing) ───────────────────────
@@ -141,6 +145,8 @@ export function createWorkers(deps: WorkerDeps): Workers {
     telegram,
     config,
     workerFactory = defaultWorkerFactory,
+    onScheduledJobCompleted,
+    markScheduledJobCompleted,
   } = deps;
 
   const connection = {
@@ -189,6 +195,15 @@ export function createWorkers(deps: WorkerDeps): Workers {
       const result = await scheduledHandler(scheduledJob);
       if (!result.ok) {
         throw new Error(result.error);
+      }
+      // Mark completed in Redis BEFORE firing callback.
+      // If crash occurs between marker and callback, catch-up will
+      // see the completed marker and re-enqueue dependents.
+      await markScheduledJobCompleted(scheduledJob.id);
+      try {
+        onScheduledJobCompleted(scheduledJob);
+      } catch (callbackErr) {
+        console.error(`[worker:scheduled] onScheduledJobCompleted callback failed for ${scheduledJob.skillId}:`, callbackErr);
       }
       return result;
     },

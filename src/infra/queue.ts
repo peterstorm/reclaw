@@ -28,6 +28,8 @@ export type Queues = {
   readonly enqueueChat: (job: Extract<Job, { kind: 'chat' }>) => Promise<void>;
   readonly enqueueScheduled: (job: Extract<Job, { kind: 'scheduled' }>) => Promise<void>;
   readonly isScheduledJobKnown: (jobId: string) => Promise<boolean>;
+  readonly markScheduledJobCompleted: (jobId: string) => Promise<void>;
+  readonly isScheduledJobCompleted: (jobId: string) => Promise<boolean>;
   readonly enqueueReminder: (job: ReminderJob) => Promise<void>;
   readonly enqueueRecurringReminder: (job: RecurringReminderJob) => Promise<string>;
   readonly listRecurringReminders: () => Promise<readonly RecurringReminderInfo[]>;
@@ -107,6 +109,20 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
     // Fallback: check BullMQ job store (covers jobs enqueued before marker was introduced).
     const job = await scheduled.getJob(jobId);
     return job !== undefined;
+  };
+
+  // ── Completion markers for dependency resolution ─────────────────────────
+  // Set when a scheduled job succeeds; checked by catch-up to decide whether
+  // dependents need enqueuing after a restart.
+
+  const markScheduledJobCompleted = async (jobId: string): Promise<void> => {
+    const client = await scheduled.client;
+    await client.set(`reclaw:sched-completed:${jobId}`, '1', 'EX', 604800);
+  };
+
+  const isScheduledJobCompleted = async (jobId: string): Promise<boolean> => {
+    const client = await scheduled.client;
+    return (await client.exists(`reclaw:sched-completed:${jobId}`)) > 0;
   };
 
   const reminder = new Queue('reclaw-reminder', {
@@ -224,10 +240,11 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
 
   return {
     chat, scheduled, reminder, research, podcast,
-    enqueueChat, enqueueScheduled, isScheduledJobKnown, enqueueReminder,
-    enqueueRecurringReminder, listRecurringReminders, cancelRecurringReminder,
-    enqueueResearch, getResearchQueuePosition, getResearchStatus,
-    enqueuePodcast,
+    enqueueChat, enqueueScheduled, isScheduledJobKnown,
+    markScheduledJobCompleted, isScheduledJobCompleted,
+    enqueueReminder, enqueueRecurringReminder, listRecurringReminders,
+    cancelRecurringReminder, enqueueResearch, getResearchQueuePosition,
+    getResearchStatus, enqueuePodcast,
   } as const;
 }
 

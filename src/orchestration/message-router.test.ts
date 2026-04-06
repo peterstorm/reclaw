@@ -40,6 +40,8 @@ const makeQueues = (): Queues => ({
   enqueueChat: vi.fn().mockResolvedValue(undefined),
   enqueueScheduled: vi.fn().mockResolvedValue(undefined),
   isScheduledJobKnown: vi.fn().mockResolvedValue(false),
+  isScheduledJobCompleted: vi.fn().mockResolvedValue(false),
+  markScheduledJobCompleted: vi.fn().mockResolvedValue(undefined),
   enqueueReminder: vi.fn().mockResolvedValue(undefined),
   enqueueRecurringReminder: vi.fn().mockResolvedValue('sched-id'),
   listRecurringReminders: vi.fn().mockResolvedValue([]),
