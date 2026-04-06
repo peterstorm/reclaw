@@ -4,21 +4,19 @@ import { getPermissionFlags } from '../core/permissions.js';
 import { splitMessage, splitHtml } from '../core/message-splitter.js';
 import { markdownToTelegramHtml } from '../core/markdown-to-telegram.js';
 import { jobResultOk, jobResultErr, makeClaudeSessionId, type ChatJob, type JobResult } from '../core/types.js';
+import {
+  createStreamState,
+  escapeHtml,
+  processChunk,
+  THINKING_CHUNK_MAX,
+  PREVIEW_MAX_CHARS,
+  type StreamState,
+  type StreamEffect,
+} from '../core/stream-state.js';
 import type { runClaudeStreaming, StreamChunk } from '../infra/claude-subprocess.js';
 import type { TelegramAdapter } from '../infra/telegram.js';
 import type { SessionStore } from '../infra/session-store.js';
 import type { AppConfig } from '../infra/config.js';
-
-// ─── Constants ────────────────────────────────────────────────────────────────
-
-/** Minimum interval between Telegram edit calls (ms). */
-const EDIT_THROTTLE_MS = 1500;
-
-/** Max chars to show in streaming preview (Telegram limit minus safety margin). */
-const PREVIEW_MAX_CHARS = 4000;
-
-/** Max escaped chars per thinking message (Telegram 4096 minus <i></i> tag overhead). */
-const THINKING_CHUNK_MAX = 4080;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -31,32 +29,109 @@ export type ChatDeps = {
   readonly triggerCortexExtraction?: (sessionId: string, cwd: string) => void;
 };
 
-/** A single streaming block (thinking or text) with its Telegram message(s). */
-type StreamBlock = {
-  readonly type: 'thinking' | 'text';
-  content: string;
-  /** Message IDs for this block (thinking can overflow into multiple). */
-  msgIds: number[];
-  /** For thinking overflow: escaped chars committed to finalized messages. */
-  committedChars: number;
-};
+// ─── Effect application (imperative shell) ───────────────────────────────────
 
-/** All mutable state for the streaming callback. Grouped for clarity and atomic reset. */
-type StreamState = {
-  blocks: StreamBlock[];
-  lastEditAt: number;
-  lastSeenThinkingBlocks: number;
-  lastSeenTextBlocks: number;
-};
+/**
+ * Apply a stream effect to Telegram. Shell logic: maps pure effects to I/O.
+ * Manages blockMsgIds as side state (block index → Telegram message IDs).
+ */
+function applyEffect(
+  effect: StreamEffect,
+  chatId: number,
+  telegram: TelegramAdapter,
+  blockMsgIds: Map<number, number[]>,
+  placeholderMsgId: number,
+  getBlockContent: (blockIndex: number) => string,
+  getBlockType: (blockIndex: number) => 'thinking' | 'text',
+): void {
+  const warn = (label: string, err: unknown): void => {
+    console.warn(`[chat] ${label} for chatId=${chatId}:`, err instanceof Error ? err.message : err);
+  };
 
-function createStreamState(): StreamState {
-  return { blocks: [], lastEditAt: 0, lastSeenThinkingBlocks: 0, lastSeenTextBlocks: 0 };
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  switch (effect.kind) {
+    case 'finalize_thinking': {
+      const msgIds = blockMsgIds.get(effect.blockIndex);
+      if (msgIds && msgIds.length > 0) {
+        const msgId = msgIds[msgIds.length - 1]!;
+        telegram.editMessage(chatId, msgId, `<i>${effect.displayContent}</i>`, { html: true })
+          .catch((err) => warn('Thinking transition edit failed', err));
+      }
+      break;
+    }
+    case 'finalize_text': {
+      const msgIds = blockMsgIds.get(effect.blockIndex);
+      if (msgIds && msgIds.length > 0) {
+        const msgId = msgIds[msgIds.length - 1]!;
+        telegram.editMessage(chatId, msgId, effect.preview, { plain: true })
+          .catch((err) => warn('Text transition edit failed', err));
+      }
+      break;
+    }
+    case 'start_block': {
+      if (effect.reusePlaceholder) {
+        blockMsgIds.set(effect.blockIndex, [placeholderMsgId]);
+      } else {
+        const initial = effect.blockType === 'thinking' ? '<i>...</i>' : '...';
+        const opts = effect.blockType === 'thinking' ? { html: true } : { plain: true };
+        telegram.sendMessage(chatId, initial, opts).then((msgId) => {
+          const ids = blockMsgIds.get(effect.blockIndex) ?? [];
+          ids.push(msgId);
+          blockMsgIds.set(effect.blockIndex, ids);
+          // Catch-up edit: if content accumulated while waiting for sendMessage
+          const content = getBlockContent(effect.blockIndex);
+          if (content.length > 0) {
+            const blockType = getBlockType(effect.blockIndex);
+            if (blockType === 'thinking') {
+              const escaped = escapeHtml(content);
+              if (escaped.length > 0 && escaped.length <= THINKING_CHUNK_MAX) {
+                telegram.editMessage(chatId, msgId, `<i>${escaped}</i>`, { html: true })
+                  .catch((err) => warn('Thinking catch-up edit failed', err));
+              }
+            } else {
+              const preview = content.length > PREVIEW_MAX_CHARS
+                ? content.slice(0, PREVIEW_MAX_CHARS) + '...'
+                : content;
+              telegram.editMessage(chatId, msgId, preview, { plain: true })
+                .catch((err) => warn('Text catch-up edit failed', err));
+            }
+          }
+        }).catch((err) => warn('New block message failed', err));
+      }
+      break;
+    }
+    case 'edit_thinking': {
+      const msgIds = blockMsgIds.get(effect.blockIndex);
+      if (msgIds && msgIds.length > 0) {
+        const msgId = msgIds[msgIds.length - 1]!;
+        telegram.editMessage(chatId, msgId, `<i>${effect.displayContent}</i>`, { html: true })
+          .catch((err) => warn('Thinking edit failed', err));
+      }
+      break;
+    }
+    case 'edit_thinking_overflow': {
+      const msgIds = blockMsgIds.get(effect.blockIndex);
+      if (msgIds && msgIds.length > 0) {
+        const msgId = msgIds[msgIds.length - 1]!;
+        telegram.editMessage(chatId, msgId, `<i>${effect.firstPart}</i>`, { html: true })
+          .catch((err) => warn('Thinking overflow edit failed', err));
+        telegram.sendMessage(chatId, `<i>${effect.remainder}</i>`, { html: true }).then((newMsgId) => {
+          const ids = blockMsgIds.get(effect.blockIndex) ?? [];
+          ids.push(newMsgId);
+          blockMsgIds.set(effect.blockIndex, ids);
+        }).catch((err) => warn('Thinking overflow msg failed', err));
+      }
+      break;
+    }
+    case 'edit_text': {
+      const msgIds = blockMsgIds.get(effect.blockIndex);
+      if (msgIds && msgIds.length > 0) {
+        const msgId = msgIds[msgIds.length - 1]!;
+        telegram.editMessage(chatId, msgId, effect.preview, { plain: true })
+          .catch((err) => warn('Text edit failed', err));
+      }
+      break;
+    }
+  }
 }
 
 // ─── Handler (imperative shell) ───────────────────────────────────────────────
@@ -65,8 +140,8 @@ function escapeHtml(s: string): string {
  * Process a chat job end-to-end with multi-turn session support and live streaming.
  *
  * Each content block (thinking/text) gets its own Telegram message, mirroring
- * Claude Code CLI's visual output. Blocks are detected via content_block_start
- * events from the stream-json format, with phase-transition fallback.
+ * Claude Code CLI's visual output. Block detection and state transitions are
+ * handled by the pure processChunk function; this handler applies effects as I/O.
  *
  * FR-002: Route messages to AI engine and return response.
  * FR-009: Personality/instructions file shaping agent behavior.
@@ -104,153 +179,36 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
     // Continue without streaming — will fall back to chunked send
   }
 
-  // 6. Block-aware streaming callback.
-  //    Each content block (thinking/text) gets its own Telegram message.
-  //    Thinking blocks are shown as italic, text blocks as plain text previews.
-  //    Block boundaries are detected from content_block_start events in StreamChunk,
-  //    with fallback to phase-transition detection.
-  let stream = createStreamState();
+  // 6. Stream state (pure) + message ID mapping (shell)
+  let stream: StreamState = createStreamState();
+  const blockMsgIds = new Map<number, number[]>();
 
-  /** Start a new streaming block. First block reuses placeholder; subsequent get new messages. */
-  const startNewBlock = (type: 'thinking' | 'text'): void => {
-    // Transition edit: finalize previous block immediately (both thinking→text and text→thinking)
-    const prevBlock = stream.blocks.length > 0 ? stream.blocks[stream.blocks.length - 1] : null;
-    if (prevBlock && prevBlock.msgIds.length > 0 && prevBlock.content.length > 0) {
-      const msgId = prevBlock.msgIds[prevBlock.msgIds.length - 1]!;
-      if (prevBlock.type === 'thinking') {
-        const escaped = escapeHtml(prevBlock.content);
-        const displayContent = escaped.slice(prevBlock.committedChars);
-        if (displayContent.length > 0) {
-          deps.telegram.editMessage(job.chatId, msgId, `<i>${displayContent}</i>`, { html: true }).catch((err) => {
-            console.warn(`[chat] Thinking transition edit failed for chatId=${job.chatId}:`, err instanceof Error ? err.message : err);
-          });
-        }
-      } else {
-        const preview = prevBlock.content.length > PREVIEW_MAX_CHARS
-          ? prevBlock.content.slice(0, PREVIEW_MAX_CHARS) + '...'
-          : prevBlock.content;
-        deps.telegram.editMessage(job.chatId, msgId, preview, { plain: true }).catch((err) => {
-          console.warn(`[chat] Text transition edit failed for chatId=${job.chatId}:`, err instanceof Error ? err.message : err);
-        });
-      }
-    }
+  const onChunk = (chunk: StreamChunk): void => {
+    if (placeholderMsgId === null) return;
 
-    const newBlock: StreamBlock = { type, content: '', msgIds: [], committedChars: 0 };
-    stream.blocks.push(newBlock);
+    const { state: nextState, effects } = processChunk(stream, chunk, {
+      hasPlaceholder: placeholderMsgId !== null,
+      nowMs: Date.now(),
+    });
+    stream = nextState;
 
-    if (stream.blocks.length === 1 && placeholderMsgId !== null) {
-      // First block reuses placeholder
-      newBlock.msgIds.push(placeholderMsgId);
-    } else {
-      // Subsequent blocks get new messages
-      const initial = type === 'thinking' ? '<i>...</i>' : '...';
-      const opts = type === 'thinking' ? { html: true } : { plain: true };
-      deps.telegram.sendMessage(job.chatId, initial, opts).then((msgId) => {
-        newBlock.msgIds.push(msgId);
-        // Catch-up edit: if content accumulated while waiting for message ID
-        if (newBlock.content.length > 0) {
-          stream.lastEditAt = Date.now();
-          if (newBlock.type === 'thinking') {
-            const escaped = escapeHtml(newBlock.content);
-            const display = escaped.slice(newBlock.committedChars);
-            if (display.length > 0 && display.length <= THINKING_CHUNK_MAX) {
-              deps.telegram.editMessage(job.chatId, msgId, `<i>${display}</i>`, { html: true }).catch((err) => {
-                console.warn(`[chat] Thinking catch-up edit failed for chatId=${job.chatId}:`, err instanceof Error ? err.message : err);
-              });
-            }
-          } else {
-            const preview = newBlock.content.length > PREVIEW_MAX_CHARS
-              ? newBlock.content.slice(0, PREVIEW_MAX_CHARS) + '...'
-              : newBlock.content;
-            deps.telegram.editMessage(job.chatId, msgId, preview, { plain: true }).catch((err) => {
-              console.warn(`[chat] Text catch-up edit failed for chatId=${job.chatId}:`, err instanceof Error ? err.message : err);
-            });
-          }
-        }
-      }).catch((err) => {
-        console.warn(`[chat] New block message failed for chatId=${job.chatId}:`, err instanceof Error ? err.message : err);
-      });
+    for (const effect of effects) {
+      applyEffect(
+        effect,
+        job.chatId,
+        deps.telegram,
+        blockMsgIds,
+        placeholderMsgId,
+        (idx) => stream.blocks[idx]?.content ?? '',
+        (idx) => stream.blocks[idx]?.type ?? 'text',
+      );
     }
   };
 
   /** Reset all streaming state — used before stale session fallback retry. */
   const resetStreamingState = (): void => {
     stream = createStreamState();
-  };
-
-  const onChunk = (chunk: StreamChunk): void => {
-    if (placeholderMsgId === null) return;
-
-    // Detect new blocks from block counts (content_block_start events)
-    if (chunk.thinkingBlockCount > stream.lastSeenThinkingBlocks) {
-      stream.lastSeenThinkingBlocks = chunk.thinkingBlockCount;
-      startNewBlock('thinking');
-    }
-    if (chunk.textBlockCount > stream.lastSeenTextBlocks) {
-      stream.lastSeenTextBlocks = chunk.textBlockCount;
-      startNewBlock('text');
-    }
-
-    // Fallback: if no blocks yet, or phase changed without block_start, create block
-    const lastBlock = stream.blocks.length > 0 ? stream.blocks[stream.blocks.length - 1] : null;
-    if (!lastBlock || lastBlock.type !== chunk.phase) {
-      startNewBlock(chunk.phase);
-    }
-
-    const currentBlock = stream.blocks[stream.blocks.length - 1]!;
-
-    // Update block content from per-block accumulators
-    if (chunk.phase === 'thinking') {
-      currentBlock.content = chunk.currentBlockThinking;
-    } else {
-      currentBlock.content = chunk.currentBlockText;
-    }
-
-    // Throttle edits
-    const nowMs = Date.now();
-    if (nowMs - stream.lastEditAt < EDIT_THROTTLE_MS) return;
-    stream.lastEditAt = nowMs;
-
-    if (currentBlock.msgIds.length === 0) return;
-
-    if (chunk.phase === 'thinking') {
-      const escaped = escapeHtml(currentBlock.content);
-      const displayContent = escaped.slice(currentBlock.committedChars);
-      if (displayContent.length === 0) return;
-
-      const msgId = currentBlock.msgIds[currentBlock.msgIds.length - 1]!;
-
-      if (displayContent.length <= THINKING_CHUNK_MAX) {
-        deps.telegram.editMessage(job.chatId, msgId, `<i>${displayContent}</i>`, { html: true }).catch((err) => {
-          console.warn(`[chat] Thinking edit failed for chatId=${job.chatId}:`, err instanceof Error ? err.message : err);
-        });
-      } else {
-        // Overflow — finalize current message and start a new one
-        const firstPart = displayContent.slice(0, THINKING_CHUNK_MAX);
-        deps.telegram.editMessage(job.chatId, msgId, `<i>${firstPart}</i>`, { html: true }).catch((err) => {
-          console.warn(`[chat] Thinking overflow edit failed for chatId=${job.chatId}:`, err instanceof Error ? err.message : err);
-        });
-        currentBlock.committedChars += firstPart.length;
-
-        const remainder = displayContent.slice(firstPart.length);
-        deps.telegram.sendMessage(job.chatId, `<i>${remainder}</i>`, { html: true }).then((newMsgId) => {
-          currentBlock.msgIds.push(newMsgId);
-        }).catch((err) => {
-          console.warn(`[chat] Thinking overflow msg failed for chatId=${job.chatId}:`, err instanceof Error ? err.message : err);
-        });
-      }
-    } else {
-      // Text block — stream as plain text preview
-      if (currentBlock.content.length === 0) return;
-      const preview = currentBlock.content.length > PREVIEW_MAX_CHARS
-        ? currentBlock.content.slice(0, PREVIEW_MAX_CHARS) + '...'
-        : currentBlock.content;
-
-      const msgId = currentBlock.msgIds[currentBlock.msgIds.length - 1]!;
-      deps.telegram.editMessage(job.chatId, msgId, preview, { plain: true }).catch((err) => {
-        console.warn(`[chat] Text edit failed for chatId=${job.chatId}:`, err instanceof Error ? err.message : err);
-      });
-    }
+    blockMsgIds.clear();
   };
 
   // 7. Run claude streaming subprocess
@@ -311,7 +269,9 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
   if (stream.blocks.length > 0) {
     const finalizationPromises: Promise<unknown>[] = [];
 
-    for (const block of stream.blocks) {
+    for (let blockIdx = 0; blockIdx < stream.blocks.length; blockIdx++) {
+      const block = stream.blocks[blockIdx]!;
+      const msgIds = blockMsgIds.get(blockIdx) ?? [];
       if (block.content.length === 0) continue;
 
       if (block.type === 'thinking') {
@@ -320,9 +280,9 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
         const htmlChunks = chunks.map((c) => `<i>${c}</i>`);
 
         for (let i = 0; i < htmlChunks.length; i++) {
-          if (i < block.msgIds.length) {
+          if (i < msgIds.length) {
             finalizationPromises.push(
-              deps.telegram.editMessage(job.chatId, block.msgIds[i]!, htmlChunks[i]!, { html: true }),
+              deps.telegram.editMessage(job.chatId, msgIds[i]!, htmlChunks[i]!, { html: true }),
             );
           } else {
             finalizationPromises.push(
@@ -335,9 +295,9 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
         const htmlChunks = splitHtml(blockHtml);
 
         for (let i = 0; i < htmlChunks.length; i++) {
-          if (i === 0 && block.msgIds.length > 0) {
+          if (i === 0 && msgIds.length > 0) {
             finalizationPromises.push(
-              deps.telegram.editMessage(job.chatId, block.msgIds[0]!, htmlChunks[i]!, { html: true }),
+              deps.telegram.editMessage(job.chatId, msgIds[0]!, htmlChunks[i]!, { html: true }),
             );
           } else {
             finalizationPromises.push(
