@@ -130,9 +130,13 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
         ],
       });
     } catch (e) {
-      // If child jobId already exists (flow already in flight), log and skip.
-      console.warn(`[queue:flow] Flow add failed (likely duplicate): ${e instanceof Error ? e.message : String(e)}`);
-      return;
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes('already exists') || msg.includes('duplicate')) {
+        console.warn(`[queue:flow] Flow skipped (duplicate): ${msg}`);
+        return;
+      }
+      // Genuine infrastructure failure — propagate to caller
+      throw e;
     }
 
     const client = await scheduled.client;

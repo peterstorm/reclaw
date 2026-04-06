@@ -72,6 +72,9 @@ export function parseSkillConfig(yamlContent: string, filePath: string): Result<
   // Validate dependsOn as a SkillId if present
   let dependsOnId: SkillConfig['dependsOn'] = null;
   if (result.data.dependsOn !== null) {
+    if (result.data.dependsOn === idStr) {
+      return err(`Skill "${filePath}" cannot depend on itself`);
+    }
     const depResult = makeSkillId(result.data.dependsOn);
     if (!depResult.ok) {
       return err(`dependsOn in "${filePath}" is invalid: ${depResult.error}`);

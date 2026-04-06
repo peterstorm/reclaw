@@ -350,4 +350,14 @@ describe('createQueues', () => {
     // Should NOT set Redis markers when flow add failed
     expect(mockRedisSet).not.toHaveBeenCalled();
   });
+
+  it('enqueueScheduledFlow re-throws non-duplicate infrastructure errors', async () => {
+    mockFlowAdd.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+    const queues = createQueues(redisConnection);
+    const triggerJob = { ...scheduledJob, id: 'infra-trigger' as import('../core/types.js').JobId };
+    const dependentJob = { ...scheduledJob, id: 'infra-dep' as import('../core/types.js').JobId, skillId: 'lib' as import('../core/types.js').SkillId };
+
+    await expect(queues.enqueueScheduledFlow(triggerJob, dependentJob)).rejects.toThrow('ECONNREFUSED');
+    expect(mockRedisSet).not.toHaveBeenCalled();
+  });
 });

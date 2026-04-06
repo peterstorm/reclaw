@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createScheduler } from './scheduler.js';
+import { type CatchUpDecision, createScheduler, decideCatchUp, hasCycle } from './scheduler.js';
 import {
+  type JobId,
   type ScheduledJob,
   type SkillConfig,
   type SkillId,
@@ -443,5 +444,181 @@ describe('createScheduler', () => {
       scheduler.stop();
       consoleSpy.mockRestore();
     });
+
+    it('reconcile detects 3-node circular dependency (A→B→C→A)', () => {
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const scheduler = createScheduler(enqueueScheduled, enqueueScheduledFlow);
+      const a = makeSkillConfig('skill-a', '* * * * *', 60, 'skill-c');
+      const b = makeSkillConfig('skill-b', null, 60, 'skill-a');
+      const c = makeSkillConfig('skill-c', null, 60, 'skill-b');
+      scheduler.reconcile(skillRegistryFromList([a, b, c]));
+
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Circular dependency'),
+      );
+
+      scheduler.stop();
+      consoleSpy.mockRestore();
+    });
+
+    it('reconcile warns when multiple skills depend on same trigger (fan-out)', () => {
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const scheduler = createScheduler(enqueueScheduled, enqueueScheduledFlow);
+      const trigger = makeSkillConfig('trigger', '* * * * *', 60);
+      const dep1 = makeSkillConfig('dep-1', null, 60, 'trigger');
+      const dep2 = makeSkillConfig('dep-2', null, 60, 'trigger');
+      scheduler.reconcile(skillRegistryFromList([trigger, dep1, dep2]));
+
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Fan-out not supported'),
+      );
+
+      scheduler.stop();
+      consoleSpy.mockRestore();
+    });
+
+    it('enqueueScheduledFlow failure does not crash scheduler', async () => {
+      const failingFlowEnqueue = vi.fn().mockRejectedValue(new Error('Redis down'));
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      const scheduler = createScheduler(enqueueScheduled, failingFlowEnqueue);
+      const trigger = makeSkillConfig('prune', '* * * * *', 60);
+      const dependent = makeSkillConfig('librarian', null, 60, 'prune');
+      scheduler.reconcile(skillRegistryFromList([trigger, dependent]));
+
+      vi.advanceTimersByTime(61_000);
+      await Promise.resolve();
+
+      expect(failingFlowEnqueue).toHaveBeenCalled();
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to enqueue flow'),
+        expect.any(Error),
+      );
+
+      scheduler.stop();
+      consoleSpy.mockRestore();
+    });
+
+    it('catch-up error fallback enqueues flow when trigger has dependent', async () => {
+      vi.useRealTimers();
+
+      const isJobKnown = vi.fn().mockRejectedValue(new Error('Redis down'));
+      const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      const scheduler = createScheduler(enqueueScheduled, enqueueScheduledFlow, isJobKnown);
+      const trigger = makeSkillConfig('prune', '* * * * *', 60);
+      const dependent = makeSkillConfig('librarian', null, 60, 'prune');
+      scheduler.reconcile(skillRegistryFromList([trigger, dependent]));
+
+      await new Promise((r) => globalThis.setTimeout(r, 50));
+
+      // Should attempt flow enqueue, not standalone
+      expect(enqueueScheduledFlow).toHaveBeenCalledOnce();
+      expect(enqueueScheduled).not.toHaveBeenCalled();
+
+      scheduler.stop();
+      consoleSpy.mockRestore();
+      errorSpy.mockRestore();
+    });
+  });
+});
+
+// ─── Pure helper unit tests ──────────────────────────────────────────────────
+
+describe('hasCycle', () => {
+  it('returns false for skill with no dependencies', () => {
+    const a = makeSkillConfig('a', '* * * * *');
+    const registry = skillRegistryFromList([a]);
+    expect(hasCycle('a' as SkillId, registry)).toBe(false);
+  });
+
+  it('returns true for self-dependency', () => {
+    const a = makeSkillConfig('a', null, 30, 'a');
+    const registry = skillRegistryFromList([a]);
+    expect(hasCycle('a' as SkillId, registry)).toBe(true);
+  });
+
+  it('returns true for 2-node cycle (A→B→A)', () => {
+    const a = makeSkillConfig('a', '* * * * *', 30, 'b');
+    const b = makeSkillConfig('b', null, 30, 'a');
+    const registry = skillRegistryFromList([a, b]);
+    expect(hasCycle('a' as SkillId, registry)).toBe(true);
+    expect(hasCycle('b' as SkillId, registry)).toBe(true);
+  });
+
+  it('returns true for 3-node cycle (A→B→C→A)', () => {
+    const a = makeSkillConfig('a', null, 30, 'c');
+    const b = makeSkillConfig('b', null, 30, 'a');
+    const c = makeSkillConfig('c', null, 30, 'b');
+    const registry = skillRegistryFromList([a, b, c]);
+    expect(hasCycle('a' as SkillId, registry)).toBe(true);
+    expect(hasCycle('b' as SkillId, registry)).toBe(true);
+    expect(hasCycle('c' as SkillId, registry)).toBe(true);
+  });
+
+  it('returns false for valid linear chain (A→B→C, no cycle)', () => {
+    const a = makeSkillConfig('a', null, 30, 'b');
+    const b = makeSkillConfig('b', null, 30, 'c');
+    const c = makeSkillConfig('c', '* * * * *');
+    const registry = skillRegistryFromList([a, b, c]);
+    expect(hasCycle('a' as SkillId, registry)).toBe(false);
+    expect(hasCycle('b' as SkillId, registry)).toBe(false);
+    expect(hasCycle('c' as SkillId, registry)).toBe(false);
+  });
+});
+
+describe('decideCatchUp', () => {
+  const triggerJob: ScheduledJob = {
+    kind: 'scheduled',
+    id: 'job-trigger' as JobId,
+    skillId: 'prune' as SkillId,
+    triggeredAt: '2026-04-06T00:00:00.000Z',
+    validUntil: '2026-04-06T01:00:00.000Z',
+  };
+
+  const depJob: ScheduledJob = {
+    kind: 'scheduled',
+    id: 'job-dep' as JobId,
+    skillId: 'librarian' as SkillId,
+    triggeredAt: '2026-04-06T00:00:00.000Z',
+    validUntil: '2026-04-06T01:00:00.000Z',
+  };
+
+  const dependent = makeSkillConfig('librarian', null, 60, 'prune');
+
+  it('skips when trigger known and no dependent', () => {
+    const result = decideCatchUp(true, null, null, triggerJob, null);
+    expect(result.action).toBe('skip');
+  });
+
+  it('skips when trigger and dependent both known', () => {
+    const result = decideCatchUp(true, dependent, true, triggerJob, depJob);
+    expect(result.action).toBe('skip');
+  });
+
+  it('enqueues dep standalone when trigger known but dependent unknown', () => {
+    const result = decideCatchUp(true, dependent, false, triggerJob, depJob);
+    expect(result.action).toBe('enqueue-dep-standalone');
+    if (result.action === 'enqueue-dep-standalone') {
+      expect(result.depJob.skillId).toBe('librarian');
+    }
+  });
+
+  it('enqueues flow when trigger unknown and has dependent', () => {
+    const result = decideCatchUp(false, dependent, null, triggerJob, depJob);
+    expect(result.action).toBe('enqueue-flow');
+    if (result.action === 'enqueue-flow') {
+      expect(result.triggerJob.skillId).toBe('prune');
+      expect(result.depJob.skillId).toBe('librarian');
+    }
+  });
+
+  it('enqueues standalone when trigger unknown and no dependent', () => {
+    const result = decideCatchUp(false, null, null, triggerJob, null);
+    expect(result.action).toBe('enqueue-standalone');
+    if (result.action === 'enqueue-standalone') {
+      expect(result.job.skillId).toBe('prune');
+    }
   });
 });

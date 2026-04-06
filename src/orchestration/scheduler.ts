@@ -28,6 +28,55 @@ type CronEntry = {
 // ─── Pure helpers ─────────────────────────────────────────────────────────────
 
 /**
+ * Detect cycles in the dependency graph via visited-set walk.
+ * Follows the dependsOn chain from startId; returns true if it loops back.
+ */
+export function hasCycle(startId: SkillId, registry: SkillRegistry): boolean {
+  const visited = new Set<SkillId>();
+  let current: SkillId | null = startId;
+  while (current !== null) {
+    if (visited.has(current)) return true;
+    visited.add(current);
+    current = registry.get(current)?.dependsOn ?? null;
+  }
+  return false;
+}
+
+/**
+ * Pure decision for catch-up logic. Returns what action the imperative shell
+ * should take, without performing any I/O.
+ */
+export type CatchUpDecision =
+  | { readonly action: 'skip'; readonly reason: string }
+  | { readonly action: 'enqueue-flow'; readonly triggerJob: ScheduledJob; readonly depJob: ScheduledJob }
+  | { readonly action: 'enqueue-standalone'; readonly job: ScheduledJob }
+  | { readonly action: 'enqueue-dep-standalone'; readonly depJob: ScheduledJob };
+
+export function decideCatchUp(
+  triggerKnown: boolean,
+  dependent: SkillConfig | null,
+  depKnown: boolean | null,
+  triggerJob: ScheduledJob,
+  depJob: ScheduledJob | null,
+): CatchUpDecision {
+  if (triggerKnown) {
+    if (dependent === null || depJob === null) {
+      return { action: 'skip', reason: `skill "${triggerJob.skillId}" already processed` };
+    }
+    if (depKnown === true) {
+      return { action: 'skip', reason: `flow ${triggerJob.skillId} -> ${dependent.id} already processed` };
+    }
+    return { action: 'enqueue-dep-standalone', depJob };
+  }
+
+  // Trigger not yet fired
+  if (dependent !== null && depJob !== null) {
+    return { action: 'enqueue-flow', triggerJob, depJob };
+  }
+  return { action: 'enqueue-standalone', job: triggerJob };
+}
+
+/**
  * Compute a unique job ID for a scheduled firing.
  * Pure: takes skillId + triggeredAt ISO string, returns a deterministic Result.
  */
@@ -136,9 +185,11 @@ export function createScheduler(
   // Mutable map of active cron entries — scheduler manages lifecycle
   const active = new Map<SkillId, CronEntry>();
 
-  // Map from trigger skillId → dependent SkillConfig. Rebuilt on every reconcile.
-  // e.g., "cortex-prune" → SkillConfig(memory-librarian)
-  const dependents = new Map<SkillId, SkillConfig>();
+  // Map from trigger skillId → dependent SkillConfigs. Rebuilt on every reconcile.
+  // e.g., "cortex-prune" → [SkillConfig(memory-librarian)]
+  // Fan-out (multiple dependents per trigger) is validated but not yet supported
+  // by the FlowProducer pattern — only the first dependent is used.
+  const dependents = new Map<SkillId, readonly SkillConfig[]>();
 
   // ── Schedule next fire for a cron entry ──────────────────────────────────
 
@@ -172,7 +223,8 @@ export function createScheduler(
       // and match the catch-up lookup on restart.
       const job = buildScheduledJob(skill, scheduledFireTime);
       if (job !== null) {
-        const dependent = dependents.get(skill.id);
+        const deps = dependents.get(skill.id) ?? [];
+        const dependent = deps[0] ?? null;
         if (dependent) {
           // This trigger has a dependent — enqueue as a flow (child→parent)
           const depJob = buildScheduledJob(dependent, scheduledFireTime);
@@ -215,6 +267,32 @@ export function createScheduler(
 
   // ── FR-023: Catch-up logic ────────────────────────────────────────────────
 
+  function executeCatchUpDecision(decision: CatchUpDecision, skillId: SkillId): void {
+    switch (decision.action) {
+      case 'skip':
+        console.info(`[scheduler] Catch-up: ${decision.reason}, skipping.`);
+        return;
+      case 'enqueue-flow':
+        console.info(`[scheduler] Catch-up: flow ${decision.triggerJob.skillId} -> ${decision.depJob.skillId} missed, enqueuing flow.`);
+        enqueueScheduledFlow(decision.triggerJob, decision.depJob).catch((e: unknown) => {
+          console.error(`[scheduler] Failed to enqueue catch-up flow for ${skillId}:`, e);
+        });
+        return;
+      case 'enqueue-standalone':
+        console.info(`[scheduler] Catch-up: skill "${skillId}" missed, within validity window. Enqueuing.`);
+        enqueueScheduled(decision.job).catch((e: unknown) => {
+          console.error(`[scheduler] Failed to enqueue catch-up job for ${skillId}:`, e);
+        });
+        return;
+      case 'enqueue-dep-standalone':
+        console.info(`[scheduler] Catch-up: dependent "${decision.depJob.skillId}" missed, enqueuing standalone.`);
+        enqueueScheduled(decision.depJob).catch((e: unknown) => {
+          console.error(`[scheduler] Failed to enqueue catch-up for ${decision.depJob.skillId}:`, e);
+        });
+        return;
+    }
+  }
+
   function tryCatchUp(
     skill: SkillConfig & { schedule: string },
     _entry: CronEntry,
@@ -229,55 +307,43 @@ export function createScheduler(
       const job = buildScheduledJob(skill, prev);
       if (job === null) return;
 
-      const dependent = dependents.get(skill.id);
+      const deps = dependents.get(skill.id) ?? [];
+      const dependent = deps[0] ?? null;
+      const depJob = dependent ? buildScheduledJob(dependent, prev) : null;
 
-      isJobKnown(job.id).then((known) => {
-        if (known) {
-          // Trigger already processed. Check if a dependent also ran.
-          if (dependent) {
-            const depJob = buildScheduledJob(dependent, prev);
-            if (depJob === null) return;
-            isJobKnown(depJob.id).then((depKnown) => {
-              if (depKnown) {
-                console.info(`[scheduler] Catch-up: flow ${skill.id} -> ${dependent.id} already processed, skipping.`);
-                return;
-              }
-              // Trigger completed but dependent didn't — enqueue dependent standalone
-              console.info(`[scheduler] Catch-up: dependent "${dependent.id}" missed, enqueuing standalone.`);
-              enqueueScheduled(depJob).catch((e: unknown) => {
-                console.error(`[scheduler] Failed to enqueue catch-up for ${dependent.id}:`, e);
-              });
-            }).catch(() => {
-              // Redis error on dependent check — enqueue defensively
-              enqueueScheduled(depJob).catch(() => {});
-            });
-          } else {
-            console.info(`[scheduler] Catch-up: skill "${skill.id}" already processed for ${prev.toISOString()}, skipping.`);
-          }
-          return;
+      isJobKnown(job.id).then((triggerKnown) => {
+        if (triggerKnown && dependent && depJob) {
+          // Trigger known — check if dependent also ran
+          isJobKnown(depJob.id).then((depKnown) => {
+            executeCatchUpDecision(
+              decideCatchUp(true, dependent, depKnown, job, depJob),
+              skill.id,
+            );
+          }).catch(() => {
+            // Redis error on dependent check — enqueue defensively
+            executeCatchUpDecision(
+              decideCatchUp(true, dependent, false, job, depJob),
+              skill.id,
+            );
+          });
+        } else {
+          executeCatchUpDecision(
+            decideCatchUp(triggerKnown, dependent, null, job, depJob),
+            skill.id,
+          );
         }
-
-        // Trigger hasn't fired yet
-        if (dependent) {
-          const depJob = buildScheduledJob(dependent, prev);
-          if (depJob !== null) {
-            console.info(`[scheduler] Catch-up: flow ${skill.id} -> ${dependent.id} missed at ${prev.toISOString()}, enqueuing flow.`);
-            enqueueScheduledFlow(job, depJob).catch((e: unknown) => {
-              console.error(`[scheduler] Failed to enqueue catch-up flow for ${skill.id}:`, e);
-            });
-            return;
-          }
-        }
-
-        console.info(`[scheduler] Catch-up: skill "${skill.id}" missed at ${prev.toISOString()}, within validity window. Enqueuing.`);
-        enqueueScheduled(job).catch((e: unknown) => {
-          console.error(`[scheduler] Failed to enqueue catch-up job for ${skill.id}:`, e);
-        });
       }).catch((e: unknown) => {
+        // Redis failure on trigger check — attempt flow if dependent exists, else standalone
         console.warn(`[scheduler] isJobKnown check failed for ${skill.id}, enqueuing anyway:`, e);
-        enqueueScheduled(job).catch((e2: unknown) => {
-          console.error(`[scheduler] Failed to enqueue catch-up job for ${skill.id}:`, e2);
-        });
+        if (dependent && depJob) {
+          enqueueScheduledFlow(job, depJob).catch((e2: unknown) => {
+            console.error(`[scheduler] Failed to enqueue catch-up flow for ${skill.id}:`, e2);
+          });
+        } else {
+          enqueueScheduled(job).catch((e2: unknown) => {
+            console.error(`[scheduler] Failed to enqueue catch-up job for ${skill.id}:`, e2);
+          });
+        }
       });
     } catch (e) {
       console.warn(`[scheduler] tryCatchUp failed for skill "${skill.id}":`, e);
@@ -306,15 +372,21 @@ export function createScheduler(
       if (skill.dependsOn !== null) {
         if (!registry.has(skill.dependsOn)) {
           console.warn(`[scheduler] Skill "${skill.id}" depends on "${skill.dependsOn}" which is not in the registry`);
+        } else if (hasCycle(skill.id, registry)) {
+          console.error(`[scheduler] Circular dependency detected for "${skill.id}". Ignoring dependency.`);
         } else {
-          // Circular dependency check (A→B→A)
-          const trigger = registry.get(skill.dependsOn)!;
-          if (trigger.dependsOn === skill.id) {
-            console.error(`[scheduler] Circular dependency: ${skill.id} <-> ${trigger.id}. Ignoring dependency.`);
-          } else {
-            dependents.set(skill.dependsOn, skill);
-          }
+          const existing = dependents.get(skill.dependsOn) ?? [];
+          dependents.set(skill.dependsOn, [...existing, skill]);
         }
+      }
+    }
+
+    // Validate: fan-out not yet supported by FlowProducer pattern
+    for (const [triggerId, deps] of dependents) {
+      if (deps.length > 1) {
+        console.error(
+          `[scheduler] Trigger "${triggerId}" has ${deps.length} dependents (${deps.map((d) => d.id).join(', ')}). Fan-out not supported — only first dependent will be used.`,
+        );
       }
     }
 

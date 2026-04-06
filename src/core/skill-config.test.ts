@@ -187,6 +187,13 @@ describe('parseSkillConfig', () => {
     if (!result.ok) expect(result.error).toContain('dependsOn');
   });
 
+  it('rejects self-dependency (dependsOn equals own id)', () => {
+    const yaml = validYaml({ schedule: null, dependsOn: 'self-ref' });
+    const result = parseSkillConfig(yaml, '/skills/self-ref.yaml');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('cannot depend on itself');
+  });
+
   it('rejects dependsOn with path separators', () => {
     const yaml = validYaml({ schedule: null, dependsOn: 'bad/path' });
     const result = parseSkillConfig(yaml, '/skills/badpath.yaml');
