@@ -68,6 +68,27 @@ promptTemplate: |
 
   **Max 4 candidates.** If nothing meets the bar, that's fine — zero is a valid output.
 
+  ## Step 3b — Verify code-related candidates against source
+
+  For any candidate that describes **code architecture, patterns, or implementation details**, verify the claim against the actual source code before promoting. Cortex memories can become stale when code is refactored.
+
+  **Verification checklist:**
+  1. Check recent commits in the relevant repo for refactors that might invalidate the memory:
+     ```bash
+     # For reclaw architecture claims:
+     cd ~/dev/claude-plugins/reclaw && git log --oneline -15
+     # For homelab/NixOS claims:
+     cd ~/.dotfiles && git log --oneline -15
+     ```
+  2. If the candidate mentions a specific pattern (e.g., "uses FlowProducer", "3 queues"), grep the source to confirm it still exists:
+     ```bash
+     grep -r "PATTERN" ~/dev/claude-plugins/reclaw/src/ --include="*.ts" | head -5
+     ```
+  3. If the code contradicts the memory: **archive the stale memory** via `/forget` and either drop the candidate or rewrite it to match the actual code.
+  4. If the code confirms the memory: proceed to Step 4.
+
+  **Skip this step** for non-code candidates (personal decisions, workflow preferences, tool configurations that aren't in git).
+
   ## Step 4 — Dedup against existing vault notes
 
   For each candidate, search the vault to check if the topic is already covered:

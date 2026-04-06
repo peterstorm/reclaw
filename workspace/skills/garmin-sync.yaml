@@ -149,6 +149,48 @@ promptTemplate: |
     - **Subjective effort vs objective data**: If perceivedExertion or feelScore is present, compare them against what the HR/pace data shows. A high RPE with low HR could indicate fatigue, poor sleep, or heat; a low RPE with high HR suggests strong fitness or flow state. If feel was poor (1-2) despite decent metrics, flag possible external stressors. If feel was great (4-5) with strong data, highlight the positive session quality. These subjective signals are valuable context that pure metrics miss.
     - Suggest what the next run should look like based on current recovery state and recent training load
 
+  **If there are CrossFit, HIIT, or strength activities, add a detailed CrossFit/Strength Analysis subsection:**
+
+  An activity qualifies if `activityType` is one of: `strength_training`, `hiit`, `fitness_equipment`, `training`, `indoor_cardio` — OR if the activity name contains any of: "CrossFit", "WOD", "AMRAP", "EMOM", "Metcon", "Strength", "Functional".
+
+  #### CrossFit/Strength Analysis
+
+  - **Session type classification** based on HR zones and training effect:
+    - Primarily aerobic (>60% time in Z1-Z3, aerobic TE > anaerobic TE) → "Endurance/Conditioning WOD"
+    - Mixed (~40-60% Z4-Z5, both TEs significant) → "Mixed Modal"
+    - Primarily anaerobic (>40% Z4-Z5, anaerobic TE > aerobic TE) → "High-Intensity WOD"
+    - Low HR throughout (<50% Z3+) → "Strength/Skill focused"
+
+  - **HR zones distribution**: Time in each zone with CrossFit-specific interpretation:
+    - High Z4-Z5 time = metabolic conditioning (engine work)
+    - High Z1-Z2 with spikes = strength-focused with brief cardio bursts
+    - Sustained Z3 = longer-duration WODs (chipper-style)
+
+  - **Training effect analysis**:
+    - Aerobic TE: value + interpretation ("Base building" 2.0-2.9, "Improving" 3.0-3.9, "Overreaching" 4.0+)
+    - Anaerobic TE: value + interpretation (same scale for anaerobic capacity)
+    - Combined: what type of stimulus did this session provide?
+
+  - **Intensity metrics**: avg/max HR, duration, calories, RPE (X/10) and feel (1-5) if present. If HR time series available, analyze HR pattern — sustained high HR suggests conditioning-heavy WOD; spiking pattern suggests interval/heavy lifting mix.
+
+  - **Training stress contribution**:
+    - Training load value (from Garmin)
+    - Contribution to weekly total: "[X] TL — weekly total now [Y]"
+    - ACWR impact: flag if this session pushes ACWR above 1.3
+
+  - **Recovery implications for running**:
+    - Hours until next scheduled run (Tue evening → Thu run is ~36h away)
+    - If anaerobic TE > 3.0: "Significant anaerobic stress — expect legs to be heavy for 24-36h. Thursday's quality run may need volume adjustment."
+    - If anaerobic TE ≤ 2.0 and aerobic TE ≤ 3.0: "Moderate session — should not significantly impact Thursday's run."
+    - If RPE > 7/10 or feel ≤ 2/5: "Subjectively hard — factor into Thursday readiness regardless of metrics."
+    - If duration > 30min and max HR > 160: "High likelihood of DOMS in 24-48h."
+
+  - **Subjective vs objective**: Compare RPE/feel against HR data. High RPE with moderate HR in CrossFit often means muscular fatigue rather than cardiovascular stress — important for running recovery context.
+
+  - **Trend comparison**: If previous CrossFit/strength notes exist in recent fitness notes, compare training load, anaerobic TE, and duration. Note weekly CrossFit load trend.
+
+  **CrossFit interaction note in Run Analysis:** If a CrossFit/strength session occurred on the same day or within 24h of a run, note the combined load in the Run Analysis commentary. Was the run before or after CrossFit? How did sequencing affect performance?
+
   If there are no activities, skip the Activities section entirely — don't include an empty heading.
 
   ### Training Status
