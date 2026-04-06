@@ -52,11 +52,11 @@ function makeMockQueues() {
       add: vi.fn().mockResolvedValue(undefined),
     },
     podcast: { close: vi.fn().mockResolvedValue(undefined), on: vi.fn() },
-    flowProducer: { close: vi.fn().mockResolvedValue(undefined), on: vi.fn() },
     enqueueChat: vi.fn().mockResolvedValue(undefined),
     enqueueScheduled: vi.fn().mockResolvedValue(undefined),
-    enqueueScheduledFlow: vi.fn().mockResolvedValue(undefined),
     isScheduledJobKnown: vi.fn().mockResolvedValue(false),
+    isScheduledJobCompleted: vi.fn().mockResolvedValue(false),
+    markScheduledJobCompleted: vi.fn().mockResolvedValue(undefined),
     enqueueReminder: vi.fn().mockResolvedValue(undefined),
     enqueueRecurringReminder: vi.fn().mockResolvedValue('recur:123'),
     listRecurringReminders: vi.fn().mockResolvedValue([]),
@@ -85,6 +85,7 @@ function makeMockScheduler() {
     reconcile: vi.fn(),
     stop: vi.fn(),
     getActiveJobs: vi.fn().mockReturnValue([]),
+    resolveDependents: vi.fn(),
   };
 }
 
@@ -230,12 +231,12 @@ describe('bootstrap', () => {
     expect(createSkillWatcherMock).toHaveBeenCalledWith(mockConfig.skillsDir);
   });
 
-  it('creates scheduler with enqueueScheduled, enqueueScheduledFlow, and isJobKnown', async () => {
+  it('creates scheduler with enqueueScheduled, isJobKnown, and isJobCompleted', async () => {
     await bootstrap(makeDeps());
     expect(createSchedulerMock).toHaveBeenCalledWith(
       mockQueues.enqueueScheduled,
-      mockQueues.enqueueScheduledFlow,
       mockQueues.isScheduledJobKnown,
+      mockQueues.isScheduledJobCompleted,
     );
   });
 

@@ -21,16 +21,8 @@ const MockQueue = vi.fn().mockImplementation((name: string, opts: unknown) => ({
   client: mockClient,
 }));
 
-const mockFlowAdd = vi.fn().mockResolvedValue({ job: { id: 'parent' }, children: [{ job: { id: 'child' } }] });
-const mockFlowOn = vi.fn();
-const MockFlowProducer = vi.fn().mockImplementation(() => ({
-  add: mockFlowAdd,
-  on: mockFlowOn,
-}));
-
 vi.mock('bullmq', () => ({
   Queue: MockQueue,
-  FlowProducer: MockFlowProducer,
 }));
 
 // Import after mock is set up
@@ -71,29 +63,29 @@ describe('createQueues', () => {
     mockGetJob.mockClear();
     mockGetWaitingCount.mockClear();
     mockGetActiveCount.mockClear();
-    MockFlowProducer.mockClear();
-    mockFlowAdd.mockClear();
-    mockFlowOn.mockClear();
   });
 
   afterEach(() => {
     vi.clearAllMocks();
   });
 
-  it('returns an object with all queue instances and FlowProducer', () => {
+  it('returns an object with queue instances and completion marker functions', () => {
     const queues = createQueues(redisConnection);
 
     expect(queues.chat).toBeDefined();
     expect(queues.scheduled).toBeDefined();
     expect(queues.reminder).toBeDefined();
     expect(queues.research).toBeDefined();
-    expect(queues.flowProducer).toBeDefined();
     expect(queues.enqueueChat).toBeTypeOf('function');
     expect(queues.enqueueScheduled).toBeTypeOf('function');
-    expect(queues.enqueueScheduledFlow).toBeTypeOf('function');
+    expect(queues.markScheduledJobCompleted).toBeTypeOf('function');
+    expect(queues.isScheduledJobCompleted).toBeTypeOf('function');
     expect(queues.enqueueReminder).toBeTypeOf('function');
     expect(queues.enqueueResearch).toBeTypeOf('function');
     expect(queues.getResearchQueuePosition).toBeTypeOf('function');
+    // FlowProducer should not exist
+    expect((queues as Record<string, unknown>).flowProducer).toBeUndefined();
+    expect((queues as Record<string, unknown>).enqueueScheduledFlow).toBeUndefined();
   });
 
   it('creates five queues with correct names', () => {
@@ -288,76 +280,31 @@ describe('createQueues', () => {
     expect(jobOpts.backoff.delay).toBe(120_000);
   });
 
-  // ── FlowProducer / enqueueScheduledFlow ──────────────────────────────────
+  // ── Completion markers ─────────────────────────────────────────────────────
 
-  it('creates a FlowProducer with redis connection', () => {
-    createQueues(redisConnection);
-    expect(MockFlowProducer).toHaveBeenCalledWith({ connection: redisConnection });
+  it('markScheduledJobCompleted sets Redis completion marker with 7-day TTL', async () => {
+    const queues = createQueues(redisConnection);
+    await queues.markScheduledJobCompleted('job-123');
+    expect(mockRedisSet).toHaveBeenCalledWith(
+      'reclaw:sched-completed:job-123',
+      '1',
+      'EX',
+      604800,
+    );
   });
 
-  it('enqueueScheduledFlow calls FlowProducer.add with correct tree (parent=dependent, child=trigger)', async () => {
+  it('isScheduledJobCompleted returns true when completion marker exists', async () => {
+    mockRedisExists.mockResolvedValueOnce(1);
     const queues = createQueues(redisConnection);
-    const triggerJob: ScheduledJob = {
-      kind: 'scheduled',
-      id: 'scheduled:cortex-prune:2026-04-06T00-00-00.000Z' as import('../core/types.js').JobId,
-      skillId: 'cortex-prune' as import('../core/types.js').SkillId,
-      triggeredAt: '2026-04-06T00:00:00.000Z',
-      validUntil: '2026-04-06T01:00:00.000Z',
-    };
-    const dependentJob: ScheduledJob = {
-      kind: 'scheduled',
-      id: 'scheduled:memory-librarian:2026-04-06T00-00-00.000Z' as import('../core/types.js').JobId,
-      skillId: 'memory-librarian' as import('../core/types.js').SkillId,
-      triggeredAt: '2026-04-06T00:00:00.000Z',
-      validUntil: '2026-04-06T01:00:00.000Z',
-    };
-
-    await queues.enqueueScheduledFlow(triggerJob, dependentJob);
-
-    expect(mockFlowAdd).toHaveBeenCalledWith({
-      name: dependentJob.id,
-      queueName: 'reclaw-scheduled',
-      data: dependentJob,
-      opts: { jobId: dependentJob.id },
-      children: [{
-        name: triggerJob.id,
-        queueName: 'reclaw-scheduled',
-        data: triggerJob,
-        opts: { jobId: triggerJob.id },
-      }],
-    });
+    const completed = await queues.isScheduledJobCompleted('job-123');
+    expect(completed).toBe(true);
+    expect(mockRedisExists).toHaveBeenCalledWith('reclaw:sched-completed:job-123');
   });
 
-  it('enqueueScheduledFlow sets Redis markers for both jobs', async () => {
+  it('isScheduledJobCompleted returns false when completion marker absent', async () => {
+    mockRedisExists.mockResolvedValueOnce(0);
     const queues = createQueues(redisConnection);
-    const triggerJob = { ...scheduledJob, id: 'trigger-1' as import('../core/types.js').JobId };
-    const dependentJob = { ...scheduledJob, id: 'dependent-1' as import('../core/types.js').JobId, skillId: 'librarian' as import('../core/types.js').SkillId };
-
-    await queues.enqueueScheduledFlow(triggerJob, dependentJob);
-
-    expect(mockRedisSet).toHaveBeenCalledWith('reclaw:sched-fired:trigger-1', '1', 'EX', 604800);
-    expect(mockRedisSet).toHaveBeenCalledWith('reclaw:sched-fired:dependent-1', '1', 'EX', 604800);
-  });
-
-  it('enqueueScheduledFlow handles duplicate jobId error gracefully', async () => {
-    mockFlowAdd.mockRejectedValueOnce(new Error('Job already exists'));
-    const queues = createQueues(redisConnection);
-    const triggerJob = { ...scheduledJob, id: 'dup-trigger' as import('../core/types.js').JobId };
-    const dependentJob = { ...scheduledJob, id: 'dup-dep' as import('../core/types.js').JobId, skillId: 'lib' as import('../core/types.js').SkillId };
-
-    // Should not throw
-    await expect(queues.enqueueScheduledFlow(triggerJob, dependentJob)).resolves.toBeUndefined();
-    // Should NOT set Redis markers when flow add failed
-    expect(mockRedisSet).not.toHaveBeenCalled();
-  });
-
-  it('enqueueScheduledFlow re-throws non-duplicate infrastructure errors', async () => {
-    mockFlowAdd.mockRejectedValueOnce(new Error('ECONNREFUSED'));
-    const queues = createQueues(redisConnection);
-    const triggerJob = { ...scheduledJob, id: 'infra-trigger' as import('../core/types.js').JobId };
-    const dependentJob = { ...scheduledJob, id: 'infra-dep' as import('../core/types.js').JobId, skillId: 'lib' as import('../core/types.js').SkillId };
-
-    await expect(queues.enqueueScheduledFlow(triggerJob, dependentJob)).rejects.toThrow('ECONNREFUSED');
-    expect(mockRedisSet).not.toHaveBeenCalled();
+    const completed = await queues.isScheduledJobCompleted('unknown');
+    expect(completed).toBe(false);
   });
 });

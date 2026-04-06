@@ -28,8 +28,8 @@ export type BootstrapDeps = {
   readonly createSkillWatcherFn?: (dir: string) => SkillWatcher;
   readonly createSchedulerFn?: (
     enq: (job: ScheduledJob) => Promise<void>,
-    enqFlow: (triggerJob: ScheduledJob, dependentJob: ScheduledJob) => Promise<void>,
     isJobKnown: (jobId: string) => Promise<boolean>,
+    isJobCompleted: (jobId: string) => Promise<boolean>,
   ) => CronScheduler;
   readonly createWorkersFn?: (deps: {
     redisConnection: { host: string; port: number };
@@ -41,6 +41,8 @@ export type BootstrapDeps = {
     reminderHandler: (job: import('./core/types.js').ReminderJob) => Promise<JobResult>;
     recurringReminderHandler: (job: import('./core/types.js').RecurringReminderJob) => Promise<JobResult>;
     podcastHandler: (job: import('./core/types.js').PodcastJob) => Promise<JobResult>;
+    onScheduledJobCompleted: (job: ScheduledJob) => void;
+    markScheduledJobCompleted: (jobId: string) => Promise<void>;
   }) => Workers;
   readonly runClaudeFn?: typeof runClaude;
   readonly runClaudeStreamingFn?: typeof runClaudeStreaming;
@@ -97,8 +99,8 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
 
   const createSchedulerFn: (
     enq: (job: ScheduledJob) => Promise<void>,
-    enqFlow: (triggerJob: ScheduledJob, dependentJob: ScheduledJob) => Promise<void>,
     isJobKnown: (jobId: string) => Promise<boolean>,
+    isJobCompleted: (jobId: string) => Promise<boolean>,
   ) => CronScheduler =
     injected.createSchedulerFn ??
     (await import('./orchestration/scheduler.js').then((m) => m.createScheduler));
@@ -238,7 +240,7 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
   const skillWatcher: SkillWatcher = createSkillWatcherFn(config.skillsDir);
 
   // ── 6. Create scheduler ────────────────────────────────────────────────────
-  const scheduler: CronScheduler = createSchedulerFn(queues.enqueueScheduled, queues.enqueueScheduledFlow, queues.isScheduledJobKnown);
+  const scheduler: CronScheduler = createSchedulerFn(queues.enqueueScheduled, queues.isScheduledJobKnown, queues.isScheduledJobCompleted);
 
   // ── 7. Wire skill watcher onChange to scheduler.reconcile ─────────────────
   skillWatcher.onRegistryChange((registry) => {
@@ -351,6 +353,8 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
     },
     telegram,
     config,
+    onScheduledJobCompleted: (job) => scheduler.resolveDependents(job.skillId, job.triggeredAt),
+    markScheduledJobCompleted: (jobId) => queues.markScheduledJobCompleted(jobId),
   });
 
   // ── 9. Wire Telegram onMessage → message router ────────────────────────────
@@ -415,7 +419,7 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
       skillWatcher.stop(),
       telegram.stop(),
     ]);
-    await Promise.all([queues.chat.close(), queues.scheduled.close(), queues.reminder.close(), queues.research.close(), queues.podcast.close(), queues.flowProducer.close()]);
+    await Promise.all([queues.chat.close(), queues.scheduled.close(), queues.reminder.close(), queues.research.close(), queues.podcast.close()]);
     await Promise.all([
       disconnectRedis(),
       quotaTracker.disconnect(),

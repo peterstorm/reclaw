@@ -134,6 +134,8 @@ describe('createWorkers', () => {
       telegram: mockTelegram,
       config: mockConfig,
       workerFactory: fakeFactory.factory,
+      onScheduledJobCompleted: vi.fn(),
+      markScheduledJobCompleted: vi.fn().mockResolvedValue(undefined),
     });
   }
 
@@ -183,6 +185,8 @@ describe('createWorkers', () => {
       telegram: mockTelegram,
       config: mockConfig,
       workerFactory: fakeFactory.factory,
+      onScheduledJobCompleted: vi.fn(),
+      markScheduledJobCompleted: vi.fn().mockResolvedValue(undefined),
     });
 
     for (const w of fakeFactory.createdWorkers) {
@@ -226,6 +230,111 @@ describe('createWorkers', () => {
     expect(result).toEqual({ ok: true, response: 'scheduled response' });
   });
 
+  // ── Completion hooks (event-driven fan-out) ──────────────────────────────
+
+  it('scheduled worker calls markScheduledJobCompleted then onScheduledJobCompleted on success', async () => {
+    const callOrder: string[] = [];
+    const markCompleted = vi.fn().mockImplementation(async () => { callOrder.push('mark'); });
+    const onCompleted = vi.fn().mockImplementation(() => { callOrder.push('callback'); });
+
+    createWorkers({
+      redisConnection: { host: 'localhost', port: 6379 },
+      chatHandler,
+      scheduledHandler,
+      reminderHandler,
+      recurringReminderHandler,
+      researchHandler,
+      podcastHandler,
+      telegram: mockTelegram,
+      config: mockConfig,
+      workerFactory: fakeFactory.factory,
+      markScheduledJobCompleted: markCompleted,
+      onScheduledJobCompleted: onCompleted,
+    });
+
+    const scheduledWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-scheduled');
+    const bullJob: FakeBullJob = {
+      data: scheduledJob,
+      id: scheduledJob.id,
+      opts: { attempts: 3 },
+      attemptsMade: 1,
+    };
+
+    await scheduledWorker!.processor(bullJob);
+
+    expect(markCompleted).toHaveBeenCalledWith(scheduledJob.id);
+    expect(onCompleted).toHaveBeenCalledWith(scheduledJob);
+    // Redis marker BEFORE callback (crash resilience ordering)
+    expect(callOrder).toEqual(['mark', 'callback']);
+  });
+
+  it('scheduled worker does NOT call completion hooks on handler failure', async () => {
+    scheduledHandler = vi.fn().mockResolvedValue({ ok: false, error: 'handler failed' } as JobResult);
+    const markCompleted = vi.fn().mockResolvedValue(undefined);
+    const onCompleted = vi.fn();
+
+    createWorkers({
+      redisConnection: { host: 'localhost', port: 6379 },
+      chatHandler,
+      scheduledHandler,
+      reminderHandler,
+      recurringReminderHandler,
+      researchHandler,
+      podcastHandler,
+      telegram: mockTelegram,
+      config: mockConfig,
+      workerFactory: fakeFactory.factory,
+      markScheduledJobCompleted: markCompleted,
+      onScheduledJobCompleted: onCompleted,
+    });
+
+    const scheduledWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-scheduled');
+    const bullJob: FakeBullJob = {
+      data: scheduledJob,
+      id: scheduledJob.id,
+      opts: { attempts: 3 },
+      attemptsMade: 1,
+    };
+
+    await expect(scheduledWorker!.processor(bullJob)).rejects.toThrow('handler failed');
+    expect(markCompleted).not.toHaveBeenCalled();
+    expect(onCompleted).not.toHaveBeenCalled();
+  });
+
+  it('scheduled worker does not crash if onScheduledJobCompleted callback throws', async () => {
+    const markCompleted = vi.fn().mockResolvedValue(undefined);
+    const onCompleted = vi.fn().mockImplementation(() => { throw new Error('callback boom'); });
+
+    createWorkers({
+      redisConnection: { host: 'localhost', port: 6379 },
+      chatHandler,
+      scheduledHandler,
+      reminderHandler,
+      recurringReminderHandler,
+      researchHandler,
+      podcastHandler,
+      telegram: mockTelegram,
+      config: mockConfig,
+      workerFactory: fakeFactory.factory,
+      markScheduledJobCompleted: markCompleted,
+      onScheduledJobCompleted: onCompleted,
+    });
+
+    const scheduledWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-scheduled');
+    const bullJob: FakeBullJob = {
+      data: scheduledJob,
+      id: scheduledJob.id,
+      opts: { attempts: 3 },
+      attemptsMade: 1,
+    };
+
+    // Should NOT throw — callback error is caught and logged
+    const result = await scheduledWorker!.processor(bullJob);
+    expect(result).toEqual({ ok: true, response: 'scheduled response' });
+    expect(markCompleted).toHaveBeenCalledWith(scheduledJob.id);
+    expect(onCompleted).toHaveBeenCalledWith(scheduledJob);
+  });
+
   it('chat worker throws on handler failure', async () => {
     chatHandler = vi.fn().mockResolvedValue({ ok: false, error: 'claude failed' } as JobResult);
 
@@ -240,6 +349,8 @@ describe('createWorkers', () => {
       telegram: mockTelegram,
       config: mockConfig,
       workerFactory: fakeFactory.factory,
+      onScheduledJobCompleted: vi.fn(),
+      markScheduledJobCompleted: vi.fn().mockResolvedValue(undefined),
     });
 
     const chatWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-chat');
@@ -267,6 +378,8 @@ describe('createWorkers', () => {
       telegram: mockTelegram,
       config: mockConfig,
       workerFactory: fakeFactory.factory,
+      onScheduledJobCompleted: vi.fn(),
+      markScheduledJobCompleted: vi.fn().mockResolvedValue(undefined),
     });
 
     const scheduledWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-scheduled');
