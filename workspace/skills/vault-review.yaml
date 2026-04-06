@@ -53,6 +53,12 @@ promptTemplate: |
 
   ## Step 5 — Ask a reflection question
 
+  First, check cortex for recent prompt styles to avoid repetition:
+  ```
+  /recall vault-review prompt style
+  ```
+  Look at the last 5-7 entries to see which styles were used recently, then pick a DIFFERENT one.
+
   End with ONE lightweight reflection prompt. Not a test — just something to nudge active thinking. Good formats:
   - "How does this connect to what you're working on right now?"
   - "When did you last use this? Would you approach it differently now?"
@@ -60,7 +66,7 @@ promptTemplate: |
   - "What would you explain differently to a junior dev?"
   - "Any part of this surprise you or feel outdated?"
 
-  Pick whichever style fits the note's content best. The question should feel natural, not forced.
+  Pick whichever style fits the note's content best AND hasn't been used recently. The question should feel natural, not forced.
 
   ## Step 6 — Update frontmatter with SRS data
 
@@ -79,7 +85,9 @@ promptTemplate: |
 
   ## Step 7 — Store review context in cortex
 
-  Run `/remember` to store a brief note: "Reviewed [note title] on [date] — key topics: [brief summary]". This lets the chat handler have context if the user replies with reflections.
+  Run `/remember` to store TWO things:
+  1. "Reviewed [note title] on [date] — key topics: [brief summary]" — lets the chat handler have context if the user replies with reflections.
+  2. "Vault-review prompt style on [date]: [style used, e.g. 'confidence rating', 'connection to current work', 'junior dev explanation']" — for prompt diversity tracking.
 
   ## Output format
 

@@ -136,14 +136,14 @@ describe('createQueues', () => {
     );
   });
 
-  it('enqueueScheduled adds job to scheduled queue with job id', async () => {
+  it('enqueueScheduled adds job to scheduled queue with job id and deduplication', async () => {
     const queues = createQueues(redisConnection);
     await queues.enqueueScheduled(scheduledJob);
 
     expect(mockQueueAdd).toHaveBeenCalledWith(
       scheduledJob.id,
       scheduledJob,
-      { jobId: scheduledJob.id },
+      { jobId: scheduledJob.id, deduplication: { id: scheduledJob.skillId } },
     );
   });
 

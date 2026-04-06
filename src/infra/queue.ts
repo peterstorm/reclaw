@@ -89,7 +89,10 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
   };
 
   const enqueueScheduled = async (job: ScheduledJob): Promise<void> => {
-    await scheduled.add(job.id, job, { jobId: job.id });
+    await scheduled.add(job.id, job, {
+      jobId: job.id,
+      deduplication: { id: job.skillId },
+    });
     // Set a durable marker so catch-up dedup survives BullMQ job cleanup.
     // TTL of 7 days is well beyond any validity window.
     const client = await scheduled.client;
