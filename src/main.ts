@@ -202,7 +202,8 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
     : null;
 
   const createSessionStoreFn = injected.createSessionStoreFn ?? (async (_redis: { host: string; port: number }) => {
-    const ioredis = sharedRedis!; // guaranteed non-null when default is used
+    if (!sharedRedis) throw new Error('BUG: sharedRedis is null but default createSessionStoreFn is in use — check needsSharedRedis condition');
+    const ioredis = sharedRedis;
     const { createSessionStore } = await import('./infra/session-store.js');
     const client: import('./infra/session-store.js').RedisClient = {
       get: (key) => ioredis.get(key),
@@ -268,7 +269,8 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
 
   // ── 8b. Create quota tracker using shared Redis connection ─────────────────
   const createQuotaTrackerFn = injected.createQuotaTrackerFn ?? (async (_redis: { host: string; port: number }) => {
-    const quotaRedis = sharedRedis!; // guaranteed non-null when default is used
+    if (!sharedRedis) throw new Error('BUG: sharedRedis is null but default createQuotaTrackerFn is in use — check needsSharedRedis condition');
+    const quotaRedis = sharedRedis;
     const { createQuotaTracker } = await import('./infra/quota-tracker.js');
     const qtClient: import('./infra/quota-tracker.js').QuotaRedisClient = {
       get: (key) => quotaRedis.get(key),

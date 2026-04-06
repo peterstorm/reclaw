@@ -22,6 +22,26 @@ import type {
 import { executeState } from './research-states.js';
 import type { ResearchDeps } from './research-states.js';
 
+// ─── Error Classification ─────────────────────────────────────────────────────
+
+/**
+ * Classify whether an unexpected thrown error is retriable.
+ *
+ * Non-retriable: auth failures, permission errors, invalid input, 404s.
+ * Retriable: network errors, timeouts, rate limits, and anything else.
+ */
+const NON_RETRIABLE_PATTERNS = [
+  'unauthorized', '401', '403', 'forbidden',
+  'invalid', 'not found', '404',
+  'permission', 'access denied',
+  'authentication', 'auth_error',
+] as const;
+
+function isRetriableError(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return !NON_RETRIABLE_PATTERNS.some((pattern) => message.includes(pattern));
+}
+
 // ─── BullMQ Job interface ─────────────────────────────────────────────────────
 
 /**
@@ -86,9 +106,9 @@ export async function handleResearchJob(
     try {
       event = await executeState(state, context, deps);
     } catch (err) {
-      // Unexpected executor error — wrap as retriable ERROR event
+      // Unexpected executor error — classify retriability from the error content
       const message = err instanceof Error ? err.message : String(err);
-      event = { type: 'ERROR' as const, error: message, retriable: true };
+      event = { type: 'ERROR' as const, error: message, retriable: isRetriableError(err) };
     }
 
     const durationMs = Date.now() - startTime;

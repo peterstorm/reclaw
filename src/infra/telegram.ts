@@ -26,6 +26,12 @@ const TELEGRAM_MAX_LENGTH = 4096;
 /** Delay between consecutive chunked messages to avoid rate limits. */
 const CHUNK_DELAY_MS = 200;
 
+/** Maximum retries for 429 rate-limit responses. */
+const RATE_LIMIT_MAX_RETRIES = 3;
+
+/** Default backoff schedule (seconds) when retry_after is not available. */
+const RATE_LIMIT_BACKOFF_S = [1, 2, 4] as const;
+
 // ─── Helpers (pure) ───────────────────────────────────────────────────────────
 
 /**
@@ -38,6 +44,38 @@ function isAuthorized(userId: number, authorizedUserIds: ReadonlySet<number>): b
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Check if an error is a Telegram 429 rate-limit response.
+ * Grammy throws GrammyError with error_code and retry_after for 429s.
+ */
+function getRateLimitRetryAfter(err: unknown): number | null {
+  if (typeof err !== 'object' || err === null) return null;
+  const e = err as Record<string, unknown>;
+  if (e['error_code'] !== 429) return null;
+  const parameters = e['parameters'] as Record<string, unknown> | undefined;
+  const retryAfter = parameters?.['retry_after'];
+  return typeof retryAfter === 'number' ? retryAfter : null;
+}
+
+/**
+ * Execute an async operation with retry on 429 rate-limit errors.
+ * Uses Telegram's retry_after hint when available, otherwise exponential backoff.
+ */
+async function withRateLimitRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; attempt <= RATE_LIMIT_MAX_RETRIES; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const retryAfter = getRateLimitRetryAfter(err);
+      if (retryAfter === null || attempt === RATE_LIMIT_MAX_RETRIES) throw err;
+      const delaySec = retryAfter > 0 ? retryAfter : (RATE_LIMIT_BACKOFF_S[attempt] ?? 4);
+      console.warn(`[telegram] 429 rate-limited on ${label}, retrying in ${delaySec}s (attempt ${attempt + 1}/${RATE_LIMIT_MAX_RETRIES})`);
+      await sleep(delaySec * 1000);
+    }
+  }
+  throw new Error('unreachable');
 }
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
@@ -90,21 +128,21 @@ export function createTelegramAdapter(config: {
 
   const sendMessage = async (chatId: number, text: string, options?: SendOptions): Promise<number> => {
     if (options?.plain) {
-      const sent = await bot.api.sendMessage(chatId, text);
+      const sent = await withRateLimitRetry('sendMessage', () => bot.api.sendMessage(chatId, text));
       return sent.message_id;
     }
     try {
       const html = options?.html ? text : markdownToTelegramHtml(text);
       if (html.length > TELEGRAM_MAX_LENGTH) {
         console.warn(`[telegram] HTML too long (${html.length} chars), sending plain text`);
-        const sent = await bot.api.sendMessage(chatId, text);
+        const sent = await withRateLimitRetry('sendMessage', () => bot.api.sendMessage(chatId, text));
         return sent.message_id;
       }
-      const sent = await bot.api.sendMessage(chatId, html, { parse_mode: 'HTML' });
+      const sent = await withRateLimitRetry('sendMessage', () => bot.api.sendMessage(chatId, html, { parse_mode: 'HTML' }));
       return sent.message_id;
     } catch (err) {
       console.warn('[telegram] HTML send failed, falling back to plain text:', err instanceof Error ? err.message : err);
-      const sent = await bot.api.sendMessage(chatId, text);
+      const sent = await withRateLimitRetry('sendMessage', () => bot.api.sendMessage(chatId, text));
       return sent.message_id;
     }
   };
@@ -112,7 +150,7 @@ export function createTelegramAdapter(config: {
   const editMessage = async (chatId: number, messageId: number, text: string, options?: SendOptions): Promise<void> => {
     if (options?.plain) {
       try {
-        await bot.api.editMessageText(chatId, messageId, text);
+        await withRateLimitRetry('editMessage', () => bot.api.editMessageText(chatId, messageId, text));
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         if (errMsg.includes('message is not modified')) return;
@@ -124,10 +162,10 @@ export function createTelegramAdapter(config: {
       const html = options?.html ? text : markdownToTelegramHtml(text);
       if (html.length > TELEGRAM_MAX_LENGTH) {
         console.warn(`[telegram] Edit HTML too long (${html.length} chars), sending plain text`);
-        await bot.api.editMessageText(chatId, messageId, text);
+        await withRateLimitRetry('editMessage', () => bot.api.editMessageText(chatId, messageId, text));
         return;
       }
-      await bot.api.editMessageText(chatId, messageId, html, { parse_mode: 'HTML' });
+      await withRateLimitRetry('editMessage', () => bot.api.editMessageText(chatId, messageId, html, { parse_mode: 'HTML' }));
     } catch (err) {
       // "message is not modified" is harmless — content already matches, skip fallback
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -135,7 +173,7 @@ export function createTelegramAdapter(config: {
 
       console.warn('[telegram] HTML edit failed, falling back to plain text:', errMsg);
       try {
-        await bot.api.editMessageText(chatId, messageId, text);
+        await withRateLimitRetry('editMessage', () => bot.api.editMessageText(chatId, messageId, text));
       } catch (plainErr) {
         const plainErrMsg = plainErr instanceof Error ? plainErr.message : String(plainErr);
         if (plainErrMsg.includes('message is not modified')) return;
