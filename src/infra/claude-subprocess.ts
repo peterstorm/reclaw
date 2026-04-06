@@ -69,6 +69,11 @@ export type ParsedClaudeOutput = {
  * Extract a stream delta from a single stream-json line (with --include-partial-messages).
  * Returns a StreamDelta for content_block_delta events (text_delta or thinking_delta), null otherwise.
  */
+/** Type guard for plain objects parsed from JSON. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 export function extractStreamDelta(line: string): StreamDelta | null {
   const trimmed = line.trim();
   if (trimmed === '') return null;
@@ -80,20 +85,20 @@ export function extractStreamDelta(line: string): StreamDelta | null {
     return null;
   }
 
-  if (typeof parsed !== 'object' || parsed === null) return null;
-  const record = parsed as Record<string, unknown>;
+  if (!isRecord(parsed)) return null;
+  if (parsed['type'] !== 'stream_event') return null;
 
-  if (record['type'] !== 'stream_event') return null;
-  const event = record['event'] as Record<string, unknown> | undefined;
-  if (!event) return null;
+  const event = parsed['event'];
+  if (!isRecord(event)) return null;
 
   // Handle content_block_start — signals a new thinking or text block
   if (event['type'] === 'content_block_start') {
-    const contentBlock = event['content_block'] as Record<string, unknown> | undefined;
-    if (contentBlock?.['type'] === 'thinking') {
+    const contentBlock = event['content_block'];
+    if (!isRecord(contentBlock)) return null;
+    if (contentBlock['type'] === 'thinking') {
       return { type: 'block_start', blockType: 'thinking' };
     }
-    if (contentBlock?.['type'] === 'text') {
+    if (contentBlock['type'] === 'text') {
       return { type: 'block_start', blockType: 'text' };
     }
     return null;
@@ -101,8 +106,12 @@ export function extractStreamDelta(line: string): StreamDelta | null {
 
   // Handle content_block_delta — text or thinking content
   if (event['type'] !== 'content_block_delta') return null;
-  const delta = event['delta'] as Record<string, unknown> | undefined;
-  if (!delta) return null;
+
+  const delta = event['delta'];
+  if (!isRecord(delta)) {
+    console.warn('[stream-parser] content_block_delta missing delta object:', JSON.stringify(event).slice(0, 200));
+    return null;
+  }
 
   if (delta['type'] === 'thinking_delta' && typeof delta['thinking'] === 'string') {
     return { type: 'thinking', thinking: delta['thinking'] };
@@ -112,6 +121,7 @@ export function extractStreamDelta(line: string): StreamDelta | null {
     return { type: 'text', text: delta['text'] };
   }
 
+  console.warn('[stream-parser] Unrecognized delta type:', JSON.stringify(delta).slice(0, 200));
   return null;
 }
 

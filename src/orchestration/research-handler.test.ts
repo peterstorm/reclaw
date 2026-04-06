@@ -471,6 +471,36 @@ describe('handleResearchJob', () => {
     expect(deps.notebookLM.searchWeb).toHaveBeenCalled();
   });
 
+  it('treats thrown auth errors as non-retriable (immediate failure)', async () => {
+    const jobData = makeInitialJobData();
+    const job = makeMockJob(jobData);
+    const deps = makeMockDeps({
+      notebookLM: {
+        ...makeMockDeps().notebookLM,
+        createNotebook: vi.fn().mockRejectedValue(new Error('401 Unauthorized')),
+      },
+    });
+
+    await expect(handleResearchJob(job, deps)).rejects.toThrow(/Research pipeline failed/);
+    // Should NOT retry — only 1 call, then immediate failure
+    expect(deps.notebookLM.createNotebook).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats thrown network errors as retriable (retries before failing)', async () => {
+    const jobData = makeInitialJobData();
+    const job = makeMockJob(jobData);
+    const deps = makeMockDeps({
+      notebookLM: {
+        ...makeMockDeps().notebookLM,
+        createNotebook: vi.fn().mockRejectedValue(new Error('ECONNREFUSED')),
+      },
+    });
+
+    await expect(handleResearchJob(job, deps)).rejects.toThrow(/Research pipeline failed/);
+    // Should retry — initial + 2 retries (MAX_RETRIES for creating_notebook = 2)
+    expect(deps.notebookLM.createNotebook).toHaveBeenCalledTimes(3);
+  });
+
   it('sends Telegram notification via sendMessage (FR-060)', async () => {
     const jobData = makeInitialJobData();
     const job = makeMockJob(jobData);
