@@ -155,11 +155,27 @@ promptTemplate: |
 
   #### CrossFit/Strength Analysis
 
-  - **Session type classification** based on HR zones and training effect:
+  - **Workout content**: Each activity includes an `associatedWorkout` field (fetched via `associatedWorkoutId` from the Garmin activity detail). When present, this contains the full workout prescription: `workoutName`, `description` (human-readable summary with all movements/reps/weights), and `steps[]` (each with `description`, `category`, `exerciseName`, `weightKg`, `durationSeconds`). Use this as the primary source of workout content. Also check the activity's own `description` field for user-written notes (actual weights used, scores, modifications). Fall back to `scheduledWorkouts` only if `associatedWorkout` is null.
+
+    Present the workout content prominently:
+    - **Format**: EMOM / AMRAP / For Time / Tabata / Strength / custom
+    - **Movements**: List all exercises with prescribed reps and weights
+    - **Score/result**: If the activity description contains a score (rounds+reps for AMRAP, time for For Time), include it
+    - If no scheduled workout matches and no description exists, note "unstructured session" and analyze from metrics only
+
+  - **Session type classification** based on HR zones, training effect, AND workout content:
     - Primarily aerobic (>60% time in Z1-Z3, aerobic TE > anaerobic TE) → "Endurance/Conditioning WOD"
     - Mixed (~40-60% Z4-Z5, both TEs significant) → "Mixed Modal"
     - Primarily anaerobic (>40% Z4-Z5, anaerobic TE > aerobic TE) → "High-Intensity WOD"
     - Low HR throughout (<50% Z3+) → "Strength/Skill focused"
+    - Refine using workout content — heavy barbell work with low HR = strength; bodyweight AMRAP with high HR = conditioning
+
+  - **Movement analysis** (when workout content is available):
+    - Identify the primary stimulus: barbell strength, gymnastics skill, monostructural cardio, or mixed
+    - Note which muscle groups were loaded — critical for running recovery (heavy squats/deadlifts/cleans affect legs very differently than pull-ups/rowing)
+    - If weights are listed: note the loading context
+    - For EMOMs: was the work-to-rest ratio appropriate? (HR should recover between minutes for strength EMOMs, stay elevated for conditioning EMOMs)
+    - For AMRAPs/For Time: was the movement combination biased toward a particular energy system or muscle group?
 
   - **HR zones distribution**: Time in each zone with CrossFit-specific interpretation:
     - High Z4-Z5 time = metabolic conditioning (engine work)
@@ -178,16 +194,17 @@ promptTemplate: |
     - Contribution to weekly total: "[X] TL — weekly total now [Y]"
     - ACWR impact: flag if this session pushes ACWR above 1.3
 
-  - **Recovery implications for running**:
+  - **Recovery implications for running** (informed by workout content):
     - Hours until next scheduled run (Tue evening → Thu run is ~36h away)
     - If anaerobic TE > 3.0: "Significant anaerobic stress — expect legs to be heavy for 24-36h. Thursday's quality run may need volume adjustment."
     - If anaerobic TE ≤ 2.0 and aerobic TE ≤ 3.0: "Moderate session — should not significantly impact Thursday's run."
     - If RPE > 7/10 or feel ≤ 2/5: "Subjectively hard — factor into Thursday readiness regardless of metrics."
     - If duration > 30min and max HR > 160: "High likelihood of DOMS in 24-48h."
+    - **Movement-specific recovery**: Heavy lower-body barbell work (squats, deadlifts, cleans, thrusters) → high leg fatigue, significant running impact; upper-body/gymnastics dominant (pull-ups, HSPU, muscle-ups) → minimal running impact; mixed sessions → moderate. Call this out explicitly — "this was a leg-heavy session" or "upper-body bias, legs should be fresh for Thursday."
 
-  - **Subjective vs objective**: Compare RPE/feel against HR data. High RPE with moderate HR in CrossFit often means muscular fatigue rather than cardiovascular stress — important for running recovery context.
+  - **Subjective vs objective**: Compare RPE/feel against HR data. High RPE with moderate HR in CrossFit often means muscular fatigue rather than cardiovascular stress — important for running recovery context. If weights were heavy, a high RPE with low HR makes perfect sense (CNS/muscular load, not cardiovascular).
 
-  - **Trend comparison**: If previous CrossFit/strength notes exist in recent fitness notes, compare training load, anaerobic TE, and duration. Note weekly CrossFit load trend.
+  - **Trend comparison**: If previous CrossFit/strength notes exist in recent fitness notes, compare training load, anaerobic TE, and duration. Note weekly CrossFit load trend. If workout content is available across sessions, note movement pattern trends (e.g. "third heavy barbell session this week — consider bodyweight/conditioning focus next").
 
   **CrossFit interaction note in Run Analysis:** If a CrossFit/strength session occurred on the same day or within 24h of a run, note the combined load in the Run Analysis commentary. Was the run before or after CrossFit? How did sequencing affect performance?
 

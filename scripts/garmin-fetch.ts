@@ -47,7 +47,25 @@ type ActivitySummary = {
   readonly splits: readonly Split[] | null;
   readonly hrTimeSeries: readonly HrTimeSeriesPoint[] | null;
   readonly lapSplits: readonly LapSplit[] | null;
+  readonly associatedWorkoutId: number | null;
+  readonly associatedWorkout: AssociatedWorkout | null;
   readonly raw: Record<string, unknown>;
+};
+
+type AssociatedWorkout = {
+  readonly workoutName: string;
+  readonly description: string | null;
+  readonly steps: readonly AssociatedWorkoutStep[];
+};
+
+type AssociatedWorkoutStep = {
+  readonly description: string | null;
+  readonly stepType: string;
+  readonly category: string | null;
+  readonly exerciseName: string | null;
+  readonly weightKg: number | null;
+  readonly durationSeconds: number | null;
+  readonly reps: number | null;
 };
 
 type HrZone = {
@@ -215,6 +233,8 @@ const extractActivity = (raw: Record<string, unknown>): ActivitySummary => {
   const summary = (raw.summaryDTO as Record<string, unknown>) ?? raw;
   // Detail uses activityTypeDTO; list uses activityType
   const typeDto = (raw.activityTypeDTO ?? raw.activityType) as Record<string, unknown> | undefined;
+  // associatedWorkoutId lives in metadataDTO on detail endpoint
+  const metadata = raw.metadataDTO as Record<string, unknown> | undefined;
 
   return {
     activityId: raw.activityId as number,
@@ -239,6 +259,8 @@ const extractActivity = (raw: Record<string, unknown>): ActivitySummary => {
     splits: extractSplits(raw),
     hrTimeSeries: null,
     lapSplits: null,
+    associatedWorkoutId: metadata?.associatedWorkoutId as number ?? null,
+    associatedWorkout: null,
     raw,
   };
 };
@@ -313,6 +335,45 @@ const extractLapSplits = (raw: Record<string, unknown>): readonly LapSplit[] | n
     elevationLoss: lap.elevationLoss as number ?? null,
     averagePower: lap.averagePower as number ?? null,
   }));
+};
+
+const extractAssociatedWorkout = (raw: Record<string, unknown>): AssociatedWorkout => {
+  const segments = raw.workoutSegments as Array<Record<string, unknown>> | undefined;
+  const steps: AssociatedWorkoutStep[] = [];
+
+  const collectSteps = (stepsArr: Array<Record<string, unknown>> | undefined) => {
+    if (!stepsArr?.length) return;
+    for (const s of stepsArr) {
+      if (s.type === "RepeatGroupDTO") {
+        // Recurse into repeat group children
+        collectSteps(s.workoutSteps as Array<Record<string, unknown>> | undefined);
+      } else {
+        const stepType = s.stepType as Record<string, unknown> | undefined;
+        const weight = s.weightValue as number ?? null;
+        steps.push({
+          description: s.description as string ?? null,
+          stepType: stepType?.stepTypeKey as string ?? "unknown",
+          category: s.category as string ?? null,
+          exerciseName: s.exerciseName as string ?? null,
+          weightKg: weight != null && weight > 0 ? weight : null,
+          durationSeconds: s.endConditionValue as number ?? null,
+          reps: null, // Garmin doesn't track reps structurally; they're in description
+        });
+      }
+    }
+  };
+
+  if (segments?.length) {
+    for (const seg of segments) {
+      collectSteps(seg.workoutSteps as Array<Record<string, unknown>> | undefined);
+    }
+  }
+
+  return {
+    workoutName: raw.workoutName as string ?? "Unknown",
+    description: raw.description as string ?? null,
+    steps,
+  };
 };
 
 // --- Main ---
@@ -427,7 +488,22 @@ async function main(): Promise<void> {
           console.error(`[WARN] Failed to fetch lap splits for activity ${act.activityId}: ${msg}`);
         }
 
-        activities.push({ ...activity, hrTimeSeries, lapSplits });
+        // Fetch associated workout prescription if this activity links to one
+        let associatedWorkout: AssociatedWorkout | null = null;
+        if (activity.associatedWorkoutId) {
+          try {
+            await delay(300);
+            const workoutRaw = await client.getWorkoutDetail({
+              workoutId: String(activity.associatedWorkoutId),
+            }) as unknown as Record<string, unknown>;
+            associatedWorkout = extractAssociatedWorkout(workoutRaw);
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            console.error(`[WARN] Failed to fetch associated workout ${activity.associatedWorkoutId}: ${msg}`);
+          }
+        }
+
+        activities.push({ ...activity, hrTimeSeries, lapSplits, associatedWorkout });
       } catch {
         // Fall back to summary data
         activities.push(extractActivity(act));
