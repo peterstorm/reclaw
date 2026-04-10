@@ -106,4 +106,30 @@ describe('buildChatPrompt', () => {
     const result = buildChatPrompt('You are an agent.', '');
     expect(result).toBe('You are an agent.\n\n---\n\n');
   });
+
+  it('appends image references when imagePaths provided', () => {
+    const result = buildChatPrompt('Agent.', 'What is this?', ['/tmp/photo.jpg']);
+    expect(result).toBe('Agent.\n\n---\n\nWhat is this?\n\n[See image: /tmp/photo.jpg]');
+  });
+
+  it('uses default text when no caption and images present', () => {
+    const result = buildChatPrompt('Agent.', '', ['/tmp/photo.jpg']);
+    expect(result).toContain('The user sent a photo');
+    expect(result).toContain('[See image: /tmp/photo.jpg]');
+  });
+
+  it('handles multiple image paths', () => {
+    const result = buildChatPrompt('', 'Caption', ['/tmp/a.jpg', '/tmp/b.jpg']);
+    expect(result).toBe('Caption\n\n[See image: /tmp/a.jpg]\n[See image: /tmp/b.jpg]');
+  });
+
+  it('works normally when imagePaths is undefined', () => {
+    const result = buildChatPrompt('Agent.', 'Hello', undefined);
+    expect(result).toBe('Agent.\n\n---\n\nHello');
+  });
+
+  it('works normally when imagePaths is empty array', () => {
+    const result = buildChatPrompt('Agent.', 'Hello', []);
+    expect(result).toBe('Agent.\n\n---\n\nHello');
+  });
 });

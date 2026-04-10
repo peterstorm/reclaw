@@ -92,7 +92,7 @@ export function flatMapResult<T, U, E>(
 
 // ─── Job Discriminated Union ───────────────────────────────────────────────────
 
-/** A chat job: user sent a Telegram message. */
+/** A chat job: user sent a Telegram message (optionally with images). */
 export type ChatJob = {
   readonly kind: 'chat';
   readonly id: JobId;
@@ -100,6 +100,7 @@ export type ChatJob = {
   readonly text: string;
   readonly chatId: number;
   readonly receivedAt: string; // ISO 8601
+  readonly imagePaths?: readonly string[];
 };
 
 /** A scheduled job: triggered by cron. */
@@ -192,8 +193,10 @@ export function makeChatJob(params: {
   text: string;
   chatId: number;
   receivedAt: string;
+  imagePaths?: readonly string[];
 }): Result<ChatJob, string> {
-  if (params.text.trim().length === 0) {
+  const hasImages = params.imagePaths !== undefined && params.imagePaths.length > 0;
+  if (params.text.trim().length === 0 && !hasImages) {
     return err('Chat job text must not be empty.');
   }
   if (!Number.isInteger(params.chatId)) {
@@ -209,6 +212,7 @@ export function makeChatJob(params: {
     text: params.text,
     chatId: params.chatId,
     receivedAt: params.receivedAt,
+    ...(hasImages ? { imagePaths: params.imagePaths } : {}),
   });
 }
 

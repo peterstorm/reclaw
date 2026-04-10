@@ -1,3 +1,5 @@
+import { mkdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { Bot } from 'grammy';
 import type { TelegramUserId } from '../core/types.js';
 import { splitMessage } from '../core/message-splitter.js';
@@ -14,11 +16,20 @@ export type TelegramAdapter = {
   readonly editMessage: (chatId: number, messageId: number, text: string, options?: SendOptions) => Promise<void>;
   readonly sendChunkedMessage: (chatId: number, chunks: readonly string[], options?: SendOptions) => Promise<readonly number[]>;
   readonly onMessage: (
-    handler: (msg: { userId: number; chatId: number; text: string; replyToMessageId?: number }) => void,
+    handler: (msg: {
+      userId: number;
+      chatId: number;
+      text: string;
+      replyToMessageId?: number;
+      imagePaths?: readonly string[];
+    }) => void,
   ) => void;
 };
 
 // ─── Constants ────────────────────────────────────────────────────────────────
+
+/** Directory for temporary photo downloads. */
+const IMAGE_DIR = '/tmp/reclaw-images';
 
 /** Telegram's maximum message length. */
 const TELEGRAM_MAX_LENGTH = 4096;
@@ -96,7 +107,13 @@ export function createTelegramAdapter(config: {
 
   // Registered message handler — set by onMessage()
   let messageHandler:
-    | ((msg: { userId: number; chatId: number; text: string; replyToMessageId?: number }) => void)
+    | ((msg: {
+        userId: number;
+        chatId: number;
+        text: string;
+        replyToMessageId?: number;
+        imagePaths?: readonly string[];
+      }) => void)
     | null = null;
 
   bot.catch((err) => {
@@ -123,6 +140,64 @@ export function createTelegramAdapter(config: {
         // NFR-013: log chatId only, never message text
         console.error(`[telegram] messageHandler error for chatId=${chatId}`, err);
       }
+    }
+  });
+
+  // ── Photo download helper ──────────────────────────────────────────────────
+  async function downloadPhoto(fileId: string): Promise<string> {
+    const file = await bot.api.getFile(fileId);
+    if (!file.file_path) {
+      throw new Error('Telegram getFile returned no file_path');
+    }
+    const url = `https://api.telegram.org/file/bot${config.token}/${file.file_path}`;
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Photo download failed: ${response.status}`);
+    }
+    const buffer = Buffer.from(await response.arrayBuffer());
+    await mkdir(IMAGE_DIR, { recursive: true });
+    const ext = file.file_path.split('.').pop() ?? 'jpg';
+    const filename = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}.${ext}`;
+    const filePath = join(IMAGE_DIR, filename);
+    await writeFile(filePath, buffer);
+    return filePath;
+  }
+
+  // FR-001 extension: Handle photo messages from authorized users.
+  // NFR-013: log chatId only, never file paths or captions.
+  bot.on('message:photo', (ctx) => {
+    console.info(`[telegram] Received photo from userId=${ctx.from?.id} chatId=${ctx.chat.id}`);
+    const userId = ctx.from?.id;
+    const chatId = ctx.chat.id;
+
+    if (userId === undefined) return;
+    if (!isAuthorized(userId, userIdSet)) return;
+
+    if (messageHandler !== null) {
+      const photos = ctx.message.photo;
+      const largest = photos[photos.length - 1];
+      if (!largest) return;
+
+      const caption = ctx.message.caption ?? '';
+      const replyToMessageId = ctx.message.reply_to_message?.message_id;
+
+      downloadPhoto(largest.file_id)
+        .then((filePath) => {
+          try {
+            messageHandler!({
+              userId,
+              chatId,
+              text: caption,
+              ...(replyToMessageId !== undefined ? { replyToMessageId } : {}),
+              imagePaths: [filePath],
+            });
+          } catch (err) {
+            console.error(`[telegram] messageHandler error for chatId=${chatId}`, err);
+          }
+        })
+        .catch((err) => {
+          console.error(`[telegram] Photo download failed for chatId=${chatId}:`, err instanceof Error ? err.message : err);
+        });
     }
   });
 
@@ -203,7 +278,13 @@ export function createTelegramAdapter(config: {
   };
 
   const onMessage = (
-    handler: (msg: { userId: number; chatId: number; text: string; replyToMessageId?: number }) => void,
+    handler: (msg: {
+      userId: number;
+      chatId: number;
+      text: string;
+      replyToMessageId?: number;
+      imagePaths?: readonly string[];
+    }) => void,
   ): void => {
     messageHandler = handler;
   };

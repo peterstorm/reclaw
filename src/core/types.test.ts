@@ -263,6 +263,63 @@ describe('makeChatJob', () => {
     });
     expect(r.ok).toBe(false);
   });
+
+  it('accepts empty text when imagePaths is non-empty', () => {
+    const r = makeChatJob({
+      id: validJobId(),
+      userId: validUserId(),
+      text: '',
+      chatId: 1,
+      receivedAt: new Date().toISOString(),
+      imagePaths: ['/tmp/reclaw-images/test.jpg'],
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.imagePaths).toEqual(['/tmp/reclaw-images/test.jpg']);
+    }
+  });
+
+  it('rejects empty text with empty imagePaths', () => {
+    const r = makeChatJob({
+      id: validJobId(),
+      userId: validUserId(),
+      text: '',
+      chatId: 1,
+      receivedAt: new Date().toISOString(),
+      imagePaths: [],
+    });
+    expect(r.ok).toBe(false);
+  });
+
+  it('omits imagePaths from result when not provided', () => {
+    const r = makeChatJob({
+      id: validJobId(),
+      userId: validUserId(),
+      text: 'Hello',
+      chatId: 1,
+      receivedAt: new Date().toISOString(),
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.imagePaths).toBeUndefined();
+    }
+  });
+
+  it('includes imagePaths alongside text', () => {
+    const r = makeChatJob({
+      id: validJobId(),
+      userId: validUserId(),
+      text: 'Check this out',
+      chatId: 1,
+      receivedAt: new Date().toISOString(),
+      imagePaths: ['/tmp/a.jpg', '/tmp/b.jpg'],
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.text).toBe('Check this out');
+      expect(r.value.imagePaths).toEqual(['/tmp/a.jpg', '/tmp/b.jpg']);
+    }
+  });
 });
 
 describe('makeScheduledJob', () => {

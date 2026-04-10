@@ -7,28 +7,26 @@ import { splitMessage } from '../core/message-splitter.js';
 //
 // We mock Grammy entirely so tests never touch the network.
 
-type MessageHandler = (ctx: {
-  from: { id: number } | undefined;
-  chat: { id: number };
-  message: { text: string; reply_to_message?: { message_id: number } };
-}) => void;
+type MessageHandler = (ctx: Record<string, unknown>) => void;
 
 const mockBotStart = vi.fn().mockResolvedValue(undefined);
 const mockBotStop = vi.fn().mockResolvedValue(undefined);
 let nextMessageId = 1000;
 const mockSendMessage = vi.fn().mockImplementation(() => Promise.resolve({ message_id: nextMessageId++ }));
+const mockGetFile = vi.fn();
 
-let capturedMessageHandler: MessageHandler | null = null;
+const capturedHandlers: Record<string, MessageHandler> = {};
 
 const mockBot = {
-  on: vi.fn((_event: string, handler: MessageHandler) => {
-    capturedMessageHandler = handler;
+  on: vi.fn((event: string, handler: MessageHandler) => {
+    capturedHandlers[event] = handler;
   }),
   catch: vi.fn(),
   start: mockBotStart,
   stop: mockBotStop,
   api: {
     sendMessage: mockSendMessage,
+    getFile: mockGetFile,
   },
 };
 
@@ -54,11 +52,32 @@ function simulateIncoming(
   text: string,
   replyToMessageId?: number,
 ): void {
-  if (capturedMessageHandler === null) throw new Error('No message handler registered');
-  capturedMessageHandler({
+  const handler = capturedHandlers['message:text'];
+  if (!handler) throw new Error('No message:text handler registered');
+  handler({
     from: { id: userId },
     chat: { id: chatId },
     message: { text, ...(replyToMessageId !== undefined ? { reply_to_message: { message_id: replyToMessageId } } : {}) },
+  });
+}
+
+function simulatePhoto(
+  userId: number | undefined,
+  chatId: number,
+  photo: Array<{ file_id: string; width: number; height: number }>,
+  caption?: string,
+  replyToMessageId?: number,
+): void {
+  const handler = capturedHandlers['message:photo'];
+  if (!handler) throw new Error('No message:photo handler registered');
+  handler({
+    from: userId !== undefined ? { id: userId } : undefined,
+    chat: { id: chatId },
+    message: {
+      photo,
+      ...(caption !== undefined ? { caption } : {}),
+      ...(replyToMessageId !== undefined ? { reply_to_message: { message_id: replyToMessageId } } : {}),
+    },
   });
 }
 
@@ -67,7 +86,7 @@ function simulateIncoming(
 describe('createTelegramAdapter', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    capturedMessageHandler = null;
+    for (const key of Object.keys(capturedHandlers)) delete capturedHandlers[key];
     nextMessageId = 1000;
   });
 
@@ -80,9 +99,10 @@ describe('createTelegramAdapter', () => {
     expect(typeof adapter.onMessage).toBe('function');
   });
 
-  it('registers message:text handler with Grammy bot', () => {
+  it('registers message:text and message:photo handlers with Grammy bot', () => {
     makeAdapter();
     expect(mockBot.on).toHaveBeenCalledWith('message:text', expect.any(Function));
+    expect(mockBot.on).toHaveBeenCalledWith('message:photo', expect.any(Function));
   });
 
   it('start delegates to bot.start', async () => {
@@ -118,7 +138,7 @@ describe('createTelegramAdapter', () => {
 describe('onMessage handler — authorization (FR-003 / NFR-010)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    capturedMessageHandler = null;
+    for (const key of Object.keys(capturedHandlers)) delete capturedHandlers[key];
   });
 
   it('invokes handler for authorized user', () => {
@@ -161,9 +181,10 @@ describe('onMessage handler — authorization (FR-003 / NFR-010)', () => {
     const adapter = makeAdapter();
     adapter.onMessage(handler);
 
-    if (capturedMessageHandler === null) throw new Error('No handler');
+    const textHandler = capturedHandlers['message:text'];
+    if (!textHandler) throw new Error('No handler');
     // Simulate ctx with no `from`
-    capturedMessageHandler({ from: undefined, chat: { id: 1 }, message: { text: 'test' } });
+    textHandler({ from: undefined, chat: { id: 1 }, message: { text: 'test' } });
 
     expect(handler).not.toHaveBeenCalled();
   });
@@ -178,7 +199,7 @@ describe('onMessage handler — authorization (FR-003 / NFR-010)', () => {
 describe('sendChunkedMessage (FR-013)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    capturedMessageHandler = null;
+    for (const key of Object.keys(capturedHandlers)) delete capturedHandlers[key];
     nextMessageId = 1000;
     // Speed up: override sleep by mocking setTimeout globally isn't straightforward in vitest,
     // so we rely on the real 200ms only for the count test (chunks are short here).
@@ -227,4 +248,91 @@ describe('sendChunkedMessage integrates with splitMessage', () => {
     await adapter.sendChunkedMessage(1, chunks);
     expect(mockSendMessage).toHaveBeenCalledTimes(chunks.length);
   }, 5000);
+});
+
+// ─── Photo handler ──────────────────────────────────────────────────────────
+
+describe('message:photo handler', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    for (const key of Object.keys(capturedHandlers)) delete capturedHandlers[key];
+    nextMessageId = 1000;
+  });
+
+  const samplePhotos = [
+    { file_id: 'small', width: 90, height: 90 },
+    { file_id: 'medium', width: 320, height: 320 },
+    { file_id: 'large', width: 800, height: 800 },
+  ];
+
+  it('downloads largest photo and calls handler with imagePaths', async () => {
+    const adapter = makeAdapter();
+    const handler = vi.fn();
+    adapter.onMessage(handler);
+
+    mockGetFile.mockResolvedValueOnce({ file_path: 'photos/file_42.jpg' });
+    // Mock global fetch for the download
+    const mockFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(new Uint8Array([0xff, 0xd8]), { status: 200 }),
+    );
+
+    simulatePhoto(123456, 789, samplePhotos, 'Look at this');
+
+    // Let async download + handler complete
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockGetFile).toHaveBeenCalledWith('large'); // largest photo selected
+    const call = handler.mock.calls[0]![0];
+    expect(call.userId).toBe(123456);
+    expect(call.chatId).toBe(789);
+    expect(call.text).toBe('Look at this');
+    expect(call.imagePaths).toHaveLength(1);
+    expect(call.imagePaths[0]).toMatch(/^\/tmp\/reclaw-images\/.+\.jpg$/);
+
+    mockFetch.mockRestore();
+  });
+
+  it('uses empty string for text when no caption', async () => {
+    const adapter = makeAdapter();
+    const handler = vi.fn();
+    adapter.onMessage(handler);
+
+    mockGetFile.mockResolvedValueOnce({ file_path: 'photos/file_43.jpg' });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(new Uint8Array([0xff, 0xd8]), { status: 200 }),
+    );
+
+    simulatePhoto(123456, 789, samplePhotos); // no caption
+
+    // Let async download + handler complete
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(handler.mock.calls[0]![0].text).toBe('');
+
+    vi.restoreAllMocks();
+  });
+
+  it('silently discards photo from unauthorized user', async () => {
+    const adapter = makeAdapter();
+    const handler = vi.fn();
+    adapter.onMessage(handler);
+
+    simulatePhoto(999999, 789, samplePhotos);
+
+    // Give async a tick to settle
+    await new Promise((r) => setTimeout(r, 10));
+    expect(handler).not.toHaveBeenCalled();
+    expect(mockGetFile).not.toHaveBeenCalled();
+  });
+
+  it('silently discards photo when from is undefined', async () => {
+    const adapter = makeAdapter();
+    const handler = vi.fn();
+    adapter.onMessage(handler);
+
+    simulatePhoto(undefined, 789, samplePhotos);
+
+    await new Promise((r) => setTimeout(r, 10));
+    expect(handler).not.toHaveBeenCalled();
+  });
 });

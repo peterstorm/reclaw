@@ -29,6 +29,15 @@ export type ChatDeps = {
   readonly triggerCortexExtraction?: (sessionId: string, cwd: string) => void;
 };
 
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+async function cleanupImages(paths: readonly string[] | undefined): Promise<void> {
+  if (!paths || paths.length === 0) return;
+  for (const p of paths) {
+    await fs.unlink(p).catch(() => {});
+  }
+}
+
 // ─── Effect application (imperative shell) ───────────────────────────────────
 
 /**
@@ -164,7 +173,11 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
   const isResuming = existingSession !== null;
 
   // 3. Build prompt — skip personality on resume (already in Claude's context)
-  const prompt = isResuming ? job.text : buildChatPrompt(personality, job.text);
+  const prompt = isResuming
+    ? (job.imagePaths && job.imagePaths.length > 0
+        ? buildChatPrompt('', job.text, job.imagePaths)
+        : job.text)
+    : buildChatPrompt(personality, job.text, job.imagePaths);
   const resumeSessionId = isResuming ? (existingSession.sessionId as string) : undefined;
 
   // 4. Get permission flags for chat profile (pure, FR-011)
@@ -229,7 +242,7 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
     console.log(`[chat] Stale session fallback for chatId=${job.chatId}, retrying fresh`);
     await deps.sessionStore.deleteSession(job.chatId);
     resetStreamingState();
-    const freshPrompt = buildChatPrompt(personality, job.text);
+    const freshPrompt = buildChatPrompt(personality, job.text, job.imagePaths);
     result = await deps.runClaudeStreaming(
       {
         prompt: freshPrompt,
@@ -251,6 +264,7 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
     } else {
       await deps.telegram.sendMessage(job.chatId, errorMsg);
     }
+    await cleanupImages(job.imagePaths);
     return jobResultErr(result.error);
   }
 
@@ -334,6 +348,9 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
     deps.triggerCortexExtraction?.(result.sessionId, deps.config.workspacePath);
   }
 
-  // 13. Return success
+  // 13. Clean up temporary image files
+  await cleanupImages(job.imagePaths);
+
+  // 14. Return success
   return jobResultOk(result.output);
 }

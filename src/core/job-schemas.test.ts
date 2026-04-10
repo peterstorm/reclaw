@@ -113,8 +113,31 @@ describe('parseChatJob', () => {
     expect(parseChatJob({ ...validChatData(), userId: 1.5 }).ok).toBe(false);
   });
 
-  it('rejects empty text', () => {
-    expect(parseChatJob({ ...validChatData(), text: '' }).ok).toBe(false);
+  it('allows empty text when schema relaxed (domain validates in makeChatJob)', () => {
+    // Schema now allows empty text — business validation happens in makeChatJob
+    expect(parseChatJob({ ...validChatData(), text: '' }).ok).toBe(true);
+  });
+
+  it('parses chat job with imagePaths', () => {
+    const data = { ...validChatData(), imagePaths: ['/tmp/reclaw-images/test.jpg'] };
+    const result = parseChatJob(data);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.imagePaths).toEqual(['/tmp/reclaw-images/test.jpg']);
+    }
+  });
+
+  it('parses chat job without imagePaths', () => {
+    const result = parseChatJob(validChatData());
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.imagePaths).toBeUndefined();
+    }
+  });
+
+  it('rejects imagePaths with empty strings', () => {
+    const data = { ...validChatData(), imagePaths: [''] };
+    expect(parseChatJob(data).ok).toBe(false);
   });
 
   it('rejects null input', () => {

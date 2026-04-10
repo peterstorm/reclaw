@@ -23,9 +23,10 @@ const ChatJobSchema = z.object({
   kind: z.literal('chat'),
   id: jobId,
   userId: telegramUserId,
-  text: z.string().min(1),
+  text: z.string(), // empty text allowed when imagePaths present (domain validated in makeChatJob)
   chatId: z.number().int(),
   receivedAt: z.string().min(1),
+  imagePaths: z.array(z.string().min(1)).readonly().optional(),
 });
 
 const ScheduledJobSchema = z.object({

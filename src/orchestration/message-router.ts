@@ -16,6 +16,7 @@ export type IncomingMessage = {
   readonly chatId: number;
   readonly text: string;
   readonly replyToMessageId?: number;
+  readonly imagePaths?: readonly string[];
 };
 
 export type MessageRouterDeps = {
@@ -102,6 +103,7 @@ export function routeMessage(msg: IncomingMessage, deps: MessageRouterDeps): voi
           text: msg.text,
           chatId: msg.chatId,
           receivedAt: new Date().toISOString(),
+          ...(msg.imagePaths && msg.imagePaths.length > 0 ? { imagePaths: msg.imagePaths } : {}),
         });
 
         if (!chatJobResult.ok) {

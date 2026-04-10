@@ -42,14 +42,31 @@ export function buildPrompt(template: string, context: PromptContext): string {
  * request. Returns a simple combined string for use with `claude -p`.
  *
  * FR-009: personality/instructions are included as context.
+ * When imagePaths are provided, appends file references so Claude can read them.
  */
-export function buildChatPrompt(personality: string, userMessage: string): string {
+export function buildChatPrompt(
+  personality: string,
+  userMessage: string,
+  imagePaths?: readonly string[],
+): string {
   const trimmedPersonality = personality.trim();
   const trimmedMessage = userMessage.trim();
+  const hasImages = imagePaths !== undefined && imagePaths.length > 0;
 
-  if (trimmedPersonality.length === 0) {
-    return trimmedMessage;
+  let userPart: string;
+  if (hasImages) {
+    const textPart = trimmedMessage.length > 0
+      ? trimmedMessage
+      : 'The user sent a photo. Please analyze it.';
+    const imageRefs = imagePaths.map((p) => `[See image: ${p}]`).join('\n');
+    userPart = `${textPart}\n\n${imageRefs}`;
+  } else {
+    userPart = trimmedMessage;
   }
 
-  return `${trimmedPersonality}\n\n---\n\n${trimmedMessage}`;
+  if (trimmedPersonality.length === 0) {
+    return userPart;
+  }
+
+  return `${trimmedPersonality}\n\n---\n\n${userPart}`;
 }
