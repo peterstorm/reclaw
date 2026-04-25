@@ -1,0 +1,262 @@
+id: hardware-intel
+name: Hardware Market Intelligence
+schedule: "0 8 * * 1"
+permissionProfile: scheduled
+validityWindowMinutes: 240
+timeout: 600
+promptTemplate: |
+  {{personality}}
+
+  Today is {{dayOfWeek}}, {{date}}.
+
+  You are running the Hardware Market Intelligence skill — a weekly analysis of hardware pricing trends and industry signals that produces buy/hold/wait recommendations for PC components the user wants to purchase.
+
+  **Tracked components:** DDR5 RAM, RTX 5090 GPU, NVMe SSD
+  **Additionally tracked as demand signal:** AI accelerator landscape (TPUs, ASICs, custom silicon competing with GPUs)
+
+  ## Step 0 — Previous context
+
+  Check cortex for previous hardware market analysis:
+  Run `/recall` with queries: "hardware market", "DRAM price", "RTX 5090", "NVMe SSD", "pressure index"
+  This surfaces last week's scores, any mid-week observations, and prediction accuracy history.
+
+  Also check for the most recent vault note:
+  ```
+  ls ~/dev/notes/remotevault/research/hardware-market/ 2>/dev/null | sort | tail -5
+  ```
+  If a previous week's note exists, read it for comparison data and the model accuracy tracker.
+
+  ## Step 1 — API data collection
+
+  Fetch hard data from free APIs. Run these commands:
+
+  **Silicon Analysts market pulse** (fab utilization, wafer prices, HBM costs, CoWoS capacity):
+  ```
+  curl -s "https://siliconanalysts.com/api/v1/market-pulse" 2>/dev/null
+  ```
+
+  **EUR/USD exchange rate** (current + 4 weeks ago for trend):
+  ```
+  curl -s "https://api.frankfurter.app/latest?base=USD&symbols=DKK,EUR" 2>/dev/null
+  curl -s "https://api.frankfurter.app/$(date -d '28 days ago' +%Y-%m-%d)?base=USD&symbols=DKK,EUR" 2>/dev/null
+  ```
+  Note: if frankfurter.app fails, try frankfurter.dev or use a web search for "EUR USD DKK exchange rate" as fallback.
+
+  **Crypto mining profitability** (GPU demand proxy — low priority, currently negligible factor):
+  Use a web search for "GPU mining profitability 2026 whattomine" instead of the Minerstat API (requires API key).
+  If crypto mining profitability is under $2/day for top consumer GPUs, score this indicator as 0 and move on.
+
+  If any API call fails, note it and continue — do not let a single failure block the analysis.
+
+  ## Step 2 — Web search sweep
+
+  Perform 8-10 targeted web searches to collect current data across all signal categories. For each search, extract specific data points (numbers, percentages, direction) — not just summaries.
+
+  **Supply signals (3 searches):**
+  1. "ChinaFlashMarket DRAM NAND spot price index {{date}}" — get the actual index numbers and month-over-month change
+  2. "TrendForce DRAM NAND contract price forecast Q2 2026" — directional guidance for next quarter
+  3. "semiconductor supply disruption fab incident 2026" — any active disruptions
+
+  **Demand signals (3 searches):**
+  4. "hyperscaler AI capex spending 2026 Microsoft Google Amazon Meta" — latest guidance and actual spend
+  5. "AI accelerator ASIC TPU Trainium Groq Cerebras 2026" — competitive landscape shifts that could ease GPU/memory demand
+  6. "GPU mining profitability 2026 RTX" — supplement the Minerstat API data with market context
+
+  **Macro & Trade (1-2 searches):**
+  7. "semiconductor tariff export control 2026" — trade policy changes affecting chip pricing
+  8. "Micron SK Hynix Samsung Nvidia earnings guidance 2026" — OEM forward-looking statements
+
+  **Retail pricing (2 searches):**
+  9. "RTX 5090 price stock Denmark Proshop Komplett" — current GPU retail pricing and availability
+  10. "DDR5 RAM price 2026" + "NVMe SSD price 2026" — current retail trends
+
+  ## Step 3 — Score each indicator
+
+  For each indicator below, assign a score from **-5 to +5**:
+  - Negative = downward price pressure (good for buyer — prices dropping or about to drop)
+  - Positive = upward price pressure (prices rising — buy soon before spike, or wait for correction)
+  - Zero = neutral / no signal
+
+  **Supply Side indicators:**
+  - DRAM spot price trend (ChinaFlashMarket index direction and magnitude)
+  - NAND spot price trend (ChinaFlashMarket index direction and magnitude)
+  - Foundry utilization (Silicon Analysts data — high utilization = constrained supply = +score)
+  - Supply disruptions (active incidents = +score, calm = 0)
+
+  **Demand Side indicators:**
+  - AI/hyperscaler capex (rising spend = more GPU/memory demand = +score)
+  - Crypto mining profitability (high profitability = GPU demand = +score; currently very low)
+  - Consumer demand (seasonal patterns, platform launches)
+  - AI accelerator competition (more ASIC adoption = less GPU demand = -score, i.e. good for buyer)
+
+  **Macro & Trade indicators:**
+  - Tariff/trade policy (new tariffs on semis = +score; relaxation = -score)
+  - EUR/USD & DKK trend (weakening EUR/DKK = imports more expensive = +score)
+  - OEM earnings guidance (positive outlooks on pricing = +score)
+
+  **Retail & Pricing indicators:**
+  - Current retail prices vs recent trend (rising = +score, falling = -score)
+  - Stock availability (scarce = +score, abundant = -score)
+  - Promotional cycle proximity (Black Friday, Prime Day approaching = -score)
+
+  For each indicator, write a 1-sentence justification with the data point that supports the score.
+
+  ## Step 4 — Compute composite pressure index
+
+  For each tracked component (DDR5, RTX 5090, NVMe):
+
+  **Category scores** = average of indicator scores within each category.
+
+  **Short-term composite** (1-4 weeks, action-oriented):
+  `(Supply × 0.25) + (Demand × 0.25) + (Macro × 0.20) + (Retail × 0.30)`
+  (heavier retail weight — this horizon is about current prices)
+
+  **Medium-term composite** (1-3 months, predictive):
+  `(Supply × 0.35) + (Demand × 0.35) + (Macro × 0.20) + (Retail × 0.10)`
+  (heavier supply/demand weight — upstream signals predict future retail)
+
+  **Traffic light mapping:**
+  - 🟢 **BUY:** composite ≤ -1.5
+  - 🟡 **HOLD:** composite between -1.5 and +1.5
+  - 🔴 **BUY SOON:** composite ≥ +1.5
+
+  Note: some indicators apply differently per component. DRAM spot matters more for DDR5 RAM, NAND spot matters more for NVMe, and GPU-specific demand/supply matters more for RTX 5090. Weight accordingly in your scoring.
+
+  ## Step 5 — Compare with previous week
+
+  If a previous vault note exists:
+  - Diff each category score and composite: note direction (↑/↓/→) and magnitude of change
+  - Identify which specific indicators shifted the most
+  - Flag any signal that flipped traffic light color — these are the most actionable changes
+
+  ## Step 6 — Model accuracy check
+
+  If last week's note had predictions (traffic light + reasoning):
+  - Check what actually happened to retail prices this week
+  - Score accuracy: ✅ correct, ⚠️ partially correct, ❌ wrong
+  - Add to the accuracy tracker table
+  - If a pattern of inaccuracy emerges, note it for calibration
+
+  ## Step 7 — Write vault note
+
+  Create the weekly analysis at: `~/dev/notes/remotevault/research/hardware-market/{{date}}-W$(date -d '{{date}}' +%V).md`
+  Create the `research/hardware-market/` directory if it doesn't exist.
+
+  **Frontmatter:**
+  ```yaml
+  ---
+  title: "Hardware Market Intel — {{date}} W$(date -d '{{date}}' +%V)"
+  date: {{date}}
+  tags: [hardware-market, weekly-intel]
+  up: "[[research/hardware-market/MOC|Hardware Market Intel]]"
+  ---
+  ```
+
+  **Sections:**
+
+  ### Summary
+  Traffic light table:
+  ```
+  | Component | Short-term | Medium-term | Key Signal |
+  |-----------|-----------|-------------|------------|
+  | DDR5 RAM  | 🟢/🟡/🔴 SIGNAL (score) | 🟢/🟡/🔴 SIGNAL (score) | 1-line reason |
+  | RTX 5090  | ... | ... | ... |
+  | NVMe SSD  | ... | ... | ... |
+  ```
+
+  Week-over-week trend arrows if previous data exists.
+
+  ### Supply Side (score: X.X)
+  Per-indicator breakdown: data point → score → justification
+
+  ### Demand Side (score: X.X)
+  Same format. Include AI accelerator landscape assessment.
+
+  ### Macro & Trade (score: X.X)
+  Same format. Include EUR/USD trend.
+
+  ### Retail & Pricing (score: X.X)
+  Same format. Include specific prices from Proshop/Komplett where found.
+
+  ### AI Accelerator Landscape
+  Dedicated section: what's happening with TPU, Trainium, Groq, Cerebras, and others. Assessment of whether GPU/memory demand is being displaced.
+
+  ### Model Accuracy Tracker
+  Table tracking previous predictions vs outcomes:
+  ```
+  | Week | Component | Prediction | Actual Outcome | Accurate? |
+  |------|-----------|-----------|----------------|-----------|
+  ```
+
+  ### Notable This Week
+  3-5 bullet points of the most important developments that could affect hardware pricing in coming weeks.
+
+  ## Step 8 — Update MOC
+
+  If `~/dev/notes/remotevault/research/hardware-market/MOC.md` doesn't exist, create it:
+  ```yaml
+  ---
+  title: Hardware Market Intel
+  date: {{date}}
+  tags: [moc, hardware-market, weekly-intel]
+  up: "[[research/MOC|Research]]"
+  ---
+  ```
+  ```markdown
+  # Hardware Market Intel
+
+  Weekly analysis of hardware pricing trends and market conditions for DDR5 RAM, RTX 5090, and NVMe SSDs.
+
+  ## Reports
+  ```
+
+  Append today's note: `- [[research/hardware-market/{{date}}-Www|{{date}}]] — [traffic light summary]`
+
+  ## Step 9 — Send Telegram summary
+
+  Send a compact, scannable message:
+
+  ```
+  📊 Hardware Market Intel — Week WW, YYYY
+
+  DDR5 RAM
+    Short:  🟢/🟡/🔴 SIGNAL (score)
+    Medium: 🟢/🟡/🔴 SIGNAL (score)
+    → [1-line key driver]
+
+  RTX 5090
+    Short:  🟢/🟡/🔴 SIGNAL (score)
+    Medium: 🟢/🟡/🔴 SIGNAL (score)
+    → [1-line key driver]
+
+  NVMe SSD
+    Short:  🟢/🟡/🔴 SIGNAL (score)
+    Medium: 🟢/🟡/🔴 SIGNAL (score)
+    → [1-line key driver]
+
+  Notable this week:
+  • [signal 1]
+  • [signal 2]
+  • [signal 3]
+
+  Full analysis saved to vault.
+  ```
+
+  If any traffic light changed color from last week, add a ⚡ prefix to that component to draw attention.
+
+  ## Step 10 — Store in cortex
+
+  Run `/remember`: "Hardware intel {{date}}: DDR5 [signal](score), RTX 5090 [signal](score), NVMe [signal](score). Key drivers: [top 2-3 signals]. Medium-term outlook: [1 sentence]."
+
+  This ensures mid-week conversations and next week's run have context.
+
+  ## Quality guardrails
+
+  Before finalizing:
+  - Does every score have a specific data point backing it (not vibes)?
+  - Are the traffic lights internally consistent with the reasoning?
+  - Did you check model accuracy against last week?
+  - Would this message help the user make a buy/wait decision TODAY?
+  - If data was sparse or APIs failed, did you note confidence level?
+
+  If a week has genuinely no meaningful changes from last week (all scores within ±0.3), send a brief "no change" Telegram message instead of a full report. Still write the vault note for the record.

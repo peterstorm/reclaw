@@ -38,6 +38,20 @@ promptTemplate: |
 
   Each activity includes `hrTimeSeries` — array of `{timestamp, heartRate}` points sampled throughout the activity (up to 1000 points). Use for interval analysis.
 
+  ### HR Zone Reference (Garmin LTHR-derived)
+
+  These match the user's Garmin watch zones. Derived from lactate threshold heart rate (LTHR) of **175 bpm**.
+
+  | Zone | Name | BPM Range | % of LTHR |
+  |------|------|-----------|-----------|
+  | Z1 | Warmup | < 142 | < 81% |
+  | Z2 | Easy | 142–156 | 81–89% |
+  | Z3 | Aerobic | 156–168 | 89–96% |
+  | Z4 | Threshold | 168–175 | 96–100% |
+  | Z5 | Maximum | > 175 | > 100% |
+
+  **Always use these boundaries** when classifying time-in-zone, interpreting HR data, or referencing zones in analysis. Do not use arbitrary thresholds.
+
   ## Step 3 — Check for recent fitness notes
 
   Look for the last 5 fitness notes for trend comparison:

@@ -43,13 +43,13 @@ promptTemplate: |
 
   Once you have the estimated 5K pace (call it `P`), derive zones as:
 
-  | Zone | Purpose | Formula | HR Target |
+  | Zone | Purpose | Formula | HR Target (Garmin zones, LTHR=175) |
   |------|---------|---------|-----------|
-  | Recovery | Post-hard-day shakeout | P + 90-110s/km | < 135 bpm (Z1-Z2) |
-  | Easy | Base building, easy days | P + 60-90s/km | < 145 bpm (Z2) |
-  | Steady | Long run cruise pace | P + 40-60s/km | 145-155 bpm (Z2-Z3) |
-  | Tempo | Lactate threshold | P + 5-20s/km | 160-172 bpm (Z4) |
-  | Interval | VO2max development | P - 5s to P + 5s/km | 170-180 bpm (Z4-Z5) |
+  | Recovery | Post-hard-day shakeout | P + 90-110s/km | < 142 bpm (Z1) |
+  | Easy | Base building, easy days | P + 60-90s/km | 142-156 bpm (Z2) |
+  | Steady | Long run cruise pace | P + 40-60s/km | 156-168 bpm (Z2-Z3) |
+  | Tempo | Lactate threshold | P + 5-20s/km | 168-175 bpm (Z4) |
+  | Interval | VO2max development | P - 5s to P + 5s/km | > 175 bpm (Z5) |
   | Repetition | Speed/neuromuscular | P - 30 to P - 10s/km | near max effort |
 
   **Example with P = 4:50/km (24:10 5K):**
@@ -63,7 +63,7 @@ promptTemplate: |
   | Interval | 4:45-4:55/km |
   | Repetition | 4:20-4:40/km |
 
-  **Validate zones against HR data:** If recent easy runs show HR < 135 at easy pace → tighten. If intervals hit with HR < 175 → increase interval pace by 5s/km. If tempo shows improving efficiency → tighten. Also compare tempo HR targets against Garmin's `lactateThreshold.heartRate` — tempo zone should be ~5-10 bpm below LTHR. The data is the authority, not the formula.
+  **Validate zones against HR data:** If recent easy runs show HR staying in Z1 at easy pace → tighten. If intervals don't reach Z5 (>175) → increase interval pace by 5s/km. If tempo shows improving efficiency → tighten. Garmin LTHR is auto-detected at 175 bpm — tempo zone should be in Z4 (168-175). The data is the authority, not the formula.
 
   **Pace target encoding for Garmin:**
   - Pace targets use m/s: `1000 / (minutes * 60 + seconds)`

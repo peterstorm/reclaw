@@ -29,12 +29,13 @@ promptTemplate: |
   ```
   Also check for **open PR branch** commits (captures unmerged work-in-progress):
   ```
-  gh api "repos/peterstorm/REPO/pulls?state=open&per_page=10" --jq '.[] | "#\(.number) \(.title)"'
+  gh api "repos/peterstorm/REPO/pulls?state=open&per_page=10" --jq '.[] | "#\(.number) \(.title) [\(.head.ref)]"'
   ```
-  For each open PR, get today's commits:
+  For each open PR, get today's commits **via the branch commits API** (not the PR commits endpoint, which paginates poorly on large PRs and misses force-pushed history):
   ```
-  gh api "repos/peterstorm/REPO/pulls/PR_NUMBER/commits?per_page=100" --jq '.[] | select(.commit.author.date >= "{{date}}T00:00:00") | "\(.sha[0:7]) \(.commit.message | split("\n")[0])"'
+  gh api "repos/peterstorm/REPO/commits?sha=BRANCH_NAME&since={{date}}T00:00:00&per_page=20" --jq '.[] | "\(.sha[0:7]) \(.commit.message | split("\n")[0])"'
   ```
+  where BRANCH_NAME is the PR's `head.ref` value from the previous step.
 
   **Calendar events (today):**
   ```

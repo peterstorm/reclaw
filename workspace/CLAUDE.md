@@ -47,6 +47,7 @@ Defined in `personality.md`. Edit if the user asks to change assistant behavior.
 - **Before writing code**, follow:
   - `~/.dotfiles/claude/project/meta/rules/architecture.md`
   - `~/.dotfiles/claude/project/typescript/rules/typescript-patterns.md`
+- **Before interacting with external APIs** (Garmin, GitHub, etc.), check the relevant vault docs under `~/dev/notes/remotevault/reclaw/` for known gotchas, confirmed mappings, and JSON structure. Don't re-derive what's already documented.
 
 # Startup Checklist
 1. Cortex memory surface is injected via hooks — check for recent context.
