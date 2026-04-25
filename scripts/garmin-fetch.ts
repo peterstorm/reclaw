@@ -265,6 +265,19 @@ const extractActivity = (raw: Record<string, unknown>): ActivitySummary => {
   };
 };
 
+/** Extract HR zone times from the activity list summary (hrTimeInZone_1..5 fields) */
+const extractHrZonesFromSummary = (raw: Record<string, unknown>): readonly HrZone[] | null => {
+  const z1 = raw.hrTimeInZone_1 as number | undefined;
+  if (z1 == null) return null;
+  return [
+    { zone: 1, seconds: Math.round(raw.hrTimeInZone_1 as number ?? 0) },
+    { zone: 2, seconds: Math.round(raw.hrTimeInZone_2 as number ?? 0) },
+    { zone: 3, seconds: Math.round(raw.hrTimeInZone_3 as number ?? 0) },
+    { zone: 4, seconds: Math.round(raw.hrTimeInZone_4 as number ?? 0) },
+    { zone: 5, seconds: Math.round(raw.hrTimeInZone_5 as number ?? 0) },
+  ];
+};
+
 const extractHrZones = (raw: Record<string, unknown>): readonly HrZone[] | null => {
   const zones = raw.hrZones as Array<Record<string, unknown>> | undefined;
   if (!zones?.length) return null;
@@ -455,12 +468,19 @@ async function main(): Promise<void> {
     });
 
     for (const act of todayActivities) {
+      // Extract HR zone times from summary list (not available in detail endpoint)
+      const summaryHrZones: readonly HrZone[] | null = extractHrZonesFromSummary(act);
+
       // Fetch full detail for each activity
       try {
         const detail = await client.getActivity({
           activityId: act.activityId as number,
         }) as unknown as Record<string, unknown>;
         const activity = extractActivity(detail);
+        // Merge summary HR zones if detail didn't have them
+        if (!activity.hrZones && summaryHrZones) {
+          (activity as { hrZones: readonly HrZone[] | null }).hrZones = summaryHrZones;
+        }
 
         // Fetch HR time series from activity details endpoint
         let hrTimeSeries: readonly HrTimeSeriesPoint[] | null = null;
