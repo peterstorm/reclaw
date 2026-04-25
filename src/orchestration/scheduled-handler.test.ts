@@ -515,4 +515,127 @@ describe('handleScheduledJob', () => {
 
     expect(sessionStore.saveMessageSession).not.toHaveBeenCalled();
   });
+
+  // ─── Skill quality recording tests ──────────────────────────────────────────
+
+  it('records suppressed signal when output is ALL_CLEAR', async () => {
+    const job = makeScheduledJob();
+    const telegram = makeTelegram();
+    const recordSkillQuality = vi.fn();
+    const runClaude = makeRunClaude({ ok: true, output: 'ALL_CLEAR', sessionId: null, durationMs: 100 });
+
+    await handleScheduledJob(job, {
+      runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
+      telegram,
+      skillRegistry: makeRegistry(),
+      config: makeConfig(),
+      recordSkillQuality,
+    });
+
+    expect(recordSkillQuality).toHaveBeenCalledOnce();
+    const signal = recordSkillQuality.mock.calls[0]![0];
+    expect(signal.skillId).toBe('morning-briefing');
+    expect(signal.status).toBe('suppressed');
+    expect(signal.outputLength).toBe('ALL_CLEAR'.length);
+    expect(signal.errorMessage).toBeNull();
+    expect(signal.durationMs).toBeGreaterThanOrEqual(0);
+    expect(typeof signal.timestamp).toBe('string');
+  });
+
+  it('records claude_error signal with error message on subprocess failure', async () => {
+    const job = makeScheduledJob();
+    const telegram = makeTelegram();
+    const recordSkillQuality = vi.fn();
+    const runClaude = makeRunClaude({ ok: false, error: 'timeout', timedOut: true });
+
+    await handleScheduledJob(job, {
+      runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
+      telegram,
+      skillRegistry: makeRegistry(),
+      config: makeConfig(),
+      recordSkillQuality,
+    });
+
+    expect(recordSkillQuality).toHaveBeenCalledOnce();
+    const signal = recordSkillQuality.mock.calls[0]![0];
+    expect(signal.status).toBe('claude_error');
+    expect(signal.errorMessage).toBe('timeout');
+  });
+
+  it('records skill_not_found signal when skill missing from registry', async () => {
+    const job = makeScheduledJob({ skillId: makeSkillId('nonexistent-skill') });
+    const telegram = makeTelegram();
+    const recordSkillQuality = vi.fn();
+    const runClaude = makeRunClaude({ ok: true, output: 'unused', sessionId: null, durationMs: 0 });
+
+    await handleScheduledJob(job, {
+      runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
+      telegram,
+      skillRegistry: makeRegistry(),
+      config: makeConfig(),
+      recordSkillQuality,
+    });
+
+    expect(recordSkillQuality).toHaveBeenCalledOnce();
+    const signal = recordSkillQuality.mock.calls[0]![0];
+    expect(signal.skillId).toBe('nonexistent-skill');
+    expect(signal.status).toBe('skill_not_found');
+  });
+
+  it('records validity_expired signal when job is past validity window', async () => {
+    const job = makeScheduledJob({
+      triggeredAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+      validUntil: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    });
+    const telegram = makeTelegram();
+    const recordSkillQuality = vi.fn();
+    const runClaude = makeRunClaude({ ok: true, output: 'unused', sessionId: null, durationMs: 0 });
+
+    await handleScheduledJob(job, {
+      runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
+      telegram,
+      skillRegistry: makeRegistry(),
+      config: makeConfig(),
+      recordSkillQuality,
+    });
+
+    expect(recordSkillQuality).toHaveBeenCalledOnce();
+    expect(recordSkillQuality.mock.calls[0]![0].status).toBe('validity_expired');
+  });
+
+  it('records success signal with full output length on normal completion', async () => {
+    const job = makeScheduledJob();
+    const telegram = makeTelegram();
+    const recordSkillQuality = vi.fn();
+    const output = 'Morning briefing — all systems nominal.';
+    const runClaude = makeRunClaude({ ok: true, output, sessionId: 'sess-1', durationMs: 500 });
+
+    await handleScheduledJob(job, {
+      runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
+      telegram,
+      skillRegistry: makeRegistry(),
+      config: makeConfig(),
+      recordSkillQuality,
+    });
+
+    expect(recordSkillQuality).toHaveBeenCalledOnce();
+    const signal = recordSkillQuality.mock.calls[0]![0];
+    expect(signal.status).toBe('success');
+    expect(signal.outputLength).toBe(output.length);
+  });
+
+  it('works without recordSkillQuality (optional dep)', async () => {
+    const job = makeScheduledJob();
+    const telegram = makeTelegram();
+    const runClaude = makeRunClaude({ ok: true, output: 'Briefing', sessionId: null, durationMs: 100 });
+
+    const result = await handleScheduledJob(job, {
+      runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
+      telegram,
+      skillRegistry: makeRegistry(),
+      config: makeConfig(),
+    });
+
+    expect(result.ok).toBe(true);
+  });
 });

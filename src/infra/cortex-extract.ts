@@ -30,22 +30,36 @@ type InstalledPlugins = {
   readonly plugins: Record<string, ReadonlyArray<{ readonly installPath: string }>>;
 };
 
+function resolveCortexInstallPath(): string | null {
+  const pluginsPath = join(homedir(), '.claude', 'plugins', 'installed_plugins.json');
+  try {
+    const data: InstalledPlugins = JSON.parse(readFileSync(pluginsPath, 'utf-8'));
+    return data.plugins['cortex@local']?.[0]?.installPath ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Resolve the cortex extract-and-generate.sh script path from
  * Claude's installed_plugins.json. Returns null if not found.
  */
 export function resolveCortexExtractScript(): string | null {
-  const pluginsPath = join(homedir(), '.claude', 'plugins', 'installed_plugins.json');
-  try {
-    const data: InstalledPlugins = JSON.parse(readFileSync(pluginsPath, 'utf-8'));
-    const firstEntry = data.plugins['cortex@local']?.[0];
-    if (!firstEntry) return null;
-    const installPath = firstEntry.installPath;
-    const scriptPath = join(installPath, 'hooks', 'scripts', 'extract-and-generate.sh');
-    return existsSync(scriptPath) ? scriptPath : null;
-  } catch {
-    return null;
-  }
+  const installPath = resolveCortexInstallPath();
+  if (installPath === null) return null;
+  const scriptPath = join(installPath, 'hooks', 'scripts', 'extract-and-generate.sh');
+  return existsSync(scriptPath) ? scriptPath : null;
+}
+
+/**
+ * Resolve the cortex engine CLI entrypoint (cli.ts) from
+ * Claude's installed_plugins.json. Returns null if not found.
+ */
+export function resolveCortexCliPath(): string | null {
+  const installPath = resolveCortexInstallPath();
+  if (installPath === null) return null;
+  const cliPath = join(installPath, 'engine', 'src', 'cli.ts');
+  return existsSync(cliPath) ? cliPath : null;
 }
 
 // ─── Fire-and-forget extraction (imperative shell) ───────────────────────────

@@ -9,6 +9,7 @@ import type { TelegramAdapter } from '../infra/telegram.js';
 import type { AppConfig } from '../infra/config.js';
 import type { SessionStore } from '../infra/session-store.js';
 import { makeClaudeSessionId } from '../core/types.js';
+import type { SkillQualitySignal, SkillRunStatus } from '../core/skill-quality.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -21,6 +22,8 @@ export type ScheduledDeps = {
   readonly sessionStore?: SessionStore;
   /** Fire-and-forget cortex memory extraction. Called after successful Claude runs. */
   readonly triggerCortexExtraction?: (sessionId: string, cwd: string) => void;
+  /** Fire-and-forget skill execution quality recorder. Anomalies only. */
+  readonly recordSkillQuality?: (signal: SkillQualitySignal) => void;
 };
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -52,9 +55,22 @@ function getDayOfWeek(d: Date): string {
  * FR-023: Skip silently if outside validity window.
  */
 export async function handleScheduledJob(job: ScheduledJob, deps: ScheduledDeps): Promise<JobResult> {
+  const startedAt = performance.now();
+  const emit = (status: SkillRunStatus, outputLength: number, errorMessage: string | null): void => {
+    deps.recordSkillQuality?.({
+      skillId: job.skillId,
+      status,
+      durationMs: Math.round(performance.now() - startedAt),
+      outputLength,
+      errorMessage,
+      timestamp: new Date().toISOString(),
+    });
+  };
+
   // 1. Look up skill first so we have validityWindowMinutes
   const skill = deps.skillRegistry.get(job.skillId);
   if (skill === undefined) {
+    emit('skill_not_found', 0, null);
     return jobResultErr('skill not found');
   }
 
@@ -62,6 +78,7 @@ export async function handleScheduledJob(job: ScheduledJob, deps: ScheduledDeps)
   const triggeredAt = new Date(job.triggeredAt);
   const now = new Date();
   if (!isWithinValidityWindow(triggeredAt, skill.validityWindowMinutes, now)) {
+    emit('validity_expired', 0, null);
     return jobResultErr('validity window expired');
   }
 
@@ -93,6 +110,7 @@ export async function handleScheduledJob(job: ScheduledJob, deps: ScheduledDeps)
 
   // 7. Handle failure — no user notification for scheduled (goes to dead letter)
   if (!result.ok) {
+    emit('claude_error', 0, result.error);
     return jobResultErr(result.error);
   }
 
@@ -125,6 +143,7 @@ export async function handleScheduledJob(job: ScheduledJob, deps: ScheduledDeps)
     deps.triggerCortexExtraction?.(result.sessionId, deps.config.workspacePath);
   }
 
-  // 11. Return success
+  // 11. Emit quality signal and return success
+  emit(isSuppressed ? 'suppressed' : 'success', result.output.length, null);
   return jobResultOk(result.output);
 }

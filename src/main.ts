@@ -139,7 +139,7 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
   console.info('[main] Config loaded');
 
   // ── 1b. Resolve cortex extraction (always-on, no config needed) ──────────
-  const { resolveCortexExtractScript, createCortexExtractor } = await import('./infra/cortex-extract.js');
+  const { resolveCortexExtractScript, resolveCortexCliPath, createCortexExtractor } = await import('./infra/cortex-extract.js');
   const cortexScriptPath = resolveCortexExtractScript();
   const triggerCortexExtraction = cortexScriptPath
     ? createCortexExtractor(cortexScriptPath)
@@ -148,6 +148,17 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
     console.info(`[main] Cortex extraction enabled: ${cortexScriptPath}`);
   } else {
     console.warn('[main] Cortex extraction disabled: script not found');
+  }
+
+  const cortexCliPath = resolveCortexCliPath();
+  const { createSkillQualityRecorder } = await import('./infra/skill-quality.js');
+  const recordSkillQuality = cortexCliPath
+    ? createSkillQualityRecorder(cortexCliPath, config.workspacePath)
+    : undefined;
+  if (cortexCliPath) {
+    console.info(`[main] Skill quality recorder enabled: ${cortexCliPath}`);
+  } else {
+    console.warn('[main] Skill quality recorder disabled: cortex CLI not found');
   }
 
   // ── 1c. Guard chat runClaude with mutex ──
@@ -301,6 +312,7 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
         config,
         sessionStore,
         ...(triggerCortexExtraction ? { triggerCortexExtraction } : {}),
+        ...(recordSkillQuality ? { recordSkillQuality } : {}),
       }),
     reminderHandler: (job) => handleReminderJobFn(job, { telegram }),
     recurringReminderHandler: (job) => handleRecurringReminderJobFn(job, { telegram }),
