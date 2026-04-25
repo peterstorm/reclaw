@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import chokidar, { type FSWatcher } from 'chokidar';
 import { parseSkillConfig } from '../core/skill-config.js';
-import { type SkillConfig, type SkillId, type SkillRegistry, emptySkillRegistry } from '../core/types.js';
+import { type SkillConfig, type SkillId, type SkillRegistry, emptySkillRegistry, makeSkillId } from '../core/types.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -43,10 +43,12 @@ function registryWithoutSkill(
 /**
  * Derive a SkillId from a file path (basename without extension).
  * Used to remove entries when a file is deleted.
+ * Returns a Result so callers can skip files with invalid names (e.g. ".yaml").
  */
-function skillIdFromPath(filePath: string): SkillId {
+function skillIdFromPath(filePath: string): ReturnType<typeof makeSkillId> {
   const basename = filePath.split('/').pop() ?? filePath;
-  return basename.replace(/\.ya?ml$/i, '') as SkillId;
+  const idStr = basename.replace(/\.ya?ml$/i, '');
+  return makeSkillId(idStr);
 }
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
@@ -67,9 +69,11 @@ export function createSkillWatcher(skillsDir: string): SkillWatcher {
   let readyResolve: (() => void) | null = null;
   const readyPromise = new Promise<void>((resolve) => { readyResolve = resolve; });
 
-  // Notify all registered change listeners
+  // Notify all registered change listeners.
+  // Iterate a snapshot so a handler that mutates `changeHandlers` (e.g. removes
+  // itself) cannot skip subsequent handlers in this notification pass.
   const notifyHandlers = (reg: SkillRegistry): void => {
-    for (const handler of changeHandlers) {
+    for (const handler of [...changeHandlers]) {
       handler(reg);
     }
   };
@@ -109,8 +113,12 @@ export function createSkillWatcher(skillsDir: string): SkillWatcher {
   };
 
   const removeFile = (filePath: string): void => {
-    const skillId = skillIdFromPath(filePath);
-    registry = registryWithoutSkill(registry, skillId);
+    const idResult = skillIdFromPath(filePath);
+    if (!idResult.ok) {
+      console.error(`[skill-watcher] Cannot derive SkillId from "${filePath}": ${idResult.error}`);
+      return;
+    }
+    registry = registryWithoutSkill(registry, idResult.value);
     notifyHandlers(registry);
   };
 

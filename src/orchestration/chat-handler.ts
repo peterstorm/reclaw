@@ -34,7 +34,9 @@ export type ChatDeps = {
 async function cleanupImages(paths: readonly string[] | undefined): Promise<void> {
   if (!paths || paths.length === 0) return;
   for (const p of paths) {
-    await fs.unlink(p).catch(() => {});
+    await fs.unlink(p).catch((err: NodeJS.ErrnoException) => {
+      console.warn(`[chat] cleanup failed: ${p} (${err.code ?? 'UNKNOWN'})`);
+    });
   }
 }
 

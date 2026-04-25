@@ -259,22 +259,20 @@ function routeResearchStatus(msg: IncomingMessage, deps: MessageRouterDeps): voi
 // ─── /research <topic> ───────────────────────────────────────────────────────
 
 function routeResearchCommand(msg: IncomingMessage, deps: MessageRouterDeps): void {
-  const researchParseResult = parseResearchCommand(msg.text);
-
-  if (!researchParseResult.ok) {
-    deps.telegram.sendMessage(msg.chatId, researchParseResult.error).catch((parseErr: unknown) => {
-      console.error('[router] Failed to send /research parse error:', parseErr);
-    });
-    return;
-  }
-
-  const { topic, prompt, sourceHints, generateAudio, generateVideo } = researchParseResult.value;
-
+  // Quota is the first gate: fail fast before parsing or job construction.
   deps.quotaTracker.hasQuota(5).then(async (hasEnoughQuota) => {
     if (!hasEnoughQuota) {
       await deps.telegram.sendMessage(msg.chatId, 'Cannot enqueue research job: daily chat quota too low (need at least 5 remaining).');
       return;
     }
+
+    const researchParseResult = parseResearchCommand(msg.text);
+    if (!researchParseResult.ok) {
+      await deps.telegram.sendMessage(msg.chatId, researchParseResult.error);
+      return;
+    }
+
+    const { topic, prompt, sourceHints, generateAudio, generateVideo } = researchParseResult.value;
 
     const researchJobDataResult = makeResearchJobData({
       topic,

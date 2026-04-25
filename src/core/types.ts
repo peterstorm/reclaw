@@ -300,6 +300,9 @@ export function makeRecurringReminderJob(params: {
   if (!hasCron && !hasInterval) {
     return err('Either intervalMs or cronPattern must be provided.');
   }
+  if (hasCron && hasInterval) {
+    return err('Cannot specify both intervalMs and cronPattern for a recurring reminder.');
+  }
 
   if (hasInterval && !hasCron) {
     if (!Number.isInteger(params.intervalMs!) || params.intervalMs! < 60_000) {

@@ -8,9 +8,8 @@ import type { Queues } from './infra/queue.js';
 import type { SkillWatcher } from './infra/skill-watcher.js';
 import type { SessionStore } from './infra/session-store.js';
 import type { CronScheduler } from './orchestration/scheduler.js';
-import type { Workers } from './orchestration/worker.js';
-import type { Result, ScheduledJob, ChatJob, JobResult } from './core/types.js';
-import type { ResearchJobLike } from './orchestration/research-handler.js';
+import type { Workers, createWorkers } from './orchestration/worker.js';
+import type { Result, ScheduledJob } from './core/types.js';
 import type { runClaude, runClaudeStreaming } from './infra/claude-subprocess.js';
 import type { handleChatJob } from './orchestration/chat-handler.js';
 import type { handleScheduledJob } from './orchestration/scheduled-handler.js';
@@ -31,19 +30,7 @@ export type BootstrapDeps = {
     isJobKnown: (jobId: string) => Promise<boolean>,
     isJobCompleted: (jobId: string) => Promise<boolean>,
   ) => CronScheduler;
-  readonly createWorkersFn?: (deps: {
-    redisConnection: { host: string; port: number };
-    chatHandler: (job: ChatJob) => Promise<JobResult>;
-    scheduledHandler: (job: ScheduledJob) => Promise<JobResult>;
-    telegram: TelegramAdapter;
-    config: AppConfig;
-    researchHandler: (job: ResearchJobLike) => Promise<{ hubPath: string | null; topic: string }>;
-    reminderHandler: (job: import('./core/types.js').ReminderJob) => Promise<JobResult>;
-    recurringReminderHandler: (job: import('./core/types.js').RecurringReminderJob) => Promise<JobResult>;
-    podcastHandler: (job: import('./core/types.js').PodcastJob) => Promise<JobResult>;
-    onScheduledJobCompleted: (job: ScheduledJob) => void;
-    markScheduledJobCompleted: (jobId: string) => Promise<void>;
-  }) => Workers;
+  readonly createWorkersFn?: typeof createWorkers;
   readonly runClaudeFn?: typeof runClaude;
   readonly runClaudeStreamingFn?: typeof runClaudeStreaming;
   readonly handleChatJobFn?: typeof handleChatJob;
@@ -107,8 +94,7 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
 
   const workerModule = await import('./orchestration/worker.js');
   const createWorkersFn: typeof workerModule.createWorkers =
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (injected.createWorkersFn as any) ?? workerModule.createWorkers;
+    injected.createWorkersFn ?? workerModule.createWorkers;
 
   const runClaudeFn: typeof runClaude =
     injected.runClaudeFn ??
@@ -358,12 +344,22 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
   });
 
   // ── 9. Wire Telegram onMessage → message router ────────────────────────────
-  telegram.onMessage((msg) => routeMessage(msg, {
-    telegram,
-    sessionStore,
-    queues,
-    quotaTracker: quotaTracker.tracker,
-  }));
+  // routeMessage is fire-and-forget (returns void) and catches its own async
+  // errors internally. This try/catch guards against synchronous throws in
+  // command parsing or dep wiring so a single bad message never silently drops.
+  telegram.onMessage((msg) => {
+    try {
+      routeMessage(msg, {
+        telegram,
+        sessionStore,
+        queues,
+        quotaTracker: quotaTracker.tracker,
+      });
+    } catch (err) {
+      console.error(`[telegram] routeMessage failed for chatId=${msg.chatId}:`, err);
+      telegram.sendMessage(msg.chatId, '⚠️ Failed to process your message. Try again.').catch(() => {});
+    }
+  });
 
   // ── 10. Start skill watcher and wait for initial load ───────────────────────
   // Must complete before workers start so the skill registry is populated

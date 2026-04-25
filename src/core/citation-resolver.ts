@@ -34,6 +34,28 @@ export type PassageToSourceMap = ReadonlyMap<number, number>;
 // ─── extractPassageToSourceMap ────────────────────────────────────────────────
 
 /**
+ * Index in a NotebookLM passage tuple where the source-reference subtree lives.
+ * Structure observed in responses: `passage[SOURCE_REF_INDEX][0][0][0]` is the
+ * source UUID. This shape is undocumented and may change upstream.
+ */
+const SOURCE_REF_INDEX = 5;
+
+/**
+ * Walk a NotebookLM passage entry to its source UUID using structural guards
+ * at each step. Returns `undefined` if any layer is missing or malformed —
+ * any upstream shape change degrades to "no mapping" rather than a runtime crash.
+ */
+function extractSourceIdFromPassage(entry: unknown): string | undefined {
+  if (!Array.isArray(entry)) return undefined;
+  const sourceRef = entry[SOURCE_REF_INDEX];
+  if (!Array.isArray(sourceRef) || !Array.isArray(sourceRef[0]) || !Array.isArray(sourceRef[0][0])) {
+    return undefined;
+  }
+  const id = sourceRef[0][0][0];
+  return typeof id === 'string' ? id : undefined;
+}
+
+/**
  * Extract a passage→source mapping from NotebookLM rawData.
  *
  * NotebookLM answers contain [N] markers that are passage references (1-indexed).
@@ -60,18 +82,11 @@ export function extractPassageToSourceMap(
 
   const passages: unknown[] = rawData[1];
   for (let i = 0; i < passages.length; i++) {
-    const entry = passages[i];
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const sourceId = (entry as any)?.[5]?.[0]?.[0]?.[0];
-      if (typeof sourceId === 'string') {
-        const sourceIndex = sourceIdToIndex.get(sourceId);
-        if (sourceIndex !== undefined) {
-          map.set(i + 1, sourceIndex); // passage numbers are 1-indexed
-        }
-      }
-    } catch {
-      // Skip entries with unexpected structure
+    const sourceId = extractSourceIdFromPassage(passages[i]);
+    if (sourceId === undefined) continue;
+    const sourceIndex = sourceIdToIndex.get(sourceId);
+    if (sourceIndex !== undefined) {
+      map.set(i + 1, sourceIndex); // passage numbers are 1-indexed
     }
   }
 

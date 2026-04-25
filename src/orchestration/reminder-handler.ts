@@ -15,7 +15,12 @@ export type ReminderDeps = {
  */
 export async function handleReminderJob(job: ReminderJob, deps: ReminderDeps): Promise<JobResult> {
   const message = `\u{23F0} Reminder: ${job.text}`;
-  await deps.telegram.sendMessage(job.chatId, message);
+  try {
+    await deps.telegram.sendMessage(job.chatId, message);
+  } catch (err) {
+    console.error(`[reminder] Send failed for chatId=${job.chatId}, jobId=${job.id}:`, err);
+    throw err;
+  }
   return jobResultOk(message);
 }
 
@@ -25,6 +30,11 @@ export async function handleReminderJob(job: ReminderJob, deps: ReminderDeps): P
  */
 export async function handleRecurringReminderJob(job: RecurringReminderJob, deps: ReminderDeps): Promise<JobResult> {
   const message = `\u{1F501} Recurring: ${job.text}`;
-  await deps.telegram.sendMessage(job.chatId, message);
+  try {
+    await deps.telegram.sendMessage(job.chatId, message);
+  } catch (err) {
+    console.error(`[reminder] Recurring send failed for chatId=${job.chatId}, jobId=${job.id}:`, err);
+    throw err;
+  }
   return jobResultOk(message);
 }

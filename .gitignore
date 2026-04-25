@@ -4,3 +4,5 @@ node_modules/
 dist/
 trigger-skill.ts
 credentials.json
+credentials.json.bak
+credentials.json.*
