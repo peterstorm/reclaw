@@ -49,7 +49,20 @@ type ActivitySummary = {
   readonly lapSplits: readonly LapSplit[] | null;
   readonly associatedWorkoutId: number | null;
   readonly associatedWorkout: AssociatedWorkout | null;
+  readonly completedSets: readonly CompletedSet[] | null;
   readonly raw: Record<string, unknown>;
+};
+
+type CompletedSet = {
+  readonly setIndex: number;
+  readonly wktStepIndex: number | null;
+  readonly setType: string;
+  readonly category: string | null;
+  readonly exerciseName: string | null;
+  readonly reps: number | null;
+  readonly weightKg: number | null;
+  readonly durationSeconds: number | null;
+  readonly startTime: string | null;
 };
 
 type AssociatedWorkout = {
@@ -261,6 +274,7 @@ const extractActivity = (raw: Record<string, unknown>): ActivitySummary => {
     lapSplits: null,
     associatedWorkoutId: metadata?.associatedWorkoutId as number ?? null,
     associatedWorkout: null,
+    completedSets: null,
     raw,
   };
 };
@@ -388,6 +402,35 @@ const extractAssociatedWorkout = (raw: Record<string, unknown>): AssociatedWorko
     steps,
   };
 };
+
+const extractCompletedSets = (raw: Record<string, unknown>): readonly CompletedSet[] | null => {
+  const sets = raw.exerciseSets as Array<Record<string, unknown>> | undefined;
+  if (!sets?.length) return null;
+  return sets.map((s, i) => {
+    const exercises = s.exercises as Array<Record<string, unknown>> | undefined;
+    const primary = exercises?.[0];
+    const weightG = s.weight as number | null | undefined;
+    return {
+      setIndex: i,
+      wktStepIndex: (s.wktStepIndex as number | null | undefined) ?? null,
+      setType: (s.setType as string | undefined) ?? "UNKNOWN",
+      category: (primary?.category as string | undefined) ?? null,
+      exerciseName: (primary?.name as string | undefined) ?? null,
+      reps: (s.repetitionCount as number | null | undefined) ?? null,
+      weightKg: weightG != null && weightG > 0 ? weightG / 1000 : (weightG === 0 ? 0 : null),
+      durationSeconds: (s.duration as number | null | undefined) ?? null,
+      startTime: (s.startTime as string | undefined) ?? null,
+    };
+  });
+};
+
+const STRENGTH_ACTIVITY_TYPES = new Set([
+  "strength_training",
+  "hiit",
+  "fitness_equipment",
+  "indoor_cardio",
+  "training",
+]);
 
 // --- Main ---
 
@@ -523,7 +566,21 @@ async function main(): Promise<void> {
           }
         }
 
-        activities.push({ ...activity, hrTimeSeries, lapSplits, associatedWorkout });
+        // Fetch per-set actuals (reps + weight) for strength-style activities
+        let completedSets: readonly CompletedSet[] | null = null;
+        if (STRENGTH_ACTIVITY_TYPES.has(activity.activityType)) {
+          try {
+            await delay(300);
+            const setsUrl = `${client.url.ACTIVITY}${act.activityId as number}/exerciseSets`;
+            const setsRaw = await client.get<Record<string, unknown>>(setsUrl);
+            completedSets = extractCompletedSets(setsRaw);
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            console.error(`[WARN] Failed to fetch exerciseSets for activity ${act.activityId}: ${msg}`);
+          }
+        }
+
+        activities.push({ ...activity, hrTimeSeries, lapSplits, associatedWorkout, completedSets });
       } catch {
         // Fall back to summary data
         activities.push(extractActivity(act));
