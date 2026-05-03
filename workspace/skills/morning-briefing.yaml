@@ -73,6 +73,16 @@ promptTemplate: |
   Flag any early morning meetings that would affect the 07:30 commute.
   If the result is empty `[]`, skip this section silently.
 
+  **Step 3b — dotslash.dev contact form:** Check for new submissions to the dotslash.dev contact form (saved on the PVC in the dotslash-dev k3s deployment):
+  ```
+  bun /home/peterstorm/dev/claude-plugins/reclaw/scripts/dotslash-contacts.ts
+  ```
+  Returns a JSON array of submissions newer than the last briefing run (the script tracks state at `~/.cache/reclaw/dotslash-contacts-last.txt`). For each entry, surface a short block with:
+  - Time received (convert UTC `timestamp` to Europe/Copenhagen, e.g. "yesterday 22:14")
+  - Sender email
+  - The full message (or first 200 chars + "…" if very long)
+  Frame these as leads / things to follow up on, not buried in the day overview. If the array is `[]`, skip this section silently.
+
   **Step 4 — Day overview:** Include:
   - The calendar events from step 2
   - Key priorities or tasks from the Obsidian vault
