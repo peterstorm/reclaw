@@ -13,6 +13,10 @@ export type PromptContext = {
   readonly dayOfWeek: string;
   readonly personality: string;
   readonly userMessage?: string; // for chat jobs
+  readonly latitude?: number;
+  readonly longitude?: number;
+  readonly timezone?: string;
+  readonly locationName?: string;
 };
 
 // ─── Pure Functions ───────────────────────────────────────────────────────────
@@ -20,7 +24,8 @@ export type PromptContext = {
 /**
  * Interpolate a skill prompt template with context variables.
  * Variables are in {{variable}} format. Supported: date, dayOfWeek,
- * personality, userMessage. Unknown variables are left unchanged.
+ * personality, userMessage, latitude, longitude, timezone, locationName.
+ * Unknown variables are left unchanged.
  */
 export function buildPrompt(template: string, context: PromptContext): string {
   const vars: Record<string, string> = {
@@ -30,6 +35,18 @@ export function buildPrompt(template: string, context: PromptContext): string {
   };
   if (context.userMessage !== undefined) {
     vars['userMessage'] = context.userMessage;
+  }
+  if (context.latitude !== undefined) {
+    vars['latitude'] = String(context.latitude);
+  }
+  if (context.longitude !== undefined) {
+    vars['longitude'] = String(context.longitude);
+  }
+  if (context.timezone !== undefined) {
+    vars['timezone'] = context.timezone;
+  }
+  if (context.locationName !== undefined) {
+    vars['locationName'] = context.locationName;
   }
 
   return template.replace(/\{\{(\w+)\}\}/g, (match, key: string) => {

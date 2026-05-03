@@ -20,6 +20,12 @@ export const AppConfigSchema = z.object({
   googleEmail: z.string().email().optional(),
   googlePassword: z.string().optional(),
   obsidianVaultPath: z.string().optional(),
+  // Location for skills that fetch weather, sun times, etc. Defaults to
+  // Copenhagen so existing behavior is preserved when env vars are unset.
+  latitude: z.number().min(-90).max(90).default(55.665),
+  longitude: z.number().min(-180).max(180).default(12.57),
+  timezone: z.string().default('Europe/Copenhagen'),
+  locationName: z.string().default('Copenhagen'),
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;
@@ -39,6 +45,24 @@ function parseNumericEnv(
   const n = Number(raw);
   if (Number.isNaN(n) || !Number.isInteger(n)) {
     errors.push(`${key}: must be a valid integer, got "${raw}"`);
+    return undefined;
+  }
+  return n;
+}
+
+/**
+ * Parse a float env var. Returns the value, undefined if not set, or pushes
+ * an error if set but unparseable.
+ */
+function parseFloatEnv(
+  key: string,
+  raw: string | undefined,
+  errors: string[],
+): number | undefined {
+  if (raw === undefined || raw === '') return undefined;
+  const n = Number(raw);
+  if (Number.isNaN(n)) {
+    errors.push(`${key}: must be a valid number, got "${raw}"`);
     return undefined;
   }
   return n;
@@ -96,6 +120,10 @@ export function parseEnvToRaw(
     googleEmail: env['GOOGLE_EMAIL'],
     googlePassword: env['GOOGLE_PASSWORD'],
     obsidianVaultPath: env['OBSIDIAN_VAULT_PATH'],
+    latitude: parseFloatEnv('LATITUDE', env['LATITUDE'], errors),
+    longitude: parseFloatEnv('LONGITUDE', env['LONGITUDE'], errors),
+    timezone: env['TZ_NAME'] ?? env['TZ'],
+    locationName: env['LOCATION_NAME'],
   };
   return { raw, errors };
 }

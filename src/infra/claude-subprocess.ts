@@ -171,6 +171,13 @@ export function parseStreamJsonOutput(rawOutput: string): ParsedClaudeOutput {
 // ─── Subprocess runner (imperative shell) ────────────────────────────────────
 
 /**
+ * Default spawn implementation, resolved lazily so tests that don't run under
+ * Bun never touch `Bun.spawn` (every test injects `_spawn`).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const getDefaultSpawn = (): SpawnFn => Bun.spawn as unknown as SpawnFn;
+
+/**
  * Spawn a fresh `claude -p` subprocess per job.
  *
  * FR-007: Fresh subprocess per job for isolation.
@@ -183,9 +190,7 @@ export function parseStreamJsonOutput(rawOutput: string): ParsedClaudeOutput {
 export async function runClaude(options: ClaudeOptions): Promise<ClaudeResult> {
   const { prompt, cwd, permissionFlags, timeoutMs, env, resumeSessionId, _spawn } = options;
 
-  // Allow injecting a spawn function for tests; default to Bun.spawn at runtime.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const spawnFn: SpawnFn = _spawn ?? (Bun.spawn as unknown as SpawnFn);
+  const spawnFn: SpawnFn = _spawn ?? getDefaultSpawn();
 
   const args = [
     'claude',
@@ -222,6 +227,12 @@ export async function runClaude(options: ClaudeOptions): Promise<ClaudeResult> {
       timedOut: false,
     };
   }
+
+  // Drain stderr concurrently with stdout. If we waited until after the child
+  // exits, a >64KB stderr write would block the child on its pipe and we'd
+  // hang forever waiting for `proc.exited`. The .catch swallows late errors
+  // from kill() closing the stream.
+  const stderrPromise: Promise<string> = new Response(proc.stderr).text().catch(() => '');
 
   // Write prompt to stdin and close it
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -272,13 +283,8 @@ export async function runClaude(options: ClaudeOptions): Promise<ClaudeResult> {
   }
 
   if (exitCode !== 0) {
-    // Collect stderr for diagnostics — but do NOT include in user-facing messages
-    let stderrText = '';
-    try {
-      stderrText = await new Response(proc.stderr).text();
-    } catch {
-      // ignore
-    }
+    // stderr was drained concurrently above — never include in user-facing messages
+    const stderrText = await stderrPromise;
     console.log(`[claude] Subprocess failed exit=${exitCode} duration=${durationMs}ms`);
     return {
       ok: false,
@@ -309,8 +315,7 @@ export async function runClaudeStreaming(
 ): Promise<ClaudeResult> {
   const { prompt, cwd, permissionFlags, timeoutMs, env, resumeSessionId, _spawn } = options;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const spawnFn: SpawnFn = _spawn ?? (Bun.spawn as unknown as SpawnFn);
+  const spawnFn: SpawnFn = _spawn ?? getDefaultSpawn();
 
   const args = [
     'claude',
@@ -339,6 +344,9 @@ export async function runClaudeStreaming(
   } catch (spawnErr) {
     return { ok: false, error: `Failed to spawn claude: ${String(spawnErr)}`, timedOut: false };
   }
+
+  // Drain stderr concurrently with stdout (see runClaude for rationale).
+  const stderrPromise: Promise<string> = new Response(proc.stderr).text().catch(() => '');
 
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -458,12 +466,7 @@ export async function runClaudeStreaming(
   }
 
   if (exitCode !== 0) {
-    let stderrText = '';
-    try {
-      stderrText = await new Response(proc.stderr).text();
-    } catch {
-      // ignore
-    }
+    const stderrText = await stderrPromise;
     console.log(`[claude] Streaming subprocess failed exit=${exitCode} duration=${durationMs}ms`);
     return { ok: false, error: `claude exited with code ${exitCode}: ${stderrText.trim()}`, timedOut: false };
   }

@@ -95,6 +95,10 @@ export async function handleScheduledJob(job: ScheduledJob, deps: ScheduledDeps)
     date: formatDate(now),
     dayOfWeek: getDayOfWeek(now),
     personality,
+    latitude: deps.config.latitude,
+    longitude: deps.config.longitude,
+    timezone: deps.config.timezone,
+    locationName: deps.config.locationName,
   });
 
   // 5. Get permission flags for scheduled profile (pure, FR-011)

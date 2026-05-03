@@ -1,5 +1,5 @@
 import { match } from 'ts-pattern';
-import { makeTelegramUserId, makeChatJob, makeJobId, makePodcastJob, makeReminderJob, makeRecurringReminderJob } from '../core/types.js';
+import { makeTelegramUserId, makeChatJob, makeJobId, makePodcastJob, makeReminderJob, makeRecurringReminderJob, makeScheduledJob, makeSkillId, type SkillRegistry } from '../core/types.js';
 import { parseRemindCommand, isRemindListCommand, parseRemindCancelCommand, formatReminderList, formatReminderConfirmation } from '../core/reminder.js';
 import { parseResearchCommand } from '../core/research-request.js';
 import { makeResearchJobData } from '../core/research-types.js';
@@ -24,6 +24,8 @@ export type MessageRouterDeps = {
   readonly sessionStore: SessionStore;
   readonly queues: Queues;
   readonly quotaTracker: QuotaTracker;
+  /** Resolved fresh on each call so hot-reloaded skills are visible. */
+  readonly getSkillRegistry?: () => SkillRegistry;
 };
 
 // ─── Command Discriminated Union ─────────────────────────────────────────────
@@ -34,6 +36,8 @@ type Command =
   | { readonly kind: 'research-status' }
   | { readonly kind: 'research' }
   | { readonly kind: 'podcast' }
+  | { readonly kind: 'status' }
+  | { readonly kind: 'run' }
   | { readonly kind: 'help' }
   | { readonly kind: 'chat' };
 
@@ -44,9 +48,11 @@ export function parseCommandKind(text: string): Command {
   if (trimmed.startsWith('/remind')) return { kind: 'remind' };
   const lower = trimmed.toLowerCase();
   if (lower === '/help') return { kind: 'help' };
+  if (lower === '/status') return { kind: 'status' };
   if (lower === '/research-status') return { kind: 'research-status' };
   if (lower.startsWith('/research')) return { kind: 'research' };
   if (lower.startsWith('/podcast')) return { kind: 'podcast' };
+  if (lower.startsWith('/run')) return { kind: 'run' };
   return { kind: 'chat' };
 }
 
@@ -76,6 +82,8 @@ export function routeMessage(msg: IncomingMessage, deps: MessageRouterDeps): voi
     .with({ kind: 'research-status' }, () => routeResearchStatus(msg, deps))
     .with({ kind: 'research' }, () => routeResearchCommand(msg, deps))
     .with({ kind: 'podcast' }, () => routePodcastCommand(msg, deps))
+    .with({ kind: 'status' }, () => routeStatusCommand(msg, deps))
+    .with({ kind: 'run' }, () => routeRunCommand(msg, deps))
     .with({ kind: 'chat' }, () => {
       const replyRouting = msg.replyToMessageId !== undefined
         ? deps.sessionStore.getMessageSession(msg.replyToMessageId).then((sessionId) => {
@@ -324,6 +332,8 @@ const HELP_TEXT = [
   '',
   '/help — Show this message',
   '/new — Clear session, start fresh conversation',
+  '/status — Queue depths, uptime, redis health',
+  '/run <skill-id> — Manually trigger a scheduled skill',
   '',
   '/remind <duration|time> <message> — Set a one-shot reminder',
   '/remind every <interval|day> [at <time>] <message> — Recurring reminder',
@@ -396,5 +406,130 @@ function routePodcastCommand(msg: IncomingMessage, deps: MessageRouterDeps): voi
       deps.telegram.sendMessage(msg.chatId, 'Failed to enqueue podcast job. Please try again.').catch((e: unknown) => {
         console.error('[router] Failed to send podcast error notification:', e);
       });
+    });
+}
+
+// ─── /status — operator visibility ───────────────────────────────────────────
+
+function formatUptime(seconds: number): string {
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h ${m}m`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+function routeStatusCommand(msg: IncomingMessage, deps: MessageRouterDeps): void {
+  (async () => {
+    const [chatCounts, scheduledCounts, reminderCounts, researchCounts, podcastCounts] = await Promise.all([
+      deps.queues.chat.getJobCounts('wait', 'active', 'failed', 'delayed'),
+      deps.queues.scheduled.getJobCounts('wait', 'active', 'failed', 'delayed'),
+      deps.queues.reminder.getJobCounts('wait', 'active', 'failed', 'delayed'),
+      deps.queues.research.getJobCounts('wait', 'active', 'failed', 'delayed'),
+      deps.queues.podcast.getJobCounts('wait', 'active', 'failed', 'delayed'),
+    ]);
+
+    let redisStatus = 'unreachable';
+    try {
+      const client = await deps.queues.chat.client;
+      const pingStart = Date.now();
+      await client.ping();
+      redisStatus = `${Date.now() - pingStart}ms`;
+    } catch (err) {
+      console.error('[router] /status: redis ping failed:', err);
+    }
+
+    const skillCount = deps.getSkillRegistry !== undefined
+      ? deps.getSkillRegistry().size
+      : null;
+
+    const fmtCounts = (c: { wait?: number; active?: number; failed?: number; delayed?: number }): string =>
+      `${c.wait ?? 0}/${c.active ?? 0}/${c.failed ?? 0}/${c.delayed ?? 0}`;
+
+    const lines = [
+      'Reclaw status',
+      `Uptime: ${formatUptime(Math.floor(process.uptime()))}`,
+      `Redis: ${redisStatus}`,
+      ...(skillCount !== null ? [`Skills loaded: ${skillCount}`] : []),
+      '',
+      'Queues (waiting/active/failed/delayed)',
+      `chat       ${fmtCounts(chatCounts)}`,
+      `scheduled  ${fmtCounts(scheduledCounts)}`,
+      `reminder   ${fmtCounts(reminderCounts)}`,
+      `research   ${fmtCounts(researchCounts)}`,
+      `podcast    ${fmtCounts(podcastCounts)}`,
+    ];
+
+    await deps.telegram.sendMessage(msg.chatId, lines.join('\n'));
+  })().catch((err: unknown) => {
+    console.error('[router] /status failed:', err);
+    deps.telegram.sendMessage(msg.chatId, 'Failed to retrieve status.').catch(() => {});
+  });
+}
+
+// ─── /run <skill-id> — manual skill trigger ──────────────────────────────────
+
+function routeRunCommand(msg: IncomingMessage, deps: MessageRouterDeps): void {
+  if (deps.getSkillRegistry === undefined) {
+    deps.telegram.sendMessage(msg.chatId, 'Skill registry not available — /run is disabled.').catch(() => {});
+    return;
+  }
+
+  const parts = msg.text.trim().split(/\s+/);
+  const rawSkillId = parts[1];
+  if (!rawSkillId || rawSkillId === '') {
+    deps.telegram.sendMessage(msg.chatId, 'Usage: /run <skill-id>\nUse /status to see how many skills are loaded; check workspace/skills/ for IDs.').catch(() => {});
+    return;
+  }
+
+  const skillIdResult = makeSkillId(rawSkillId);
+  if (!skillIdResult.ok) {
+    deps.telegram.sendMessage(msg.chatId, `Invalid skill id "${rawSkillId}": ${skillIdResult.error}`).catch(() => {});
+    return;
+  }
+
+  const registry = deps.getSkillRegistry();
+  const skill = registry.get(skillIdResult.value);
+  if (skill === undefined) {
+    const known = [...registry.keys()].slice(0, 20).join(', ');
+    deps.telegram.sendMessage(msg.chatId, `Unknown skill "${rawSkillId}". Known: ${known}`).catch(() => {});
+    return;
+  }
+
+  const triggeredAt = new Date();
+  triggeredAt.setMilliseconds(0);
+  const triggeredIso = triggeredAt.toISOString();
+  const validUntilIso = new Date(triggeredAt.getTime() + skill.validityWindowMinutes * 60 * 1000).toISOString();
+
+  // Distinct ID prefix so a manual trigger never collides with the cron-fired
+  // job ID for the same skill at the same minute.
+  const sanitized = triggeredIso.replaceAll(':', '-');
+  const jobIdRaw = `scheduled:${skill.id}:run:${sanitized}-${crypto.randomUUID().slice(0, 8)}`;
+  const jobIdResult = makeJobId(jobIdRaw);
+  if (!jobIdResult.ok) {
+    console.error(`[router] /run: failed to make jobId: ${jobIdResult.error}`);
+    deps.telegram.sendMessage(msg.chatId, 'Failed to create job.').catch(() => {});
+    return;
+  }
+
+  const scheduledJobResult = makeScheduledJob({
+    id: jobIdResult.value,
+    skillId: skill.id,
+    triggeredAt: triggeredIso,
+    validUntil: validUntilIso,
+  });
+
+  if (!scheduledJobResult.ok) {
+    console.error(`[router] /run: failed to build ScheduledJob: ${scheduledJobResult.error}`);
+    deps.telegram.sendMessage(msg.chatId, 'Failed to build scheduled job.').catch(() => {});
+    return;
+  }
+
+  deps.queues.enqueueScheduled(scheduledJobResult.value)
+    .then(() => deps.telegram.sendMessage(msg.chatId, `Triggered "${skill.id}" — output will arrive in chat when it completes.`))
+    .catch((err: unknown) => {
+      console.error('[router] /run: enqueue failed:', err);
+      deps.telegram.sendMessage(msg.chatId, 'Failed to enqueue manual run.').catch(() => {});
     });
 }

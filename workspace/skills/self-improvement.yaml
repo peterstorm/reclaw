@@ -41,6 +41,17 @@ promptTemplate: |
   **Cortex memory:**
   Run `/recall` with queries like "reclaw architecture", "reclaw bug", "reclaw improvement", "feature idea" to surface relevant context.
 
+  ## Step 2b — Verify carryover status
+
+  For each item flagged "still open" or "carryover" in the previous week's improvement note, confirm by reading the cited file/line that it is actually unfixed. If a fix shipped, mark it as resolved this week instead of restating it. Build a small carryover table with a "Verified" column showing how you confirmed (e.g. "stderr still drained late, only on non-zero exit", "no removeOnComplete in retryOptions", "literal 55.665/12.57 in YAML").
+
+  ## Step 2c — Detect stagnation
+
+  If ≥80% of carryover items from the previous note are still open this week, do NOT re-list each fix in detail (that becomes broken-record output). Instead:
+  - Condense them to a one-line table with file/line references and "Verified" evidence.
+  - Spend the body of the note on **why nothing shipped** and **what changes the cadence** — e.g. recommend a single batch debt-clearing session over more individual recommendations.
+  - Pivot the Priority Recommendation to the batch rather than picking a "next single item".
+
   ## Step 3 — External Inspiration
 
   Search the web for inspiration and emerging patterns:

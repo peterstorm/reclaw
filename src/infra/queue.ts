@@ -40,7 +40,7 @@ export type Queues = {
   readonly enqueuePodcast: (job: PodcastJob) => Promise<void>;
 };
 
-// ─── Retry configuration (FR-014) ────────────────────────────────────────────
+// ─── Retry + retention configuration (FR-014, FR-031) ────────────────────────
 
 /**
  * Exponential backoff strategy: 30s, 60s, 120s for attempts 1, 2, 3.
@@ -57,7 +57,45 @@ const retryOptions = {
   },
 } as const;
 
+/**
+ * Long-delay retry for the research queue: 2min → 4min → 8min. Transient
+ * NotebookLM/network failures need more time to clear than the standard 30s.
+ */
+const researchRetryOptions = {
+  attempts: 3,
+  backoff: {
+    type: 'exponential' as const,
+    delay: 120_000,
+  },
+} as const;
+
+/**
+ * Default retention — keep recent successes for diagnostics, keep failures
+ * longer so dead-letter jobs don't disappear before the user reads them.
+ * Without these, completed/failed jobs accumulate in Redis indefinitely.
+ */
+const defaultRetention = {
+  removeOnComplete: { age: 24 * 3600, count: 100 },
+  removeOnFail: { age: 7 * 24 * 3600, count: 200 },
+} as const;
+
 // ─── Factory ──────────────────────────────────────────────────────────────────
+
+/**
+ * Build a Queue with consistent error logging. Centralizes the
+ * `new Queue(...)` + `on('error')` pair that was previously copy-pasted.
+ */
+function createQueue(
+  name: string,
+  connection: { host: string; port: number },
+  defaultJobOptions: object,
+): Queue {
+  const q = new Queue(name, { connection, defaultJobOptions });
+  q.on('error', (err) => {
+    console.error(`[queue:${name}] error`, err);
+  });
+  return q;
+}
 
 /**
  * Create BullMQ queues for chat and scheduled jobs.
@@ -70,21 +108,8 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
     port: redisConnection.port,
   };
 
-  const chat = new Queue('reclaw-chat', {
-    connection,
-    defaultJobOptions: retryOptions,
-  });
-  chat.on('error', (err) => {
-    console.error('[queue:chat] error', err);
-  });
-
-  const scheduled = new Queue('reclaw-scheduled', {
-    connection,
-    defaultJobOptions: retryOptions,
-  });
-  scheduled.on('error', (err) => {
-    console.error('[queue:scheduled] error', err);
-  });
+  const chat = createQueue('reclaw-chat', connection, { ...retryOptions, ...defaultRetention });
+  const scheduled = createQueue('reclaw-scheduled', connection, { ...retryOptions, ...defaultRetention });
 
   const enqueueChat = async (job: ChatJob): Promise<void> => {
     await chat.add(job.id, job, { jobId: job.id });
@@ -125,13 +150,7 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
     return (await client.exists(`reclaw:sched-completed:${jobId}`)) > 0;
   };
 
-  const reminder = new Queue('reclaw-reminder', {
-    connection,
-    defaultJobOptions: retryOptions,
-  });
-  reminder.on('error', (err) => {
-    console.error('[queue:reminder] error', err);
-  });
+  const reminder = createQueue('reclaw-reminder', connection, { ...retryOptions, ...defaultRetention });
 
   const enqueueReminder = async (job: ReminderJob): Promise<void> => {
     await reminder.add(job.id, job, { jobId: job.id, delay: job.delayMs });
@@ -178,25 +197,14 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
   // BullMQ retries resume from the last successful checkpoint (SC-003).
   // Backoff: 2min → 4min → 8min — gives transient issues time to resolve.
 
-  const research = new Queue('reclaw-research', {
-    connection,
-    defaultJobOptions: {
-      attempts: 3,
-      backoff: { type: 'exponential' as const, delay: 120_000 },
-    },
-  });
-  research.on('error', (err) => {
-    console.error('[queue:research] error', err);
+  const research = createQueue('reclaw-research', connection, {
+    ...researchRetryOptions,
+    ...defaultRetention,
   });
 
   // ── Podcast queue (no retry — failure is final, like research) ──────────
 
-  const podcast = new Queue('reclaw-podcast', {
-    connection,
-  });
-  podcast.on('error', (err) => {
-    console.error('[queue:podcast] error', err);
-  });
+  const podcast = createQueue('reclaw-podcast', connection, defaultRetention);
 
   const enqueuePodcast = async (job: PodcastJob): Promise<void> => {
     await podcast.add(job.id, job, { jobId: job.id });

@@ -478,4 +478,52 @@ describe('runClaude', () => {
       expect(result.sessionId).toBeNull();
     }
   });
+
+  // Regression test: stderr must be drained concurrently with stdout. Previously
+  // stderr was only read in the non-zero-exit branch, so a >64KB stderr write
+  // from the child would block its `write(2)` indefinitely (parent's pipe
+  // buffer full) → child can't exit → `await proc.exited` hangs forever.
+  it('drains stderr on the success path (concurrent draining prevents pipe deadlock)', async () => {
+    const resultLine = JSON.stringify({ type: 'result', result: 'ok' });
+    const encoder = new TextEncoder();
+    let stderrPullCount = 0;
+
+    const spawn: SpawnFn = () => {
+      let resolveExited: (code: number) => void;
+      const exitedPromise = new Promise<number>((resolve) => {
+        resolveExited = resolve;
+      });
+      Promise.resolve().then(() => resolveExited!(0));
+
+      return {
+        stdin: { write: vi.fn().mockReturnValue(0), end: vi.fn(), flush: vi.fn() },
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode(resultLine));
+            controller.close();
+          },
+        }),
+        stderr: new ReadableStream({
+          pull(controller) {
+            stderrPullCount++;
+            controller.enqueue(encoder.encode('debug noise that the old code never read'));
+            controller.close();
+          },
+        }),
+        exited: exitedPromise,
+        kill: vi.fn(),
+      };
+    };
+
+    const result = await runClaude({
+      prompt: 'test',
+      cwd: '/workspace',
+      permissionFlags: [],
+      timeoutMs: 5000,
+      _spawn: spawn,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(stderrPullCount).toBeGreaterThan(0);
+  });
 });

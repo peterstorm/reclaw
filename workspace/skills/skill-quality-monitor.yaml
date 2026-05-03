@@ -37,8 +37,27 @@ promptTemplate: |
 
   - `/recall "skill-quality" --keyword --limit=50`
 
-  If recall returns nothing, the system is either healthy or the recorder
-  is disabled — respond with `ALL_CLEAR`.
+  ### Step 1b — Distinguish "healthy" from "no signal"
+
+  If recall returns 0 entries, do NOT immediately respond `ALL_CLEAR` —
+  the recorder may be broken (which is itself an anomaly worth alerting on).
+  Verify the recorder is functioning by grepping the cortex memory store
+  directly for any entries containing the literal "skill-quality":
+
+  ```
+  bun /home/peterstorm/.dotfiles/.claude/local-marketplace/plugins/cortex/engine/src/cli.ts list /home/peterstorm/dev/claude-plugins/reclaw/workspace --limit=200 2>/dev/null | grep -i "skill-quality" | head -20
+  ```
+
+  - If grep finds entries that recall missed → semantic-recall is degraded
+    (Gemini rate limit, embedding mismatch). Alert with: "skill-quality
+    recall failed — N entries exist but were not surfaced".
+  - If grep also finds nothing AND any scheduled skill should have run in
+    the last 7 days (i.e. the system isn't completely idle) → the recorder
+    pipeline is broken. Alert with: "skill-quality recorder produced zero
+    entries in 7 days — check infra/skill-quality.ts wiring or cortex CLI
+    path resolution".
+  - If grep finds nothing AND no scheduled skill ran (genuinely idle
+    system) → respond `ALL_CLEAR`.
 
   ## Step 2 — Group and triage
 

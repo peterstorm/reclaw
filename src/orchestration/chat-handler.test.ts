@@ -43,6 +43,10 @@ const makeConfig = (overrides: Record<string, unknown> = {}): AppConfig => ({
   claudeBinaryPath: 'claude',
   chatTimeoutMs: 3_600_000,
   scheduledTimeoutMs: 300_000,
+  latitude: 55.665,
+  longitude: 12.57,
+  timezone: 'Europe/Copenhagen',
+  locationName: 'Copenhagen',
   ...overrides,
 });
 

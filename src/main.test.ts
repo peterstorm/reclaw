@@ -21,6 +21,10 @@ const mockConfig: AppConfig = {
   claudeBinaryPath: 'claude',
   chatTimeoutMs: 120_000,
   scheduledTimeoutMs: 300_000,
+  latitude: 55.665,
+  longitude: 12.57,
+  timezone: 'Europe/Copenhagen',
+  locationName: 'Copenhagen',
 };
 
 // ─── Fake component builders ──────────────────────────────────────────────────

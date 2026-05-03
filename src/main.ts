@@ -366,6 +366,7 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
         sessionStore,
         queues,
         quotaTracker: quotaTracker.tracker,
+        getSkillRegistry: skillWatcher.getRegistry,
       });
     } catch (err) {
       console.error(`[telegram] routeMessage failed for chatId=${msg.chatId}:`, err);
@@ -454,6 +455,20 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
 
   process.once('SIGTERM', handleSignal);
   process.once('SIGINT', handleSignal);
+
+  // Top-level error handlers — without these, an unhandled rejection from any
+  // of the dozens of `.catch` chains (or a top-level await throw) tears the
+  // process down with whatever Node prints by default. systemd then crash-loops
+  // until StartLimitBurst (5 in 5min) trips. Log these explicitly so the cause
+  // survives in journalctl.
+  process.on('uncaughtException', (err) => {
+    console.error('[main] uncaughtException — exiting:', err);
+    process.exit(1);
+  });
+  process.on('unhandledRejection', (reason) => {
+    console.error('[main] unhandledRejection:', reason);
+    // Don't exit — this is recoverable; SIGTERM-driven shutdown still works.
+  });
 
   return shutdown;
 }
