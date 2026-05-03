@@ -52,18 +52,35 @@ promptTemplate: |
 
   **Always use these boundaries** when classifying time-in-zone, interpreting HR data, or referencing zones in analysis. Do not use arbitrary thresholds.
 
-  ## Step 3 — Check for recent fitness notes
+  ## Step 3 — Pull historical context (REQUIRED)
 
-  Look for the last 5 fitness notes for trend comparison:
+  **Never write a fitness note without first reading recent history.** Trend comparison and progressive-overload tracking are core to this skill — not optional flourishes. If today has no activity, you can skip this step; otherwise it is mandatory.
+
+  ### 3a. Recent fitness notes (general trend window)
+
   ```
-  ls -t ~/dev/notes/remotevault/personal/fitness/ 2>/dev/null | head -10
-  ```
-  If the fitness directory uses year/month structure, also check:
-  ```
-  find ~/dev/notes/remotevault/personal/fitness/ -name "*.md" -not -name "MOC.md" | sort -r | head -5
+  find ~/dev/notes/remotevault/personal/fitness/ -name "*.md" -not -name "MOC.md" | sort -r | head -7
   ```
 
-  Read the most recent 3 notes (if they exist) to extract recent metrics for comparison.
+  Read the most recent **5–7 notes** to extract daily metrics (sleep, HRV, RHR, VO2 max, training status, training load).
+
+  ### 3b. Last 3–5 runs (if today has a running activity)
+
+  Grep across the last ~30 days of fitness notes for run analyses:
+  ```
+  find ~/dev/notes/remotevault/personal/fitness/ -name "*.md" -newer $(date -d '30 days ago' +%Y-%m-%d 2>/dev/null) -o -name "*.md" | sort -r | head -30
+  ```
+  Open the most recent files until you have collected the last **3–5 runs** worth of: distance, avg pace, avg HR, HR zone distribution, pace:HR ratio, training effect, perceived exertion. This is the dataset for the run trend comparison in Step 4.
+
+  ### 3c. Last 5–10 CrossFit/strength sessions (if today has a CrossFit/strength activity)
+
+  Strength sessions happen 2–3×/week, so a 5-note window is too short. Walk back further — up to 30 days — and read every fitness note that contains a CrossFit/Strength Analysis section. For each previous session, extract:
+  - Date and session format (EMOM / AMRAP / For Time / Strength / Mixed)
+  - Per-movement load and reps from `completedSets` (e.g. "Back Squat: 5×5 @ 100kg", "Pull-ups: 4×8 strict")
+  - Total training load, anaerobic TE, duration, RPE/feel
+  - Movement patterns (lower-body barbell, gymnastics pulling, monostructural, etc.)
+
+  Build a small in-memory ledger of "movement → recent set/rep/load history" so you can answer **per-movement progressive-overload questions** in Step 4. If a movement appearing today also appears in a previous session, you must compare directly. If it's new (first appearance in 30 days), say so explicitly.
 
   ## Step 3.5 — Check if today's note already exists
 
@@ -144,10 +161,13 @@ promptTemplate: |
   - **Cadence**: Steps per minute if available
   - **Training effect**: Aerobic and anaerobic values and what they indicate
   - **VO2 max impact**: Did this run contribute to VO2 max estimation?
-  - **Trend comparison**: Compare pace, HR, and efficiency to recent runs from previous fitness notes:
-    - Is pace improving at the same HR? (aerobic development)
+  - **Trend comparison (REQUIRED)**: Using the last 3–5 runs collected in Step 3b, build an explicit comparison:
+    - Table or bullet list of: date · distance · avg pace · avg HR · pace:HR ratio · aerobic TE
+    - Is pace improving at the same HR? (aerobic development) — quantify the delta
     - Is HR drift increasing during runs? (potential fatigue)
     - Are training effects appropriate for the training phase?
+    - Call out the longest, fastest, and lowest-HR run in the window so progress (or regression) is visible at a glance
+    - If today is the first run in 30 days, say so explicitly instead of inventing a comparison
   - **Commentary**: Comprehensive, honest training analysis — don't hold back on detail:
     - Classify the run type based on HR zones and pace (easy/recovery, tempo, threshold, intervals, long run)
     - Evaluate whether the effort matched the likely training intent — e.g. was an "easy run" actually easy? Did HR stay in zone 2?
@@ -225,7 +245,21 @@ promptTemplate: |
 
   - **Subjective vs objective**: Compare RPE/feel against HR data. High RPE with moderate HR in CrossFit often means muscular fatigue rather than cardiovascular stress — important for running recovery context. If weights were heavy, a high RPE with low HR makes perfect sense (CNS/muscular load, not cardiovascular).
 
-  - **Trend comparison**: If previous CrossFit/strength notes exist in recent fitness notes, compare training load, anaerobic TE, and duration. Note weekly CrossFit load trend. If workout content is available across sessions, note movement pattern trends (e.g. "third heavy barbell session this week — consider bodyweight/conditioning focus next").
+  - **Progressive overload (REQUIRED when previous sessions exist)**: Using the per-movement ledger from Step 3c, compare today's `completedSets` against the most recent prior occurrences of the same movement. Be specific — this is the heart of strength tracking.
+    - **Per movement** that appears in both today and the recent window, output a one-liner:
+      `Back Squat: today 5×5 @ 105kg ← previous 5×5 @ 100kg (2026-04-26) — +5kg, top set rep speed unknown · ✅ overload`
+    - **Comparison rules** (apply in this order, pick the strongest one true):
+      1. **Heavier load at equal-or-higher reps** = clean progressive overload ✅
+      2. **Same load, more reps or more sets** = volume progression ✅
+      3. **Same load × same reps × same sets** = maintenance / consolidation (good if recent jump, stagnation if multi-week)
+      4. **Lighter load, fewer reps, or missed prescribed reps** = regression — flag and look for a cause (fatigue, low readiness, deload, illness, form focus)
+      5. **New movement (no prior in 30 days)** = baseline — record today's numbers as the new reference
+    - **Total tonnage** (sum of reps × weightKg across loaded movements) vs prior session of similar format. Rising tonnage at similar RPE is a strong overload signal; rising tonnage with rising RPE means the body is doing more work but feeling it.
+    - **Bodyweight / unloaded movements** (pull-ups, ring dips, T2B, push-ups, HSPU): track total reps completed and whether reps were prescribed-and-hit, scaled, or broken into smaller sets. Progress here = more unbroken reps, harder progression (e.g. strict vs kipping, deficit, weighted).
+    - **Conditioning benchmarks**: if today repeats a known WOD (Fran, Cindy, Murph, an EMOM the athlete has done before, etc.), explicitly compare score/time/rounds to the previous attempt.
+    - **Verdict line**: end the subsection with a one-sentence summary — "Net progression: overload on squat and pull-ups, maintenance on bench, regression on deadlift (likely Tuesday-run fatigue)."
+
+  - **Weekly load & movement trend**: Compare training load, anaerobic TE, and duration against the last 7–14 days of CrossFit/strength sessions. Note weekly CrossFit load trend and movement pattern bias (e.g. "third heavy barbell session this week — consider bodyweight/conditioning focus next").
 
   **CrossFit interaction note in Run Analysis:** If a CrossFit/strength session occurred on the same day or within 24h of a run, note the combined load in the Run Analysis commentary. Was the run before or after CrossFit? How did sequencing affect performance?
 
@@ -262,7 +296,12 @@ promptTemplate: |
 
   ## Step 6 — Store in cortex
 
-  Run `/remember`: "Fitness [date]: [concise summary of key metrics and any notable activities or trends]"
+  Run `/remember` with a concise daily summary: "Fitness [date]: [key metrics + notable activities or trends]".
+
+  Additionally, when today included strength work, store a second `/remember` entry capturing **per-movement progressive-overload signal** so future runs of this skill (and the running coach) can pull it back without re-deriving:
+  "Strength [date]: Back Squat 5×5 @ 105kg (+5kg vs 2026-04-26); Pull-ups 4×8 strict (+1 rep/set); Bench 3×5 @ 75kg (maintenance). Net: overload."
+
+  Keep it to one line. Skip the second entry if there were no loaded movements today.
 
   ## Output
 
