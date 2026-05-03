@@ -47,10 +47,19 @@ promptTemplate: |
 
   ## Step 2c — Detect stagnation
 
-  If ≥80% of carryover items from the previous note are still open this week, do NOT re-list each fix in detail (that becomes broken-record output). Instead:
-  - Condense them to a one-line table with file/line references and "Verified" evidence.
-  - Spend the body of the note on **why nothing shipped** and **what changes the cadence** — e.g. recommend a single batch debt-clearing session over more individual recommendations.
-  - Pivot the Priority Recommendation to the batch rather than picking a "next single item".
+  Trigger this step if EITHER:
+  - ≥80% of carryover items from the previous note are still open, OR
+  - any single carryover item has been open ≥3 weeks (count consecutive prior notes where it appears).
+
+  When triggered:
+  - Condense **carryover** to a one-line table per item with: file/line, "Verified" evidence, weeks-open, effort estimate. Do NOT re-write the fix details — they're in prior notes.
+  - New findings (Code Quality, Feature Ideas, Skill Improvements) still go in their normal sections in full detail. Stagnation only affects how carryover is rendered.
+  - Replace any narrative about "why nothing shipped" with **facts only**: total open items, sum of effort estimates to clear the register, smallest 3 items by effort, oldest 3 items by age. Let the user draw conclusions — do not introspect on user behavior.
+  - Pivot the Priority Recommendation to the batch (sum of small items into one session) rather than picking a "next single item".
+
+  ## Step 2d — Escalation
+
+  If Step 2c triggered for ≥2 consecutive notes (check the previous 2 improvement notes), do NOT add new Code Quality findings this week. Replace that section with a one-line note: "Frozen until carryover drops below threshold — see Step 2c table." Skill Improvements and Feature Ideas remain unfrozen.
 
   ## Step 3 — External Inspiration
 
