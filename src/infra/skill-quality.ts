@@ -35,6 +35,7 @@ export function createSkillQualityRecorder(
         `--priority=${memory.priority}`,
         `--tags=${memory.tags.join(',')}`,
       ];
+      if (memory.pinned) args.push('--pinned');
 
       const proc = Bun.spawn(['bun', ...args], {
         stdout: 'pipe',

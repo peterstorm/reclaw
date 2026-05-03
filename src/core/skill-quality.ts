@@ -34,6 +34,7 @@ export type SkillQualityMemory = {
   readonly content: string;
   readonly type: CortexMemoryType;
   readonly priority: number;
+  readonly pinned: boolean;
   readonly tags: ReadonlyArray<string>;
 };
 
@@ -93,10 +94,14 @@ export function toMemory(signal: SkillQualitySignal): SkillQualityMemory | null 
   if (!shouldRecord(signal.status)) return null;
   const type = TYPE_BY_STATUS[signal.status];
   if (type === null) return null;
+  // Pinned so cortex ai-prune does not archive them — the skill-quality-monitor
+  // reads these entries via /recall (active-only), and Haiku flags them as
+  // "redundant/granular/one-time" without it.
   return {
     content: describe(signal),
     type,
     priority: PRIORITY_BY_STATUS[signal.status],
+    pinned: true,
     tags: ['skill-quality', signal.skillId, signal.status],
   };
 }

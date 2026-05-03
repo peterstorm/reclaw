@@ -43,6 +43,7 @@ describe('toMemory', () => {
     expect(mem?.content).toContain('ALL_CLEAR');
     expect(mem?.content).toContain('morning-briefing');
     expect(mem?.content).toContain('1234ms');
+    expect(mem?.pinned).toBe(true);
   });
 
   it('produces a gotcha memory for claude_error including the reason', () => {
@@ -54,6 +55,7 @@ describe('toMemory', () => {
     expect(mem?.tags).toEqual(['skill-quality', skillId, 'claude_error']);
     expect(mem?.content).toContain('subprocess timed out after 300s');
     expect(mem?.priority).toBeGreaterThanOrEqual(7);
+    expect(mem?.pinned).toBe(true);
   });
 
   it('uses "unknown error" placeholder when errorMessage missing', () => {
@@ -66,5 +68,6 @@ describe('toMemory', () => {
     expect(mem?.type).toBe('gotcha');
     expect(mem?.content).toContain('missing from registry');
     expect(mem?.tags).toEqual(['skill-quality', skillId, 'skill_not_found']);
+    expect(mem?.pinned).toBe(true);
   });
 });
