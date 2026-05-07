@@ -26,6 +26,7 @@ A long-running Telegram-fronted personal agent. Reclaw routes messages, schedule
 
 - [Runtime model](#runtime-model)
 - [BullMQ + Redis](#bullmq--redis) — the durable backbone
+- [Workers](#workers) — the consumer side of every queue
 - [Other Redis-resident state](#other-redis-resident-state)
 - [Skills](#skills)
 - [Sessions & multi-turn](#sessions--multi-turn)
@@ -187,6 +188,149 @@ await queues.chat.clean(0, 0, 'failed');
 ```
 
 This is the only queue that gets drained — scheduled/reminder/research/podcast jobs are all crash-safe and resume normally.
+
+---
+
+## Workers
+
+Workers are the consumer side of every queue, defined in `src/orchestration/worker.ts` by `createWorkers(deps)`. One BullMQ `Worker` is constructed per queue, all at `concurrency: 1`, and the lifecycle of all five is bundled into a single `Workers = { start, stop }` interface.
+
+### The processor function
+
+Every worker is constructed the same way:
+
+```ts
+workerFactory(queueName, processor, { connection, concurrency, lockDuration, stalledInterval })
+```
+
+The `processor` is the function BullMQ invokes per job. The shape is consistent across all five queues:
+
+```ts
+async (job) => {
+  const parsed = parseChatJob(job.data);    // Zod parse at the boundary
+  if (!parsed.ok) throw new Error(parsed.error);
+  const result = await chatHandler(parsed.value);
+  if (!result.ok) throw new Error(result.error);
+  return result;
+}
+```
+
+Three things to note:
+
+1. **The trust boundary is the Zod parser.** Job data goes through Redis as JSON, so it's untrusted on read. Once parsed, the handler can rely on the type.
+2. **Errors propagate by `throw`.** Handlers return `Result<T, E>`; the processor unwraps and throws on `err`. BullMQ catches the throw, increments `attemptsMade`, and re-queues with backoff.
+3. **The processor is thin.** All real work (subprocess spawn, vault writes, Telegram streaming) lives in the handler — this is the imperative-shell pattern.
+
+### The factory pattern
+
+`createWorkers` accepts a `workerFactory: WorkerFactory` so tests can inject a fake. The default is:
+
+```ts
+const defaultWorkerFactory: WorkerFactory = (name, processor, opts) => {
+  const { Worker } = require('bullmq');   // dynamic require, not import
+  return new Worker(name, processor, opts);
+};
+```
+
+The dynamic `require` is deliberate — vitest's ESM loader and BullMQ's CJS interop don't get along, and tests never reach this path because they inject their own factory.
+
+### Queue-specific differences
+
+Most workers are identical except for handler + lock duration. Two have extra logic:
+
+**Reminder worker** dispatches by `kind` because the queue accepts two job shapes:
+
+```ts
+match(kind)
+  .with('reminder',           () => reminderHandler(parsedReminderJob))
+  .with('recurring-reminder', () => recurringReminderHandler(parsedRecurringJob))
+  .otherwise(...)
+```
+
+**Scheduled worker** has a completion side-effect that runs **after** the handler succeeds:
+
+```ts
+const result = await scheduledHandler(scheduledJob);
+if (!result.ok) throw new Error(result.error);
+
+await markScheduledJobCompleted(scheduledJob.id);   // Redis marker FIRST
+try {
+  onScheduledJobCompleted(scheduledJob);            // then dependents callback
+} catch (callbackErr) { /* logged, not rethrown */ }
+return result;
+```
+
+The order matters: if the process crashes between these two lines, catch-up on next boot sees the completed marker and re-enqueues the dependents itself. Reverse the order and you get either a lost dependency chain or a double-fire.
+
+### Lock duration vs stalled interval
+
+BullMQ's lock is a timer — the worker holds a Redis lock on the job and renews it periodically. If the process dies, the lock expires and the job goes back to `waiting`. If the handler runs longer than `lockDuration` without finishing, BullMQ thinks it's stalled and re-queues mid-execution, causing double-runs.
+
+| Worker      | lockDuration | stalledInterval | Why                                                |
+|-------------|--------------|-----------------|----------------------------------------------------|
+| chat        | 20 min       | 20 min          | `CHAT_TIMEOUT_MS` is 1h but typical < 5min         |
+| scheduled   | 20 min       | 20 min          | Skill prompts capped at `SCHEDULED_TIMEOUT_MS=20m` |
+| reminder    | default      | default         | Pure Telegram send, milliseconds                   |
+| research    | 60 min       | 60 min          | NotebookLM + artifact gen can hit 30–45min         |
+| podcast     | 20 min       | 20 min          | NotebookLM podcast generation                      |
+
+`stalledInterval = lockDuration` keeps BullMQ from flagging a stall before the lock would naturally expire.
+
+### Dead-letter wiring
+
+After construction, every worker gets `attachDeadLetterHandler` attached:
+
+```ts
+worker.on('failed', async (job, err) => {
+  const maxAttempts = job.opts?.attempts ?? defaultMaxAttempts;
+  if (job.attemptsMade >= maxAttempts) {
+    const msg = formatDeadLetterMessage(jobKind, job.id, err.message);
+    for (const chatId of getChatIds(job.data)) {
+      await telegram.sendMessage(chatId, msg);
+    }
+  }
+});
+worker.on('error', (e) => console.error(`[worker:${jobKind}]`, e));
+```
+
+`getChatIds` is what differs per worker: chat/reminder/research/podcast pull `chatId` from the job data; the scheduled worker fans out to all `authorizedUserIds` because cron jobs aren't owned by a single chat.
+
+The `>=` comparison is important — `failed` fires on every attempt, but the DLQ Telegram alert only goes out on the **final** failure.
+
+### The chat mutex sits above the workers
+
+Chat handlers spawn the Claude CLI, which writes to a session file. Two concurrent spawns could corrupt it. So `main.ts` wraps the streaming call in an `AsyncMutex`:
+
+```ts
+const guardedRunClaudeStreamingChat = async (opts, onChunk) => {
+  const release = await chatMutex.acquire();
+  try { return await runClaudeStreamingFn(opts, onChunk); }
+  finally { release(); }
+};
+```
+
+This is **on top of** `concurrency: 1`. Queue concurrency only protects within one queue; the mutex protects across handlers. Scheduled jobs deliberately don't take the mutex — they spawn independent Claude instances on disjoint workspace files, so concurrency there is safe.
+
+### Lifecycle
+
+`workers.start()` is a **no-op** — BullMQ workers begin pulling immediately on construction. The method exists for interface symmetry. `workers.stop()` closes all five in parallel:
+
+```ts
+await Promise.all([
+  chatWorker.close(), scheduledWorker.close(), reminderWorker.close(),
+  researchWorker.close(), podcastWorker.close(),
+]);
+```
+
+`Worker.close()` finishes the current job (up to `lockDuration`) and stops accepting new ones. `bootstrap`'s `shutdown` calls this from `SIGTERM`/`SIGINT` with a 15-second hard force-exit timer in case BullMQ's Redis handles keep the event loop alive.
+
+### Bootstrap ordering
+
+Workers must start **after** the skill watcher's initial load completes. Otherwise catch-up scheduled jobs could get pulled by the worker before the skill registry knows about them, and the handler would fail with "skill not found." Bootstrap order:
+
+```
+skillWatcher.start() → skillWatcher.ready() → queues.chat.drain() → workers.start() → telegram.start()
+```
 
 ---
 
