@@ -51,9 +51,50 @@ promptTemplate: |
   - High access count: frequently accessed = clearly useful
   - Unique: no other memory covers this information
 
+  ## Step 2.5: Code-drift check (selective)
+
+  For memories that reference code, verify the named symbols still exist in the source. A memory is **code-coupled** if its `summary` or `content` contains:
+
+  - A file path (e.g. `src/foo/bar.ts`, `roles/reclaw/default.nix`)
+  - A function or class name in code-style (`camelCase`, `PascalCase`, `snake_case` referring to identifiers — not English nouns)
+  - An env var (`UPPER_SNAKE_CASE`)
+  - A version string (`x.y.z`)
+  - A schema/DB field, API endpoint, or config key
+  - Tags signaling code domain: `garmin-api`, `bullmq`, `cortex`, `nixos`, `redis`, `telegram`, `next-js`, `hono`, `bun`, etc.
+
+  **Skip this step entirely** for memories tagged with non-code domains: `training`, `running-analysis`, `crossfit-coach`, `journal`, `calendar`, `vault-review`, `srs`, `morning-briefing`, `weather`, `evening-journal`, `weekly-review`, `reflection-prompts`. Their truth lives outside the repo.
+
+  For each code-coupled candidate (cap the check at 30 memories per run to stay within timeout):
+
+  ```bash
+  # Example: verify a memory mentioning `runForkedAgent` from autoDream
+  grep -rn "runForkedAgent" /home/peterstorm/dev/claude-plugins/reclaw/src \
+      /home/peterstorm/dev/claude-plugins/cortex/engine/src \
+      /home/peterstorm/.dotfiles \
+      --include="*.ts" --include="*.nix" -l 2>/dev/null | head -3
+  ```
+
+  Roots to grep (in order, stop at first hit):
+  1. `/home/peterstorm/dev/claude-plugins/reclaw/src`
+  2. `/home/peterstorm/dev/claude-plugins/reclaw/workspace/skills`
+  3. `/home/peterstorm/dev/claude-plugins/cortex/engine/src`
+  4. `/home/peterstorm/.dotfiles`
+
+  **Decision rule:**
+  - Symbol found → **keep** (memory still grounded in code)
+  - Symbol absent → **archive with reason `code-drift`** and add to the Step 3 batch
+  - Multiple symbols in one memory → drift only if **all** are absent (a partially-renamed memory deserves an update, not an archive — but we can't update from a scheduled job, so flag for human review by leaving it active)
+
+  **Don't archive on drift if:**
+  - Memory is `pinned`
+  - Memory was created in the last 7 days (give librarian time to verify)
+  - Symbol could plausibly live in a build artifact, lockfile, or external dep we haven't grepped
+
+  Output for the batch summary: track `code-drift` archives separately so the final Telegram message can mention them.
+
   ## Step 3: Archive directly
 
-  Archive all identified memories in a single batch — no confirmation needed:
+  Archive all identified memories (from Step 2 AND Step 2.5) in a single batch — no confirmation needed:
 
   ```bash
   bun -e "
@@ -92,5 +133,5 @@ promptTemplate: |
 
   ## Output
 
-  - If memories were pruned: send a brief summary — how many reviewed, archived, remaining, and top reasons (1-3 bullet points). Keep it concise for Telegram.
+  - If memories were pruned: send a brief summary — how many reviewed, archived (split into normal-prune vs code-drift), remaining, and top reasons (1-3 bullet points). Keep it concise for Telegram.
   - If nothing needed pruning: respond with exactly `ALL_CLEAR`

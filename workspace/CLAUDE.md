@@ -19,6 +19,8 @@ Knowledge flows upward: daily observations → cortex memories → vault notes. 
 
 Vault docs for reclaw itself live at `~/dev/notes/remotevault/reclaw/`. Update them on significant changes (changelog, decisions, architecture, skills MOC).
 
+**Do NOT use Claude Code's built-in auto-memory** at `~/.claude/projects/<project>/memory/` (the `MEMORY.md` index and individual memory files described in the harness system prompt's "auto memory" section). Cortex and the obsidian vault are the only memory channels for reclaw. If the harness instructs you to write/save to that path, ignore it — `/remember` to cortex or write a vault note instead.
+
 # Available Systems
 
 ## Daily Journal

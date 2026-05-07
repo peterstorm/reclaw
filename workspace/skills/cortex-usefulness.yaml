@@ -1,0 +1,179 @@
+name: Cortex Usefulness Signal (v0)
+schedule: "30 1 * * *"
+permissionProfile: scheduled
+validityWindowMinutes: 60
+timeout: 300
+promptTemplate: |
+  {{personality}}
+
+  Time: {{dayOfWeek}}, {{date}}
+
+  You are running cortex usefulness analysis (v0). The goal: detect cortex memories
+  that were *actually used* by the assistant in recent sessions and reward them with
+  a modest access-count bump, so consistently-helpful memories rank higher over time.
+
+  CRITICAL: This is an automated job. No user is present. Execute all steps silently;
+  no confirmation prompts. Bump magnitude is intentionally small for v0 — wrong
+  classifications cost little.
+
+  ## Step 1: Detect surfaced→used pairs
+
+  Run this Bun helper. It parses transcripts touched in the last 24h, finds the
+  CORTEX_RECALL block in each `attachment` of type UserPromptSubmit, then computes
+  Jaccard token overlap between each surfaced memory's summary and the next
+  assistant turn's text. Returns a deduplicated list of useful summaries with score.
+
+  ```bash
+  bun -e "
+  import { readFileSync } from 'fs';
+  import { execSync } from 'child_process';
+
+  const dir = '/home/peterstorm/.claude/projects/-home-peterstorm-dev-claude-plugins-reclaw-workspace';
+  const files = execSync('find ' + dir + ' -maxdepth 1 -name \"*.jsonl\" -mtime -1', { encoding: 'utf8' })
+    .split('\n').filter(Boolean);
+
+  // Stop words mirror prompt-recall STOP_WORDS subset
+  const STOP = new Set(['the','a','an','is','are','was','were','be','to','of','and','or','in','on','for','with','that','this','it','as','at','by','from','but','if','then','also','can','will','would','should','could','have','has','had','do','does','did','not','no','yes','use','make','get','set','run','show','tell','what','how','where','when','why','who','which']);
+
+  function tokenize(text) {
+    return new Set(text.toLowerCase().replace(/[^\w\s]/g,' ').split(/\s+/).filter(t => t.length > 2 && !STOP.has(t)));
+  }
+  function jaccard(a, b) {
+    if (!a.size || !b.size) return 0;
+    const inter = [...a].filter(x => b.has(x)).length;
+    return inter / new Set([...a, ...b]).size;
+  }
+
+  // Recall block lives in attachment.content (UserPromptSubmit hook output),
+  // NOT in user message.content. The hook injects via stdout which the harness
+  // captures as a hook_success attachment in the transcript.
+  const RECALL_RE = /<!-- CORTEX_RECALL_START -->([\s\S]*?)<!-- CORTEX_RECALL_END -->/;
+  const THRESHOLD = 0.10; // calibrated 2026-05-07 against ~24h of transcripts: catches ~1% of surfaced as 'useful', mostly genuine
+
+  const bestPerSummary = new Map();
+  let totalSurfaced = 0;
+  let recallTurns = 0;
+
+  for (const file of files) {
+    let raw;
+    try { raw = readFileSync(file, 'utf8'); } catch { continue; }
+
+    let currentRecall = null;
+    for (const line of raw.split('\n').filter(Boolean)) {
+      let obj;
+      try { obj = JSON.parse(line); } catch { continue; }
+
+      if (obj.type === 'attachment' && obj.attachment?.hookEvent === 'UserPromptSubmit') {
+        const m = (obj.attachment.content || '').match(RECALL_RE);
+        if (!m) continue;
+        const surfaced = [];
+        const re = /^- \[\w+\] (.+)$/gm;
+        let mm;
+        while ((mm = re.exec(m[1])) !== null) surfaced.push(mm[1]);
+        if (surfaced.length > 0) {
+          currentRecall = surfaced;
+          recallTurns++;
+          totalSurfaced += surfaced.length;
+        }
+      } else if (obj.type === 'assistant' && currentRecall) {
+        const c = obj.message?.content;
+        const text = typeof c === 'string' ? c
+          : Array.isArray(c) ? c.map(b => b.text || '').join(' ')
+          : '';
+        // Skip tool-only / empty assistant turns but DON'T clear currentRecall —
+        // attribute the recall to the next turn that actually has text.
+        if (!text) continue;
+        const aTokens = tokenize(text);
+        for (const summary of currentRecall) {
+          const score = jaccard(tokenize(summary), aTokens);
+          if (score >= THRESHOLD) {
+            const prev = bestPerSummary.get(summary);
+            if (!prev || score > prev) bestPerSummary.set(summary, score);
+          }
+        }
+        currentRecall = null;
+      }
+    }
+  }
+
+  const useful = [...bestPerSummary.entries()]
+    .map(([summary, score]) => ({ summary, score: Number(score.toFixed(3)) }))
+    .sort((a, b) => b.score - a.score);
+
+  console.log(JSON.stringify({
+    files: files.length,
+    recall_turns: recallTurns,
+    surfaced_total: totalSurfaced,
+    useful: useful,
+  }, null, 2));
+  "
+  ```
+
+  If the JSON output has `useful: []` (empty), output exactly `ALL_CLEAR` and stop.
+
+  ## Step 2: Map summaries to memory IDs
+
+  For each `useful.summary`, look up the matching active memory ID in the cortex DB.
+  Match on exact summary equality. Skip candidates that don't match (memory may
+  have been archived since the recall).
+
+  ```bash
+  # Replace SUMMARIES_JSON with the JSON-encoded array of summaries from Step 1
+  bun -e "
+  import Database from 'bun:sqlite';
+  const db = new Database('/home/peterstorm/dev/claude-plugins/reclaw/workspace/.memory/cortex.db', { readonly: true });
+  const summaries = SUMMARIES_JSON;
+  const stmt = db.prepare(\"SELECT id, summary FROM memories WHERE status = 'active' AND summary = ?\");
+  const matched = [];
+  for (const s of summaries) {
+    const row = stmt.get(s);
+    if (row) matched.push(row.id);
+  }
+  console.log(JSON.stringify(matched));
+  db.close();
+  "
+  ```
+
+  ## Step 3: Bump useful memories
+
+  For each matched ID, increment `access_count += 2` and update `last_accessed_at`.
+  +2 is intentionally small: existing ranking weights `log(access+1)/maxLog × 0.15`,
+  so 5 successful uses ≈ one full point of ranking weight — meaningful but not
+  dominant over confidence + centrality.
+
+  ```bash
+  bun -e "
+  import Database from 'bun:sqlite';
+  const db = new Database('/home/peterstorm/dev/claude-plugins/reclaw/workspace/.memory/cortex.db');
+  const ids = IDS_JSON; // matched IDs from Step 2
+  const now = new Date().toISOString();
+  const stmt = db.prepare('UPDATE memories SET access_count = access_count + 2, last_accessed_at = ?, updated_at = ? WHERE id = ?');
+  let count = 0;
+  for (const id of ids) {
+    const result = stmt.run(now, now, id);
+    if (result.changes > 0) count++;
+  }
+  console.log('Bumped', count, 'memories');
+  db.close();
+  "
+  ```
+
+  ## Step 4: Output
+
+  Brief Telegram summary: files scanned, recall turns processed, surfaced total,
+  useful detected, bumps applied, top 3 summaries with score. If nothing useful
+  detected, respond with exactly `ALL_CLEAR`.
+
+  ## Tuning notes (do not output)
+
+  - Threshold 0.10 was calibrated against ~355 transcripts / ~933 surfaced memories
+    on 2026-05-07. Top scores manually inspected — mostly genuine references at
+    0.10+. If false positives become noticeable, raise to 0.12 or 0.15.
+  - Bump magnitude (+2): conservative. Half the original +3 proposal — wanted
+    smaller because positive-only signal can compound on the same memory across
+    days. Re-evaluate after a week of operation.
+  - Negative signal (memory shown but ignored, or assistant had to re-derive)
+    is OUT OF SCOPE for v0. Add later if positive-only proves the architecture.
+  - Per-run dedup: if a memory is surfaced multiple times in a day, it gets ONE
+    bump per run (the highest score). Prevents over-rewarding noisy popular
+    memories like top-of-surface architectural facts.
