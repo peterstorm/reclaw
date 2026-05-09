@@ -81,7 +81,7 @@ function yamlValue(value: string): string {
  * - links to all Q&A notes
  */
 export function buildHubNote(ctx: ResearchContext, quality: QualityResult): VaultNote {
-  const relativePath = hubRelativePath(ctx.topicSlug);
+  const relativePath = hubRelativePath(ctx.topicSlug ?? 'untitled');
   const researchDate = ctx.startedAt.split('T')[0] ?? ctx.startedAt;
 
   const sourceLinks = ctx.sources
@@ -246,7 +246,8 @@ Up: ${hubWikilink}
  * FR-052 fallback: Contains all raw Q&A answers in a single file.
  */
 export function buildEmergencyNote(ctx: ResearchContext): VaultNote {
-  const relativePath = `${RESEARCH_BASE}/${ctx.topicSlug}/_emergency.md`;
+  const slug = ctx.topicSlug ?? 'untitled';
+  const relativePath = `${RESEARCH_BASE}/${slug}/_emergency.md`;
   const researchDate = ctx.startedAt.split('T')[0] ?? ctx.startedAt;
 
   const answersSection =
@@ -266,12 +267,12 @@ export function buildEmergencyNote(ctx: ResearchContext): VaultNote {
   const content = `---
 title: ${yamlValue(`[EMERGENCY] ${ctx.topic}`)}
 date: ${researchDate}
-topic_slug: ${ctx.topicSlug}
+topic_slug: ${slug}
 emergency: true
 tags:
   - research
   - emergency
-  - ${ctx.topicSlug}
+  - ${slug}
 ---
 
 # [Emergency Backup] ${ctx.topic}
@@ -309,7 +310,7 @@ export function buildAllVaultNotes(
   preResolvedNotes?: readonly ResolvedNote[],
 ): readonly VaultNote[] {
   const notes: VaultNote[] = [];
-  const hubPath = hubRelativePath(ctx.topicSlug);
+  const hubPath = hubRelativePath(ctx.topicSlug ?? 'untitled');
   const researchDate = ctx.startedAt.split('T')[0] ?? ctx.startedAt;
   const notebookId = ctx.notebookId ?? '';
 
@@ -364,7 +365,7 @@ export function buildAllVaultNotes(
     const source = ctx.sources[i]!;
     const passageNumbers = allCitedSourceIndices.has(i) ? [i + 1] : [];
     const anchors = generatePassageAnchors(source, passageNumbers);
-    notes.push(buildSourceNote(source, ctx.topicSlug, hubPath, anchors, researchDate, notebookId));
+    notes.push(buildSourceNote(source, ctx.topicSlug ?? 'untitled', hubPath, anchors, researchDate, notebookId));
   }
 
   // ── 3. Q&A notes ─────────────────────────────────────────────────────────────
@@ -375,7 +376,7 @@ export function buildAllVaultNotes(
       .map((idx) => ctx.sources[idx])
       .filter((s): s is SourceMeta => s !== undefined);
 
-    notes.push(buildQANote(question, resolved.resolvedText, citedSources, ctx.topicSlug, hubPath));
+    notes.push(buildQANote(question, resolved.resolvedText, citedSources, ctx.topicSlug ?? 'untitled', hubPath));
   }
 
   return notes;

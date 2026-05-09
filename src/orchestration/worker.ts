@@ -267,7 +267,7 @@ export function createWorkers(deps: WorkerDeps): Workers {
       if (!parsed.ok) throw new Error(parsed.error);
       // Construct ResearchJobLike wrapping real BullMQ job methods for checkpointing (SC-002/SC-003)
       const researchJobData = parsed.value;
-      console.log(`[worker:research] Processing job ${job.id ?? 'unknown'} topic="${researchJobData.topic}"`);
+      console.log(`[worker:research] Processing job ${job.id ?? 'unknown'} prompt="${researchJobData.prompt.slice(0, 60)}"`);
       const jobLike: ResearchJobLike = {
         data: researchJobData,
         updateData: job.updateData

@@ -4,13 +4,12 @@
 // research pipeline state machine.
 //
 // FR-004: System MUST execute the research pipeline as a state machine with
-// the following ordered states: creating_notebook, searching_sources,
-// adding_sources, awaiting_processing, generating_questions, querying,
-// resolving_citations, writing_vault, notifying, done/failed.
+// the following ordered states: deriving_topic, creating_notebook,
+// searching_sources, adding_sources, awaiting_processing, generating_questions,
+// querying, resolving_citations, writing_vault, notifying, done/failed.
 
 import { err, ok } from './types.js';
 import type { Result } from './types.js';
-import { generateTopicSlug } from './topic-slug.js';
 import type { TopicSlug } from './topic-slug.js';
 
 // ─── Value Objects ─────────────────────────────────────────────────────────────
@@ -88,12 +87,13 @@ export type ResearchMetrics = {
 /**
  * The current position in the research state machine.
  *
- * FR-004: States in order: creating_notebook -> searching_sources ->
- * adding_sources -> awaiting_processing -> generating_questions ->
- * querying -> resolving_citations -> writing_vault -> notifying ->
- * done | failed
+ * FR-004: States in order: deriving_topic -> creating_notebook ->
+ * searching_sources -> adding_sources -> awaiting_processing ->
+ * generating_questions -> querying -> resolving_citations ->
+ * writing_vault -> notifying -> done | failed
  */
 export type ResearchState =
+  | { readonly kind: 'deriving_topic' }
   | { readonly kind: 'creating_notebook' }
   | { readonly kind: 'searching_sources' }
   | { readonly kind: 'adding_sources' }
@@ -111,6 +111,7 @@ export type ResearchState =
 
 /** Events emitted by state executors that drive state machine transitions. */
 export type ResearchEvent =
+  | { readonly type: 'TOPIC_DERIVED'; readonly topic: string; readonly topicSlug: TopicSlug }
   | { readonly type: 'NOTEBOOK_CREATED'; readonly notebookId: string }
   | { readonly type: 'SOURCES_DISCOVERED'; readonly webSources: readonly WebSource[]; readonly sessionId: string; readonly claudeDiscoveredUrls: readonly string[] }
   | { readonly type: 'SOURCES_ADDED'; readonly sourceIds: readonly string[]; readonly sourceUrlById: Readonly<Record<string, string>> }
@@ -133,10 +134,11 @@ export type ResearchEvent =
  * Checkpointed to BullMQ job data after every state transition.
  */
 export type ResearchContext = {
+  /** Derived topic title. Empty string ("") until TOPIC_DERIVED is processed. */
   readonly topic: string;
-  /** Optional research prompt guiding source discovery and question generation. */
+  /** Research prompt provided by the user. Non-null for jobs created via auto-derive flow. */
   readonly prompt: string | null;
-  readonly topicSlug: TopicSlug;
+  readonly topicSlug: TopicSlug | null;
   readonly sourceHints: readonly string[];
   readonly chatId: number;
   readonly notebookId: string | null;
@@ -170,11 +172,13 @@ export type ResearchContext = {
 /**
  * The full data payload stored in a BullMQ research job.
  * Contains both the immutable job parameters and the mutable state machine state.
+ *
+ * Note: topic and topicSlug are derived during the deriving_topic state and
+ * checkpointed into context. The canonical values are in context.topic and
+ * context.topicSlug after derivation.
  */
 export type ResearchJobData = {
-  readonly topic: string;
-  readonly prompt: string | null;
-  readonly topicSlug: TopicSlug;
+  readonly prompt: string;
   readonly sourceHints: readonly string[];
   readonly chatId: number;
   readonly state: ResearchState;
@@ -189,6 +193,7 @@ export type ResearchJobData = {
  * 'failed' is excluded because its progress derives from failedState.
  */
 const STATE_ORDER: ReadonlyArray<ResearchState['kind']> = [
+  'deriving_topic',
   'creating_notebook',
   'searching_sources',
   'adding_sources',
@@ -208,31 +213,32 @@ const STATE_ORDER: ReadonlyArray<ResearchState['kind']> = [
  * Construct a ResearchJobData with an initial state and context.
  *
  * Validates:
- * - topic must be non-empty
- * - chatId must be a positive integer
+ * - prompt must be non-empty
+ * - chatId must be an integer
+ *
+ * The initial state is `deriving_topic`. The topic and topicSlug are derived
+ * via LLM during that state and checkpointed into context before proceeding.
  */
 export function makeResearchJobData(params: {
-  topic: string;
-  prompt?: string | null;
+  prompt: string;
   sourceHints: readonly string[];
   chatId: number;
   generateAudio?: boolean;
   generateVideo?: boolean;
 }): Result<ResearchJobData, string> {
-  if (params.topic.trim().length === 0) {
-    return err('Research topic must not be empty.');
+  if (params.prompt.trim().length === 0) {
+    return err('Research prompt must not be empty.');
   }
   if (!Number.isInteger(params.chatId)) {
     return err(`chatId must be an integer, got: ${params.chatId}`);
   }
 
-  const topicSlug = generateTopicSlug(params.topic);
   const startedAt = new Date().toISOString();
 
   const context: ResearchContext = {
-    topic: params.topic,
-    prompt: params.prompt ?? null,
-    topicSlug,
+    topic: '',
+    prompt: params.prompt,
+    topicSlug: null,
     sourceHints: params.sourceHints,
     chatId: params.chatId,
     notebookId: null,
@@ -258,12 +264,10 @@ export function makeResearchJobData(params: {
   };
 
   const jobData: ResearchJobData = {
-    topic: params.topic,
-    prompt: params.prompt ?? null,
-    topicSlug,
+    prompt: params.prompt,
     sourceHints: params.sourceHints,
     chatId: params.chatId,
-    state: { kind: 'creating_notebook' },
+    state: { kind: 'deriving_topic' },
     context,
   };
 

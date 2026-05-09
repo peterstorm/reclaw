@@ -4,52 +4,52 @@ import { parseResearchCommand } from './research-request.js';
 // ─── parseResearchCommand ─────────────────────────────────────────────────────
 
 describe('parseResearchCommand', () => {
-  // ── Basic topic extraction ────────────────────────────────────────────────
+  // ── Basic prompt extraction ────────────────────────────────────────────────
 
-  it('extracts a simple topic with no URLs', () => {
+  it('captures full text as prompt with no URLs', () => {
     const r = parseResearchCommand('/research AI agents');
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.value.topic).toBe('AI agents');
+      expect(r.value.prompt).toBe('AI agents');
       expect(r.value.sourceHints).toEqual([]);
     }
   });
 
-  it('trims leading/trailing whitespace from the topic', () => {
+  it('trims leading/trailing whitespace from the prompt', () => {
     const r = parseResearchCommand('/research   machine learning  ');
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.value.topic).toBe('machine learning');
+      expect(r.value.prompt).toBe('machine learning');
     }
   });
 
-  it('handles a multi-word topic', () => {
+  it('handles a multi-word prompt', () => {
     const r = parseResearchCommand('/research deep neural networks and transformers');
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.value.topic).toBe('deep neural networks and transformers');
+      expect(r.value.prompt).toBe('deep neural networks and transformers');
       expect(r.value.sourceHints).toEqual([]);
     }
   });
 
-  // ── URL parsing (FR-013, FR-091) ──────────────────────────────────────────
+  // ── URL parsing (FR-013) ──────────────────────────────────────────────────
 
-  it('extracts topic before a single URL', () => {
+  it('extracts prompt before a URL and collects URL as source hint', () => {
     const r = parseResearchCommand('/research AI agents https://example.com');
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.value.topic).toBe('AI agents');
+      expect(r.value.prompt).toBe('AI agents');
       expect(r.value.sourceHints).toEqual(['https://example.com']);
     }
   });
 
-  it('extracts topic before first URL and collects all URLs as source hints', () => {
+  it('collects all URLs as source hints and remaining text as prompt', () => {
     const r = parseResearchCommand(
       '/research machine learning https://papers.ai https://arxiv.org/abs/123',
     );
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.value.topic).toBe('machine learning');
+      expect(r.value.prompt).toBe('machine learning');
       expect(r.value.sourceHints).toEqual([
         'https://papers.ai',
         'https://arxiv.org/abs/123',
@@ -63,7 +63,7 @@ describe('parseResearchCommand', () => {
     );
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.value.topic).toBe('quantum computing');
+      expect(r.value.prompt).toBe('quantum computing');
       expect(r.value.sourceHints).toHaveLength(3);
       expect(r.value.sourceHints[0]).toBe('https://a.com');
       expect(r.value.sourceHints[1]).toBe('https://b.org');
@@ -75,14 +75,14 @@ describe('parseResearchCommand', () => {
     const r = parseResearchCommand('/research legacy systems http://old-site.com/docs');
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.value.topic).toBe('legacy systems');
+      expect(r.value.prompt).toBe('legacy systems');
       expect(r.value.sourceHints).toEqual(['http://old-site.com/docs']);
     }
   });
 
-  // ── Empty command validation (FR-092) ─────────────────────────────────────
+  // ── Empty command validation ───────────────────────────────────────────────
 
-  it('rejects /research with no topic (empty after prefix)', () => {
+  it('rejects /research with no prompt (empty after prefix)', () => {
     const r = parseResearchCommand('/research');
     expect(r.ok).toBe(false);
     if (!r.ok) {
@@ -98,7 +98,7 @@ describe('parseResearchCommand', () => {
     }
   });
 
-  it('rejects /research with only a URL (no topic text)', () => {
+  it('rejects /research with only a URL (no prompt text)', () => {
     const r = parseResearchCommand('/research https://example.com');
     expect(r.ok).toBe(false);
     if (!r.ok) {
@@ -106,7 +106,7 @@ describe('parseResearchCommand', () => {
     }
   });
 
-  it('rejects /research with multiple URLs but no topic text', () => {
+  it('rejects /research with multiple URLs but no prompt text', () => {
     const r = parseResearchCommand('/research https://a.com https://b.com');
     expect(r.ok).toBe(false);
     if (!r.ok) {
@@ -133,7 +133,7 @@ describe('parseResearchCommand', () => {
     const r = parseResearchCommand('/Research AI ethics');
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.value.topic).toBe('AI ethics');
+      expect(r.value.prompt).toBe('AI ethics');
     }
   });
 
@@ -141,26 +141,26 @@ describe('parseResearchCommand', () => {
     const r = parseResearchCommand('/RESEARCH climate change');
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.value.topic).toBe('climate change');
+      expect(r.value.prompt).toBe('climate change');
     }
   });
 
   // ── Edge cases ────────────────────────────────────────────────────────────
 
-  it('handles topic with special characters', () => {
+  it('handles prompt with special characters', () => {
     const r = parseResearchCommand('/research C++ memory management & RAII');
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.value.topic).toBe('C++ memory management & RAII');
+      expect(r.value.prompt).toBe('C++ memory management & RAII');
       expect(r.value.sourceHints).toEqual([]);
     }
   });
 
-  it('handles topic with numbers', () => {
+  it('handles prompt with numbers', () => {
     const r = parseResearchCommand('/research GPT-4 vs GPT-3.5 performance');
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.value.topic).toBe('GPT-4 vs GPT-3.5 performance');
+      expect(r.value.prompt).toBe('GPT-4 vs GPT-3.5 performance');
     }
   });
 
@@ -170,7 +170,7 @@ describe('parseResearchCommand', () => {
     );
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.value.topic).toBe('rust ownership');
+      expect(r.value.prompt).toBe('rust ownership');
       expect(r.value.sourceHints).toEqual([
         'https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html#ownership-rules',
       ]);
@@ -183,7 +183,7 @@ describe('parseResearchCommand', () => {
     );
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.value.topic).toBe('transformers explained');
+      expect(r.value.prompt).toBe('transformers explained');
       expect(r.value.sourceHints).toEqual([
         'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
       ]);
@@ -199,31 +199,31 @@ describe('parseResearchCommand', () => {
     }
   });
 
-  it('preserves topic text with leading/trailing whitespace stripped but internal spaces preserved', () => {
+  it('preserves prompt text with leading/trailing whitespace stripped but internal spaces preserved', () => {
     const r = parseResearchCommand('/research  the   history  of  computing  ');
     expect(r.ok).toBe(true);
     if (r.ok) {
       // internal spaces are preserved as-is; only leading/trailing trimmed
-      expect(r.value.topic).toBe('the   history  of  computing');
+      expect(r.value.prompt).toBe('the   history  of  computing');
     }
   });
 
   // ── --link flag ─────────────────────────────────────────────────────────────
 
-  it('accepts --link with URL and derives topic from path', () => {
+  it('accepts --link with URL and derives prompt from URL path when no text given', () => {
     const r = parseResearchCommand('/research --link https://example.com/article-about-ai-agents');
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.value.topic).toBe('article about ai agents');
+      expect(r.value.prompt).toBe('article about ai agents');
       expect(r.value.sourceHints).toEqual(['https://example.com/article-about-ai-agents']);
     }
   });
 
-  it('uses explicit topic over URL-derived topic when both provided', () => {
-    const r = parseResearchCommand('/research My custom topic --link https://example.com/some-path');
+  it('uses explicit text as prompt when provided alongside --link', () => {
+    const r = parseResearchCommand('/research My research topic --link https://example.com/some-path');
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.value.topic).toBe('My custom topic');
+      expect(r.value.prompt).toBe('My research topic');
       expect(r.value.sourceHints).toEqual(['https://example.com/some-path']);
     }
   });
@@ -234,7 +234,7 @@ describe('parseResearchCommand', () => {
     );
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.value.topic).toBe('AI safety');
+      expect(r.value.prompt).toBe('AI safety');
       // --link URL comes first, then additional URLs
       expect(r.value.sourceHints).toEqual([
         'https://primary.com/article',
@@ -247,18 +247,18 @@ describe('parseResearchCommand', () => {
     const r = parseResearchCommand('/research --link https://blog.com/post --audio --video');
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.value.topic).toBe('post');
+      expect(r.value.prompt).toBe('post');
       expect(r.value.sourceHints).toEqual(['https://blog.com/post']);
       expect(r.value.generateAudio).toBe(true);
       expect(r.value.generateVideo).toBe(true);
     }
   });
 
-  it('derives topic from URL hostname when path is empty', () => {
+  it('derives prompt from URL hostname when path is empty', () => {
     const r = parseResearchCommand('/research --link https://www.example.com');
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.value.topic).toBe('example');
+      expect(r.value.prompt).toBe('example');
       expect(r.value.sourceHints).toEqual(['https://www.example.com']);
     }
   });
@@ -267,7 +267,7 @@ describe('parseResearchCommand', () => {
     const r = parseResearchCommand('/research --link https://arxiv.org/abs/2301.12345');
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.value.topic).toBe('abs 2301.12345');
+      expect(r.value.prompt).toBe('abs 2301.12345');
       expect(r.value.sourceHints).toEqual(['https://arxiv.org/abs/2301.12345']);
     }
   });
@@ -280,93 +280,33 @@ describe('parseResearchCommand', () => {
     }
   });
 
-  // ── Pipe separator (title | prompt) ──────────────────────────────────────
+  // ── --audio / --video flags ───────────────────────────────────────────────
 
-  it('splits title and prompt on pipe separator', () => {
-    const r = parseResearchCommand('/research Transformer Attention | Find papers on multi-head attention after 2023');
+  it('sets generateAudio to true when --audio flag is present', () => {
+    const r = parseResearchCommand('/research Transformers --audio');
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.value.topic).toBe('Transformer Attention');
-      expect(r.value.prompt).toBe('Find papers on multi-head attention after 2023');
-      expect(r.value.sourceHints).toEqual([]);
-    }
-  });
-
-  it('sets prompt to null when no pipe separator', () => {
-    const r = parseResearchCommand('/research AI agents');
-    expect(r.ok).toBe(true);
-    if (r.ok) {
-      expect(r.value.prompt).toBeNull();
-    }
-  });
-
-  it('collects URLs from both sides of the pipe', () => {
-    const r = parseResearchCommand('/research Rust Ownership https://doc.rust-lang.org | Focus on borrow checker edge cases https://blog.rust-lang.org');
-    expect(r.ok).toBe(true);
-    if (r.ok) {
-      expect(r.value.topic).toBe('Rust Ownership');
-      expect(r.value.prompt).toBe('Focus on borrow checker edge cases');
-      expect(r.value.sourceHints).toEqual([
-        'https://doc.rust-lang.org',
-        'https://blog.rust-lang.org',
-      ]);
-    }
-  });
-
-  it('handles pipe with --audio flag', () => {
-    const r = parseResearchCommand('/research Transformers | Focus on efficiency --audio');
-    expect(r.ok).toBe(true);
-    if (r.ok) {
-      expect(r.value.topic).toBe('Transformers');
-      expect(r.value.prompt).toBe('Focus on efficiency');
+      expect(r.value.prompt).toBe('Transformers');
       expect(r.value.generateAudio).toBe(true);
     }
   });
 
-  it('handles pipe with --video and --audio flags', () => {
-    const r = parseResearchCommand('/research AI Safety | Academic papers only --audio --video');
+  it('sets generateVideo to true when --video flag is present', () => {
+    const r = parseResearchCommand('/research AI Safety --audio --video');
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.value.topic).toBe('AI Safety');
-      expect(r.value.prompt).toBe('Academic papers only');
+      expect(r.value.prompt).toBe('AI Safety');
       expect(r.value.generateAudio).toBe(true);
       expect(r.value.generateVideo).toBe(true);
     }
   });
 
-  it('trims whitespace around pipe separator', () => {
-    const r = parseResearchCommand('/research  AI Agents  |  Focus on autonomous reasoning  ');
+  it('has no prompt field (topic is derived via LLM)', () => {
+    const r = parseResearchCommand('/research AI agents');
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.value.topic).toBe('AI Agents');
-      expect(r.value.prompt).toBe('Focus on autonomous reasoning');
-    }
-  });
-
-  it('sets prompt to null when pipe has empty right side', () => {
-    const r = parseResearchCommand('/research AI Agents |');
-    expect(r.ok).toBe(true);
-    if (r.ok) {
-      expect(r.value.topic).toBe('AI Agents');
-      expect(r.value.prompt).toBeNull();
-    }
-  });
-
-  it('rejects pipe with empty left side (no title)', () => {
-    const r = parseResearchCommand('/research | some prompt');
-    expect(r.ok).toBe(false);
-    if (!r.ok) {
-      expect(r.error).toContain('empty');
-    }
-  });
-
-  it('handles pipe with --link flag', () => {
-    const r = parseResearchCommand('/research AI Safety | Focus on alignment --link https://example.com/alignment');
-    expect(r.ok).toBe(true);
-    if (r.ok) {
-      expect(r.value.topic).toBe('AI Safety');
-      expect(r.value.prompt).toBe('Focus on alignment');
-      expect(r.value.sourceHints).toContain('https://example.com/alignment');
+      // ResearchRequest has no topic field — only prompt
+      expect('topic' in r.value).toBe(false);
     }
   });
 });

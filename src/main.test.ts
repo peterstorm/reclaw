@@ -572,8 +572,8 @@ describe('bootstrap', () => {
       expect(mockQueues.enqueueResearch).toHaveBeenCalledOnce();
       const callArgs = (mockQueues.enqueueResearch as ReturnType<typeof vi.fn>).mock.calls[0]!;
       // The first arg is the ResearchJobData
-      const jobData = callArgs[0] as { topic: string; sourceHints: string[] };
-      expect(jobData.topic).toBe('neural networks');
+      const jobData = callArgs[0] as { prompt: string; sourceHints: string[] };
+      expect(jobData.prompt).toBe('neural networks');
       expect(jobData.sourceHints).toContain('https://arxiv.org/paper1');
     });
   });

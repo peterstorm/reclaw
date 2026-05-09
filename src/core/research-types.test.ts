@@ -11,44 +11,46 @@ import type {
 // ─── makeResearchJobData ──────────────────────────────────────────────────────
 
 describe('makeResearchJobData', () => {
-  it('creates a valid job data with initial state creating_notebook', () => {
+  it('creates a valid job data with initial state deriving_topic', () => {
     const result = makeResearchJobData({
-      topic: 'Large Language Models',
+      prompt: 'Research large language models',
       sourceHints: [],
       chatId: 123456,
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.topic).toBe('Large Language Models');
-    expect(result.value.state.kind).toBe('creating_notebook');
+    expect(result.value.prompt).toBe('Research large language models');
+    expect(result.value.state.kind).toBe('deriving_topic');
   });
 
-  it('generates a topic slug on the job data', () => {
+  it('initial context has empty topic and null topicSlug', () => {
     const result = makeResearchJobData({
-      topic: 'Neural Networks & Deep Learning',
+      prompt: 'Research neural networks',
       sourceHints: [],
       chatId: 1,
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.topicSlug).toBe('neural-networks-deep-learning');
+    expect(result.value.context.topic).toBe('');
+    expect(result.value.context.topicSlug).toBeNull();
   });
 
-  it('sets topicSlug on context as well', () => {
+  it('stores prompt on job data and context', () => {
     const result = makeResearchJobData({
-      topic: 'Climate Change',
+      prompt: 'Climate Change',
       sourceHints: [],
       chatId: 1,
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.context.topicSlug).toBe('climate-change');
+    expect(result.value.prompt).toBe('Climate Change');
+    expect(result.value.context.prompt).toBe('Climate Change');
   });
 
   it('stores sourceHints on both job data and context', () => {
     const hints = ['https://example.com', 'https://other.com'];
     const result = makeResearchJobData({
-      topic: 'Some topic',
+      prompt: 'Some topic',
       sourceHints: hints,
       chatId: 1,
     });
@@ -60,7 +62,7 @@ describe('makeResearchJobData', () => {
 
   it('stores chatId on both job data and context', () => {
     const result = makeResearchJobData({
-      topic: 'Some topic',
+      prompt: 'Some topic',
       sourceHints: [],
       chatId: 987654,
     });
@@ -72,7 +74,7 @@ describe('makeResearchJobData', () => {
 
   it('initializes context with empty collections', () => {
     const result = makeResearchJobData({
-      topic: 'Some topic',
+      prompt: 'Some topic',
       sourceHints: [],
       chatId: 1,
     });
@@ -96,7 +98,7 @@ describe('makeResearchJobData', () => {
 
   it('sets startedAt as ISO 8601 timestamp', () => {
     const result = makeResearchJobData({
-      topic: 'Some topic',
+      prompt: 'Some topic',
       sourceHints: [],
       chatId: 1,
     });
@@ -107,45 +109,20 @@ describe('makeResearchJobData', () => {
     expect(Number.isNaN(new Date(startedAt).getTime())).toBe(false);
   });
 
-  it('stores prompt on both job data and context', () => {
-    const result = makeResearchJobData({
-      topic: 'Some topic',
-      prompt: 'Focus on academic papers',
-      sourceHints: [],
-      chatId: 1,
-    });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.prompt).toBe('Focus on academic papers');
-    expect(result.value.context.prompt).toBe('Focus on academic papers');
-  });
-
-  it('defaults prompt to null when not provided', () => {
-    const result = makeResearchJobData({
-      topic: 'Some topic',
-      sourceHints: [],
-      chatId: 1,
-    });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.prompt).toBeNull();
-    expect(result.value.context.prompt).toBeNull();
-  });
-
   // Validation failures
 
-  it('rejects empty topic', () => {
+  it('rejects empty prompt', () => {
     const result = makeResearchJobData({
-      topic: '',
+      prompt: '',
       sourceHints: [],
       chatId: 1,
     });
     expect(result.ok).toBe(false);
   });
 
-  it('rejects whitespace-only topic', () => {
+  it('rejects whitespace-only prompt', () => {
     const result = makeResearchJobData({
-      topic: '   ',
+      prompt: '   ',
       sourceHints: [],
       chatId: 1,
     });
@@ -154,7 +131,7 @@ describe('makeResearchJobData', () => {
 
   it('accepts chatId of zero (integer, may represent edge cases)', () => {
     const result = makeResearchJobData({
-      topic: 'Valid topic',
+      prompt: 'Valid topic',
       sourceHints: [],
       chatId: 0,
     });
@@ -164,7 +141,7 @@ describe('makeResearchJobData', () => {
 
   it('accepts negative chatId (Telegram group chats have negative IDs)', () => {
     const result = makeResearchJobData({
-      topic: 'Valid topic',
+      prompt: 'Valid topic',
       sourceHints: [],
       chatId: -1001234567890,
     });
@@ -174,7 +151,7 @@ describe('makeResearchJobData', () => {
 
   it('rejects float chatId', () => {
     const result = makeResearchJobData({
-      topic: 'Valid topic',
+      prompt: 'Valid topic',
       sourceHints: [],
       chatId: 1.5,
     });
@@ -183,7 +160,7 @@ describe('makeResearchJobData', () => {
 
   it('provides an error message on failure', () => {
     const result = makeResearchJobData({
-      topic: '',
+      prompt: '',
       sourceHints: [],
       chatId: 1,
     });
@@ -205,6 +182,10 @@ describe('isTerminal', () => {
   it('returns true for failed state', () => {
     const state: ResearchState = { kind: 'failed', error: 'something went wrong', failedState: 'querying' };
     expect(isTerminal(state)).toBe(true);
+  });
+
+  it('returns false for deriving_topic', () => {
+    expect(isTerminal({ kind: 'deriving_topic' })).toBe(false);
   });
 
   it('returns false for creating_notebook', () => {
@@ -247,8 +228,12 @@ describe('isTerminal', () => {
 // ─── stateProgress ────────────────────────────────────────────────────────────
 
 describe('stateProgress', () => {
-  it('returns 0 for creating_notebook (initial state)', () => {
-    expect(stateProgress({ kind: 'creating_notebook' })).toBe(0);
+  it('returns 0 for deriving_topic (initial state)', () => {
+    expect(stateProgress({ kind: 'deriving_topic' })).toBe(0);
+  });
+
+  it('returns a value greater than 0 for creating_notebook', () => {
+    expect(stateProgress({ kind: 'creating_notebook' })).toBeGreaterThan(0);
   });
 
   it('returns 100 for done (terminal success)', () => {
@@ -257,6 +242,7 @@ describe('stateProgress', () => {
 
   it('returns a value between 0 and 100 for intermediate states', () => {
     const intermediateStates: ResearchState[] = [
+      { kind: 'creating_notebook' },
       { kind: 'searching_sources' },
       { kind: 'adding_sources' },
       { kind: 'awaiting_processing' },
@@ -275,6 +261,7 @@ describe('stateProgress', () => {
 
   it('returns monotonically increasing progress through the pipeline', () => {
     const states: ResearchState[] = [
+      { kind: 'deriving_topic' },
       { kind: 'creating_notebook' },
       { kind: 'searching_sources' },
       { kind: 'adding_sources' },
@@ -320,6 +307,7 @@ describe('stateProgress', () => {
 
   it('progress values are integers in range [0, 100]', () => {
     const states: ResearchState[] = [
+      { kind: 'deriving_topic' },
       { kind: 'creating_notebook' },
       { kind: 'searching_sources' },
       { kind: 'adding_sources' },
@@ -367,10 +355,11 @@ describe('ResearchState discriminated union', () => {
 
 describe('FR-004 state machine states', () => {
   it('all required pipeline states can be constructed', () => {
-    // FR-004 states: creating_notebook, searching_sources, adding_sources,
-    // awaiting_processing, generating_questions, querying, resolving_citations,
-    // writing_vault, notifying, done, failed
+    // FR-004 states: deriving_topic, creating_notebook, searching_sources,
+    // adding_sources, awaiting_processing, generating_questions, querying,
+    // resolving_citations, writing_vault, notifying, done, failed
     const states: ResearchState[] = [
+      { kind: 'deriving_topic' },
       { kind: 'creating_notebook' },
       { kind: 'searching_sources' },
       { kind: 'adding_sources' },
@@ -387,6 +376,6 @@ describe('FR-004 state machine states', () => {
     for (const s of states) {
       expect(typeof s.kind).toBe('string');
     }
-    expect(states).toHaveLength(11);
+    expect(states).toHaveLength(12);
   });
 });

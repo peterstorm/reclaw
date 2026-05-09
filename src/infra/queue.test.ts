@@ -210,16 +210,14 @@ describe('createQueues', () => {
   it('enqueueResearch adds ResearchJobData to research queue with generated job id', async () => {
     const queues = createQueues(redisConnection);
     const researchJobData = {
-      topic: 'AI agents',
-      prompt: null,
-      topicSlug: 'ai-agents' as import('../core/research-types.js').ResearchJobData['topicSlug'],
+      prompt: 'AI agents research',
       sourceHints: [] as readonly string[],
       chatId: 987654,
-      state: { kind: 'creating_notebook' as const },
+      state: { kind: 'deriving_topic' as const },
       context: {
-        topic: 'AI agents',
-        prompt: null,
-        topicSlug: 'ai-agents' as import('../core/research-types.js').ResearchJobData['topicSlug'],
+        topic: '',
+        prompt: 'AI agents research',
+        topicSlug: null,
         sourceHints: [] as readonly string[],
         chatId: 987654,
         notebookId: null,

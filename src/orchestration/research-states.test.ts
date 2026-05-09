@@ -104,6 +104,7 @@ function makeMockDeps(overrides: Partial<ResearchDeps> = {}): ResearchDeps {
   };
 
   const researchLLM: ResearchLLMAdapter = {
+    deriveTopic: vi.fn().mockResolvedValue('AI Agents Overview'),
     generateQuestions: vi.fn().mockResolvedValue({
       ok: true,
       value: ['Q1?', 'Q2?', 'Q3?'],

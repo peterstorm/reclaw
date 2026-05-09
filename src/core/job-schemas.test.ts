@@ -56,13 +56,11 @@ function validRecurringReminderData() {
 
 function validResearchData() {
   return {
-    topic: 'quantum computing',
-    prompt: null,
-    topicSlug: 'quantum-computing',
+    prompt: 'Research quantum computing advancements',
     sourceHints: ['https://arxiv.org'],
     chatId: 123,
-    state: { kind: 'creating_notebook' },
-    context: { topic: 'quantum computing' },
+    state: { kind: 'deriving_topic' },
+    context: { topic: '', prompt: 'Research quantum computing advancements', topicSlug: null },
   };
 }
 
@@ -238,21 +236,12 @@ describe('parseResearchJobData', () => {
     const result = parseResearchJobData(validResearchData());
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.topic).toBe('quantum computing');
-    expect(result.value.topicSlug).toBe('quantum-computing');
+    expect(result.value.prompt).toBe('Research quantum computing advancements');
+    expect(result.value.chatId).toBe(123);
   });
 
-  it('accepts null prompt', () => {
-    const result = parseResearchJobData({ ...validResearchData(), prompt: null });
-    expect(result.ok).toBe(true);
-  });
-
-  it('rejects empty topic', () => {
-    expect(parseResearchJobData({ ...validResearchData(), topic: '' }).ok).toBe(false);
-  });
-
-  it('rejects empty topicSlug', () => {
-    expect(parseResearchJobData({ ...validResearchData(), topicSlug: '' }).ok).toBe(false);
+  it('rejects empty prompt', () => {
+    expect(parseResearchJobData({ ...validResearchData(), prompt: '' }).ok).toBe(false);
   });
 
   it('preserves extra fields via passthrough', () => {

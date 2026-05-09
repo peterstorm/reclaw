@@ -16,6 +16,13 @@ import type { SourceMeta } from '../core/research-types.js';
 
 export type ResearchLLMAdapter = {
   /**
+   * Derive a concise 3-8 word topic title from a user's free-form research prompt.
+   * Used in the deriving_topic state before any other pipeline state runs.
+   * Throws on error — the state machine executor catches and emits ERROR.
+   */
+  readonly deriveTopic: (prompt: string) => Promise<string>;
+
+  /**
    * Generate 3-5 research questions for a given topic, informed by source titles.
    * FR-020: informed by the topic and the list of ingested sources.
    * When prompt is provided, it guides question focus and specificity.
@@ -57,6 +64,14 @@ export type ResearchLLMAdapter = {
 };
 
 // ─── Pure: prompt builders ────────────────────────────────────────────────────
+
+/**
+ * Build the topic derivation prompt.
+ * Instructs Claude to output a concise 3-8 word title with no extra text.
+ */
+export function buildDeriveTopicPrompt(prompt: string): string {
+  return `You are a research title generator. Read the user's research prompt and generate a concise 3-8 word title that captures the topic. Output ONLY the title text — no quotes, no punctuation at the end, no explanation.\n\nResearch prompt: ${prompt}`;
+}
 
 /**
  * Build the question generation prompt.
@@ -317,6 +332,22 @@ export function createResearchLLMAdapter(
     timeoutMs: webSearchTimeoutMs,
   };
 
+  const deriveTopic = async (userPrompt: string): Promise<string> => {
+    const claudePrompt = buildDeriveTopicPrompt(userPrompt);
+    const claudeResult = await runClaude({ ...baseOptions, prompt: claudePrompt });
+
+    if (!claudeResult.ok) {
+      throw new Error(`Claude subprocess failed: ${claudeResult.error}`);
+    }
+
+    const trimmed = claudeResult.output.trim().split('\n')[0]?.trim() ?? '';
+    if (!trimmed) {
+      throw new Error('Empty topic derivation response from Claude');
+    }
+
+    return trimmed;
+  };
+
   const generateQuestions = async (
     topic: string,
     sources: readonly SourceMeta[],
@@ -387,5 +418,5 @@ export function createResearchLLMAdapter(
     return parseDiscoveredUrlsFromOutput(claudeResult.output);
   };
 
-  return { generateQuestions, reformulateQuery, rephraseQuestion, discoverSourceUrls } as const;
+  return { deriveTopic, generateQuestions, reformulateQuery, rephraseQuestion, discoverSourceUrls } as const;
 }

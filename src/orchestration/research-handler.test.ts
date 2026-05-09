@@ -31,7 +31,7 @@ import { makeResearchJobData } from '../core/research-types.js';
 
 function makeInitialJobData(): ResearchJobData {
   const result = makeResearchJobData({
-    topic: 'AI agents',
+    prompt: 'AI agents',
     sourceHints: [],
     chatId: 12345,
   });
@@ -85,6 +85,7 @@ function makeMockDeps(overrides: Partial<ResearchDeps> = {}): ResearchDeps {
   };
 
   const researchLLM: ResearchLLMAdapter = {
+    deriveTopic: vi.fn().mockResolvedValue('AI agents'),
     generateQuestions: vi.fn().mockResolvedValue({
       ok: true,
       value: ['Q1?', 'Q2?', 'Q3?'],
@@ -313,8 +314,11 @@ describe('handleResearchJob', () => {
     const baseData = makeInitialJobData();
 
     // Build a context that's already at the querying state
+    // (topic was derived in deriving_topic before the crash)
     const checkpointContext: ResearchContext = {
       ...baseData.context,
+      topic: 'AI agents',
+      topicSlug: 'ai-agents' as ResearchContext['topicSlug'],
       notebookId: 'nb-001',
       sources: [source],
       questions: ['Q1?', 'Q2?'],
@@ -449,6 +453,8 @@ describe('handleResearchJob', () => {
     const baseData = makeInitialJobData();
     const checkpointContext: ResearchContext = {
       ...baseData.context,
+      topic: 'AI agents',
+      topicSlug: 'ai-agents' as ResearchContext['topicSlug'],
       notebookId: 'nb-001',
       retries: { searching_sources: 2 },
       lastError: 'Previous failure',

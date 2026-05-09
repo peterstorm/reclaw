@@ -30,6 +30,7 @@ import { buildAllVaultNotes, buildEmergencyNote } from '../core/vault-content.js
 import { resolveAnswerCitations, extractPassageToSourceMap } from '../core/citation-resolver.js';
 import type { ArtifactMeta, ResolvedNote } from '../core/research-types.js';
 import { computeMetrics, evaluateQuality } from '../core/research-quality.js';
+import { generateTopicSlug } from '../core/topic-slug.js';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -124,6 +125,7 @@ export async function executeState(
   deps: ResearchDeps,
 ): Promise<ResearchEvent> {
   return match(state)
+    .with({ kind: 'deriving_topic' }, () => executeDerivingTopic(ctx, deps))
     .with({ kind: 'creating_notebook' }, () => executeCreatingNotebook(ctx, deps))
     .with({ kind: 'searching_sources' }, () => executeSearchingSources(ctx, deps))
     .with({ kind: 'adding_sources' }, () => executeAddingSources(ctx, deps))
@@ -143,6 +145,25 @@ export async function executeState(
 }
 
 // ─── State Executors ──────────────────────────────────────────────────────────
+
+/**
+ * deriving_topic: Derive a short topic title from the user's free-form prompt.
+ *
+ * Calls the LLM to generate a 3-8 word title, then generates a slug from it.
+ * This is always the first state in the pipeline.
+ */
+async function executeDerivingTopic(
+  ctx: ResearchContext,
+  deps: ResearchDeps,
+): Promise<ResearchEvent> {
+  try {
+    const derivedTopic = await deps.researchLLM.deriveTopic(ctx.prompt ?? '');
+    const topicSlug = generateTopicSlug(derivedTopic);
+    return { type: 'TOPIC_DERIVED', topic: derivedTopic, topicSlug };
+  } catch (err) {
+    return { type: 'ERROR', error: String(err), retriable: true };
+  }
+}
 
 /**
  * creating_notebook: Create a new NotebookLM notebook.
@@ -562,8 +583,9 @@ async function executeWritingVault(
   if (writeResult.ok) {
     // Append new topic to the Research MOC (best-effort — failure here doesn't block the pipeline)
     try {
+      const topicSlug = ctx.topicSlug ?? 'untitled';
       const researchDate = ctx.startedAt.split('T')[0] ?? ctx.startedAt;
-      const mocEntry = `\n- [[reclaw/research/${ctx.topicSlug}/_index|${ctx.topic}]] — (${researchDate})\n`;
+      const mocEntry = `\n- [[reclaw/research/${topicSlug}/_index|${ctx.topic}]] — (${researchDate})\n`;
       const mocPath = `${deps.vaultBasePath}/reclaw/research/MOC.md`;
       // Insert before "## Related Learning Notes" if it exists, otherwise append to end
       const fs = await import('fs/promises');
@@ -573,9 +595,9 @@ async function executeWritingVault(
         ? mocContent.slice(0, relatedIdx) + `\n## Uncategorized\n${mocEntry}` + mocContent.slice(relatedIdx)
         : mocContent + `\n## Uncategorized\n${mocEntry}`;
       // Only append if this topic isn't already in the MOC
-      if (!mocContent.includes(ctx.topicSlug)) {
+      if (!mocContent.includes(topicSlug)) {
         await fs.writeFile(mocPath, updatedMoc, 'utf8');
-        console.log(`[research:vault] Added ${ctx.topicSlug} to Research MOC`);
+        console.log(`[research:vault] Added ${topicSlug} to Research MOC`);
       }
     } catch (mocErr) {
       console.warn('[research:vault] Failed to update Research MOC:', mocErr);

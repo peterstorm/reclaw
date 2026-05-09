@@ -237,7 +237,7 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
     const data = activeJob.data as ResearchJobData | undefined;
     return {
       active: {
-        topic: data?.topic ?? '(unknown)',
+        topic: data?.context?.topic ?? '(unknown)',
         state: data?.state?.kind ?? '(unknown)',
         progress: data?.state ? stateProgress(data.state) : 0,
         startedAt: data?.context?.startedAt ?? '(unknown)',

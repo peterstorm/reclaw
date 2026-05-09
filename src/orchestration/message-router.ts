@@ -280,10 +280,9 @@ function routeResearchCommand(msg: IncomingMessage, deps: MessageRouterDeps): vo
       return;
     }
 
-    const { topic, prompt, sourceHints, generateAudio, generateVideo } = researchParseResult.value;
+    const { prompt, sourceHints, generateAudio, generateVideo } = researchParseResult.value;
 
     const researchJobDataResult = makeResearchJobData({
-      topic,
       prompt,
       sourceHints,
       chatId: msg.chatId,
@@ -311,10 +310,10 @@ function routeResearchCommand(msg: IncomingMessage, deps: MessageRouterDeps): vo
       ? `\nMedia: ${mediaFlags.join(' + ')} overview will be generated.`
       : '';
 
-    const promptSuffix = prompt ? `\nFocus: ${prompt}` : '';
+    const promptPreview = prompt.length > 100 ? `${prompt.slice(0, 100)}…` : prompt;
     const confirmMsg = position > 1
-      ? `Research enqueued: "${topic}"${promptSuffix}\n\nQueue position: ${position} (${position - 1} job(s) ahead)${mediaSuffix}`
-      : `Research enqueued: "${topic}"${promptSuffix}\n\nStarting now.${mediaSuffix}`;
+      ? `Research enqueued.\nFocus: ${promptPreview}\n\nQueue position: ${position} (${position - 1} job(s) ahead)${mediaSuffix}`
+      : `Research enqueued.\nFocus: ${promptPreview}\n\nStarting now. Topic will be derived from your prompt.${mediaSuffix}`;
 
     await deps.telegram.sendMessage(msg.chatId, confirmMsg);
   }).catch((researchErr: unknown) => {
@@ -340,8 +339,8 @@ const HELP_TEXT = [
   '/remind list — List active recurring reminders',
   '/remind cancel <id> — Cancel a recurring reminder',
   '',
-  '/research <topic> [--audio] [--video] [--link <url>] [| <prompt>]',
-  '  Deep research with NotebookLM + Claude',
+  '/research <prompt> [--audio] [--video] [--link <url>]',
+  '  Deep research with NotebookLM + Claude. Topic is derived automatically.',
   '/research-status — Check research job progress',
   '',
   '/podcast <vault-path> [--format deep-dive|brief|critique|debate] [--length short|default|long]',

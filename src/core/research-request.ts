@@ -4,13 +4,11 @@ import { type Result, ok, err } from './types.js';
 
 /**
  * A parsed research request from a /research Telegram command.
- * Satisfies FR-091: topic is all text after /research up to first URL.
- * Satisfies FR-013: sourceHints are URLs extracted from the message.
+ * The user supplies free-form prompt text; the topic is derived via LLM later.
+ * FR-013: sourceHints are URLs extracted from the message.
  */
 export type ResearchRequest = {
-  readonly topic: string;
-  /** Optional research prompt that guides source discovery and question generation. */
-  readonly prompt: string | null;
+  readonly prompt: string;
   readonly sourceHints: readonly string[];
   readonly generateAudio: boolean;
   readonly generateVideo: boolean;
@@ -28,19 +26,10 @@ function extractUrls(text: string): readonly string[] {
 }
 
 /**
- * Find the index of the first URL in the string, or -1 if none.
- * Uses a local regex literal without the /g flag so lastIndex is never an issue.
- */
-function indexOfFirstUrl(text: string): number {
-  const match = /https?:\/\/\S+/i.exec(text);
-  return match ? match.index : -1;
-}
-
-/**
  * Derive a human-readable topic from a URL's path segments.
  * Strips protocol, domain, query params, and converts dashes/underscores to spaces.
  */
-function topicFromUrl(url: string): string {
+export function topicFromUrl(url: string): string {
   try {
     const parsed = new URL(url);
     // Use the last meaningful path segment(s)
@@ -73,9 +62,12 @@ function topicFromUrl(url: string): string {
  * Parse a /research Telegram command.
  *
  * FR-090: Detects the /research prefix.
- * FR-091: topic = all text after /research up to the first URL.
- * FR-013: sourceHints = all URLs in the message remainder.
- * FR-092: Returns err if topic is empty after trimming.
+ * FR-013: sourceHints = all URLs in the message (including --link URL).
+ * Returns err if prompt is empty after stripping flags and URLs.
+ *
+ * Flags: --audio, --video, --link <url>
+ * All remaining text (after removing prefix, flags, and inline URLs) is the prompt.
+ * If prompt is empty but --link is provided, derives a seed prompt from the URL.
  *
  * @param text - The full Telegram message text (e.g. "/research AI agents https://example.com")
  * @returns Result<ResearchRequest, string>
@@ -101,97 +93,38 @@ export function parseResearchCommand(text: string): Result<ResearchRequest, stri
   const linkMatch = rawRemainder.match(/(?:^|\s)--link\s+(https?:\/\/\S+)/i);
   const linkUrl = linkMatch ? linkMatch[1] : null;
 
+  // Strip all flags (--audio, --video, --link <url>) from remainder
   const remainder = rawRemainder
     .replace(/(?:^|\s)--audio\b/gi, ' ')
     .replace(/(?:^|\s)--video\b/gi, ' ')
     .replace(/(?:^|\s)--link\s+https?:\/\/\S+/gi, ' ')
     .replace(/^\s+/, '');
 
-  // Split on pipe separator: left = title, right = prompt
-  // If no pipe, entire remainder is the title (backward compatible)
-  let titleSection: string;
-  let prompt: string | null = null;
+  // Collect inline URLs from the remainder (after flag stripping)
+  const inlineUrls = extractUrls(remainder);
 
-  const pipeIndex = remainder.indexOf('|');
-  if (pipeIndex !== -1) {
-    titleSection = remainder.slice(0, pipeIndex);
-    const promptSection = remainder.slice(pipeIndex + 1);
-    // Extract URLs from the prompt section and strip them out to get the prompt text
-    const promptUrls = extractUrls(promptSection);
-    const promptText = promptSection.replace(/https?:\/\/\S+/gi, '').trim();
-    if (promptText.length > 0) {
-      prompt = promptText;
-    }
-    // Collect URLs from both sides
-    const titleFirstUrlIndex = indexOfFirstUrl(titleSection);
-    let topicRaw: string;
-    let titleUrlSection: string;
+  // Strip inline URLs from remainder text to get the prompt
+  const promptText = remainder.replace(/https?:\/\/\S+/gi, '').trim();
 
-    if (titleFirstUrlIndex === -1) {
-      topicRaw = titleSection;
-      titleUrlSection = '';
-    } else {
-      topicRaw = titleSection.slice(0, titleFirstUrlIndex);
-      titleUrlSection = titleSection.slice(titleFirstUrlIndex);
-    }
-
-    const topic = topicRaw.trim();
-
-    if (topic.length === 0 && linkUrl) {
-      return ok({
-        topic: topicFromUrl(linkUrl),
-        prompt,
-        sourceHints: [linkUrl, ...extractUrls(titleUrlSection), ...promptUrls],
-        generateAudio,
-        generateVideo,
-      });
-    }
-
-    if (topic.length === 0) {
-      return err(
-        'Research topic must not be empty. Usage: /research <topic> | <prompt> [urls...] or /research <topic> [urls...]',
-      );
-    }
-
-    const sourceHints = [
-      ...(linkUrl ? [linkUrl] : []),
-      ...extractUrls(titleUrlSection),
-      ...promptUrls,
-    ];
-
-    return ok({ topic, prompt, sourceHints, generateAudio, generateVideo });
-  }
-
-  // No pipe — original parsing: topic is everything up to the first URL
-  const firstUrlIndex = indexOfFirstUrl(remainder);
-
-  let topicRaw: string;
-  let urlSection: string;
-
-  if (firstUrlIndex === -1) {
-    topicRaw = remainder;
-    urlSection = '';
-  } else {
-    topicRaw = remainder.slice(0, firstUrlIndex);
-    urlSection = remainder.slice(firstUrlIndex);
-  }
-
-  let topic = topicRaw.trim();
-
-  if (topic.length === 0 && linkUrl) {
-    topic = topicFromUrl(linkUrl);
-  }
-
-  if (topic.length === 0) {
-    return err(
-      'Research topic must not be empty. Usage: /research <topic> | <prompt> [urls...] or /research <topic> [urls...]',
-    );
-  }
-
-  const sourceHints = [
+  // Build sourceHints: --link URL first, then inline URLs
+  const sourceHints: readonly string[] = [
     ...(linkUrl ? [linkUrl] : []),
-    ...extractUrls(urlSection),
+    ...inlineUrls,
   ];
 
-  return ok({ topic, prompt, sourceHints, generateAudio, generateVideo });
+  // Determine prompt
+  let prompt = promptText;
+
+  if (prompt.length === 0) {
+    if (linkUrl) {
+      // Derive a seed prompt from the --link URL
+      prompt = topicFromUrl(linkUrl);
+    } else {
+      return err(
+        'Research prompt must not be empty. Usage: /research <prompt> [--audio] [--video] [--link <url>]',
+      );
+    }
+  }
+
+  return ok({ prompt, sourceHints, generateAudio, generateVideo });
 }

@@ -2,7 +2,6 @@ import { z } from 'zod';
 import type { ChatJob, PodcastJob, RecurringReminderJob, ReminderJob, ScheduledJob } from './types.js';
 import type { JobId, SkillId, TelegramUserId } from './types.js';
 import type { ResearchJobData } from './research-types.js';
-import type { TopicSlug } from './topic-slug.js';
 import { type Result, err, ok } from './types.js';
 
 // ─── Branded Field Transforms ────────────────────────────────────────────────
@@ -13,7 +12,6 @@ import { type Result, err, ok } from './types.js';
 const jobId = z.string().min(1).transform((s) => s as JobId);
 const skillId = z.string().min(1).transform((s) => s as SkillId);
 const telegramUserId = z.number().int().positive().transform((n) => n as TelegramUserId);
-const topicSlug = z.string().min(1).transform((s) => s as TopicSlug);
 
 // ─── Zod Schemas ─────────────────────────────────────────────────────────────
 // Validate job data at the BullMQ boundary (deserialized from Redis).
@@ -71,9 +69,7 @@ const PodcastJobSchema = z.object({
 // Research jobs have deeply nested state/context — validate top-level shape only.
 // The research pipeline validates its own invariants.
 const ResearchJobDataSchema = z.object({
-  topic: z.string().min(1),
-  prompt: z.string().nullable().optional(),
-  topicSlug: topicSlug,
+  prompt: z.string().min(1),
   sourceHints: z.array(z.string()),
   chatId: z.number().int(),
   state: z.object({}).passthrough(),

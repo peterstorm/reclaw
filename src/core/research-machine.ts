@@ -21,12 +21,13 @@ import type { ResearchContext, ResearchEvent, ResearchState } from './research-t
 /**
  * Maximum number of retries allowed per state.
  *
- * FR-050: creating_notebook=2, searching_sources=2, adding_sources=2,
- *         writing_vault=3, notifying=2.
+ * FR-050: deriving_topic=2, creating_notebook=2, searching_sources=2,
+ *         adding_sources=2, writing_vault=3, notifying=2.
  *
  * States not listed here are not retried (they either succeed or fail immediately).
  */
 export const MAX_RETRIES: Readonly<Record<string, number>> = Object.freeze({
+  deriving_topic: 2,
   creating_notebook: 2,
   searching_sources: 2,
   adding_sources: 2,
@@ -73,6 +74,7 @@ export function transition(
 
   // ── State-specific happy-path transitions ──────────────────────────────────
   return match(state)
+    .with({ kind: 'deriving_topic' }, (s) => handleDerivingTopic(s, event, ctx))
     .with({ kind: 'creating_notebook' }, (s) => handleCreatingNotebook(s, event, ctx))
     .with({ kind: 'searching_sources' }, (s) => handleSearchingSources(s, event, ctx))
     .with({ kind: 'adding_sources' }, (s) => handleAddingSources(s, event, ctx))
@@ -142,6 +144,25 @@ function handleError(
 }
 
 // ─── State Handlers ───────────────────────────────────────────────────────────
+
+function handleDerivingTopic(
+  _state: Extract<ResearchState, { kind: 'deriving_topic' }>,
+  event: ResearchEvent,
+  ctx: ResearchContext,
+): { state: ResearchState; context: ResearchContext } {
+  if (event.type !== 'TOPIC_DERIVED') {
+    return unexpectedEvent('deriving_topic', event, ctx);
+  }
+
+  const nextContext: ResearchContext = {
+    ...ctx,
+    topic: event.topic,
+    topicSlug: event.topicSlug,
+    lastError: null,
+    retries: clearRetries(ctx.retries, 'deriving_topic'),
+  };
+  return { state: { kind: 'creating_notebook' }, context: nextContext };
+}
 
 function handleCreatingNotebook(
   _state: Extract<ResearchState, { kind: 'creating_notebook' }>,
