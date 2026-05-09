@@ -161,8 +161,9 @@ promptTemplate: |
   ## Step 4: Output
 
   Brief Telegram summary: files scanned, recall turns processed, surfaced total,
-  useful detected, bumps applied, top 3 summaries with score. If nothing useful
-  detected, respond with exactly `ALL_CLEAR`.
+  useful detected, bumps applied, and the full list of useful summaries with
+  score (sorted descending). If nothing useful detected, respond with exactly
+  `ALL_CLEAR`.
 
   ## Tuning notes (do not output)
 
