@@ -84,7 +84,7 @@ promptTemplate: |
   Frame these as leads / things to follow up on, not buried in the day overview. If the array is `[]`, skip this section silently.
 
   **Step 4 — Day overview:** Include:
-  - The calendar events from step 2
+  - The calendar events from step 3
   - Key priorities or tasks from the Obsidian vault
   - Any open items from the reclaw todo at ~/dev/notes/remotevault/reclaw/todo.md
 

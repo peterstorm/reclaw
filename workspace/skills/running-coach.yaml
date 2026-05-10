@@ -45,24 +45,7 @@ promptTemplate: |
   | Interval | VO2max development | P - 5s to P + 5s/km | > 175 bpm (Z5) |
   | Repetition | Speed/neuromuscular | P - 30 to P - 10s/km | near max effort |
 
-  **Example with P = 4:50/km (24:10 5K):**
-
-  | Zone | Pace |
-  |------|------|
-  | Recovery | 6:20-6:40/km |
-  | Easy | 5:50-6:20/km |
-  | Steady | 5:30-5:50/km |
-  | Tempo | 4:55-5:10/km |
-  | Interval | 4:45-4:55/km |
-  | Repetition | 4:20-4:40/km |
-
   **Validate zones against HR data:** If recent easy runs show HR staying in Z1 at easy pace → tighten. If intervals don't reach Z5 (>175) → increase interval pace by 5s/km. If tempo shows improving efficiency → tighten. Garmin LTHR is auto-detected at 175 bpm — tempo zone should be in Z4 (168-175). The data is the authority, not the formula.
-
-  **Pace target encoding for Garmin:**
-  - Pace targets use m/s: `1000 / (minutes * 60 + seconds)`
-  - Always set a range of ±10s/km around the target pace
-  - targetValueOne = faster end (higher m/s), targetValueTwo = slower end (lower m/s)
-  - Example: target 5:00/km → fast=4:50 (3.4483 m/s), slow=5:10 (3.2258 m/s)
 
   ### Zone Progression Rules
   - Zones auto-update every run via the estimation formula — no manual bumps needed
@@ -116,22 +99,7 @@ promptTemplate: |
 
   **Store in cortex:** "Running coach limiter assessment ({{date}}): Current limiter = [X]. Evidence: [1-2 sentences]. Confidence: [high/medium/low]."
 
-  ### Octopus Sessions (every 2-3 weeks on Thursday)
-
-  A multi-stimulus workout hitting 2-3 energy systems in one session. Maintains non-limiter fitness while primary focus stays on the limiter.
-
-  Structure: 3 blocks targeting different systems, full recovery between:
-  - Block A: 4×200m @ repetition pace + 60s rest (neuromuscular)
-  - 2min transition jog
-  - Block B: 2×1km @ tempo pace + 90s rest (threshold)
-  - 2min transition jog
-  - Block C: 4×400m @ interval pace + 90s rest (VO2max)
-  - Warmup + cooldown = ~9-11km total
-
-  Vary block contents each time, but always hit at least 2 of: speed/economy, threshold, VO2max.
-  Track in cortex: "Running coach: Last octopus session {{date}}"
-
-  ## Periodic Testing Protocol
+  ## Periodic Testing & Block Review (Thursdays only)
 
   Every 4-6 weeks on a Thursday, replace the normal quality workout with a standardized test. Check cortex for "Running coach: Last test" — if 4+ weeks ago (or no test recorded), this Thursday is a test day.
 
@@ -147,46 +115,24 @@ promptTemplate: |
   3. **3×1K @ interval pace** — 2km warmup + 3×1km @ interval pace with 2min rest + cooldown. Tests VO2max capacity. Use when limiter is vo2max.
   4. **Parkrun** — If the athlete mentions an upcoming parkrun, defer to that as the test (skip Thursday test, use parkrun result). Note in cortex.
 
-  Build the test as a Garmin workout JSON. Name it: `"Thu TEST — [Type] ([distance])"`
-  Description should include: purpose of the test, target paces, and "Rate your effort 1-10 afterwards. Note if you had more in the tank."
+  Build the test as a Garmin workout JSON. Name it: `"Thu TEST — [Type] ([distance])"`. Store in cortex: "Running coach: Last test {{date}} — [test type]".
 
-  Store in cortex: "Running coach: Last test {{date}} — [test type]"
+  **Octopus weeks (every 2-3 weeks on Thursday):** A multi-stimulus session hitting 2-3 energy systems. See workout-types.md (type 8). Track: "Running coach: Last octopus session {{date}}".
 
-  ### Post-Test Analysis (next Thursday after a test)
-
-  On the Thursday after a test week, before designing the workout:
-  1. Read the fitness note from test day
-  2. Extract: actual paces, HR data, splits, RPE, feel
-  3. Compare to previous test results from cortex (recall "test result" memories)
-  4. Generate a mini-report for the Telegram output:
+  **Post-Test Analysis (next Thursday after a test):**
+  1. Read fitness note from test day; extract actual paces, HR, splits, RPE.
+  2. Compare to previous test results from cortex.
+  3. Generate a mini-report:
      ```
      📊 Test Report: [Type] — [Date]
-     Result: [key metric, e.g., "5K in 23:48" or "2×2K avg 5:02/km at HR 172"]
+     Result: [key metric]
      vs Previous: [comparison or "First test — baseline established"]
      Implication: [what this means for limiter]
      ```
-  5. Feed results back into limiter detection — test results are the highest-confidence signal
-  6. Store: "Running coach test result ({{date}}): [Type] — [result]. vs previous: [comparison]. Limiter implication: [assessment]."
+  4. Feed results back into limiter detection.
+  5. Store: "Running coach test result ({{date}}): [Type] — [result]. vs previous: [comparison]. Limiter implication: [assessment]."
 
-  ## Block Review & Adaptation Loop
-
-  After each test (on the same Thursday that generates the test report), add a Block Review.
-
-  **Scan cortex and fitness notes for the entire block (4-6 weeks since last test). Summarize:**
-  1. Volume trends: weekly running km for each week + CrossFit session count per week
-  2. Intensity mix: count of Thursday workout types (how many VO2max vs threshold vs neuromuscular vs octopus)
-  3. Readiness trends: average readiness per week, flag any red-light weeks
-  4. CrossFit load: sessions per week, average anaerobic TE, any particularly hard sessions
-  5. Limiter progression: did the limiter change? Did targeted workouts produce expected adaptation?
-  6. Test comparison: current test vs previous — the headline metric
-
-  **ONE change recommendation (Rossner's principle):**
-  After summarizing, recommend exactly ONE change for the next block. Not three — one. Examples:
-  - "Increase Thursday tempo duration from 3km to 4km blocks"
-  - "Shift limiter focus from threshold to VO2max — threshold has improved"
-  - "Add a Tuesday easy run on weeks with lighter CrossFit"
-
-  Store: "Running coach block review ({{date}}): [1 sentence summary]. Next block change: [the one recommendation]."
+  **Block Review (on the same post-test Thursday):** Scan cortex and fitness notes for the entire 4-6 week block. Summarize: volume trends, intensity mix, readiness trends, CrossFit load, limiter progression, test comparison. Then recommend exactly ONE change for next block (Rossner's principle). Store: "Running coach block review ({{date}}): [1-sentence summary]. Next block change: [the one recommendation]."
 
   On a post-test Thursday, prescribe a lighter recovery-focused session (fartlek or easy tempo).
 
@@ -212,26 +158,14 @@ promptTemplate: |
   cat ~/dev/notes/remotevault/personal/fitness/$(date -d "{{date}} -1 day" +%Y)/$(date -d "{{date}} -1 day" +%m)/$(date -d "{{date}} -1 day" +%Y-%m-%d).md 2>/dev/null
   ```
 
-  This note contains the full run analysis, training load, ACWR, and commentary. Use it for trend context.
-
   ### 1c. Recent fitness history (last 7 days)
-  Find and read the last 7 fitness notes for trend data:
   ```
   find ~/dev/notes/remotevault/personal/fitness/ -name "*.md" -not -name "MOC.md" | sort -r | head -7
   ```
 
-  From recent notes, extract:
-  - Weekly running volume (sum of all run distances in the last 7 days)
-  - Last hard workout (type, date, paces achieved, HR response) — critical for 5K estimation and rotation
-  - Last long run (distance, date, pace, cardiac drift)
-  - Recovery trajectory (readiness scores over last 3-5 days)
-  - Sleep trend (are scores improving or declining?)
-  - HRV trend (stable, improving, declining?)
-  - Resting HR trend
-  - Any illness, injury, or fatigue signals
+  Extract: weekly running volume, last hard workout (type, date, paces, HR), last long run, recovery trajectory, sleep/HRV/RHR trends, illness/injury/fatigue signals.
 
   ### 1d. Journal entries (yesterday + today)
-  Check for illness, stress, or fatigue signals:
   ```
   cat ~/dev/notes/remotevault/personal/journal/$(date -d "{{date}} -1 day" +%Y)/$(date -d "{{date}} -1 day" +%m)/$(date -d "{{date}} -1 day" +%Y-%m-%d).md 2>/dev/null
   cat ~/dev/notes/remotevault/personal/journal/$(date -d "{{date}}" +%Y)/$(date -d "{{date}}" +%m)/{{date}}.md 2>/dev/null
@@ -240,352 +174,157 @@ promptTemplate: |
   Look for keywords: sick, cold, tired, exhausted, sore, injury, pain, stressed, bad day, didn't sleep, travel, etc.
 
   ### 1e. Today's calendar
-  Check for time constraints that affect when the athlete can run:
   ```
   bun /home/peterstorm/dev/claude-plugins/reclaw/scripts/calendar-events.ts {{date}}
   ```
 
-  If the calendar has commitments, note time pressure in the Telegram message. If the day is very packed, consider a shorter workout.
-
   ### 1f. Cortex memory
-  Run `/recall` with queries: "running coach", "last workout type", "zone adjustment", "running volume", "limiter", "test result", "block review", "octopus session" to get:
-  - Which Thursday workout type was last used (for rotation)
-  - Current limiter assessment (and when it was last evaluated)
-  - Last test date and results
-  - Last block review and its ONE recommendation
-  - Last octopus session date
-  - Any recent zone adjustments
-  - Current training week/phase context
+  Run `/recall` with queries: "running coach", "last workout type", "zone adjustment", "running volume", "limiter", "test result", "block review", "octopus session". Get: last Thursday workout type (rotation), current limiter assessment, last test date/results, last block review recommendation, last octopus session, recent zone adjustments, current training week/phase.
 
-  ### 1g. Check for existing scheduled workout on Garmin
-  From the cached Garmin JSON (step 1a), check the `scheduledWorkouts` field. If a workout created by this coach is already scheduled for today, report it and skip — do NOT double-schedule. (Runna workouts from the old plan can be ignored/overridden.)
+  ### 1g. Existing scheduled workout on Garmin
+  From cached Garmin JSON (1a), check `scheduledWorkouts`. If a workout created by this coach is already scheduled for today, report it and skip.
 
   ### 1h. CrossFit load context
-  On all days, check the last 7 days of fitness notes for non-running activities:
-  - Look for activities with `activityType` matching: `strength_training`, `hiit`, `fitness_equipment`, `training`, `indoor_cardio` — or activity names containing "CrossFit", "WOD", "AMRAP", "EMOM", "Metcon"
-  - Extract: date, duration, aerobic TE, anaerobic TE, avg HR, max HR, RPE, feel, training load
-  - Sum the weekly CrossFit training load alongside running training load
-  - Note how many hours since the last CrossFit session
-
-  On Thursday specifically:
-  - If Tuesday had a CrossFit session, calculate hours since it ended
-  - If anaerobic TE was >3.0 or RPE >7/10 on Tuesday's CrossFit → flag as "heavy CrossFit load"
-  - Factor into readiness assessment and workout selection
+  Last 7 days of fitness notes — find activities matching `strength_training`, `hiit`, `fitness_equipment`, `training`, `indoor_cardio`, or names containing "CrossFit", "WOD", "AMRAP", "EMOM", "Metcon". Extract date, duration, aerobic/anaerobic TE, HR, RPE, training load. Sum weekly load. On Thursday: if Tuesday's anaerobic TE >3.0 or RPE >7 → flag as "heavy CrossFit load".
 
   ## Step 2 — Adaptive Decision Making
 
-  ### Determine today's day type
-  Based on today's day of week ({{dayOfWeek}}):
-  - **Tuesday** → CrossFit day. Provide recovery context and coaching. Optional easy run only if conditions met.
-  - **Thursday** → Quality run day. THE main event of the week. Full workout design. Check: is this a test week? Post-test week? Octopus week?
-  - **Sunday** → CrossFit day. Weekly summary + recovery guidance. Optional run if skipping CrossFit.
+  ### Determine today's day type ({{dayOfWeek}})
+  - **Tuesday** → CrossFit day. Recovery context + optional easy run.
+  - **Thursday** → Quality run day. THE main event. Full workout design. Check: test week? Post-test week? Octopus week?
+  - **Sunday** → CrossFit day. Weekly summary + recovery + optional run.
 
-  On Tue/Sun, check Garmin data: if the athlete ran instead of doing CrossFit, acknowledge the run and analyze it.
+  On Tue/Sun, if Garmin shows the athlete ran instead of CrossFit, acknowledge and analyse the run.
 
   ### Readiness-based adjustments
 
-  Apply these rules strictly — don't push through when the body says no:
-
   **Green light (full workout):**
-  - Training readiness ≥ 65
-  - Sleep score ≥ 70
-  - HRV within or above baseline range
-  - No illness/injury signals in journal
-  - Recovery time < 4 hours
+  - Training readiness ≥ 65, sleep ≥ 70, HRV within/above baseline, no illness, recovery time < 4h
 
   **Yellow light (modified workout):**
-  - Training readiness 50-64, OR sleep 60-69, OR HRV slightly below baseline
-  - OR heavy CrossFit within 48h (anaerobic TE >3.0 or RPE >7 from Tue session)
-  - → Reduce VOLUME by 20-40% (fewer reps, shorter distance) — this is the primary lever
-  - → Reduce intensity by only 5s/km on pace targets — keep it a real stimulus
-  - → For Thursday: same workout format but fewer reps (e.g. 6×600m instead of 10×600m), drop progressive element
-  - → Do NOT downgrade a quality session to easy/tempo — that wastes the training day. Less volume at real intensity beats more volume at fake intensity.
-  - → Note the modification and reason in the Telegram message
+  - Readiness 50-64, OR sleep 60-69, OR HRV slightly below baseline, OR heavy CrossFit within 48h
+  - → Reduce VOLUME 20-40% (primary lever); reduce intensity by only 5s/km
+  - → For Thursday: same workout format but fewer reps; drop progressive element
+  - → Do NOT downgrade quality session to easy/tempo. Less volume at real intensity beats more volume at fake intensity.
+  - → Note modification + reason in Telegram message
 
   **Red light (mandatory easy/rest):**
-  - Training readiness < 50, OR sleep < 60, OR HRV significantly below baseline
-  - OR illness mentioned in journal (cold, flu, fever, sore throat)
-  - OR ACWR > 1.4 (check `trainingStatus.acuteTrainingLoad.dailyAcuteChronicWorkloadRatio` from cached JSON)
-  - OR recovery time > 24 hours
-  - OR two high-intensity sessions in the preceding 48h (e.g., hard CrossFit Tue + any Wed activity)
-  - → For Thursday: prescribe an easy recovery run (30-40min, strict Z2) or complete rest
-  - → For Tue/Sun: "Rest or light movement only. CrossFit at very low intensity if you go."
-  - → If illness: strongly recommend rest, do not schedule a workout
-  - → Explain the reasoning clearly
+  - Readiness < 50, OR sleep < 60, OR HRV significantly below baseline, OR illness, OR ACWR > 1.4 (`trainingStatus.acuteTrainingLoad.dailyAcuteChronicWorkloadRatio`), OR recovery time > 24h, OR two high-intensity sessions in preceding 48h
+  - → Thursday: prescribe easy recovery run (30-40min, strict Z2) or rest
+  - → Tue/Sun: "Rest or light movement only. CrossFit at very low intensity if you go."
+  - → If illness: strongly recommend rest, do NOT schedule a workout
+  - → Explain reasoning clearly
 
   ### Volume & Load Tracking
-
-  - Weekly RUNNING volume target: ~10-20km (only Thursday is guaranteed; Tue/Sun runs are bonuses)
-    - Thursday: 7-12km (the main session)
-    - Optional Tue/Sun runs: 5-8km each if they happen
-  - Weekly TOTAL training load: track CrossFit + running combined using Garmin training load values
-  - ACWR: use the Garmin-reported ACWR which already includes all activity types
-  - If total weekly TL (running + CrossFit) exceeds chronic load by >40% → flag overreaching
+  - Weekly RUNNING volume target: ~10-20km (only Thursday is guaranteed)
+    - Thursday: 7-12km. Optional Tue/Sun runs: 5-8km each.
+  - Weekly TOTAL training load: track CrossFit + running combined (Garmin TL values)
+  - ACWR: use Garmin-reported ACWR (already includes all activity types)
+  - If total weekly TL exceeds chronic load by >40% → flag overreaching
   - Hard cap: no single run over 12km
-  - Deload: every 4th week, reduce Thursday to shorter/less intense. CrossFit deload is the athlete's responsibility — just note cumulative load
-  - Track current training "week" via cortex memory
+  - Deload: every 4th week, reduce Thursday volume/intensity. CrossFit deload is the athlete's responsibility.
+  - Track current training "week" via cortex.
 
   ## Step 3 — Design the Workout
 
   ### Tuesday — CrossFit Day
 
-  **Primary role:** Provide context and recovery guidance for CrossFit. Do NOT schedule a Garmin workout by default.
+  **Primary role:** Recovery context + coaching for CrossFit. Schedule a Garmin **fallback** easy run (5-7km easy, no pace target, HR cap 145, single `interval` step with `no.target` and distance end condition). If readiness is red, schedule a shorter recovery run (3-4km).
 
   **Output:**
   ```
   🏋️ Tuesday — CrossFit Day
 
   📊 Body check: Readiness [X]/100 | Sleep [X] | HRV [X]ms
-  [One-line assessment: "Fresh for the box", "Watch the volume — Thursday's the priority", etc.]
+  [One-line assessment]
 
   📈 Week so far: [X]km running + [N] CrossFit sessions
-  [Note if this is a build/deload week]
+  [Note if build/deload week]
 
   🏃 Easy run scheduled on Garmin (just in case): [X]km easy, no pace target, HR < 145
 
-  💡 [Recovery-focused coaching note — e.g. "Thursday has tempo intervals lined up, so keep today's WOD at 80% if possible" or "Good week to push at the box — Thursday is lighter"]
+  💡 [Recovery-focused coaching note]
   ```
 
-  **Always schedule a Garmin easy run** as a fallback in case the athlete skips CrossFit. Prescribe: 5-7km easy, no pace target, HR cap 145. Build a simple one-step Garmin workout JSON (single `interval` step, `no.target`, distance end condition). If readiness is red, schedule a shorter recovery run (3-4km) instead.
-
-  **If the athlete ran instead of CrossFit:** Acknowledge the run on the next coach firing. Provide brief analysis based on fitness note data. Note the shift in weekly load balance. Adjust Thursday planning accordingly.
+  If the athlete ran instead of CrossFit, acknowledge on next coach firing and adjust Thursday planning.
 
   ### Thursday — Hard/Quality Session
 
-  **Purpose:** The key training stimulus of the week. Rotate through these types to target different energy systems.
+  **Read the workout-types catalog before designing the session:**
 
-  **Available workout types (do NOT follow a fixed rotation — see selection logic below):**
+  ```
+  cat /home/peterstorm/dev/claude-plugins/reclaw/workspace/skills/running-coach/workout-types.md
+  ```
 
-  1. **Classic Intervals** — VO2max development
-     - 2km warmup + 90s rest + N × (distance @ interval pace + rest) + 2km cooldown
-     - Formats: 5×800m, 6×600m, 8×400m, 4×1000m
-     - Rest: 90s for ≤600m, 120s for ≥800m
-     - Use RepeatGroupDTO for identical reps
-
-  2. **Tempo Run** — Lactate threshold
-     - 2km warmup + 90s rest + sustained tempo block (20-30min at tempo pace) + 2km cooldown
-     - Single long interval step at tempo pace
-     - Total distance: 8-10km
-
-  3. **Rolling Tempo** — Threshold with variety
-     - 1.5-2km warmup + N × (400m fast + 400m steady) + rest + cooldown
-     - Fast: interval pace, steady: steady pace
-     - Use RepeatGroupDTO for the rolling block
-
-  4. **Pyramid Intervals** — Progressive intensity
-     - Warmup + 200m-400m-600m-800m-1000m-800m-600m-400m-200m + cooldown
-     - Each rep at slightly different pace (faster for shorter, slower for longer)
-     - Flat sequence (no RepeatGroupDTO — each rep is different)
-     - Rest: 60s after 200m, 90s after 400m-800m, 120s after 1000m
-
-  5. **Fartlek** — Speed play
-     - Warmup + alternating fast/easy segments (varied durations)
-     - Less structured — use time-based end conditions
-     - E.g., 8 × (90s fast + 90s easy)
-     - Good for weeks with moderate readiness (gentler than structured intervals)
-
-  6. **Short Repeats** — Running economy + neuromuscular power
-     - 2km warmup + 90s rest + N × (150-200m @ repetition pace + full recovery) + 2km cooldown
-     - Pace: repetition zone (P - 30 to P - 10s/km) — fast but controlled, not sprinting
-     - Recovery: 60-90s walk/easy jog (full recovery between reps — this is neuromuscular, not aerobic)
-     - Formats: 10×200m, 12×150m, 8×200m
-     - Use RepeatGroupDTO for identical reps
-     - Builds speed, running economy, and leg turnover without high metabolic stress
-
-  7. **Cruise Intervals** — Broken threshold
-     - 2km warmup + 90s rest + N × (longer reps @ tempo pace + short rest) + 2km cooldown
-     - Formats: 4×2km, 3×2.5km, 5×1.5km — all at tempo pace
-     - Rest: 60-90s (shorter than VO2max intervals — keeps lactate elevated)
-     - Use RepeatGroupDTO for identical reps
-     - More sustainable than a 25-min sustained tempo block, better for building threshold duration
-
-  8. **Octopus Session** — Multi-stimulus (every 2-3 weeks)
-     - 2km warmup + 90s rest
-     - Block A: 4×200m @ repetition pace + 60s rest (neuromuscular)
-     - 2min transition jog
-     - Block B: 2×1km @ tempo pace + 90s rest (threshold)
-     - 2min transition jog
-     - Block C: 4×400m @ interval pace + 90s rest (VO2max)
-     - 1.5km cooldown
-     - Total: ~9-11km
-     - Vary block contents — always hit at least 2 of: speed/economy, threshold, VO2max
-     - Use sequential ExecutableStepDTO steps (not RepeatGroupDTO — each block is different)
+  This file contains all 8 available workout formats and the general structure rules for hard sessions.
 
   **Selection logic (limiter-biased, NOT fixed rotation):**
 
-  1. **Is this a test week?** Check cortex for last test date. If 4+ weeks ago and readiness is green → prescribe the appropriate test (see Testing Protocol). Skip the rest of this selection logic.
-  2. **Is this a post-test week?** Check if last Thursday was a test. If so, generate test report + block review first, then prescribe a lighter recovery-focused session (fartlek or easy tempo).
-  3. **Is this an octopus week?** Check cortex for last octopus session. If 2-3 weeks ago → schedule an octopus session.
-  4. **Determine current limiter** (see Limiter Detection). Check cortex for stored assessment. If >2 weeks old or missing, re-evaluate from data.
-  5. **Apply limiter bias:** Consult the limiter → workout mapping table. ~60-70% of Thursdays should target the limiter (primary types), ~30-40% secondary types. Check cortex for last 2-3 Thursday types to track the ratio.
-  6. **Don't repeat** — never use the same type as last Thursday
-  7. **Factor in CrossFit load:**
-     - If Tuesday CrossFit had anaerobic TE >3.0 or RPE >7 → prefer lower-impact types (tempo, fartlek, cruise intervals over pyramid, classic intervals)
-     - If Tuesday was rest/no CrossFit → body is fresher, good for higher-intensity work
-  8. **Readiness tiebreaker:**
-     - Yellow light → prefer fartlek or short repeats (recovery-friendly)
-     - Strong green → prefer classic intervals or pyramid (maximise stimulus)
-  9. **Respond to last session's data:**
-     - If last hard session showed high HR at interval pace → threshold work this week
-     - If last hard session was comfortable at tempo → VO2max work to sharpen top end
-     - If last session had high cardiac drift or poor recovery → fartlek or short repeats
-  10. **Log the choice, reasoning, and limiter status** in cortex every week
-
-  **General structure for hard sessions:**
-  - Always include warmup (1.5-2km at easy pace, no target)
-  - 90s walking rest after warmup
-  - Main set (intervals, tempo, etc.)
-  - 1.5-2km cooldown (lap.button end condition — let them jog until ready)
-  - Total distance: 7-12km depending on format (hard cap at 12km)
+  1. **Test week?** Check cortex for last test date. If 4+ weeks ago and readiness is green → prescribe the appropriate test (see Periodic Testing). Skip the rest.
+  2. **Post-test week?** If last Thursday was a test → generate test report + block review first, then prescribe a lighter recovery-focused session.
+  3. **Octopus week?** If last octopus session was 2-3 weeks ago → schedule type 8.
+  4. **Determine current limiter** (Limiter Detection). Re-evaluate if cortex assessment is >2 weeks old.
+  5. **Apply limiter bias:** ~60-70% of Thursdays target the limiter (primary types), ~30-40% secondary. Check cortex for last 2-3 Thursday types to track the ratio.
+  6. **Don't repeat** — never use the same type as last Thursday.
+  7. **Factor in CrossFit load:** Heavy Tue CrossFit → prefer lower-impact (tempo, fartlek, cruise intervals). Rest/no CrossFit Tue → fresher, good for higher intensity.
+  8. **Readiness tiebreaker:** Yellow → fartlek or short repeats. Strong green → classic intervals or pyramid.
+  9. **Respond to last session's data:** High HR at interval pace → threshold work. Comfortable at tempo → VO2max work. High cardiac drift / poor recovery → fartlek or short repeats.
+  10. **Log the choice, reasoning, and limiter status** in cortex every week.
 
   ### Sunday — CrossFit Day
 
-  **Primary role:** Weekly summary, recovery guidance, CrossFit context. Do NOT schedule a Garmin workout by default.
+  **Primary role:** Weekly summary, recovery guidance, CrossFit context. Schedule a Garmin **fallback** easy-to-steady run (7-10km, no pace target). If readiness is red, shorter recovery run (3-4km).
 
   **Output:**
   ```
   🏋️ Sunday — CrossFit Day
 
   📊 Body check: Readiness [X]/100 | Sleep [X] | HRV [X]ms
-  [Assessment factoring in Thursday's quality run recovery]
+  [Assessment factoring Thursday's quality run recovery]
 
   📈 Week total: [X]km running + [N] CrossFit | Total TL: [X] ([trend vs last week])
 
-  🔄 Thursday recap: [1-line summary of Thursday's workout result if fitness note available]
+  🔄 Thursday recap: [1-line summary of Thursday's workout]
 
   🏃 Easy run scheduled on Garmin (just in case): [X]km easy/steady, no pace target
 
-  💡 [Forward-looking coaching note — e.g. "Solid week. Tuesday has CrossFit, Thursday targeting threshold with cruise intervals" or "Light week by design — the test is Thursday, come in fresh"]
+  💡 [Forward-looking coaching note]
   ```
 
-  **Always schedule a Garmin run** as a fallback in case the athlete skips CrossFit. Prescribe an easy-to-steady run (7-10km), no pace target. Build a simple one-step Garmin workout JSON. If readiness is red, schedule a shorter recovery run (3-4km) instead.
+  ## Step 4 — Build Workout JSON (Thursday and fallback runs)
 
-  **If the athlete ran instead of CrossFit:** Acknowledge and analyze the run on the next coach firing. Note the shift in weekly load balance.
+  **Read the JSON reference before constructing the workout:**
 
-  ## Step 4 — Build Workout JSON
-
-  Construct the full `IWorkoutDetail` JSON. Follow these rules exactly:
-
-  **Required fields for all workouts:**
-  ```json
-  {
-    "workoutName": "[Day] [Type] — [Brief description] ([total distance])",
-    "description": "[Detailed human-readable description with paces in min/km]",
-    "sportType": { "sportTypeId": 1, "sportTypeKey": "running", "displayOrder": 1 },
-    "estimatedDistanceInMeters": TOTAL_DISTANCE_OR_NULL,
-    "workoutSegments": [{ "segmentOrder": 1, "sportType": { ... }, "workoutSteps": [...] }]
-  }
+  ```
+  cat /home/peterstorm/dev/claude-plugins/reclaw/workspace/skills/running-coach/garmin-workout-json.md
   ```
 
-  **Step template (ExecutableStepDTO):**
-  ```json
-  {
-    "type": "ExecutableStepDTO",
-    "stepId": null,
-    "stepOrder": N,
-    "stepType": { "stepTypeId": ID, "stepTypeKey": "KEY", "displayOrder": ID },
-    "childStepId": null,
-    "description": "Human-readable step description",
-    "endCondition": { "conditionTypeId": ID, "conditionTypeKey": "KEY", "displayOrder": ID, "displayable": true },
-    "endConditionValue": VALUE,
-    "preferredEndConditionUnit": { "unitId": 2, "unitKey": "kilometer", "factor": 100000 },
-    "endConditionCompare": null,
-    "targetType": { "workoutTargetTypeId": 1, "workoutTargetTypeKey": "no.target", "displayOrder": 1 },
-    "targetValueOne": null,
-    "targetValueTwo": null,
-    "targetValueUnit": null,
-    "zoneNumber": null,
-    "secondaryTargetType": null,
-    "secondaryTargetValueOne": null,
-    "secondaryTargetValueTwo": null,
-    "secondaryTargetValueUnit": null,
-    "secondaryZoneNumber": null,
-    "endConditionZone": null,
-    "strokeType": { "strokeTypeId": 0, "strokeTypeKey": null, "displayOrder": 0 },
-    "equipmentType": { "equipmentTypeId": 0, "equipmentTypeKey": null, "displayOrder": 0 },
-    "category": null,
-    "exerciseName": null,
-    "workoutProvider": null,
-    "providerExerciseSourceId": null,
-    "weightValue": null,
-    "weightUnit": null
-  }
-  ```
+  This file contains: the IWorkoutDetail top-level shape, ExecutableStepDTO + RepeatGroupDTO templates, step type / end condition reference, per-step gotchas (rest, cooldown lap.button, distance steps, stepOrder, childStepId), and pace target encoding rules.
 
-  **For pace-targeted steps, replace targetType block with:**
-  ```json
-  "targetType": { "workoutTargetTypeId": 6, "workoutTargetTypeKey": "pace.zone", "displayOrder": 6 },
-  "targetValueOne": FAST_PACE_MS,
-  "targetValueTwo": SLOW_PACE_MS,
-  ```
-
-  **Repeat group template (RepeatGroupDTO):**
-  ```json
-  {
-    "type": "RepeatGroupDTO",
-    "stepId": null,
-    "stepOrder": N,
-    "stepType": { "stepTypeId": 6, "stepTypeKey": "repeat", "displayOrder": 6 },
-    "childStepId": CHILD_GROUP_ID,
-    "numberOfIterations": COUNT,
-    "workoutSteps": [ ... child ExecutableStepDTO steps ... ],
-    "endConditionValue": COUNT,
-    "preferredEndConditionUnit": null,
-    "endConditionCompare": null,
-    "endCondition": { "conditionTypeId": 7, "conditionTypeKey": "iterations", "displayOrder": 7, "displayable": false },
-    "skipLastRestStep": null,
-    "smartRepeat": false
-  }
-  ```
-
-  **Step type reference:**
-  - warmup: stepTypeId=1, stepTypeKey="warmup"
-  - cooldown: stepTypeId=2, stepTypeKey="cooldown"
-  - interval: stepTypeId=3, stepTypeKey="interval"
-  - recovery: stepTypeId=4, stepTypeKey="recovery"
-  - rest: stepTypeId=5, stepTypeKey="rest"
-  - repeat: stepTypeId=6, stepTypeKey="repeat"
-
-  **End condition reference:**
-  - lap.button: conditionTypeId=1 (for cooldowns — run until you press lap)
-  - time: conditionTypeId=2 (value in seconds)
-  - distance: conditionTypeId=3 (value in meters)
-  - iterations: conditionTypeId=7 (for repeat groups)
-
-  **For rest steps:** set `targetType` to null (not no.target), and `preferredEndConditionUnit` to null.
-
-  **For cooldown with lap.button:** set `endConditionValue` to null.
-
-  **For distance steps:** include `preferredEndConditionUnit: { "unitId": 2, "unitKey": "kilometer", "factor": 100000 }`.
-
-  **stepOrder:** must be sequential across ALL steps including children of repeat groups. Start at 1.
-
-  **childStepId for repeat children:** all children of the same repeat group share the same `childStepId` (incrementing integer, starting at 1 for first repeat group, 2 for second, etc.).
+  Construct the full JSON inline in your reply, following those templates exactly. For Tue/Sun fallback runs, the JSON is small enough that you can produce it from the simple shape: a single `interval` step with `no.target` and distance end condition.
 
   ## Step 5 — Schedule on Garmin
 
-  Write the workout JSON to a temp file and schedule it:
+  Write the workout JSON to a temp file and schedule:
   ```bash
   cat > /tmp/workout.json << 'WORKOUT_EOF'
   { ... the workout JSON ... }
   WORKOUT_EOF
-  cat /tmp/workout.json | bun /home/peterstorm/dev/claude-plugins/reclaw/scripts/garmin-schedule-workout.ts YYYY-MM-DD
+  cat /tmp/workout.json | bun /home/peterstorm/dev/claude-plugins/reclaw/scripts/garmin-schedule-workout.ts {{date}}
   ```
-
-  Replace YYYY-MM-DD with today's date ({{date}}). Check the script output for success/failure.
 
   If it fails:
   - Auth error → report and stop
-  - API error → report the error, still send the Telegram notification with the planned workout (just note it wasn't scheduled on Garmin)
+  - API error → report the error, still send the Telegram notification (note it wasn't scheduled on Garmin)
 
   ## Step 6 — Store in Cortex
 
-  Run `/remember` with the appropriate memory based on the day:
+  Run `/remember` based on the day:
 
-  **Always store (every day the skill runs):**
+  **Always store (every day):**
   - "Running coach {{date}} ({{dayOfWeek}}): [What happened]. Est. 5K: [X:XX]. Weekly running: Xkm. Weekly CrossFit: N sessions."
 
-  **Thursday-specific (in addition to the above):**
+  **Thursday-specific (in addition):**
   - "Running coach last Thursday type: [type name]"
   - "Running coach limiter assessment ({{date}}): Current limiter = [X]. Evidence: [summary]. Confidence: [high/medium/low]."
   - If zone adjustments: "Running coach zone adjustment: [what changed and why]"
@@ -620,8 +359,8 @@ promptTemplate: |
   💡 [Coaching note]
   ```
 
-  If this is a **test week**, replace the Workout section with the test prescription.
-  If this is a **post-test week**, prepend the test report and block review before the workout.
+  If **test week**, replace the Workout section with the test prescription.
+  If **post-test week**, prepend the test report and block review before the workout.
 
   ### Tuesday/Sunday Output (CrossFit day):
   Use the 🏋️ format defined in the Tuesday/Sunday sections of Step 3.

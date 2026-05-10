@@ -46,22 +46,14 @@ promptTemplate: |
   Run `/recall` with queries: "pattern", "decision", "struggle", "priority", "goal", "energy", "tension", "family", "business", "building" — surface recent memories that reveal behavioral patterns, not just events.
 
   **Git activity (last 14 days, via GitHub API):**
-  Find repos pushed recently:
-  ```
-  gh api "user/repos?sort=pushed&per_page=20&type=owner" --jq --arg cutoff "$(date -d '14 days ago' --iso-8601=seconds)" '.[] | select(.pushed_at >= $cutoff) | .name'
-  ```
-  For each active repo, enumerate **all branches** and count commits per branch since the cutoff, deduping SHAs across branches. This captures feature branches that have no open PR yet (the default-branch-only query misses these):
-  ```
-  CUTOFF=$(date -d '14 days ago' --iso-8601=seconds)
-  for branch in $(gh api "repos/peterstorm/REPO/branches?per_page=100" --jq '.[].name'); do
-    gh api "repos/peterstorm/REPO/commits?sha=$branch&since=$CUTOFF&per_page=100" \
-      --jq ".[] | \"$branch\\t\\(.sha)\""
-  done | sort -u -k2,2 | awk -F'\t' '{print $1}' | sort | uniq -c
-  ```
-  This yields per-branch commit counts with cross-branch SHA dedup. Also list open PRs for context (titles + branch names):
-  ```
-  gh api "repos/peterstorm/REPO/pulls?state=open&per_page=10" --jq '.[] | "#\(.number) [\(.head.ref)] \(.title)"'
-  ```
+  Read `~/dev/claude-plugins/reclaw/workspace/skills/SHARED_GIT_QUERIES.md`
+  and follow the procedure with parameters:
+  - `CUTOFF=$(date -d '14 days ago' --iso-8601=seconds)`
+  - `PER_PAGE=100`
+  - `OUTPUT_FMT=counts`
+
+  Run Step A → Step B (counts variant) → Step C for open PRs.
+
   Report by branch: "REPO: N commits on main, M commits on feat/X, K commits on bugfix/Y". This tells you WHERE time actually went — including unmerged feature branches with no PR yet, not just what landed on main.
 
   ## Step 2 — Analyze for patterns

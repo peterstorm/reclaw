@@ -33,11 +33,13 @@ export type ChatDeps = {
 
 async function cleanupImages(paths: readonly string[] | undefined): Promise<void> {
   if (!paths || paths.length === 0) return;
-  for (const p of paths) {
-    await fs.unlink(p).catch((err: NodeJS.ErrnoException) => {
-      console.warn(`[chat] cleanup failed: ${p} (${err.code ?? 'UNKNOWN'})`);
-    });
-  }
+  await Promise.all(
+    paths.map((p) =>
+      fs.unlink(p).catch((err: NodeJS.ErrnoException) => {
+        console.warn(`[chat] cleanup failed: ${p} (${err.code ?? 'UNKNOWN'})`);
+      }),
+    ),
+  );
 }
 
 // ─── Effect application (imperative shell) ───────────────────────────────────

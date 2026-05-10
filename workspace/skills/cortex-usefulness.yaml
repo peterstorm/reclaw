@@ -134,6 +134,56 @@ promptTemplate: |
   "
   ```
 
+  ### Divergence check (insurance against silent matcher failure)
+
+  If `useful.length > 0` but `matched.length === 0`, the Step 1 regex extracted
+  summaries that don't exist verbatim in the active cortex store. That can
+  happen if the recall surface ever truncates summaries, normalises whitespace
+  differently, or if the schema changes — and the skill would otherwise still
+  report "useful detected, 0 bumped" and look healthy.
+
+  Track per-day divergence in `~/.cache/reclaw/cortex-usefulness-divergence.json`
+  (create dir/file if missing). Format:
+
+  ```json
+  {"streak": 0, "last_divergence_date": null, "last_match_date": "YYYY-MM-DD"}
+  ```
+
+  Update logic (run after Step 2 produces `matched`):
+  - If `useful.length === 0`: leave file unchanged (no signal either way).
+  - Else if `matched.length > 0`: reset `streak: 0`, set `last_match_date` to today.
+  - Else (`useful > 0 && matched === 0`): increment `streak`, set
+    `last_divergence_date` to today.
+
+  ```bash
+  bun -e "
+  import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+  import { dirname } from 'path';
+  const path = '/home/peterstorm/.cache/reclaw/cortex-usefulness-divergence.json';
+  const today = new Date().toISOString().slice(0, 10);
+  const usefulCount = USEFUL_COUNT;   // from Step 1
+  const matchedCount = MATCHED_COUNT; // from Step 2
+  let state;
+  try { state = JSON.parse(readFileSync(path, 'utf8')); }
+  catch { state = { streak: 0, last_divergence_date: null, last_match_date: null }; }
+  if (usefulCount === 0) {
+    // no signal — write nothing
+  } else if (matchedCount > 0) {
+    state.streak = 0;
+    state.last_match_date = today;
+  } else {
+    state.streak = (state.streak || 0) + 1;
+    state.last_divergence_date = today;
+  }
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(state, null, 2));
+  console.log(JSON.stringify(state));
+  "
+  ```
+
+  Carry the resulting `streak` into Step 4 — if `streak >= 3` the output must
+  contain a divergence warning.
+
   ## Step 3: Bump useful memories
 
   For each matched ID, increment `access_count += 2` and update `last_accessed_at`.
@@ -162,8 +212,15 @@ promptTemplate: |
 
   Brief Telegram summary: files scanned, recall turns processed, surfaced total,
   useful detected, bumps applied, and the full list of useful summaries with
-  score (sorted descending). If nothing useful detected, respond with exactly
-  `ALL_CLEAR`.
+  score (sorted descending).
+
+  **If `streak >= 3` from Step 2 divergence state**, prepend a single line:
+
+      ⚠️ Cortex-usefulness matcher divergence: useful>0 but matched=0 for {{streak}} days running. Step 2 lookup is failing — schema/format may have drifted. Investigate before signal becomes meaningless.
+
+  This warning is the only case where the skill emits notification when nothing
+  was bumped. If `useful.length === 0` (and so divergence state untouched),
+  respond with exactly `ALL_CLEAR`.
 
   ## Tuning notes (do not output)
 

@@ -70,6 +70,23 @@ describe('buildPrompt', () => {
     const result = buildPrompt('{{date}} and {{date}}', baseContext);
     expect(result).toBe('2026-02-26 and 2026-02-26');
   });
+
+  it('interpolates {{workspacePath}} and {{cwd}} from workspacePath', () => {
+    const ctx: PromptContext = {
+      ...baseContext,
+      workspacePath: '/home/peterstorm/dev/claude-plugins/reclaw/workspace',
+    };
+    const template = 'workspace={{workspacePath}}; cwd={{cwd}}/.memory/cortex.db';
+    const result = buildPrompt(template, ctx);
+    expect(result).toBe(
+      'workspace=/home/peterstorm/dev/claude-plugins/reclaw/workspace; cwd=/home/peterstorm/dev/claude-plugins/reclaw/workspace/.memory/cortex.db',
+    );
+  });
+
+  it('leaves {{cwd}} as-is when workspacePath not provided', () => {
+    const result = buildPrompt('db at {{cwd}}/.memory/cortex.db', baseContext);
+    expect(result).toBe('db at {{cwd}}/.memory/cortex.db');
+  });
 });
 
 // ─── buildChatPrompt ──────────────────────────────────────────────────────────

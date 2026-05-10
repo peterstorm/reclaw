@@ -30,7 +30,13 @@ export type WorkerFactory = (
     updateData?: (data: unknown) => Promise<void>;
     updateProgress?: (progress: number) => Promise<void>;
   }) => Promise<unknown>,
-  opts: { connection: { host: string; port: number }; concurrency: number; lockDuration?: number; stalledInterval?: number },
+  opts: {
+    connection: { host: string; port: number };
+    concurrency: number;
+    lockDuration?: number;
+    stalledInterval?: number;
+    limiter?: { max: number; duration: number };
+  },
 ) => BullWorkerLike;
 
 type WorkerDeps = {
@@ -68,15 +74,27 @@ export function formatDeadLetterMessage(
 // ─── Default BullMQ worker factory ───────────────────────────────────────────
 
 /**
- * Default factory uses a dynamic import so that the BullMQ Worker class is only
+ * Default factory uses a lazy require so that the BullMQ Worker class is only
  * loaded when actually creating real workers (not during test module evaluation).
  * This avoids CJS/ESM interop issues with vitest's module loader.
+ *
+ * The Worker constructor is memoized after the first lookup so the require
+ * (and the single eslint-disable) only fires once across all queue factories.
  */
+type BullWorkerCtor = new (...args: unknown[]) => BullWorkerLike;
+let cachedBullWorkerCtor: BullWorkerCtor | null = null;
+
+function getBullWorkerCtor(): BullWorkerCtor {
+  if (cachedBullWorkerCtor === null) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require('bullmq') as { Worker: BullWorkerCtor };
+    cachedBullWorkerCtor = mod.Worker;
+  }
+  return cachedBullWorkerCtor;
+}
+
 const defaultWorkerFactory: WorkerFactory = (queueName, processor, opts) => {
-  // Synchronous import via require for the default factory.
-  // Tests inject their own factory so this path is never taken in tests.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { Worker } = require('bullmq') as { Worker: new (...args: unknown[]) => BullWorkerLike };
+  const Worker = getBullWorkerCtor();
   return new Worker(queueName, processor, opts);
 };
 
@@ -173,7 +191,17 @@ export function createWorkers(deps: WorkerDeps): Workers {
       }
       return result;
     },
-    { connection, concurrency: 1, lockDuration: longLockMs, stalledInterval: longLockMs },
+    {
+      connection,
+      concurrency: 1,
+      lockDuration: longLockMs,
+      stalledInterval: longLockMs,
+      // Cap processing at 10 chat jobs/minute. concurrency=1 already
+      // serializes execution; this adds back-pressure so a typo storm or
+      // automation glitch doesn't burn Claude API spend / Telegram quota
+      // by replaying a long backlog at full speed.
+      limiter: { max: 10, duration: 60_000 },
+    },
   );
 
   attachDeadLetterHandler({
@@ -196,10 +224,19 @@ export function createWorkers(deps: WorkerDeps): Workers {
       if (!result.ok) {
         throw new Error(result.error);
       }
-      // Mark completed in Redis BEFORE firing callback.
-      // If crash occurs between marker and callback, catch-up will
-      // see the completed marker and re-enqueue dependents.
-      await markScheduledJobCompleted(scheduledJob.id);
+      // Mark completed in Redis. If this throws (e.g. transient Redis flap
+      // mid-handler), surface the error but don't re-fail the whole job —
+      // the skill body has already run and BullMQ would otherwise retry it.
+      // The in-memory dependents callback below can still resolve dependents
+      // for this run; catch-up logic re-enqueues them on next restart if needed.
+      try {
+        await markScheduledJobCompleted(scheduledJob.id);
+      } catch (markerErr) {
+        console.error(
+          `[worker:scheduled] markScheduledJobCompleted failed for ${scheduledJob.skillId} — dependents may re-fire on next restart:`,
+          markerErr,
+        );
+      }
       try {
         onScheduledJobCompleted(scheduledJob);
       } catch (callbackErr) {

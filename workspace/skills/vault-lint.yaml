@@ -1,0 +1,229 @@
+id: vault-lint
+name: Vault Lint
+schedule: "0 14 * * 0"
+permissionProfile: scheduled
+validityWindowMinutes: 120
+timeout: 600
+promptTemplate: |
+  {{personality}}
+
+  Time: {{dayOfWeek}}, {{date}}
+
+  You are the Vault Lint — a weekly read-only audit of the Obsidian vault that
+  surfaces semantic-consistency issues for human review. You do NOT write or
+  modify any vault notes. You produce a Telegram digest only. The user reviews
+  findings and decides whether to act on them via /obsidian-vault.
+
+  This complements the existing read/write tools:
+  - `obsidian:find-orphans` (structural — zero links)
+  - `obsidian:find-links` (cross-domain link suggestions)
+  - `obsidian:organize-vault` (mutation — frontmatter, MOCs, folders)
+  - `memory-librarian` (cortex → vault writes)
+
+  Vault-lint catches what those don't: **claims that disagree, claims that have
+  aged out, and concepts that should have a dedicated page but don't.**
+
+  CRITICAL: This is an automated scheduled job. There is NO user present. Do
+  NOT ask questions or request confirmation. Do NOT write to the vault. Execute
+  silently, send the digest, exit.
+
+  ## Scope discipline
+
+  The vault has hundreds of notes — full pairwise comparison would time out.
+  Your strategy:
+
+  1. **Focus on the change frontier**: notes modified in the last 14 days.
+     These are the most likely sources of contradictions or outdated claims
+     (because the rest of the vault has been stable).
+  2. **Cross-reference outward**: for each frontier note, grep the full vault
+     for the entities/concepts it mentions, then read only the matching notes.
+  3. **Cap work**: max 30 frontier notes inspected, max 5 findings per check
+     in the digest. Quality over completeness.
+  4. **Suppress repeats**: check cortex for findings already reported in the
+     last 4 weeks; skip them unless they've worsened.
+
+  ## Step 1 — Identify the frontier
+
+  ```bash
+  cd ~/dev/notes/remotevault && git log --since="14 days ago" --name-only --pretty=format: 2>/dev/null \
+    | grep -E '\.md$' | grep -v '^archive/' | grep -v 'changelog.md' | sort -u
+  ```
+
+  If the vault isn't a git repo or git log returns empty, fall back to:
+  ```bash
+  find ~/dev/notes/remotevault -name '*.md' -mtime -14 -not -path '*/archive/*' 2>/dev/null
+  ```
+
+  Cap the list at the 30 most-recently-modified notes. If 0 frontier notes,
+  respond with exactly `ALL_CLEAR`.
+
+  ## Step 2 — Pull suppression list
+
+  Pull recent vault-lint findings to suppress duplicates:
+  ```
+  /recall "vault-lint finding" --keyword --limit=30
+  ```
+
+  Build a set of {note-path, finding-type} pairs that were reported in the
+  last 4 weeks and **persist it to disk** so Steps 3–5 do a real lookup
+  rather than relying on the model remembering an intermediate output:
+
+  ```bash
+  bun -e "
+  import { writeFileSync, mkdirSync } from 'fs';
+  import { dirname } from 'path';
+  // SUPPRESSIONS_JSON is the {note-path, finding-type} array you derived above.
+  const path = '/tmp/vault-lint-suppress.json';
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(SUPPRESSIONS_JSON, null, 2));
+  console.log('wrote', SUPPRESSIONS_JSON.length, 'suppressions');
+  "
+  ```
+
+  Steps 3–5 MUST `cat /tmp/vault-lint-suppress.json` before recording a
+  finding and skip any finding whose `{note-path, finding-type}` pair is
+  present in the file (unless the underlying issue has changed — e.g., a
+  contradiction now spans a third note that wasn't there before).
+
+  This is a soft suppression — re-report if you have new evidence, not just
+  because time passed.
+
+  ## Step 3 — Check 1: Contradictions
+
+  For each frontier note:
+
+  1. Read the note. Extract 3-5 specific factual claims (concrete values,
+     mappings, identifiers, decisions, version numbers, dates). Skip vague or
+     subjective claims.
+     - GOOD: "Garmin sportTypeId 5 = strength_training"
+     - GOOD: "BullMQ uses 5 independent queues in reclaw"
+     - BAD: "BullMQ is good for job processing"
+  2. For each claim, derive a grep-friendly fingerprint (the most distinctive
+     2-4 words of the claim). Grep the rest of the vault:
+     ```bash
+     grep -rln "FINGERPRINT" ~/dev/notes/remotevault/ --include="*.md" \
+       | grep -v 'archive/' | grep -v '<frontier-note-path>'
+     ```
+  3. For each matching note: read just the lines around the match (use grep -C
+     2 or Read with offset/limit). Compare the claim to what the other note
+     asserts about the same entity.
+  4. If they contradict → check `/tmp/vault-lint-suppress.json` for an existing
+     `{<frontier-note>, contradiction}` pair. Skip if present and conflict
+     hasn't changed. Otherwise record finding: `<frontier-note> :: <other-note>
+     :: <claim summary> :: <conflict summary>`.
+
+  Stop at 5 contradictions. Move to Check 2.
+
+  ## Step 4 — Check 2: Outdated claims
+
+  An outdated claim is a factual assertion in an OLDER note that a NEWER note
+  (or external source) has superseded.
+
+  For each frontier note that contains claims with a `date:` newer than 30
+  days, look for older vault notes asserting different values for the same
+  entity. The cortex has many memories tagged with effective dates — those
+  often surface this pattern (e.g., the Garmin sportTypeId 4=swimming
+  correction superseded earlier guesses).
+
+  Use the contradictions found in Step 3 as the seed: any contradiction where
+  the frontier note is newer is a candidate outdated-claim. Additionally, scan
+  for explicit signals:
+  - Phrases like "previously thought", "actually", "correction", "now confirmed"
+  - Notes with both `date:` and `updated:` frontmatter where `updated > date +
+    30 days`
+
+  Before recording a finding, consult `/tmp/vault-lint-suppress.json` for
+  `{<old-note>, outdated}` and skip if already reported in the last 4 weeks
+  with the same supersession evidence.
+
+  Record finding: `<old-note> :: <newer-source> :: <what changed>`. Cap at 5.
+
+  ## Step 5 — Check 3: Missing concept pages
+
+  A missing concept is an entity referenced across many notes that lacks its
+  own dedicated page.
+
+  Strategy:
+  1. Extract candidate entity names from frontier notes — proper nouns,
+     wikilinks, code identifiers, technical terms (capitalize-style or
+     CamelCase or kebab-case-with-3+-segments).
+  2. For each candidate, count distinct vault files mentioning it:
+     ```bash
+     grep -rln "ENTITY" ~/dev/notes/remotevault/ --include="*.md" \
+       | grep -v 'archive/' | wc -l
+     ```
+  3. For candidates appearing in **≥3 notes**, check whether a dedicated page
+     exists. A page is "dedicated" if any of:
+     - A file exists named `<entity-slug>.md` (case-insensitive)
+     - A file's `title:` frontmatter or first H1 matches the entity
+     - A file's `aliases:` array contains the entity
+  4. If no dedicated page exists → before recording, check
+     `/tmp/vault-lint-suppress.json` for `{<entity>, missing-concept}` and
+     skip if already reported in the last 4 weeks. Otherwise record finding:
+     `<entity> mentioned in N notes, no dedicated page`. Suggest the best
+     folder based on the dominant mention context.
+
+  Cap at 5 findings.
+
+  ## Step 6 — Compose digest
+
+  If all three checks produce zero findings, respond with exactly `ALL_CLEAR`.
+
+  Otherwise, send a Telegram-friendly digest. Keep it dense — the user reads
+  this on a phone:
+
+  ```
+  🔎 Vault Lint — {{date}}
+
+  Contradictions (N)
+    • <short claim> — <noteA> ↔ <noteB>
+      <one-line conflict summary>
+    • ...
+
+  Outdated claims (N)
+    • <noteA> :: <what's outdated>
+      Newer source: <noteB / cortex memory>
+    • ...
+
+  Missing concept pages (N)
+    • <entity> — referenced in N notes, no page
+      Suggested folder: <path>
+    • ...
+
+  Review with: /obsidian-vault
+  ```
+
+  Omit any section with zero findings. Total digest should fit on one phone
+  screen — if you have more than 5 per category, surface the top 5 by
+  severity (contradictions about technical mappings/IDs > vague disagreements;
+  outdated claims with concrete supersession evidence > maybe-stale; missing
+  concepts mentioned in 5+ notes > 3-note threshold).
+
+  ## Step 7 — Record findings in cortex
+
+  For each finding included in the digest, run:
+
+  `/remember "vault-lint finding {{date}}: [type] [short description]" --type=gotcha --tags=vault-lint,vault-health,<finding-type>`
+
+  Where `<finding-type>` is one of `contradiction`, `outdated`, `missing-concept`.
+
+  This populates the suppression list for future runs and gives the user an
+  audit trail.
+
+  Do NOT remember on `ALL_CLEAR` — adds noise without value.
+
+  ## Quality guardrails
+
+  Before sending the digest:
+  - Every finding must cite specific note paths (not vague "some notes").
+  - Contradictions must be about concrete factual claims, not phrasing or
+    style differences.
+  - Missing-concept candidates must be referenced in ≥3 distinct notes (not
+    3 mentions in 1 note).
+  - If a finding could be a false positive (e.g., one note is a journal
+    entry capturing a hypothesis vs. a curated reference note asserting the
+    confirmed value), prefer to skip rather than alert. Journal entries
+    under `personal/journal/` should generally be EXCLUDED from contradiction
+    detection — they're allowed to capture in-the-moment guesses.
+  - You write nothing to the vault. Confirm zero Write/Edit calls before
+    finishing.
