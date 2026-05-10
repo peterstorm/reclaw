@@ -50,19 +50,19 @@ promptTemplate: |
   ```
   gh api "user/repos?sort=pushed&per_page=20&type=owner" --jq --arg cutoff "$(date -d '14 days ago' --iso-8601=seconds)" '.[] | select(.pushed_at >= $cutoff) | .name'
   ```
-  For each active repo, count **default branch** commits:
+  For each active repo, enumerate **all branches** and count commits per branch since the cutoff, deduping SHAs across branches. This captures feature branches that have no open PR yet (the default-branch-only query misses these):
   ```
-  gh api "repos/peterstorm/REPO/commits?since=$(date -d '14 days ago' --iso-8601=seconds)&per_page=50" --jq '. | length'
+  CUTOFF=$(date -d '14 days ago' --iso-8601=seconds)
+  for branch in $(gh api "repos/peterstorm/REPO/branches?per_page=100" --jq '.[].name'); do
+    gh api "repos/peterstorm/REPO/commits?sha=$branch&since=$CUTOFF&per_page=100" \
+      --jq ".[] | \"$branch\\t\\(.sha)\""
+  done | sort -u -k2,2 | awk -F'\t' '{print $1}' | sort | uniq -c
   ```
-  Then check for **open PR branch** commits (captures unmerged work-in-progress):
+  This yields per-branch commit counts with cross-branch SHA dedup. Also list open PRs for context (titles + branch names):
   ```
-  gh api "repos/peterstorm/REPO/pulls?state=open&per_page=10" --jq '.[] | "#\(.number) \(.title)"'
+  gh api "repos/peterstorm/REPO/pulls?state=open&per_page=10" --jq '.[] | "#\(.number) [\(.head.ref)] \(.title)"'
   ```
-  For each open PR, count commits within the window:
-  ```
-  gh api "repos/peterstorm/REPO/pulls/PR_NUMBER/commits?per_page=100" --jq 'length'
-  ```
-  Report both: "REPO: N commits (main) + M commits (PR #X: title)". This tells you WHERE time actually went — including unmerged feature branches, not just what landed on main.
+  Report by branch: "REPO: N commits on main, M commits on feat/X, K commits on bugfix/Y". This tells you WHERE time actually went — including unmerged feature branches with no PR yet, not just what landed on main.
 
   ## Step 2 — Analyze for patterns
 

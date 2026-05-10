@@ -38,19 +38,19 @@ promptTemplate: |
   ```
   gh api "user/repos?sort=pushed&per_page=30&type=owner" --jq --arg cutoff "$(date -d '1 month ago' --iso-8601=seconds)" '.[] | select(.pushed_at >= $cutoff) | .name'
   ```
-  Then for each active repo, get the month's **default branch** commits:
+  Then for each active repo, enumerate **all branches** and collect commits per branch since the cutoff, deduping by SHA. This captures feature branches that have no open PR yet (the default-branch-only query misses these):
   ```
-  gh api "repos/peterstorm/REPO/commits?since=$(date -d '1 month ago' --iso-8601=seconds)&per_page=50" --jq '.[] | "\(.sha[0:7]) \(.commit.message | split("\n")[0])"'
+  CUTOFF=$(date -d '1 month ago' --iso-8601=seconds)
+  for branch in $(gh api "repos/peterstorm/REPO/branches?per_page=100" --jq '.[].name'); do
+    gh api "repos/peterstorm/REPO/commits?sha=$branch&since=$CUTOFF&per_page=100" \
+      --jq ".[] | \"$branch\\t\\(.sha[0:7])\\t\\(.commit.message | split(\"\\n\")[0])\""
+  done | sort -u -k2,2
   ```
-  Also check for **open PR branch** commits (captures unmerged work-in-progress):
+  Also list open PRs for context (titles + branch names):
   ```
-  gh api "repos/peterstorm/REPO/pulls?state=open&per_page=10" --jq '.[] | "#\(.number) \(.title)"'
+  gh api "repos/peterstorm/REPO/pulls?state=open&per_page=10" --jq '.[] | "#\(.number) [\(.head.ref)] \(.title)"'
   ```
-  For each open PR, get its commits:
-  ```
-  gh api "repos/peterstorm/REPO/pulls/PR_NUMBER/commits?per_page=100" --jq '.[] | "\(.sha[0:7]) \(.commit.message | split("\n")[0])"'
-  ```
-  Run these for each repo found in the first step. Group results by repo name in your summary, noting PR branch work separately.
+  Run the branch sweep for each repo found in the first step. Group results by repo and branch; include feature-branch work even without a PR.
 
   ## Step 2 — Write the monthly review note
 
