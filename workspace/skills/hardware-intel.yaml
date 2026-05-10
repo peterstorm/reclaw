@@ -11,13 +11,15 @@ promptTemplate: |
 
   You are running the Hardware Market Intelligence skill — a weekly analysis of hardware pricing trends and industry signals that produces buy/hold/wait recommendations for PC components the user wants to purchase.
 
-  **Tracked components:** DDR5 RAM, RTX 5090 GPU, NVMe SSD
+  **Tracked components:** DDR5 RAM, RTX 5090 GPU, RTX 6000 Pro (Blackwell workstation, 96GB GDDR7), NVMe SSD
   **Additionally tracked as demand signal:** AI accelerator landscape (TPUs, ASICs, custom silicon competing with GPUs)
+
+  RTX 6000 Pro context: workstation/prosumer GPU, GB202 die (same as RTX 5090) but with 96GB GDDR7 ECC. Targets local AI inference, ML training on workstations, professional rendering. Channel is different from gaming RTX (workstation specialists, NVIDIA partners like PNY/Leadtek, Bizon/Comino, Proshop workstation listings). Pricing typically $7,000-10,000+ depending on variant (Workstation Edition, Max-Q, Server Edition). Demand dynamic is closer to AI accelerator pull than consumer GPU.
 
   ## Step 0 — Previous context
 
   Check cortex for previous hardware market analysis:
-  Run `/recall` with queries: "hardware market", "DRAM price", "RTX 5090", "NVMe SSD", "pressure index"
+  Run `/recall` with queries: "hardware market", "DRAM price", "RTX 5090", "RTX 6000 Pro", "NVMe SSD", "pressure index"
   This surfaces last week's scores, any mid-week observations, and prediction accuracy history.
 
   Also check for the most recent vault note:
@@ -66,9 +68,16 @@ promptTemplate: |
   7. "semiconductor tariff export control 2026" — trade policy changes affecting chip pricing
   8. "Micron SK Hynix Samsung Nvidia earnings guidance 2026" — OEM forward-looking statements
 
-  **Retail pricing (2 searches):**
-  9. "RTX 5090 price stock Denmark Proshop Komplett" — current GPU retail pricing and availability
-  10. "DDR5 RAM price 2026" + "NVMe SSD price 2026" — current retail trends
+  **Retail pricing (3 searches):**
+  9. "RTX 5090 price stock Denmark Proshop Komplett" — current consumer GPU retail pricing and availability
+  10. "RTX 6000 Pro Blackwell price availability workstation 96GB" — workstation GPU retail pricing; check Proshop workstation listings, PNY, Leadtek, Bizon, Comino
+  11. "DDR5 RAM price" + "NVMe SSD price" — current retail trends (always include current year in query)
+
+  **Date verification (calibration from W19):** Web search results often surface undated articles from prior years. Before treating any retail-pricing signal as current:
+  - Check the article URL for date markers (e.g. BigGo `202505...` slugs encode YYYYMMDDHHMM)
+  - WebFetch the article and confirm the publication date appears in 2026
+  - Cross-reference retailer-direct status (Proshop) where possible
+  - Be especially skeptical of "first time below MSRP" or "launch-period scarcity relief" framings — RTX 5090 launched Jan 2025 and RTX 6000 Pro Blackwell shipped Q2 2025, so launch-period stories from 2025 frequently re-surface in 2026 searches.
 
   ## Step 3 — Score each indicator
 
@@ -103,7 +112,7 @@ promptTemplate: |
 
   ## Step 4 — Compute composite pressure index
 
-  For each tracked component (DDR5, RTX 5090, NVMe):
+  For each tracked component (DDR5, RTX 5090, RTX 6000 Pro, NVMe):
 
   **Category scores** = average of indicator scores within each category.
 
@@ -120,7 +129,11 @@ promptTemplate: |
   - 🟡 **HOLD:** composite between -1.5 and +1.5
   - 🔴 **BUY SOON:** composite ≥ +1.5
 
-  Note: some indicators apply differently per component. DRAM spot matters more for DDR5 RAM, NAND spot matters more for NVMe, and GPU-specific demand/supply matters more for RTX 5090. Weight accordingly in your scoring.
+  Note: some indicators apply differently per component. Per-component weighting:
+  - **DDR5 RAM:** weight DRAM spot heaviest; foundry utilization and supply disruptions also relevant.
+  - **NVMe SSD:** weight NAND spot heaviest; foundry utilization and supply disruptions also relevant.
+  - **RTX 5090:** weight foundry utilization, supply disruptions, AI/hyperscaler capex (GPU-specific demand), GPU retail/stock heaviest. Crypto mining = direct GPU demand proxy. AI accelerator competition is the consumer-relief lever.
+  - **RTX 6000 Pro:** weight foundry utilization (same GB202 die as RTX 5090), supply disruptions, AI/hyperscaler capex (workstation AI demand), GDDR7 supply, workstation retail/stock. ASIC competition has weaker effect on workstation pull (local-AI workstation buyers can't easily substitute to ASICs). GDDR7 capacity competition with RTX 50-series is the dominant supply tension.
 
   ## Step 5 — Compare with previous week
 
@@ -157,11 +170,12 @@ promptTemplate: |
   ### Summary
   Traffic light table:
   ```
-  | Component | Short-term | Medium-term | Key Signal |
-  |-----------|-----------|-------------|------------|
-  | DDR5 RAM  | 🟢/🟡/🔴 SIGNAL (score) | 🟢/🟡/🔴 SIGNAL (score) | 1-line reason |
-  | RTX 5090  | ... | ... | ... |
-  | NVMe SSD  | ... | ... | ... |
+  | Component     | Short-term | Medium-term | Key Signal |
+  |---------------|-----------|-------------|------------|
+  | DDR5 RAM      | 🟢/🟡/🔴 SIGNAL (score) | 🟢/🟡/🔴 SIGNAL (score) | 1-line reason |
+  | RTX 5090      | ... | ... | ... |
+  | RTX 6000 Pro  | ... | ... | ... |
+  | NVMe SSD      | ... | ... | ... |
   ```
 
   Week-over-week trend arrows if previous data exists.
@@ -176,7 +190,7 @@ promptTemplate: |
   Same format. Include EUR/USD trend.
 
   ### Retail & Pricing (score: X.X)
-  Same format. Include specific prices from Proshop/Komplett where found.
+  Same format. Include specific prices from Proshop/Komplett where found, plus workstation channel pricing for RTX 6000 Pro (PNY, Leadtek, Bizon, Comino, Proshop workstation listings).
 
   ### AI Accelerator Landscape
   Dedicated section: what's happening with TPU, Trainium, Groq, Cerebras, and others. Assessment of whether GPU/memory demand is being displaced.
@@ -205,7 +219,7 @@ promptTemplate: |
   ```markdown
   # Hardware Market Intel
 
-  Weekly analysis of hardware pricing trends and market conditions for DDR5 RAM, RTX 5090, and NVMe SSDs.
+  Weekly analysis of hardware pricing trends and market conditions for DDR5 RAM, RTX 5090, RTX 6000 Pro (Blackwell workstation), and NVMe SSDs.
 
   ## Reports
   ```
@@ -229,6 +243,11 @@ promptTemplate: |
     Medium: 🟢/🟡/🔴 SIGNAL (score)
     → [1-line key driver]
 
+  RTX 6000 Pro
+    Short:  🟢/🟡/🔴 SIGNAL (score)
+    Medium: 🟢/🟡/🔴 SIGNAL (score)
+    → [1-line key driver]
+
   NVMe SSD
     Short:  🟢/🟡/🔴 SIGNAL (score)
     Medium: 🟢/🟡/🔴 SIGNAL (score)
@@ -246,7 +265,7 @@ promptTemplate: |
 
   ## Step 10 — Store in cortex
 
-  Run `/remember`: "Hardware intel {{date}}: DDR5 [signal](score), RTX 5090 [signal](score), NVMe [signal](score). Key drivers: [top 2-3 signals]. Medium-term outlook: [1 sentence]."
+  Run `/remember`: "Hardware intel {{date}}: DDR5 [signal](score), RTX 5090 [signal](score), RTX 6000 Pro [signal](score), NVMe [signal](score). Key drivers: [top 2-3 signals]. Medium-term outlook: [1 sentence]."
 
   This ensures mid-week conversations and next week's run have context.
 
