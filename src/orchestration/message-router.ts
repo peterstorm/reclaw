@@ -4,10 +4,17 @@ import { parseRemindCommand, isRemindListCommand, parseRemindCancelCommand, form
 import { parseResearchCommand } from '../core/research-request.js';
 import { makeResearchJobData } from '../core/research-types.js';
 import { parsePodcastCommand, audioFormatToCode, audioLengthToCode } from '../core/podcast-request.js';
+import { parseAskCommand } from '../core/ask-request.js';
+import { findNotebookByTopic } from '../infra/research-vault-lookup.js';
+import { appendAskAnswer } from '../infra/research-qa-writer.js';
+import { resolveAnswerCitations, extractPassageToSourceMap } from '../core/citation-resolver.js';
+import { splitMessage } from '../core/message-splitter.js';
+import type { SourceMeta } from '../core/research-types.js';
 import type { TelegramAdapter } from '../infra/telegram.js';
 import type { Queues } from '../infra/queue.js';
 import type { SessionStore } from '../infra/session-store.js';
 import type { QuotaTracker } from '../infra/quota-tracker.js';
+import type { NotebookLMAdapter } from '../infra/notebooklm-client.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -26,6 +33,10 @@ export type MessageRouterDeps = {
   readonly quotaTracker: QuotaTracker;
   /** Resolved fresh on each call so hot-reloaded skills are visible. */
   readonly getSkillRegistry?: () => SkillRegistry;
+  /** Lazy-init NotebookLM adapter for /ask. Returns null if creds missing. */
+  readonly getNotebookLM?: () => Promise<NotebookLMAdapter | null>;
+  /** Vault root path used by /ask to locate hub notes. */
+  readonly vaultBasePath?: string;
 };
 
 // ─── Command Discriminated Union ─────────────────────────────────────────────
@@ -36,6 +47,7 @@ type Command =
   | { readonly kind: 'research-status' }
   | { readonly kind: 'research' }
   | { readonly kind: 'podcast' }
+  | { readonly kind: 'ask' }
   | { readonly kind: 'status' }
   | { readonly kind: 'run' }
   | { readonly kind: 'help' }
@@ -52,6 +64,7 @@ export function parseCommandKind(text: string): Command {
   if (lower === '/research-status') return { kind: 'research-status' };
   if (lower.startsWith('/research')) return { kind: 'research' };
   if (lower.startsWith('/podcast')) return { kind: 'podcast' };
+  if (lower.startsWith('/ask')) return { kind: 'ask' };
   if (lower.startsWith('/run')) return { kind: 'run' };
   return { kind: 'chat' };
 }
@@ -82,6 +95,7 @@ export function routeMessage(msg: IncomingMessage, deps: MessageRouterDeps): voi
     .with({ kind: 'research-status' }, () => routeResearchStatus(msg, deps))
     .with({ kind: 'research' }, () => routeResearchCommand(msg, deps))
     .with({ kind: 'podcast' }, () => routePodcastCommand(msg, deps))
+    .with({ kind: 'ask' }, () => routeAskCommand(msg, deps))
     .with({ kind: 'status' }, () => routeStatusCommand(msg, deps))
     .with({ kind: 'run' }, () => routeRunCommand(msg, deps))
     .with({ kind: 'chat' }, () => {
@@ -343,16 +357,124 @@ const HELP_TEXT = [
   '  Deep research with NotebookLM + Claude. Topic is derived automatically.',
   '/research-status — Check research job progress',
   '',
+  '/ask <topic-slug> <question>',
+  '  One-shot question against an existing research notebook.',
+  '  Slug = leaf folder under reclaw/research/ (e.g. code-execution-with-mcp).',
+  '',
   '/podcast <vault-path> [--format deep-dive|brief|critique|debate] [--length short|default|long]',
   '  Generate audio podcast from a vault note',
   '  Vault path: use Obsidian "Copy vault path" (e.g. reclaw/architecture)',
-  '  Defaults: --format deep-dive --length default',
+  '  Defaults: --format deep-dive --length long',
 ].join('\n');
 
 function routeHelpCommand(msg: IncomingMessage, deps: MessageRouterDeps): void {
   deps.telegram.sendMessage(msg.chatId, HELP_TEXT).catch((err: unknown) => {
     console.error('[router] Failed to send /help response:', err);
   });
+}
+
+// ─── /ask <topic-slug> <question> ────────────────────────────────────────────
+
+function routeAskCommand(msg: IncomingMessage, deps: MessageRouterDeps): void {
+  void runAsk(msg, deps).catch((err: unknown) => {
+    console.error('[router] /ask failed:', err);
+    deps.telegram.sendMessage(msg.chatId, 'Failed to run /ask. Try again.').catch(() => {});
+  });
+}
+
+async function runAsk(msg: IncomingMessage, deps: MessageRouterDeps): Promise<void> {
+  if (deps.getNotebookLM === undefined || deps.vaultBasePath === undefined) {
+    await deps.telegram.sendMessage(msg.chatId, '/ask is not wired up — NotebookLM adapter or vault path missing.');
+    return;
+  }
+
+  const parsed = parseAskCommand(msg.text);
+  if (!parsed.ok) {
+    await deps.telegram.sendMessage(msg.chatId, parsed.error);
+    return;
+  }
+
+  const lookup = await findNotebookByTopic(deps.vaultBasePath, parsed.value.slug);
+  if (!lookup.ok) {
+    await deps.telegram.sendMessage(msg.chatId, lookup.error);
+    return;
+  }
+
+  const hasQuota = await deps.quotaTracker.hasQuota(1);
+  if (!hasQuota) {
+    await deps.telegram.sendMessage(msg.chatId, 'Daily NotebookLM chat quota exhausted. Try again tomorrow.');
+    return;
+  }
+
+  const notebookLM = await deps.getNotebookLM();
+  if (notebookLM === null) {
+    await deps.telegram.sendMessage(msg.chatId, 'NotebookLM is not configured on this reclaw instance.');
+    return;
+  }
+
+  await deps.telegram.sendMessage(msg.chatId, `Asking notebook: ${lookup.value.topic}…`);
+
+  const chatResult = await notebookLM.chat(lookup.value.notebookId, parsed.value.question);
+  if (!chatResult.ok) {
+    await deps.telegram.sendMessage(msg.chatId, `NotebookLM error: ${chatResult.error.message}`);
+    return;
+  }
+
+  const sourcesResult = await notebookLM.listSources(lookup.value.notebookId);
+  const sources = sourcesResult.ok ? sourcesResult.value : [];
+
+  const passageMap = extractPassageToSourceMap(chatResult.value.rawData, sources);
+  const { resolvedText, citedSourceIndices } = resolveAnswerCitations(
+    chatResult.value.text,
+    sources,
+    passageMap,
+  );
+
+  // Persist Q&A to the vault so /ask answers accumulate alongside the
+  // canonical research output. Best-effort — never blocks the user reply.
+  const citedSources = [...citedSourceIndices]
+    .sort((a, b) => a - b)
+    .map((i) => sources[i])
+    .filter((s): s is SourceMeta => s !== undefined);
+
+  void appendAskAnswer({
+    vaultBasePath: deps.vaultBasePath,
+    lookup: lookup.value,
+    question: parsed.value.question,
+    resolvedAnswer: resolvedText,
+    citedSources,
+  })
+    .then((res) => {
+      if (!res.ok) console.error(`[router] /ask: failed to persist Q&A: ${res.error}`);
+    })
+    .catch((e: unknown) => {
+      console.error('[router] /ask: persistence threw:', e);
+    });
+
+  const reply = formatAskReply(resolvedText, sources, citedSourceIndices, lookup.value);
+  const chunks = splitMessage(reply);
+  await deps.telegram.sendChunkedMessage(msg.chatId, chunks);
+}
+
+function formatAskReply(
+  resolvedText: string,
+  sources: ReadonlyArray<{ readonly title: string; readonly url: string }>,
+  citedSourceIndices: ReadonlySet<number>,
+  lookup: { readonly topic: string; readonly hubVaultPath: string },
+): string {
+  const cited = [...citedSourceIndices]
+    .sort((a, b) => a - b)
+    .map((i) => sources[i])
+    .filter((s): s is { readonly title: string; readonly url: string } => s !== undefined);
+
+  const sourcesSection = cited.length > 0
+    ? '\n\nSources:\n' + cited.map((s) => `• ${s.title}\n  ${s.url}`).join('\n')
+    : '';
+
+  // Hub link is rendered as the vault path so the user can open it in Obsidian.
+  const hubLink = `\n\n→ ${lookup.hubVaultPath.replace(/\.md$/, '')}`;
+
+  return `${resolvedText}${sourcesSection}${hubLink}`;
 }
 
 // ─── /podcast <vault-path> ──────────────────────────────────────────────────

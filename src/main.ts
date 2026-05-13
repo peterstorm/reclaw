@@ -367,6 +367,8 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
         queues,
         quotaTracker: quotaTracker.tracker,
         getSkillRegistry: skillWatcher.getRegistry,
+        getNotebookLM: getOrCreateNotebookLMAdapter,
+        vaultBasePath: config.obsidianVaultPath ?? config.workspacePath,
       });
     } catch (err) {
       console.error(`[telegram] routeMessage failed for chatId=${msg.chatId}:`, err);

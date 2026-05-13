@@ -1,9 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { routeMessage, type IncomingMessage, type MessageRouterDeps } from './message-router.js';
 import type { TelegramAdapter } from '../infra/telegram.js';
 import type { SessionStore } from '../infra/session-store.js';
 import type { Queues } from '../infra/queue.js';
 import type { QuotaTracker } from '../infra/quota-tracker.js';
+import type { NotebookLMAdapter } from '../infra/notebooklm-client.js';
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -231,6 +235,261 @@ describe('routeMessage', () => {
       await vi.waitFor(() => {
         expect(deps.queues.enqueueChat).toHaveBeenCalled();
       });
+    });
+  });
+
+  describe('/ask command', () => {
+    let vaultDir: string;
+    const slug = 'demo-topic';
+    const notebookId = 'nb-xyz';
+
+    beforeEach(() => {
+      vaultDir = mkdtempSync(join(tmpdir(), 'reclaw-ask-'));
+      const hubDir = join(vaultDir, 'reclaw/research', slug);
+      mkdirSync(hubDir, { recursive: true });
+      writeFileSync(
+        join(hubDir, '_index.md'),
+        `---\ntitle: Demo Topic\nnotebook_id: ${notebookId}\n---\n\nbody\n`,
+        'utf8',
+      );
+    });
+
+    const cleanup = (): void => {
+      try {
+        rmSync(vaultDir, { recursive: true, force: true });
+      } catch {
+        // best-effort
+      }
+    };
+
+    const makeNotebookLM = (answerText: string): NotebookLMAdapter => ({
+      chat: vi.fn().mockResolvedValue({
+        ok: true,
+        value: { text: answerText, citations: [], rawData: {} },
+      }),
+      listSources: vi.fn().mockResolvedValue({ ok: true, value: [] }),
+      // The router only uses chat + listSources; cast through unknown for the rest.
+    } as unknown as NotebookLMAdapter);
+
+    it('chunks long /ask replies into multiple Telegram messages', async () => {
+      // Long enough that resolvedText alone overflows 4096-char Telegram limit.
+      const longAnswer = 'lorem ipsum dolor sit amet. '.repeat(400);
+      const deps = makeDeps({
+        vaultBasePath: vaultDir,
+        getNotebookLM: () => Promise.resolve(makeNotebookLM(longAnswer)),
+      });
+
+      try {
+        routeMessage(makeMsg({ text: `/ask ${slug} What is the gist?` }), deps);
+
+        await vi.waitFor(() => {
+          expect(deps.telegram.sendChunkedMessage).toHaveBeenCalled();
+        });
+
+        const call = (deps.telegram.sendChunkedMessage as ReturnType<typeof vi.fn>).mock.calls[0]!;
+        const [chatId, chunks] = call as [number, readonly string[]];
+        expect(chatId).toBe(456);
+        expect(chunks.length).toBeGreaterThan(1);
+        for (const chunk of chunks) {
+          expect(chunk.length).toBeLessThanOrEqual(4096);
+        }
+        expect(chunks.join('')).toContain('lorem ipsum');
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('persists the answer to the vault QA folder and links it from the hub', async () => {
+      const deps = makeDeps({
+        vaultBasePath: vaultDir,
+        getNotebookLM: () => Promise.resolve(makeNotebookLM('Persisted answer.')),
+      });
+
+      try {
+        routeMessage(makeMsg({ text: `/ask ${slug} What gets stored?` }), deps);
+
+        const qaPath = join(vaultDir, 'reclaw/research', slug, 'QA', 'What gets stored.md');
+        await vi.waitFor(() => {
+          expect(existsSync(qaPath)).toBe(true);
+        });
+
+        const qa = readFileSync(qaPath, 'utf8');
+        expect(qa).toContain('# What gets stored?');
+        expect(qa).toContain('Persisted answer.');
+
+        await vi.waitFor(() => {
+          const hub = readFileSync(join(vaultDir, 'reclaw/research', slug, '_index.md'), 'utf8');
+          expect(hub).toContain('- [[What gets stored]]');
+        });
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('sends short /ask replies as a single chunk', async () => {
+      const deps = makeDeps({
+        vaultBasePath: vaultDir,
+        getNotebookLM: () => Promise.resolve(makeNotebookLM('short answer.')),
+      });
+
+      try {
+        routeMessage(makeMsg({ text: `/ask ${slug} hi?` }), deps);
+
+        await vi.waitFor(() => {
+          expect(deps.telegram.sendChunkedMessage).toHaveBeenCalled();
+        });
+
+        const call = (deps.telegram.sendChunkedMessage as ReturnType<typeof vi.fn>).mock.calls[0]!;
+        const [, chunks] = call as [number, readonly string[]];
+        expect(chunks.length).toBe(1);
+        expect(chunks[0]).toContain('short answer.');
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('reports a friendly error when /ask is missing the question', async () => {
+      const getNotebookLM = vi.fn();
+      const deps = makeDeps({
+        vaultBasePath: vaultDir,
+        getNotebookLM,
+      });
+
+      try {
+        routeMessage(makeMsg({ text: '/ask demo-topic' }), deps);
+
+        await vi.waitFor(() => {
+          expect(deps.telegram.sendMessage).toHaveBeenCalledWith(
+            456,
+            expect.stringMatching(/Usage: \/ask/),
+          );
+        });
+        expect(getNotebookLM).not.toHaveBeenCalled();
+        expect(deps.telegram.sendChunkedMessage).not.toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('reports a friendly error when the topic slug has no hub note', async () => {
+      const chatSpy = vi.fn();
+      const notebook = {
+        chat: chatSpy,
+        listSources: vi.fn(),
+      } as unknown as NotebookLMAdapter;
+      const deps = makeDeps({
+        vaultBasePath: vaultDir,
+        getNotebookLM: () => Promise.resolve(notebook),
+      });
+
+      try {
+        routeMessage(makeMsg({ text: '/ask no-such-topic Why?' }), deps);
+
+        await vi.waitFor(() => {
+          expect(deps.telegram.sendMessage).toHaveBeenCalledWith(
+            456,
+            expect.stringMatching(/no research topic/i),
+          );
+        });
+        expect(chatSpy).not.toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('reports quota exhaustion before calling NotebookLM', async () => {
+      const chatSpy = vi.fn();
+      const notebook = {
+        chat: chatSpy,
+        listSources: vi.fn(),
+      } as unknown as NotebookLMAdapter;
+      const deps = makeDeps({
+        vaultBasePath: vaultDir,
+        getNotebookLM: () => Promise.resolve(notebook),
+      });
+      (deps.quotaTracker.hasQuota as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+
+      try {
+        routeMessage(makeMsg({ text: `/ask ${slug} What now?` }), deps);
+
+        await vi.waitFor(() => {
+          expect(deps.telegram.sendMessage).toHaveBeenCalledWith(
+            456,
+            expect.stringMatching(/quota exhausted/i),
+          );
+        });
+        expect(chatSpy).not.toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('reports when NotebookLM is not configured on this instance', async () => {
+      const deps = makeDeps({
+        vaultBasePath: vaultDir,
+        getNotebookLM: () => Promise.resolve(null),
+      });
+
+      try {
+        routeMessage(makeMsg({ text: `/ask ${slug} Hello?` }), deps);
+
+        await vi.waitFor(() => {
+          expect(deps.telegram.sendMessage).toHaveBeenCalledWith(
+            456,
+            expect.stringMatching(/NotebookLM is not configured/i),
+          );
+        });
+        expect(deps.telegram.sendChunkedMessage).not.toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('reports when /ask is not wired up (missing vault path / adapter)', async () => {
+      // No vaultBasePath / getNotebookLM provided.
+      const deps = makeDeps();
+
+      try {
+        routeMessage(makeMsg({ text: `/ask ${slug} hi?` }), deps);
+
+        await vi.waitFor(() => {
+          expect(deps.telegram.sendMessage).toHaveBeenCalledWith(
+            456,
+            expect.stringMatching(/not wired up/i),
+          );
+        });
+        expect(deps.telegram.sendChunkedMessage).not.toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('surfaces NotebookLM chat errors back to Telegram', async () => {
+      const notebook = {
+        chat: vi.fn().mockResolvedValue({
+          ok: false,
+          error: { message: 'rate limited' },
+        }),
+        listSources: vi.fn().mockResolvedValue({ ok: true, value: [] }),
+      } as unknown as NotebookLMAdapter;
+      const deps = makeDeps({
+        vaultBasePath: vaultDir,
+        getNotebookLM: () => Promise.resolve(notebook),
+      });
+
+      try {
+        routeMessage(makeMsg({ text: `/ask ${slug} What broke?` }), deps);
+
+        await vi.waitFor(() => {
+          expect(deps.telegram.sendMessage).toHaveBeenCalledWith(
+            456,
+            expect.stringMatching(/NotebookLM error: rate limited/),
+          );
+        });
+        expect(deps.telegram.sendChunkedMessage).not.toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
     });
   });
 

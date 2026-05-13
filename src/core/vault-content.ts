@@ -104,11 +104,13 @@ export function buildHubNote(ctx: ResearchContext, quality: QualityResult): Vaul
       ? `\n## Quality Warnings\n\n${quality.warnings.map((w) => `- ${w}`).join('\n')}\n`
       : '';
 
+  const notebookIdLine = ctx.notebookId ? `\nnotebook_id: ${yamlValue(ctx.notebookId)}` : '';
+
   const content = `---
 title: ${yamlValue(ctx.topic)}
 date: ${researchDate}
 quality: ${quality.grade}
-topic_slug: ${ctx.topicSlug}
+topic_slug: ${ctx.topicSlug}${notebookIdLine}
 tags:
   - research
   - ${ctx.topicSlug}
