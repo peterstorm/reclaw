@@ -94,14 +94,14 @@ export function toMemory(signal: SkillQualitySignal): SkillQualityMemory | null 
   if (!shouldRecord(signal.status)) return null;
   const type = TYPE_BY_STATUS[signal.status];
   if (type === null) return null;
-  // Pinned so cortex ai-prune does not archive them — the skill-quality-monitor
-  // reads these entries via /recall (active-only), and Haiku flags them as
-  // "redundant/granular/one-time" without it.
+  // Not pinned: the monitor only reads a 7-day window, so older signals
+  // are noise. The nightly prune's `skill-quality`-tag carve-out keeps
+  // entries within that window active.
   return {
     content: describe(signal),
     type,
     priority: PRIORITY_BY_STATUS[signal.status],
-    pinned: true,
+    pinned: false,
     tags: ['skill-quality', signal.skillId, signal.status],
   };
 }

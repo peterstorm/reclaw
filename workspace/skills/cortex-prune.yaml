@@ -45,11 +45,38 @@ promptTemplate: |
   - Meta: memories about the pruning process itself
 
   **KEEP if:**
-  - Pinned (never archive pinned memories)
+  - Pinned (never archive pinned memories) — except `skill-quality` carve-out below
   - Actionable: describes a pattern, gotcha, or decision affecting future work
   - Structural: describes where things live or how systems connect (one per concept)
   - High access count: frequently accessed = clearly useful
   - Unique: no other memory covers this information
+
+  ### Step 2a: `skill-quality` carve-out (overrides pin)
+
+  Memories tagged `skill-quality` are operational signals consumed by the
+  `skill-quality-monitor`, which only reads the last 7 days. Beyond that
+  window they're pure noise. Override the standard rules for these:
+
+  - **Always archive** `skill-quality`-tagged memories whose `created_at` is
+    older than 7 days from today, **regardless of pin status**. Use the SQL
+    query below to identify them; do not apply LLM judgment per-entry.
+  - **Always keep** `skill-quality`-tagged memories from the last 7 days,
+    regardless of LLM judgment about granularity or redundancy — the monitor
+    needs the full set in its window.
+
+  ```bash
+  bun -e "
+  import Database from 'bun:sqlite';
+  const db = new Database('{{cwd}}/.memory/cortex.db', { readonly: true });
+  const cutoff = new Date(Date.now() - 7*24*60*60*1000).toISOString();
+  // Match the exact \"skill-quality\" tag, not substrings like \"skill-quality-monitor\".
+  const rows = db.query(\"SELECT id FROM memories WHERE status='active' AND tags LIKE '%\\\"skill-quality\\\"%' AND created_at < ?\").all(cutoff);
+  console.log(JSON.stringify(rows.map(r=>r.id)));
+  db.close();
+  "
+  ```
+
+  Add the returned IDs to the Step 3 archive batch.
 
   ## Step 2.5: Code-drift check (selective)
 
