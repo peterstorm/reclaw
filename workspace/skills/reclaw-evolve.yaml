@@ -1,0 +1,269 @@
+id: reclaw-evolve
+name: Reclaw Evolve
+schedule: "0 18 * * 0"
+permissionProfile: scheduled
+validityWindowMinutes: 60
+timeout: 600
+promptTemplate: |
+  {{personality}}
+
+  Time: {{dayOfWeek}}, {{date}}
+
+  You are the evolution loop. Mine the past week of conversational
+  transcripts for habits — both yours and the user's — and propose
+  concrete changes to skills, personality, or behavior. Output is a
+  proposal note for human review; nothing is auto-applied.
+
+  CRITICAL: This is a scheduled job. No user is present. Do NOT ask for
+  confirmation, never edit a skill, personality.md, or any other file
+  outside the proposals directory. Your only side effects are: write
+  one proposal note, optionally `/remember` a one-line summary, send one
+  Telegram message.
+
+  ## Inputs
+
+  - Transcripts: `~/.claude/projects/-home-peterstorm-dev-claude-plugins-reclaw-workspace/*.jsonl`
+  - Skills: `/home/peterstorm/dev/claude-plugins/reclaw/workspace/skills/`
+  - Personality: `/home/peterstorm/dev/claude-plugins/reclaw/workspace/personality.md`
+  - Prior proposals: `~/dev/notes/remotevault/reclaw/evolve/`
+  - Cortex memory store at `{{cwd}}/.memory/cortex.db`
+
+  ## Step 1 — Find conversational sessions from the past 7 days
+
+  Transcripts include three kinds of sessions: (a) Telegram user
+  conversations, (b) scheduled skill runs, (c) cortex internal LLM
+  calls (consolidate/prune/extract). Only (a) is useful here.
+
+  ```bash
+  TRANSCRIPT_DIR=~/.claude/projects/-home-peterstorm-dev-claude-plugins-reclaw-workspace
+  CUTOFF=$(date -d '7 days ago' --iso-8601=seconds)
+
+  find "$TRANSCRIPT_DIR" -name "*.jsonl" -mtime -7 -type f | while read -r f; do
+    # First user-role record; probe the session class by its first user message.
+    # NOTE: jq -rc decodes JSON strings — embedded newlines break `head -1`.
+    # Use grep -m1 to pick the first matching JSON LINE, then jq to decode.
+    FIRST=$(grep -m1 '"type":"user"' "$f" 2>/dev/null | jq -rc '.message.content // ""' 2>/dev/null)
+    [ -z "$FIRST" ] && continue
+    # Filter heuristics:
+    #   - Scheduled skill runs start with personality + "Time: ..." or "Today is ..." + "Step 1"
+    #   - Cortex internal calls start with "Classify relationships", "You are a memory pruner", "Extract memories from this"
+    case "$FIRST" in
+      *"Classify relationships between memory pairs"*) continue ;;
+      *"You are a memory pruner"*) continue ;;
+      *"Extract memories from this Claude Code session"*) continue ;;
+      *"Time: "*"Step 1"*) continue ;;
+      *"Today is"*"Step 1"*) continue ;;
+    esac
+    # Conversational sessions usually contain "You are a personal AI assistant"
+    # followed by "---" separator and a short user prompt.
+    case "$FIRST" in
+      *"You are a personal AI assistant"*"---"*) echo "$f" ;;
+    esac
+  done | sort > /tmp/reclaw-evolve-sessions.txt
+
+  wc -l /tmp/reclaw-evolve-sessions.txt
+  ```
+
+  If 0 sessions, emit `ALL_CLEAR` and stop — no signal to mine this week.
+
+  ## Step 2 — Extract user messages from those sessions
+
+  Strip the personality prefix and `---` separator; what remains is the
+  user's actual message. Collect every user turn across all sessions.
+
+  ```bash
+  while read -r f; do
+    jq -rc --arg file "$f" '
+      select(.type=="user" and (.message.content | type == "string"))
+      | {ts: .timestamp, sid: .sessionId, file: $file, text: .message.content}
+    ' "$f" 2>/dev/null
+  done < /tmp/reclaw-evolve-sessions.txt > /tmp/reclaw-evolve-user-turns.jsonl
+
+  wc -l /tmp/reclaw-evolve-user-turns.jsonl
+  ```
+
+  Drop the first turn of each session if it begins with the personality
+  prefix (that's the wrapper, not the real message). Keep everything
+  after the `---\n\n` separator. For follow-up turns (no prefix), keep
+  the whole text.
+
+  ## Step 3 — Mine correction signals
+
+  These are the highest-signal events: the user told the agent it was
+  wrong. Grep the user turns for correction patterns (case-insensitive,
+  word-boundary):
+
+  - `\bno\b`, `\bnope\b`
+  - `\bstop\b`, `\bdon'?t\b`
+  - `\bactually\b`, `\binstead\b`
+  - `\bwrong\b`, `\bnot what\b`
+  - `\bredo\b`, `\bagain\b.*\bbut\b`
+  - `\bnever\b` (e.g. "never do X")
+  - "you should have", "you should've", "should not have"
+
+  ```bash
+  jq -rc 'select(.text | test("(?i)\\b(no|nope|stop|don.?t|actually|instead|wrong|redo|never|not what)\\b"))' \
+    /tmp/reclaw-evolve-user-turns.jsonl > /tmp/reclaw-evolve-corrections.jsonl
+  wc -l /tmp/reclaw-evolve-corrections.jsonl
+  ```
+
+  Cap at 30 highest-signal events. For each, retrieve ~3 assistant
+  turns preceding the correction (the behavior that triggered it):
+
+  ```bash
+  # For a given file and timestamp, extract the prior assistant turn.
+  # Use jq to walk the JSONL in order and stash the last assistant text
+  # before the timestamp of interest.
+  ```
+
+  For ranking, prefer corrections that:
+  - Contain a directive ("instead do X", "always Y") — actionable
+  - Repeat across sessions — pattern, not a one-off
+  - Match a specific skill (mentioned by name or tool sequence)
+
+  Drop corrections that are just conversational ("no, the green one" in
+  an unrelated context).
+
+  ## Step 4 — Mine repeated tool sequences
+
+  Look for sequences of tool calls (3+) that recur across sessions and
+  are not already encoded as a skill. These are candidate new skills.
+
+  ```bash
+  # Extract assistant tool_use blocks per session, build per-session
+  # ordered tool-name sequence, then look for repeating 3-grams.
+  while read -r f; do
+    jq -rc 'select(.type=="assistant") | .message.content[]? | select(.type=="tool_use") | .name' "$f" 2>/dev/null
+  done < /tmp/reclaw-evolve-sessions.txt | \
+    awk 'NR>2 {print prev2, prev1, $0} {prev2=prev1; prev1=$0}' | \
+    sort | uniq -c | sort -rn | head -30 > /tmp/reclaw-evolve-trigrams.txt
+  ```
+
+  A trigram appearing ≥3 times across distinct sessions is a candidate.
+  Discard trigrams already covered by an existing skill (read
+  `skills/*.yaml` and check whether the tool sequence matches the skill's
+  workflow). What remains is "things the user keeps doing manually
+  that could become a one-shot skill".
+
+  ## Step 5 — Cross-reference prior proposals
+
+  Read all notes under `~/dev/notes/remotevault/reclaw/evolve/`. For
+  each candidate from Steps 3-4, check whether it was:
+
+  - **Already proposed and approved/shipped** → drop (don't re-propose)
+  - **Already proposed and rejected** → drop, unless new evidence strengthens
+    the case substantially (note the prior rejection)
+  - **Already proposed but no decision yet** → drop, status-quo applies
+
+  Only surface NEW signal or strengthened signal.
+
+  ## Step 6 — Write the proposal note
+
+  Path: `~/dev/notes/remotevault/reclaw/evolve/{{date}}.md`
+  Create `~/dev/notes/remotevault/reclaw/evolve/` if missing.
+
+  Frontmatter:
+  ```yaml
+  ---
+  title: "Reclaw Evolve — {{date}}"
+  date: {{date}}
+  tags: [reclaw, evolve, proposal, self-improvement]
+  up: "[[reclaw/evolve/MOC]]"
+  status: pending
+  ---
+  ```
+
+  Sections (omit any that has no signal — don't pad):
+
+  ### Behavior changes (from corrections)
+  For each correction-cluster:
+  - **Pattern**: 1-line description of the behavior the user wants
+    changed
+  - **Evidence**: 2-3 quoted user messages with timestamps + session IDs
+  - **Proposed change**: concrete diff. Either:
+    - Personality edit: "add line X to `personality.md` after line N"
+    - Skill edit: "in `skills/<id>.yaml` line N, change `<before>` to `<after>`"
+    - New rule for cortex: "add tag-filter for <pattern>"
+  - **Confidence**: low / medium / high
+
+  ### New skill candidates (from tool-sequence mining)
+  For each candidate:
+  - **Trigger**: when the user asks for X
+  - **Sequence**: the recurring tool flow
+  - **Frequency**: N occurrences across M sessions
+  - **Proposed skill**: id, schedule (if applicable), 1-paragraph sketch
+
+  ### Drop candidates
+  Skills with zero conversational invocation and zero scheduled hits in
+  7 days. List them with last-touch date. Surface only — don't
+  recommend deletion unless the case is overwhelming.
+
+  ### Decision queue
+  Reorder all proposals by signal-strength × ease-of-implementation.
+  Top 3 are the "if you act on one thing this week".
+
+  Cap proposals at 5 total. Above 5 = noise; pick the strongest.
+
+  ## Step 7 — Update the MOC
+
+  If `~/dev/notes/remotevault/reclaw/evolve/MOC.md` doesn't exist,
+  create it:
+
+  ```yaml
+  ---
+  title: Reclaw Evolve
+  date: {{date}}
+  tags: [moc, reclaw, evolve]
+  up: "[[reclaw/MOC]]"
+  ---
+  ```
+
+  ```markdown
+  # Reclaw Evolve
+
+  Weekly transcript-mined proposals for reclaw skill/personality changes.
+  Each note proposes specific edits for human review. Approved items are
+  applied manually and the note marked `status: shipped`. Rejected items
+  marked `status: rejected` so future runs skip re-proposing.
+
+  ## Notes
+  ```
+
+  Append `- [[reclaw/evolve/{{date}}|{{date}}]] — N proposals, top: <one-liner>`
+
+  ## Step 8 — Cortex
+
+  `/remember "Reclaw evolve {{date}}: N proposals — top: <1-line summary of #1>" --type=progress --tags=reclaw-evolve,self-improvement`
+
+  ## Step 9 — Telegram
+
+  Format:
+
+  ```
+  🧬 Reclaw Evolve — {{date}}
+
+  Top: <one-line summary of the highest-ranked proposal>
+
+  <N> behavior changes proposed
+  <N> new-skill candidates
+  <N> drop candidates
+
+  Full note in vault.
+  ```
+
+  If no proposals survived Step 5 cross-referencing, respond with
+  exactly `ALL_CLEAR`.
+
+  ## Guardrails
+
+  - NEVER edit `personality.md` or any file under `skills/`. All edits
+    are proposals on paper.
+  - NEVER `/forget` a cortex memory. Suggest forgets in the proposal
+    only.
+  - If `find` returns 0 conversational sessions (no Telegram traffic
+    that week), `ALL_CLEAR`.
+  - If correction-grep finds 0 hits AND tool-sequence mining finds 0
+    new candidates, `ALL_CLEAR`.
+  - Cap total runtime: if Step 3 user-turn extraction exceeds 200
+    turns, sample down to 200 by session-stratified random pick before
+    grep. Don't blow timeout.
