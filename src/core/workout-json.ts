@@ -51,7 +51,7 @@ interface WorkoutSegment {
   readonly workoutSteps: ReadonlyArray<WorkoutStep>;
 }
 
-interface WorkoutJson {
+export interface WorkoutJson {
   readonly workoutName: string;
   readonly sportType: { readonly sportTypeId: number; readonly sportTypeKey: string };
   readonly workoutSegments: ReadonlyArray<WorkoutSegment>;
@@ -197,7 +197,7 @@ function validateExecutableStep(
   if (tt && tt['workoutTargetTypeKey'] === 'pace.zone') {
     if (typeof s['targetValueOne'] !== 'number' || typeof s['targetValueTwo'] !== 'number') {
       errors.push(`${path}: pace.zone targets require numeric targetValueOne and targetValueTwo`);
-    } else if (s['targetValueOne'] as number <= s['targetValueTwo'] as number) {
+    } else if ((s['targetValueOne'] as number) <= (s['targetValueTwo'] as number)) {
       // targetValueOne (fast) should be > targetValueTwo (slow) in m/s
       errors.push(
         `${path}: targetValueOne (fast, ${s['targetValueOne']}) must be > targetValueTwo (slow, ${s['targetValueTwo']})`,

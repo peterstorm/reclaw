@@ -397,7 +397,7 @@ describe('createWorkers', () => {
     await expect(scheduledWorker!.processor(bullJob)).rejects.toThrow('subprocess timed out');
   });
 
-  it('dead letter: sends telegram notification on final chat job failure', async () => {
+  it('dead letter: sends user-friendly telegram notification on final chat job failure', async () => {
     makeWorkers();
 
     const chatWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-chat');
@@ -411,8 +411,13 @@ describe('createWorkers', () => {
 
     expect(mockTelegram.sendMessage).toHaveBeenCalledWith(
       chatJob.chatId,
-      expect.stringContaining('permanently failed'),
+      expect.stringContaining('Sorry'),
     );
+    // Operator-style detail (raw error / job id) must NOT leak to the user.
+    const callArgs = (mockTelegram.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    const message = String(callArgs[1]);
+    expect(message).not.toContain('final failure');
+    expect(message).not.toContain(chatJob.id);
   });
 
   it('dead letter: sends telegram notification on final scheduled job failure to all users', async () => {
@@ -469,19 +474,19 @@ describe('createWorkers', () => {
     }
   });
 
-  it('dead letter message includes job kind, id, and error', async () => {
+  it('dead letter message for non-chat job kinds includes job kind, id, and error', async () => {
     makeWorkers();
 
-    const chatWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-chat');
-    const failedHandler = chatWorker!.eventHandlers.get('failed');
+    const scheduledWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-scheduled');
+    const failedHandler = scheduledWorker!.eventHandlers.get('failed');
 
     await failedHandler!(
-      { data: chatJob, id: 'specific-job-id', opts: { attempts: 3 }, attemptsMade: 3 },
+      { data: scheduledJob, id: 'specific-job-id', opts: { attempts: 3 }, attemptsMade: 3 },
       new Error('specific error message'),
     );
 
     expect(mockTelegram.sendMessage).toHaveBeenCalledWith(
-      chatJob.chatId,
+      mockConfig.authorizedUserIds[0],
       expect.stringContaining('specific error message'),
     );
   });
@@ -723,19 +728,20 @@ describe('createWorkers', () => {
 // ─── formatDeadLetterMessage ──────────────────────────────────────────────────
 
 describe('formatDeadLetterMessage', () => {
-  it('includes kind, id, and error in message', () => {
+  it('returns a user-friendly message for chat jobs (hides operator details)', () => {
     const msg = formatDeadLetterMessage('chat', 'job-123', 'Claude crashed');
-    expect(msg).toContain('chat');
-    expect(msg).toContain('job-123');
-    expect(msg).toContain('Claude crashed');
+    expect(msg).toContain('Sorry');
+    expect(msg).toContain('try again');
+    expect(msg).not.toContain('job-123');
+    expect(msg).not.toContain('Claude crashed');
   });
 
-  it('includes "permanently failed" language', () => {
+  it('includes "permanently failed" language for non-chat jobs', () => {
     const msg = formatDeadLetterMessage('scheduled', 'job-abc', 'timeout');
     expect(msg).toContain('permanently failed');
   });
 
-  it('formats all three fields', () => {
+  it('formats all three fields for non-chat jobs', () => {
     const msg = formatDeadLetterMessage('scheduled', 'sched-xyz', 'redis timeout');
     expect(msg).toContain('scheduled');
     expect(msg).toContain('sched-xyz');

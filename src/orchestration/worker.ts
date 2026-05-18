@@ -60,7 +60,9 @@ type WorkerDeps = {
 // ─── Dead letter notification (pure helper for testing) ───────────────────────
 
 /**
- * Format a dead-letter notification message.
+ * Format a dead-letter notification message. Chat jobs get a user-friendly
+ * message because the chat handler is the user-facing surface; everything
+ * else is operator-facing (includes ID + raw error).
  * Pure: no side effects.
  */
 export function formatDeadLetterMessage(
@@ -68,6 +70,9 @@ export function formatDeadLetterMessage(
   jobId: string,
   errorMessage: string,
 ): string {
+  if (jobKind === 'chat') {
+    return 'Sorry, I ran into a problem processing your message. Please try again.';
+  }
   return `[reclaw] Job permanently failed after all retries.\nKind: ${jobKind}\nID: ${jobId}\nError: ${errorMessage}`;
 }
 

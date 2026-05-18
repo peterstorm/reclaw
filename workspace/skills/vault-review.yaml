@@ -1,6 +1,6 @@
 id: vault-review
 name: Vault Review
-schedule: "0 9,12,17,20 * * *"
+schedule: null  # paused 2026-05-15 — was "0 9,12,17,20 * * *" (20-min timeout hit ~weekly). See decisions.md. Manually triggerable via /run vault-review.
 permissionProfile: scheduled
 validityWindowMinutes: 30
 timeout: 120

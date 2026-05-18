@@ -259,15 +259,10 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
   }
 
   // 9. Handle failure (FR-012)
+  // User-facing error is sent by the worker's dead-letter handler after the
+  // final retry attempt — see formatDeadLetterMessage. Sending here would
+  // produce one duplicate "Sorry" message per BullMQ retry attempt.
   if (!result.ok) {
-    const errorMsg = 'Sorry, I ran into a problem processing your message. Please try again.';
-    if (stream.blocks.length > 0) {
-      await deps.telegram.sendMessage(job.chatId, errorMsg);
-    } else if (placeholderMsgId !== null) {
-      await deps.telegram.editMessage(job.chatId, placeholderMsgId, errorMsg);
-    } else {
-      await deps.telegram.sendMessage(job.chatId, errorMsg);
-    }
     await cleanupImages(job.imagePaths);
     return jobResultErr(result.error);
   }

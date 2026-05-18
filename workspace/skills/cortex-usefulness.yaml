@@ -121,7 +121,7 @@ promptTemplate: |
   # Replace SUMMARIES_JSON with the JSON-encoded array of summaries from Step 1
   bun -e "
   import Database from 'bun:sqlite';
-  const db = new Database('/home/peterstorm/dev/claude-plugins/reclaw/workspace/.memory/cortex.db', { readonly: true });
+  const db = new Database('{{cwd}}/.memory/cortex.db', { readonly: true });
   const summaries = SUMMARIES_JSON;
   const stmt = db.prepare(\"SELECT id, summary FROM memories WHERE status = 'active' AND summary = ?\");
   const matched = [];
@@ -194,7 +194,7 @@ promptTemplate: |
   ```bash
   bun -e "
   import Database from 'bun:sqlite';
-  const db = new Database('/home/peterstorm/dev/claude-plugins/reclaw/workspace/.memory/cortex.db');
+  const db = new Database('{{cwd}}/.memory/cortex.db');
   const ids = IDS_JSON; // matched IDs from Step 2
   const now = new Date().toISOString();
   const stmt = db.prepare('UPDATE memories SET access_count = access_count + 2, last_accessed_at = ?, updated_at = ? WHERE id = ?');

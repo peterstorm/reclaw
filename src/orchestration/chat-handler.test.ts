@@ -261,7 +261,7 @@ describe('handleChatJob', () => {
     expect(chunks).toEqual(['Fallback response']);
   });
 
-  it('edits placeholder with error message on claude failure (FR-012)', async () => {
+  it('stays silent on claude failure — user error is the dead-letter handler\'s job (FR-012)', async () => {
     const job = makeChatJob({ chatId: 999 });
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
@@ -279,14 +279,16 @@ describe('handleChatJob', () => {
       expect(result.error).toBe('claude exited with code 1');
     }
 
-    // Should edit placeholder (not send new message)
+    // Handler must NOT send a per-attempt "Sorry" — that produced one duplicate
+    // message per BullMQ retry. The worker's dead-letter handler sends a single
+    // user-friendly message after the final retry.
     const editCalls = (telegram.editMessage as ReturnType<typeof vi.fn>).mock.calls;
-    expect(editCalls.length).toBeGreaterThan(0);
-    const lastEdit = editCalls[editCalls.length - 1]!;
-    expect(lastEdit[0]).toBe(999);
-    expect(lastEdit[2]).not.toContain('claude exited with code 1');
-    expect(typeof lastEdit[2]).toBe('string');
-    expect(lastEdit[2].length).toBeGreaterThan(0);
+    const sendCalls = (telegram.sendMessage as ReturnType<typeof vi.fn>).mock.calls;
+    const mentionsSorry = (text: unknown): boolean =>
+      typeof text === 'string' && text.toLowerCase().includes('sorry');
+    expect(editCalls.some((c) => mentionsSorry(c[2]))).toBe(false);
+    // Only the placeholder send is expected; no error message.
+    expect(sendCalls.some((c) => mentionsSorry(c[1]))).toBe(false);
   });
 
   it('does not send chunked message on claude failure', async () => {
@@ -510,7 +512,7 @@ describe('handleChatJob', () => {
     expect(telegram.sendChunkedMessage).not.toHaveBeenCalled();
   });
 
-  it('sends error as new message when failure occurs after thinking', async () => {
+  it('does not overwrite streamed thinking with error on failure (dead-letter sends the apology)', async () => {
     const job = makeChatJob({ chatId: 789 });
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
@@ -537,19 +539,15 @@ describe('handleChatJob', () => {
 
     expect(result.ok).toBe(false);
 
-    // Error sent as new message (preserving thinking in placeholder)
+    // Handler stays silent — neither the placeholder nor a new message carries
+    // a "Sorry" string. The worker's dead-letter handler is responsible for the
+    // single user-facing message after final retry.
     const sendCalls = (telegram.sendMessage as ReturnType<typeof vi.fn>).mock.calls;
-    const errorSend = sendCalls.find(
-      (c: unknown[]) => typeof c[1] === 'string' && (c[1] as string).includes('Sorry'),
-    );
-    expect(errorSend).toBeDefined();
-
-    // Thinking message (placeholder) NOT overwritten with error
     const editCalls = (telegram.editMessage as ReturnType<typeof vi.fn>).mock.calls;
-    const errorEdit = editCalls.find(
-      (c: unknown[]) => typeof c[2] === 'string' && (c[2] as string).includes('Sorry'),
-    );
-    expect(errorEdit).toBeUndefined();
+    const mentionsSorry = (text: unknown): boolean =>
+      typeof text === 'string' && text.toLowerCase().includes('sorry');
+    expect(sendCalls.some((c) => mentionsSorry(c[1]))).toBe(false);
+    expect(editCalls.some((c) => mentionsSorry(c[2]))).toBe(false);
   });
 
   it('captures full thinking content even when most chunks are throttled', async () => {
