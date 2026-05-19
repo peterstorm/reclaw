@@ -1,10 +1,10 @@
 import fs from 'node:fs/promises';
 import { buildPrompt } from '../core/prompt-builder.js';
-import { getPermissionFlags } from '../core/permissions.js';
+import { getAllowedTools } from '../core/permissions.js';
 import { splitMessage } from '../core/message-splitter.js';
 import { isWithinValidityWindow } from '../core/schedule.js';
 import { jobResultOk, jobResultErr, type ScheduledJob, type JobResult, type SkillRegistry } from '../core/types.js';
-import type { runClaude } from '../infra/claude-subprocess.js';
+import type { AgentOptions, AgentResult } from '../infra/agent-backends/index.js';
 import type { TelegramAdapter } from '../infra/telegram.js';
 import type { AppConfig } from '../infra/config.js';
 import type { SessionStore } from '../infra/session-store.js';
@@ -14,7 +14,7 @@ import type { SkillQualitySignal, SkillRunStatus } from '../core/skill-quality.j
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type ScheduledDeps = {
-  readonly runClaude: typeof runClaude;
+  readonly runClaude: (options: AgentOptions) => Promise<AgentResult>;
   readonly telegram: TelegramAdapter;
   readonly skillRegistry: SkillRegistry;
   readonly config: AppConfig;
@@ -102,14 +102,14 @@ export async function handleScheduledJob(job: ScheduledJob, deps: ScheduledDeps)
     workspacePath: deps.config.workspacePath,
   });
 
-  // 5. Get permission flags for scheduled profile (pure, FR-011)
-  const permissionFlags = getPermissionFlags('scheduled');
+  // 5. Get allowed tools for scheduled profile (pure, FR-011)
+  const allowedTools = getAllowedTools('scheduled');
 
   // 6. Run claude subprocess (FR-007)
   const result = await deps.runClaude({
     prompt,
     cwd: deps.config.workspacePath,
-    permissionFlags,
+    allowedTools,
     timeoutMs: deps.config.scheduledTimeoutMs,
   });
 

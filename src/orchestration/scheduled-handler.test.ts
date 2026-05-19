@@ -12,9 +12,9 @@ import type { ScheduledJob, SkillConfig, SkillRegistry } from '../core/types.js'
 import type { AppConfig } from '../infra/config.js';
 import type { TelegramAdapter } from '../infra/telegram.js';
 import type { SessionStore } from '../infra/session-store.js';
-import type { ClaudeResult } from '../infra/claude-subprocess.js';
+import type { AgentResult } from '../infra/agent-backends/index.js';
 import type { ClaudeSessionId } from '../core/types.js';
-import { getPermissionFlags } from '../core/permissions.js';
+import { getAllowedTools } from '../core/permissions.js';
 import fs from 'node:fs/promises';
 
 const mockReadFile = fs.readFile as ReturnType<typeof vi.fn>;
@@ -64,6 +64,7 @@ const makeConfig = (overrides: Record<string, unknown> = {}): AppConfig => ({
   longitude: 12.57,
   timezone: 'Europe/Copenhagen',
   locationName: 'Copenhagen',
+  agentBackend: 'claude' as const,
   ...overrides,
 });
 
@@ -91,7 +92,7 @@ const makeSessionStore = (): SessionStore => ({
   getMessageSession: vi.fn().mockResolvedValue(null),
 });
 
-const makeRunClaude = (result: ClaudeResult) => vi.fn().mockResolvedValue(result);
+const makeRunClaude = (result: AgentResult) => vi.fn().mockResolvedValue(result);
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
@@ -221,7 +222,7 @@ describe('handleScheduledJob', () => {
     });
 
     const callArgs = runClaude.mock.calls[0]![0];
-    expect(callArgs.permissionFlags).toEqual(getPermissionFlags('scheduled'));
+    expect(callArgs.allowedTools).toEqual(getAllowedTools('scheduled'));
   });
 
   it('uses scheduled timeout and workspace cwd (FR-016)', async () => {

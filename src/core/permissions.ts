@@ -1,11 +1,12 @@
 // ─── Permissions ──────────────────────────────────────────────────────────────
 //
 // FR-011: Distinct permission profiles for chat vs scheduled jobs.
+// FR-104: Backend-agnostic tool names — each backend formats into its own CLI flags.
 //
 // chat:      read + write access for interactive sessions
 // scheduled: same tools — write access for automation
 
-// ─── Permission flag definitions ─────────────────────────────────────────────
+// ─── Tool name definitions ───────────────────────────────────────────────────
 
 const CHAT_ALLOWED_TOOLS = ['Read', 'Write', 'Bash', 'recall', 'remember'] as const;
 const SCHEDULED_ALLOWED_TOOLS = ['Read', 'Write', 'Bash', 'recall', 'remember'] as const;
@@ -13,16 +14,11 @@ const SCHEDULED_ALLOWED_TOOLS = ['Read', 'Write', 'Bash', 'recall', 'remember'] 
 // ─── Pure Function ────────────────────────────────────────────────────────────
 
 /**
- * Return the claude -p permission flags for the given profile.
- *
- * Both profiles use --dangerously-skip-permissions because in -p mode
- * there is no interactive user to prompt — unapproved commands silently
- * fail. The --allowedTools flag still limits which tools are available.
- *
- * chat:      --allowedTools Read,Write,Bash,recall,remember
- * scheduled: --allowedTools Read,Write,Bash,recall,remember
+ * Return the backend-agnostic list of allowed tool names for the given profile.
+ * Each backend is responsible for formatting these into its own CLI flags:
+ * - Claude: '--dangerously-skip-permissions --allowedTools Read,Write,Bash,...'
+ * - Pi: '--tools read,write,bash,...' (lowercased)
  */
-export function getPermissionFlags(profile: 'chat' | 'scheduled'): readonly string[] {
-  const tools = profile === 'chat' ? CHAT_ALLOWED_TOOLS : SCHEDULED_ALLOWED_TOOLS;
-  return ['--dangerously-skip-permissions', '--allowedTools', tools.join(',')];
+export function getAllowedTools(profile: 'chat' | 'scheduled'): readonly string[] {
+  return profile === 'chat' ? CHAT_ALLOWED_TOOLS : SCHEDULED_ALLOWED_TOOLS;
 }

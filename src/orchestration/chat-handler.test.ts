@@ -11,11 +11,11 @@ import { handleChatJob, type ChatDeps } from './chat-handler.js';
 import type { ChatJob } from '../core/types.js';
 import type { AppConfig } from '../infra/config.js';
 import type { TelegramAdapter } from '../infra/telegram.js';
-import type { ClaudeResult, OnStreamChunk, StreamChunk } from '../infra/claude-subprocess.js';
+import type { AgentResult, OnStreamChunk, StreamChunk } from '../infra/agent-backends/index.js';
 import type { SessionStore } from '../infra/session-store.js';
 import type { SessionRecord } from '../core/session.js';
 import type { ClaudeSessionId } from '../core/types.js';
-import { getPermissionFlags } from '../core/permissions.js';
+import { getAllowedTools } from '../core/permissions.js';
 import fs from 'node:fs/promises';
 
 const mockReadFile = fs.readFile as ReturnType<typeof vi.fn>;
@@ -47,6 +47,7 @@ const makeConfig = (overrides: Record<string, unknown> = {}): AppConfig => ({
   longitude: 12.57,
   timezone: 'Europe/Copenhagen',
   locationName: 'Copenhagen',
+  agentBackend: 'claude' as const,
   ...overrides,
 });
 
@@ -88,7 +89,7 @@ const chunk = (
 });
 
 /** Creates a mock runClaudeStreaming that calls onChunk with a final text chunk before resolving. */
-const makeRunClaudeStreaming = (result: ClaudeResult) =>
+const makeRunClaudeStreaming = (result: AgentResult) =>
   vi.fn().mockImplementation((_options: unknown, onChunk?: OnStreamChunk) => {
     if (result.ok && onChunk) {
       onChunk(chunk('text', '', result.output, { textBlockCount: 1, currentBlockText: result.output }));
@@ -138,7 +139,7 @@ describe('handleChatJob', () => {
 
     expect(runClaudeStreaming).toHaveBeenCalledOnce();
     const callArgs = runClaudeStreaming.mock.calls[0]![0];
-    expect(callArgs.permissionFlags).toEqual(getPermissionFlags('chat'));
+    expect(callArgs.allowedTools).toEqual(getAllowedTools('chat'));
   });
 
   it('calls runClaudeStreaming with workspace cwd and chat timeout (FR-016)', async () => {

@@ -46,7 +46,7 @@ export function createSkillQualityRecorder(
       // Drain both pipes concurrently with exit. Without draining, a large
       // stdout/stderr write fills the pipe buffer and blocks the child waiting
       // for a reader while the parent waits for `proc.exited` — same deadlock
-      // pattern guarded against in claude-subprocess.ts. The cortex remember
+      // pattern guarded against in agent-backends/runner.ts. The cortex remember
       // CLI normally writes little, but this defends against a verbose error.
       const stdoutPromise = new Response(proc.stdout).text().catch(() => '');
       const stderrPromise = new Response(proc.stderr).text().catch(() => '');

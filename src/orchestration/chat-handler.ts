@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import { buildChatPrompt } from '../core/prompt-builder.js';
-import { getPermissionFlags } from '../core/permissions.js';
+import { getAllowedTools } from '../core/permissions.js';
 import { splitMessage, splitHtml } from '../core/message-splitter.js';
 import { markdownToTelegramHtml } from '../core/markdown-to-telegram.js';
 import { jobResultOk, jobResultErr, makeClaudeSessionId, type ChatJob, type JobResult } from '../core/types.js';
@@ -13,7 +13,7 @@ import {
   type StreamState,
   type StreamEffect,
 } from '../core/stream-state.js';
-import type { runClaudeStreaming, StreamChunk } from '../infra/claude-subprocess.js';
+import type { AgentOptions, AgentResult, StreamChunk, OnStreamChunk } from '../infra/agent-backends/index.js';
 import type { TelegramAdapter } from '../infra/telegram.js';
 import type { SessionStore } from '../infra/session-store.js';
 import type { AppConfig } from '../infra/config.js';
@@ -21,7 +21,7 @@ import type { AppConfig } from '../infra/config.js';
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type ChatDeps = {
-  readonly runClaudeStreaming: typeof runClaudeStreaming;
+  readonly runClaudeStreaming: (options: AgentOptions, onChunk: OnStreamChunk) => Promise<AgentResult>;
   readonly telegram: TelegramAdapter;
   readonly config: AppConfig;
   readonly sessionStore: SessionStore;
@@ -184,8 +184,8 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
     : buildChatPrompt(personality, job.text, job.imagePaths);
   const resumeSessionId = isResuming ? (existingSession.sessionId as string) : undefined;
 
-  // 4. Get permission flags for chat profile (pure, FR-011)
-  const permissionFlags = getPermissionFlags('chat');
+  // 4. Get allowed tools for chat profile (pure, FR-011)
+  const allowedTools = getAllowedTools('chat');
 
   // 5. Send placeholder message for live streaming
   let placeholderMsgId: number | null = null;
@@ -233,7 +233,7 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
   const claudeOptions = {
     prompt,
     cwd: deps.config.workspacePath,
-    permissionFlags,
+    allowedTools,
     timeoutMs: deps.config.chatTimeoutMs,
     ...(resumeSessionId ? { resumeSessionId } : {}),
   };
@@ -251,7 +251,7 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
       {
         prompt: freshPrompt,
         cwd: deps.config.workspacePath,
-        permissionFlags,
+        allowedTools,
         timeoutMs: deps.config.chatTimeoutMs,
       },
       onChunk,

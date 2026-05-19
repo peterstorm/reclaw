@@ -26,6 +26,7 @@ export const AppConfigSchema = z.object({
   longitude: z.number().min(-180).max(180).default(12.57),
   timezone: z.string().default('Europe/Copenhagen'),
   locationName: z.string().default('Copenhagen'),
+  agentBackend: z.enum(['claude', 'pi']).default('claude'),
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;
@@ -124,6 +125,7 @@ export function parseEnvToRaw(
     longitude: parseFloatEnv('LONGITUDE', env['LONGITUDE'], errors),
     timezone: env['TZ_NAME'] ?? env['TZ'],
     locationName: env['LOCATION_NAME'],
+    agentBackend: env['AGENT_BACKEND'] || undefined,
   };
   return { raw, errors };
 }

@@ -7,8 +7,7 @@
 // FR-021: Use a lightweight language model call (not the full chat subprocess).
 // AD-4: Question generation uses existing runClaude() subprocess for LLM calls.
 
-import { runClaude } from './claude-subprocess.js';
-import type { ClaudeOptions } from './claude-subprocess.js';
+import type { AgentOptions, AgentResult } from './agent-backends/index.js';
 import type { Result } from '../core/types.js';
 import type { SourceMeta } from '../core/research-types.js';
 
@@ -319,22 +318,23 @@ export function createResearchLLMAdapter(
   cwd: string,
   timeoutMs = 30_000,
   webSearchTimeoutMs = 120_000,
+  runFn: (options: AgentOptions) => Promise<AgentResult>,
 ): ResearchLLMAdapter {
-  const baseOptions: Omit<ClaudeOptions, 'prompt'> = {
+  const baseOptions: Omit<AgentOptions, 'prompt'> = {
     cwd,
-    permissionFlags: [],
+    allowedTools: [],
     timeoutMs,
   };
 
-  const webSearchOptions: Omit<ClaudeOptions, 'prompt'> = {
+  const webSearchOptions: Omit<AgentOptions, 'prompt'> = {
     cwd,
-    permissionFlags: ['--allowedTools', 'WebSearch(*)'],
+    allowedTools: ['WebSearch(*)'],
     timeoutMs: webSearchTimeoutMs,
   };
 
   const deriveTopic = async (userPrompt: string): Promise<string> => {
     const claudePrompt = buildDeriveTopicPrompt(userPrompt);
-    const claudeResult = await runClaude({ ...baseOptions, prompt: claudePrompt });
+    const claudeResult = await runFn({ ...baseOptions, prompt: claudePrompt });
 
     if (!claudeResult.ok) {
       throw new Error(`Claude subprocess failed: ${claudeResult.error}`);
@@ -354,7 +354,7 @@ export function createResearchLLMAdapter(
     researchPrompt?: string | null,
   ): Promise<Result<readonly string[], string>> => {
     const prompt = buildGenerateQuestionsPrompt(topic, sources, researchPrompt);
-    const claudeResult = await runClaude({ ...baseOptions, prompt });
+    const claudeResult = await runFn({ ...baseOptions, prompt });
 
     if (!claudeResult.ok) {
       return {
@@ -372,7 +372,7 @@ export function createResearchLLMAdapter(
     researchPrompt?: string | null,
   ): Promise<Result<string, string>> => {
     const prompt = buildReformulateQueryPrompt(topic, previousError, researchPrompt);
-    const claudeResult = await runClaude({ ...baseOptions, prompt });
+    const claudeResult = await runFn({ ...baseOptions, prompt });
 
     if (!claudeResult.ok) {
       return {
@@ -389,7 +389,7 @@ export function createResearchLLMAdapter(
     sources: readonly SourceMeta[],
   ): Promise<Result<string, string>> => {
     const prompt = buildRephraseQuestionPrompt(question, sources);
-    const claudeResult = await runClaude({ ...baseOptions, prompt });
+    const claudeResult = await runFn({ ...baseOptions, prompt });
 
     if (!claudeResult.ok) {
       return {
@@ -406,7 +406,7 @@ export function createResearchLLMAdapter(
     researchPrompt?: string | null,
   ): Promise<Result<readonly string[], string>> => {
     const prompt = buildDiscoverSourcesPrompt(topic, researchPrompt);
-    const claudeResult = await runClaude({ ...webSearchOptions, prompt });
+    const claudeResult = await runFn({ ...webSearchOptions, prompt });
 
     if (!claudeResult.ok) {
       return {

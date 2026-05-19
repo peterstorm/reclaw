@@ -10,7 +10,7 @@ import type { SessionStore } from './infra/session-store.js';
 import type { CronScheduler } from './orchestration/scheduler.js';
 import type { Workers, createWorkers } from './orchestration/worker.js';
 import type { Result, ScheduledJob } from './core/types.js';
-import type { runClaude, runClaudeStreaming } from './infra/claude-subprocess.js';
+import type { AgentOptions, AgentResult, OnStreamChunk } from './infra/agent-backends/index.js';
 import type { handleChatJob } from './orchestration/chat-handler.js';
 import type { handleScheduledJob } from './orchestration/scheduled-handler.js';
 import type { handleReminderJob, handleRecurringReminderJob } from './orchestration/reminder-handler.js';
@@ -31,8 +31,8 @@ export type BootstrapDeps = {
     isJobCompleted: (jobId: string) => Promise<boolean>,
   ) => CronScheduler;
   readonly createWorkersFn?: typeof createWorkers;
-  readonly runClaudeFn?: typeof runClaude;
-  readonly runClaudeStreamingFn?: typeof runClaudeStreaming;
+  readonly runClaudeFn?: (options: AgentOptions) => Promise<AgentResult>;
+  readonly runClaudeStreamingFn?: (options: AgentOptions, onChunk: OnStreamChunk) => Promise<AgentResult>;
   readonly handleChatJobFn?: typeof handleChatJob;
   readonly handleScheduledJobFn?: typeof handleScheduledJob;
   readonly handleReminderJobFn?: typeof handleReminderJob;
@@ -96,14 +96,6 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
   const createWorkersFn: typeof workerModule.createWorkers =
     injected.createWorkersFn ?? workerModule.createWorkers;
 
-  const runClaudeFn: typeof runClaude =
-    injected.runClaudeFn ??
-    (await import('./infra/claude-subprocess.js').then((m) => m.runClaude));
-
-  const runClaudeStreamingFn: typeof runClaudeStreaming =
-    injected.runClaudeStreamingFn ??
-    (await import('./infra/claude-subprocess.js').then((m) => m.runClaudeStreaming));
-
   const handleChatJobFn: typeof handleChatJob =
     injected.handleChatJobFn ??
     (await import('./orchestration/chat-handler.js').then((m) => m.handleChatJob));
@@ -137,6 +129,17 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
   const config = configResult.value;
 
   console.info('[main] Config loaded');
+
+  // ── 1a. Resolve agent backend ──────────────────────────────────────────────
+  const { resolveBackend, runAgent, runAgentStreaming } = await import('./infra/agent-backends/index.js');
+  const backend = resolveBackend(config);
+  console.info(`[main] Agent backend: ${backend.name}`);
+
+  const runClaudeFn: (options: AgentOptions) => Promise<AgentResult> =
+    injected.runClaudeFn ?? ((opts) => runAgent(backend, opts));
+
+  const runClaudeStreamingFn: (options: AgentOptions, onChunk: OnStreamChunk) => Promise<AgentResult> =
+    injected.runClaudeStreamingFn ?? ((opts, onChunk) => runAgentStreaming(backend, opts, onChunk));
 
   // ── 1b. Resolve cortex extraction (always-on, no config needed) ──────────
   const { resolveCortexExtractScript, resolveCortexCliPath, createCortexExtractor } = await import('./infra/cortex-extract.js');
@@ -297,7 +300,7 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
 
   // ── 8d. Research LLM adapter ─────────────────────────────────────────────
   const researchLLMAdapter = await import('./infra/research-llm-client.js').then((m) =>
-    m.createResearchLLMAdapter(config.workspacePath, 30_000, 600_000),
+    m.createResearchLLMAdapter(config.workspacePath, 30_000, 600_000, runClaudeFn),
   );
 
   // ── 8. Create workers ──────────────────────────────────────────────────────
@@ -332,7 +335,7 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
           const result = await runClaudeFn({
             cwd: config.workspacePath,
             prompt: `Store this research summary in memory for future recall:\n\n${text}`,
-            permissionFlags: [],
+            allowedTools: [],
             timeoutMs: 30_000,
           });
           if (result.ok && result.sessionId && triggerCortexExtraction) {

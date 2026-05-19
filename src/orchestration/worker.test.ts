@@ -21,6 +21,7 @@ const mockConfig: AppConfig = {
   longitude: 12.57,
   timezone: 'Europe/Copenhagen',
   locationName: 'Copenhagen',
+  agentBackend: 'claude' as const,
 };
 
 const chatJob: ChatJob = {

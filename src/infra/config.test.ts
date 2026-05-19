@@ -265,3 +265,46 @@ describe('loadConfig', () => {
     }
   });
 });
+
+describe('AGENT_BACKEND config', () => {
+  it('defaults to claude when AGENT_BACKEND is not set', () => {
+    const result = loadConfig(VALID_ENV);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.agentBackend).toBe('claude');
+    }
+  });
+
+  it('accepts "claude" as valid AGENT_BACKEND', () => {
+    const result = loadConfig({ ...VALID_ENV, AGENT_BACKEND: 'claude' });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.agentBackend).toBe('claude');
+    }
+  });
+
+  it('accepts "pi" as valid AGENT_BACKEND', () => {
+    const result = loadConfig({ ...VALID_ENV, AGENT_BACKEND: 'pi' });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.agentBackend).toBe('pi');
+    }
+  });
+
+  it('rejects invalid AGENT_BACKEND value', () => {
+    const result = loadConfig({ ...VALID_ENV, AGENT_BACKEND: 'openai' });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('agentBackend');
+    }
+  });
+
+  it('rejects empty string AGENT_BACKEND (uses default)', () => {
+    // Empty string is treated as undefined by zod, falls back to default
+    const result = loadConfig({ ...VALID_ENV, AGENT_BACKEND: '' });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.agentBackend).toBe('claude');
+    }
+  });
+});

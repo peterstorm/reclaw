@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { StreamChunk } from '../infra/claude-subprocess.js';
+import type { StreamChunk } from '../infra/agent-backends/index.js';
 import {
   createStreamState,
   escapeHtml,

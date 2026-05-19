@@ -10,7 +10,7 @@ import {
   createResearchLLMAdapter,
 } from './research-llm-client.js';
 import type { SourceMeta } from '../core/research-types.js';
-import type { ClaudeOptions } from './claude-subprocess.js';
+import type { AgentOptions } from './agent-backends/index.js';
 
 // ─── Test fixtures ────────────────────────────────────────────────────────────
 
@@ -341,7 +341,7 @@ describe('createResearchLLMAdapter', () => {
    * Create a mock runClaude that records calls and returns fixed output.
    */
   type MockRunClaude = {
-    calls: ClaudeOptions[];
+    calls: AgentOptions[];
     mockOutput: string;
   };
 
@@ -350,12 +350,11 @@ describe('createResearchLLMAdapter', () => {
     mock: MockRunClaude;
   } {
     const mock: MockRunClaude = { calls: [], mockOutput };
-
-    // We can't easily inject runClaude without modifying the module.
-    // Instead, test the pure functions (buildPrompt, parseOutput) above,
-    // and do integration tests separately when needed.
-    // For this test we just verify the adapter is constructed correctly.
-    const adapter = createResearchLLMAdapter('/tmp', 5_000);
+    const mockRunFn = async (opts: AgentOptions) => {
+      mock.calls.push(opts);
+      return { ok: true as const, output: mock.mockOutput, sessionId: null, durationMs: 10 };
+    };
+    const adapter = createResearchLLMAdapter('/tmp', 5_000, 120_000, mockRunFn);
     return { adapter, mock };
   }
 
@@ -368,23 +367,19 @@ describe('createResearchLLMAdapter', () => {
   });
 
   it('adapter methods are all functions', () => {
-    const adapter = createResearchLLMAdapter('/tmp', 5_000);
+    const noopRun = async () => ({ ok: true as const, output: '', sessionId: null, durationMs: 0 });
+    const adapter = createResearchLLMAdapter('/tmp', 5_000, 120_000, noopRun);
     expect(typeof adapter.generateQuestions).toBe('function');
     expect(typeof adapter.reformulateQuery).toBe('function');
     expect(typeof adapter.rephraseQuestion).toBe('function');
     expect(typeof adapter.discoverSourceUrls).toBe('function');
   });
 
-  // Test error handling when Claude fails (requires Bun runtime — Bun.spawn not available in vitest/Node)
-  it.skipIf(typeof globalThis.Bun === 'undefined')('generateQuestions returns error when claude subprocess fails', async () => {
-    // We inject a custom _spawn that fails immediately
-    // Use the Claude options with _spawn override for testing
-    const adapter = createResearchLLMAdapter('/tmp/nonexistent-99999', 100);
-    // This will fail because the cwd doesn't exist and claude isn't installed in test env,
-    // but it should return a Result error, not throw.
+  it('generateQuestions returns error when agent subprocess fails', async () => {
+    const failRunFn = async () => ({ ok: false as const, error: 'spawn failed', timedOut: false });
+    const adapter = createResearchLLMAdapter('/tmp', 100, 120_000, failRunFn);
     const result = await adapter.generateQuestions('AI agents', []);
     expect(result.ok).toBe(false);
-    // Should have an error message
     if (!result.ok) {
       expect(typeof result.error).toBe('string');
       expect(result.error.length).toBeGreaterThan(0);
