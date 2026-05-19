@@ -6,3 +6,4 @@ trigger-skill.ts
 credentials.json
 credentials.json.bak
 credentials.json.*
+.pi/cortex-memory.local.md
