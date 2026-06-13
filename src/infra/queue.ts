@@ -1,5 +1,6 @@
 import { Queue } from 'bullmq';
 import type { ChatJob, Job, PodcastJob, ReminderJob, RecurringReminderJob, ScheduledJob } from '../core/types.js';
+import { parseRecurringReminderJob } from '../core/job-schemas.js';
 import type { ResearchJobData } from '../core/research-types.js';
 import { stateProgress } from '../core/research-types.js';
 
@@ -170,21 +171,35 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
 
   const listRecurringReminders = async (): Promise<readonly RecurringReminderInfo[]> => {
     const schedulers = await reminder.getJobSchedulers();
-    return schedulers
-      .filter((s) => (s.every !== undefined || s.pattern !== undefined) && s.id != null)
-      .map((s) => {
-        const data = (s as unknown as { template?: { data?: RecurringReminderJob } }).template?.data;
-        const cronPattern = data?.cronPattern ?? (s.pattern as string | undefined);
-        const cronDescription = data?.cronDescription;
-        return {
-          schedulerId: s.id!,
-          text: data?.text ?? '(unknown)',
-          intervalMs: s.every !== undefined ? Number(s.every) : 0,
-          ...(cronPattern ? { cronPattern } : {}),
-          ...(cronDescription ? { cronDescription } : {}),
-          chatId: data?.chatId ?? 0,
-        };
+    const infos: RecurringReminderInfo[] = [];
+    for (const s of schedulers) {
+      if (!((s.every !== undefined || s.pattern !== undefined) && s.id != null)) continue;
+
+      // BullMQ's JobSchedulerJson doesn't type the template payload, so extract it
+      // as `unknown` and parse — never cast it to the trusted job shape. A scheduler
+      // whose template fails to deserialize (corruption, a schema migration, a
+      // hand-enqueued debug job) is logged and skipped rather than silently
+      // surfaced with a fabricated chatId:0, which would render it invisible to
+      // every user's filtered `/remind list` and thus un-cancellable.
+      const rawData = (s as { template?: { data?: unknown } }).template?.data;
+      const parsed = parseRecurringReminderJob(rawData);
+      if (!parsed.ok) {
+        console.warn(`[queue] recurring reminder scheduler ${s.id} has unparseable template data, excluding from list: ${parsed.error}`);
+        continue;
+      }
+
+      const data = parsed.value;
+      const cronPattern = data.cronPattern ?? (s.pattern as string | undefined);
+      infos.push({
+        schedulerId: s.id,
+        text: data.text,
+        intervalMs: s.every !== undefined ? Number(s.every) : 0,
+        ...(cronPattern ? { cronPattern } : {}),
+        ...(data.cronDescription ? { cronDescription: data.cronDescription } : {}),
+        chatId: data.chatId,
       });
+    }
+    return infos;
   };
 
   const cancelRecurringReminder = async (schedulerId: string): Promise<boolean> => {

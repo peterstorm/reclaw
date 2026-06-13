@@ -14,17 +14,17 @@ type MockRedisStore = Map<string, string>;
 function createMockRedis(store: MockRedisStore = new Map()): QuotaRedisClient & {
   store: MockRedisStore;
   ttls: Map<string, number>;
-  incrCalls: string[];
+  expireCalls: string[];
   incrByCalls: Array<{ key: string; count: number }>;
 } {
   const ttls = new Map<string, number>();
-  const incrCalls: string[] = [];
+  const expireCalls: string[] = [];
   const incrByCalls: Array<{ key: string; count: number }> = [];
 
   return {
     store,
     ttls,
-    incrCalls,
+    expireCalls,
     incrByCalls,
 
     async get(key: string): Promise<string | null> {
@@ -37,14 +37,6 @@ function createMockRedis(store: MockRedisStore = new Map()): QuotaRedisClient & 
       return 'OK';
     },
 
-    async incr(key: string): Promise<number> {
-      incrCalls.push(key);
-      const current = parseInt(store.get(key) ?? '0', 10);
-      const next = current + 1;
-      store.set(key, String(next));
-      return next;
-    },
-
     async incrby(key: string, count: number): Promise<number> {
       incrByCalls.push({ key, count });
       const current = parseInt(store.get(key) ?? '0', 10);
@@ -54,6 +46,7 @@ function createMockRedis(store: MockRedisStore = new Map()): QuotaRedisClient & 
     },
 
     async expire(key: string, ttlSeconds: number): Promise<number> {
+      expireCalls.push(key);
       ttls.set(key, ttlSeconds);
       return 1;
     },
@@ -157,6 +150,16 @@ describe('createQuotaTracker', () => {
       const tracker = createQuotaTracker(redis, 50, () => fixedDate);
       await tracker.increment();
       expect(redis.ttls.get(fixedKey)).toBe(QUOTA_TTL_SECONDS);
+    });
+
+    it('refreshes TTL on every increment (not just the first)', async () => {
+      const tracker = createQuotaTracker(redis, 50, () => fixedDate);
+      await tracker.increment();
+      await tracker.increment();
+      await tracker.increment();
+      // Unconditional EXPIRE: guarantees the daily key always carries a TTL,
+      // even for a key that predates this code path with no TTL set.
+      expect(redis.expireCalls).toEqual([fixedKey, fixedKey, fixedKey]);
     });
 
     it('uses the correct daily key', async () => {

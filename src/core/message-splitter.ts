@@ -175,18 +175,32 @@ export function splitHtml(html: string, maxLength = DEFAULT_MAX_LENGTH): readonl
 
     if (cutAt <= 0) cutAt = effectiveMax;
 
-    const chunk = remaining.slice(0, cutAt);
-    const unclosed = getUnclosedTags(chunk);
-
+    let chunk = remaining.slice(0, cutAt);
+    let unclosed = getUnclosedTags(chunk);
     // Close unclosed tags at end of this chunk
-    const closers = [...unclosed].reverse().map((t) => `</${t.name}>`).join('');
+    let closers = [...unclosed].reverse().map((t) => `</${t.name}>`).join('');
+
+    // Guard the maxLength invariant: TAG_OVERHEAD only *reserves* room for closers,
+    // it doesn't bound them. Deeply nested tags can produce closers longer than the
+    // reserve, so chunk+closers could exceed maxLength — the one thing this function
+    // exists to prevent. Re-cut to make room for the actual closers when that happens.
+    if (chunk.length + closers.length > maxLength) {
+      const room = Math.max(1, maxLength - closers.length);
+      cutAt = avoidTagBoundary(remaining, room);
+      if (cutAt <= 0) cutAt = room;
+      chunk = remaining.slice(0, cutAt);
+      unclosed = getUnclosedTags(chunk);
+      closers = [...unclosed].reverse().map((t) => `</${t.name}>`).join('');
+    }
+
     // Reopen them at start of next chunk
     const openers = unclosed.map((t) => t.full).join('');
-
     const newRemaining = openers + remaining.slice(cutAt);
 
-    // Safety: if prepending openers doesn't shrink remaining, hard-cut without tag handling
-    if (newRemaining.length >= remaining.length) {
+    // Safety: if prepending openers doesn't shrink remaining, or the closers still
+    // overflow maxLength after re-cutting, hard-cut without tag handling. Preserves
+    // the length invariant at the cost of tag fidelity in pathological input.
+    if (newRemaining.length >= remaining.length || chunk.length + closers.length > maxLength) {
       chunks.push(remaining.slice(0, maxLength));
       remaining = remaining.slice(maxLength);
       continue;

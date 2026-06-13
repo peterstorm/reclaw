@@ -222,4 +222,20 @@ describe('splitHtml', () => {
   it('throws RangeError for maxLength < 1', () => {
     expect(() => splitHtml('hello', 0)).toThrowError(RangeError);
   });
+
+  it('never emits a chunk longer than maxLength, even with deeply nested tags', () => {
+    // Deeply nested tags produce a long closers string. If closers exceed the
+    // reserved TAG_OVERHEAD budget, a naive split would push chunk+closers past
+    // maxLength — the exact failure the splitter exists to prevent.
+    const opens = ['<b>', '<i>', '<u>', '<s>', '<code>', '<pre>'];
+    const nested = opens.join('') + 'x'.repeat(500) + [...opens].reverse().map((t) => t.replace('<', '</')).join('');
+    const maxLength = 60; // smaller than the nested closers can demand
+    const result = splitHtml(nested, maxLength);
+
+    for (const chunk of result) {
+      expect(chunk.length).toBeLessThanOrEqual(maxLength);
+    }
+    // And no content is lost.
+    expect(result.join('').replace(/<\/?[^>]+>/g, '')).toBe('x'.repeat(500));
+  });
 });

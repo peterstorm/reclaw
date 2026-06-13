@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import { buildPrompt } from '../core/prompt-builder.js';
+import { localDate, localDayOfWeek } from '../core/clock.js';
 import { getAllowedTools } from '../core/permissions.js';
 import { splitMessage } from '../core/message-splitter.js';
 import { isWithinValidityWindow } from '../core/schedule.js';
@@ -30,18 +31,6 @@ export type ScheduledDeps = {
 
 /** Sentinel output that scheduled skills use to signal "nothing to report". */
 const SUPPRESS_SENTINEL = 'ALL_CLEAR';
-
-// ─── Day-of-week helper (pure) ────────────────────────────────────────────────
-
-const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as const;
-
-function formatDate(d: Date): string {
-  return d.toISOString().slice(0, 10);
-}
-
-function getDayOfWeek(d: Date): string {
-  return DAY_NAMES[d.getDay()] ?? 'Unknown';
-}
 
 // ─── Handler (imperative shell) ───────────────────────────────────────────────
 
@@ -92,8 +81,8 @@ export async function handleScheduledJob(job: ScheduledJob, deps: ScheduledDeps)
 
   // 4. Build prompt from template (pure)
   const prompt = buildPrompt(skill.promptTemplate, {
-    date: formatDate(now),
-    dayOfWeek: getDayOfWeek(now),
+    date: localDate(now, deps.config.timezone),
+    dayOfWeek: localDayOfWeek(now, deps.config.timezone),
     personality,
     latitude: deps.config.latitude,
     longitude: deps.config.longitude,

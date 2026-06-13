@@ -18,8 +18,7 @@
 export type QuotaRedisClient = {
   get(key: string): Promise<string | null>;
   set(key: string, value: string, mode: 'EX', ttlSeconds: number): Promise<string | null>;
-  incr(key: string): Promise<number>;
-  /** Atomic increment by an arbitrary amount. Used for bulk increments. */
+  /** Atomic increment by an arbitrary amount. The only write path the tracker uses. */
   incrby(key: string, count: number): Promise<number>;
   expire(key: string, ttlSeconds: number): Promise<number>;
 };
@@ -97,13 +96,11 @@ export function createQuotaTracker(
     const key = getKey();
     // Use INCRBY for a single atomic increment — avoids the non-atomic
     // sequential INCR loop that was here before (Fix: increment atomicity).
-    const newValue = await redisClient.incrby(key, count);
-    // Set TTL on the first increment (newValue === count) so the key expires
-    // automatically after midnight. Refresh on every subsequent increment to
-    // guard against keys created just before midnight with short TTLs.
-    if (newValue <= count) {
-      await redisClient.expire(key, QUOTA_TTL_SECONDS);
-    }
+    await redisClient.incrby(key, count);
+    // Refresh the TTL on every increment. EXPIRE is cheap and idempotent, and an
+    // unconditional refresh guarantees the daily key always carries a TTL — so the
+    // counter resets after midnight even if a key somehow predates this code path.
+    await redisClient.expire(key, QUOTA_TTL_SECONDS);
   };
 
   const getRemaining = async (): Promise<number> => {

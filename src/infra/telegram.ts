@@ -101,6 +101,12 @@ async function withRateLimitRetry<T>(label: string, fn: () => Promise<T>): Promi
 export function createTelegramAdapter(config: {
   token: string;
   authorizedUserIds: readonly TelegramUserId[];
+  /**
+   * Called when long-polling fails fatally after `start()`. The adapter must not
+   * unilaterally `process.exit()` — it surfaces the failure to the composition
+   * root, which owns the graceful-shutdown sequence (queue drain, Redis close).
+   */
+  onFatalError?: (err: unknown) => void;
 }): TelegramAdapter {
   const bot = new Bot(config.token);
   const userIdSet: ReadonlySet<number> = new Set(config.authorizedUserIds as readonly number[]);
@@ -290,9 +296,12 @@ export function createTelegramAdapter(config: {
   };
 
   const start = async (): Promise<void> => {
+    // Intentionally not awaited: grammy's bot.start() resolves only when polling
+    // stops. Surface a fatal polling failure to the composition root instead of
+    // killing the process from inside the adapter.
     bot.start().catch((err: unknown) => {
       console.error('[telegram] bot.start() failed:', err);
-      process.exit(1);
+      config.onFatalError?.(err);
     });
   };
 

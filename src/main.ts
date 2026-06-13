@@ -191,9 +191,18 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
     userIds.push(r.value);
   }
 
+  // Forward reference: a fatal Telegram polling failure routes through the same
+  // graceful-shutdown path as SIGTERM. Reassigned once `handleSignal` exists
+  // below; the default only fires if polling dies before bootstrap finishes.
+  let onTelegramFatal: (err: unknown) => void = (err) => {
+    console.error('[main] Telegram polling failed before shutdown was wired — exiting:', err);
+    process.exit(1);
+  };
+
   const telegram: TelegramAdapter = createTelegramAdapterFn({
     token: config.telegramToken,
     authorizedUserIds: userIds,
+    onFatalError: (err) => onTelegramFatal(err),
   });
 
   // ── 3. Create BullMQ queues ────────────────────────────────────────────────
@@ -260,12 +269,12 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
     const hasToken = config.notebooklmAuthToken && config.notebooklmCookies;
     const hasGoogle = config.googleEmail && config.googlePassword;
     if (hasToken) {
-      console.log('[main] Initializing NotebookLM adapter with token auth...');
+      console.info('[main] Initializing NotebookLM adapter with token auth...');
       notebookLMAdapter = await createNotebookLMAdapter({
         kind: 'token', authToken: config.notebooklmAuthToken!, cookies: config.notebooklmCookies!,
       });
     } else if (hasGoogle) {
-      console.log('[main] Initializing NotebookLM adapter with Google auto-login...');
+      console.info('[main] Initializing NotebookLM adapter with Google auto-login...');
       notebookLMAdapter = await createNotebookLMAdapter({
         kind: 'google', email: config.googleEmail!, password: config.googlePassword!,
       });
@@ -273,7 +282,7 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
       console.warn('[main] NotebookLM credentials not configured — research jobs will fail');
       return null;
     }
-    console.log('[main] NotebookLM adapter initialized successfully');
+    console.info('[main] NotebookLM adapter initialized successfully');
     return notebookLMAdapter;
   };
 
@@ -285,7 +294,6 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
     const qtClient: import('./infra/quota-tracker.js').QuotaRedisClient = {
       get: (key) => quotaRedis.get(key),
       set: (key, value, mode, ttlSeconds) => quotaRedis.set(key, value, mode, ttlSeconds),
-      incr: (key) => quotaRedis.incr(key),
       incrby: (key, count) => quotaRedis.incrby(key, count),
       expire: (key, ttlSeconds) => quotaRedis.expire(key, ttlSeconds),
     };
@@ -456,6 +464,13 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
         console.error('[main] Shutdown error:', err);
         process.exit(1);
       });
+  };
+
+  // A fatal Telegram polling failure now drains queues and closes Redis like any
+  // other shutdown, rather than the adapter calling process.exit() mid-flight.
+  onTelegramFatal = (err: unknown): void => {
+    console.error('[main] Telegram polling failed fatally — initiating graceful shutdown:', err);
+    handleSignal();
   };
 
   process.once('SIGTERM', handleSignal);
