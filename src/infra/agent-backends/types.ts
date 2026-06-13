@@ -58,6 +58,15 @@ export type StreamChunk = {
   readonly textBlockCount: number;
 };
 
+/**
+ * Streaming callback, invoked once per accumulated chunk.
+ *
+ * MUST be synchronous. The runner calls it fire-and-forget and does NOT await
+ * the return value — returning a Promise would float (unhandled rejection on
+ * throw, no ordering guarantee against subsequent chunks). The `void` return
+ * type enforces this at the call site. Keep handlers cheap; push any async
+ * work (I/O, network) onto a separate queue rather than doing it here.
+ */
 export type OnStreamChunk = (chunk: StreamChunk) => void;
 
 // ─── Backend Interface ────────────────────────────────────────────────────────

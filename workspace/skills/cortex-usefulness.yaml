@@ -158,8 +158,9 @@ promptTemplate: |
   ```bash
   bun -e "
   import { readFileSync, writeFileSync, mkdirSync } from 'fs';
-  import { dirname } from 'path';
-  const path = '/home/peterstorm/.cache/reclaw/cortex-usefulness-divergence.json';
+  import { dirname, join } from 'path';
+  import { homedir } from 'os';
+  const path = join(homedir(), '.cache/reclaw/cortex-usefulness-divergence.json');
   const today = new Date().toISOString().slice(0, 10);
   const usefulCount = USEFUL_COUNT;   // from Step 1
   const matchedCount = MATCHED_COUNT; // from Step 2

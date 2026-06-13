@@ -11,7 +11,6 @@ export const AppConfigSchema = z.object({
   workspacePath: z.string().default('/workspace'),
   skillsDir: z.string().default('/workspace/skills'),
   personalityPath: z.string().default('/workspace/personality.md'),
-  claudeBinaryPath: z.string().default('claude'),
   chatTimeoutMs: z.number().int().positive().default(3_600_000), // 1 hour
   scheduledTimeoutMs: z.number().int().positive().default(1_200_000), // 20 minutes
   geminiApiKey: z.string().optional(),
@@ -104,7 +103,6 @@ export function parseEnvToRaw(
     workspacePath: env['WORKSPACE_PATH'],
     skillsDir: env['SKILLS_DIR'],
     personalityPath: env['PERSONALITY_PATH'],
-    claudeBinaryPath: env['CLAUDE_BINARY_PATH'],
     chatTimeoutMs: parseNumericEnv(
       'CHAT_TIMEOUT_MS',
       env['CHAT_TIMEOUT_MS'],

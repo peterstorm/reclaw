@@ -62,7 +62,6 @@ describe('loadConfig', () => {
       expect(result.value.workspacePath).toBe('/workspace');
       expect(result.value.skillsDir).toBe('/workspace/skills');
       expect(result.value.personalityPath).toBe('/workspace/personality.md');
-      expect(result.value.claudeBinaryPath).toBe('claude');
       expect(result.value.chatTimeoutMs).toBe(3_600_000);
       expect(result.value.scheduledTimeoutMs).toBe(1_200_000);
     }
@@ -157,7 +156,6 @@ describe('loadConfig', () => {
       WORKSPACE_PATH: '/custom',
       SKILLS_DIR: '/custom/skills',
       PERSONALITY_PATH: '/custom/personality.md',
-      CLAUDE_BINARY_PATH: '/usr/bin/claude',
       CHAT_TIMEOUT_MS: '1800000',
       SCHEDULED_TIMEOUT_MS: '180000',
     });
@@ -168,7 +166,6 @@ describe('loadConfig', () => {
       expect(result.value.workspacePath).toBe('/custom');
       expect(result.value.skillsDir).toBe('/custom/skills');
       expect(result.value.personalityPath).toBe('/custom/personality.md');
-      expect(result.value.claudeBinaryPath).toBe('/usr/bin/claude');
       expect(result.value.chatTimeoutMs).toBe(1800000);
       expect(result.value.scheduledTimeoutMs).toBe(180000);
     }

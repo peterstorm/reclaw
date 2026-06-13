@@ -76,6 +76,22 @@ export function formatDeadLetterMessage(
   return `[reclaw] Job permanently failed after all retries.\nKind: ${jobKind}\nID: ${jobId}\nError: ${errorMessage}`;
 }
 
+/**
+ * Safely extract a recipient chatId from raw, possibly-malformed job data.
+ *
+ * The dead-letter notifier runs on the data MOST likely to be malformed — a Zod
+ * parse failure is itself a trigger for dead-lettering — so it must never assume
+ * the shape. `(data as XJob).chatId` would yield `undefined` on bad data and then
+ * call `telegram.sendMessage(undefined, …)` inside the must-not-throw notifier.
+ * Narrow defensively and fall back to the authorized users when no numeric
+ * chatId is present, so the operator still gets the failure notification.
+ * Pure: no side effects.
+ */
+export function chatIdOrFallback(data: unknown, fallback: readonly number[]): readonly number[] {
+  const id = (data as Record<string, unknown> | null | undefined)?.['chatId'];
+  return typeof id === 'number' ? [id] : fallback;
+}
+
 // ─── Default BullMQ worker factory ───────────────────────────────────────────
 
 /**
@@ -213,7 +229,7 @@ export function createWorkers(deps: WorkerDeps): Workers {
     worker: chatWorker,
     jobKind: 'chat',
     telegram,
-    getChatIds: (data) => [(data as ChatJob).chatId],
+    getChatIds: (data) => chatIdOrFallback(data, config.authorizedUserIds),
   });
 
   // ── Scheduled worker (FR-015: concurrency=1) ─────────────────────────────
@@ -295,7 +311,7 @@ export function createWorkers(deps: WorkerDeps): Workers {
     worker: reminderWorker,
     jobKind: 'reminder',
     telegram,
-    getChatIds: (data) => [(data as ReminderJob).chatId],
+    getChatIds: (data) => chatIdOrFallback(data, config.authorizedUserIds),
   });
 
   // ── Research worker (AD-1: concurrency=1, long lock for SC-009) ──────────
@@ -337,7 +353,7 @@ export function createWorkers(deps: WorkerDeps): Workers {
     worker: researchWorker,
     jobKind: 'research',
     telegram,
-    getChatIds: (data) => [(data as ResearchJobData).chatId],
+    getChatIds: (data) => chatIdOrFallback(data, config.authorizedUserIds),
     defaultMaxAttempts: 3,
   });
 
@@ -362,7 +378,7 @@ export function createWorkers(deps: WorkerDeps): Workers {
     worker: podcastWorker,
     jobKind: 'podcast',
     telegram,
-    getChatIds: (data) => [(data as PodcastJob).chatId],
+    getChatIds: (data) => chatIdOrFallback(data, config.authorizedUserIds),
     defaultMaxAttempts: 1,
   });
 

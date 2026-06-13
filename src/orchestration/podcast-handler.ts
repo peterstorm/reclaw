@@ -175,11 +175,24 @@ export async function handlePodcastJob(
   const shareResult = await notebookLM.shareNotebook(notebookId);
   const shareUrl = shareResult.ok ? shareResult.value : `https://notebooklm.google.com/notebook/${notebookId}`;
 
-  // 9. Link podcast back to source note
-  await appendPodcastLink(note.filePath, formatLabel, shareUrl).catch(console.error);
+  // 9. Link podcast back to source note. The audio already exists and is
+  // shared, so a link-back failure must NOT fail the job — but it also must not
+  // be swallowed: previously the rejection was logged and the user was told
+  // "ready" with no hint the note was never updated. Capture the outcome and
+  // surface it in the notification so a silent vault-write blip is visible.
+  const linkBack = await appendPodcastLink(note.filePath, formatLabel, shareUrl).then(
+    () => ({ ok: true as const }),
+    (e: unknown) => ({ ok: false as const, error: e instanceof Error ? e.message : String(e) }),
+  );
+  if (!linkBack.ok) {
+    console.error(`[podcast] link-back to ${note.filePath} failed:`, linkBack.error);
+  }
 
   // 10. Notify
-  const successMsg = `Podcast ready: ${note.title}\nFormat: ${formatLabel}\n\n${shareUrl}`;
+  const linkBackNote = linkBack.ok
+    ? ''
+    : '\n\n⚠️ Heads up: I couldn\'t add the podcast link back into the source note.';
+  const successMsg = `Podcast ready: ${note.title}\nFormat: ${formatLabel}\n\n${shareUrl}${linkBackNote}`;
   await telegram.sendMessage(job.chatId, successMsg).catch(console.error);
 
   return jobResultOk(successMsg);

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 import { bootstrap, type BootstrapDeps } from './main.js';
 import type { AppConfig } from './infra/config.js';
 import type { SkillRegistry } from './core/types.js';
@@ -18,7 +18,6 @@ const mockConfig: AppConfig = {
   workspacePath: '/workspace',
   skillsDir: '/workspace/skills',
   personalityPath: '/workspace/personality.md',
-  claudeBinaryPath: 'claude',
   chatTimeoutMs: 120_000,
   scheduledTimeoutMs: 300_000,
   latitude: 55.665,
@@ -128,10 +127,8 @@ describe('bootstrap', () => {
   let createSchedulerMock: ReturnType<typeof vi.fn>;
   let createWorkersMock: ReturnType<typeof vi.fn>;
   let createSessionStoreMock: ReturnType<typeof vi.fn>;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let processExitSpy: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let processOnceSpy: any;
+  let processExitSpy: MockInstance<typeof process.exit>;
+  let processOnceSpy: MockInstance<typeof process.once>;
   const signalHandlers = new Map<string, () => void>();
 
   beforeEach(() => {

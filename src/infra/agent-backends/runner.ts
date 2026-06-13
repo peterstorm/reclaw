@@ -93,6 +93,15 @@ export async function runAgent(backend: AgentBackend, options: AgentOptions): Pr
   }
 
   const parsed = backend.parseResult(rawOutput);
+  // parseResult returning null means the backend recognised no structured
+  // assistant text in a *successful* (exit 0) run — a parser/output-format
+  // mismatch, not a real reply. Surface it instead of silently shipping raw
+  // protocol bytes downstream as if they were the answer.
+  if (parsed.text === null) {
+    console.warn(
+      `[runner] ${backend.name}.parseResult found no assistant text on exit-0 output (${rawOutput.length} bytes); falling back to raw stdout`,
+    );
+  }
   const output = parsed.text ?? rawOutput.trim();
 
   return { ok: true, output, sessionId: parsed.sessionId, durationMs };
@@ -261,9 +270,18 @@ export async function runAgentStreaming(
     };
   }
 
-  // Use backend.parseResult for final text; fall back to accumulated text
+  // Use backend.parseResult for final text; fall back to accumulated text.
+  // Unlike the non-streaming path, a null parse here is less alarming — we still
+  // have the deltas accumulated during streaming — but it does mean the final
+  // message-end frame was missing/unparseable, so warn for the same diagnostic
+  // reason (silent format drift otherwise looks like a healthy short reply).
   const rawCollected = collectedLines.join('\n');
   const parsed = backend.parseResult(rawCollected);
+  if (parsed.text === null) {
+    console.warn(
+      `[runner] ${backend.name}.parseResult found no final assistant text on exit-0 stream; falling back to ${accumulatedText.length} accumulated bytes`,
+    );
+  }
   const output = parsed.text ?? accumulatedText;
 
   // Use parseResult sessionId if streaming didn't capture one

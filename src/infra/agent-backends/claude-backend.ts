@@ -33,6 +33,9 @@ export const claudeBackend: AgentBackend = {
   },
 
   cleanEnv(env: Record<string, string | undefined>): Record<string, string | undefined> {
+    // Claude Code detects a nested invocation by the *existence* of these keys
+    // (not their value) and a nested `claude -p` refuses to start. Delete them —
+    // setting them to '' is insufficient. See reclaw/claude-subprocess-gotchas.md.
     const { CLAUDECODE: _cc, CLAUDE_CODE_ENTRYPOINT: _cce, ...rest } = env;
     return rest;
   },

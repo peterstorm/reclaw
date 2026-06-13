@@ -7,6 +7,16 @@
  *
  * Pi uses defaults for model/provider (no --model or --provider flags)
  * and loads all features (no --no-extensions or --no-skills flags).
+ *
+ * STATUS — NOT YET EXERCISED IN PRODUCTION (as of 2026-06-13).
+ * The backend is fully wired: `resolveBackend()` (index.ts) returns it when
+ * `AGENT_BACKEND=pi`, and `main.ts` routes every `runAgent`/`runAgentStreaming`
+ * call through the resolved backend. But selection is GLOBAL and all-or-nothing
+ * — there is no per-skill override (skill-config.ts has no `backend` field), so
+ * flipping the env var would route *every* chat turn and scheduled skill to pi
+ * at once. Until a per-skill canary route exists, pi runs only in unit tests.
+ * Consequently the parse/stream paths below are unverified against a live pi
+ * CLI; treat their event-shape assumptions as provisional.
  */
 
 import type { AgentBackend, StreamDelta } from './types.js';
@@ -88,7 +98,12 @@ export const piBackend: AgentBackend = {
   },
 
   cleanEnv(env: Record<string, string | undefined>): Record<string, string | undefined> {
-    // Pi doesn't need env cleaning — pass through unchanged
+    // Intentional pass-through, NOT an unfinished stub. The claude backend
+    // strips CLAUDECODE / CLAUDE_CODE_ENTRYPOINT because the Claude CLI refuses
+    // to run when it detects it was launched from inside another Claude session.
+    // Pi has no equivalent self-detection guard, so there are no variables to
+    // remove — and the claude-specific markers are inert noise to pi. If a
+    // future pi version grows such a guard, strip the offending vars here.
     return env;
   },
 

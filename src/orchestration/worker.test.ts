@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createWorkers, formatDeadLetterMessage, type BullWorkerLike, type WorkerFactory } from './worker.js';
+import { chatIdOrFallback, createWorkers, formatDeadLetterMessage, type BullWorkerLike, type WorkerFactory } from './worker.js';
 import type { AppConfig } from '../infra/config.js';
 import type { TelegramAdapter } from '../infra/telegram.js';
 import type { ChatJob, JobId, JobResult, RecurringReminderJob, ReminderJob, ScheduledJob, SkillId, TelegramUserId } from '../core/types.js';
@@ -14,7 +14,6 @@ const mockConfig: AppConfig = {
   workspacePath: '/workspace',
   skillsDir: '/workspace/skills',
   personalityPath: '/workspace/personality.md',
-  claudeBinaryPath: 'claude',
   chatTimeoutMs: 120_000,
   scheduledTimeoutMs: 300_000,
   latitude: 55.665,
@@ -747,5 +746,31 @@ describe('formatDeadLetterMessage', () => {
     expect(msg).toContain('scheduled');
     expect(msg).toContain('sched-xyz');
     expect(msg).toContain('redis timeout');
+  });
+});
+
+// ─── chatIdOrFallback ─────────────────────────────────────────────────────────
+
+describe('chatIdOrFallback', () => {
+  const fallback = [111, 222] as const;
+
+  it('returns the chatId when present and numeric', () => {
+    expect(chatIdOrFallback({ chatId: 789 }, fallback)).toEqual([789]);
+  });
+
+  it('falls back when chatId is missing', () => {
+    expect(chatIdOrFallback({ note: 'no chatId here' }, fallback)).toEqual(fallback);
+  });
+
+  it('falls back when chatId is the wrong type', () => {
+    expect(chatIdOrFallback({ chatId: '789' }, fallback)).toEqual(fallback);
+    expect(chatIdOrFallback({ chatId: null }, fallback)).toEqual(fallback);
+  });
+
+  it('falls back on null/undefined/non-object data (the dead-letter malformed case)', () => {
+    expect(chatIdOrFallback(null, fallback)).toEqual(fallback);
+    expect(chatIdOrFallback(undefined, fallback)).toEqual(fallback);
+    expect(chatIdOrFallback('not an object', fallback)).toEqual(fallback);
+    expect(chatIdOrFallback(42, fallback)).toEqual(fallback);
   });
 });

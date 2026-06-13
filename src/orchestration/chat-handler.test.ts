@@ -40,7 +40,6 @@ const makeConfig = (overrides: Record<string, unknown> = {}): AppConfig => ({
   workspacePath: '/workspace',
   skillsDir: '/workspace/skills',
   personalityPath: '/workspace/personality.md',
-  claudeBinaryPath: 'claude',
   chatTimeoutMs: 3_600_000,
   scheduledTimeoutMs: 300_000,
   latitude: 55.665,
