@@ -1,0 +1,81 @@
+id: garmin-catchup
+name: Garmin Late-Activity Catch-up
+schedule: "0 6 * * *"
+permissionProfile: scheduled
+validityWindowMinutes: 90
+timeout: 300
+promptTemplate: |
+  {{personality}}
+
+  Today is {{dayOfWeek}}, {{date}}.
+
+  You are the **morning backfill pass** for Garmin data. The nightly `garmin-sync` runs at 20:00,
+  so any activity logged *after* 20:00 (a late evening run, a night workout) is missing from
+  yesterday's fitness note. Your single job: re-sync **yesterday** so those late activities get
+  backfilled. By 06:00 they have fully synced to Garmin Connect.
+
+  This is a no-op on most days — that is expected and correct. Only act when something is genuinely
+  missing.
+
+  ## Step 1 — Resolve yesterday's date
+
+  ```
+  date -d 'yesterday' +%F
+  ```
+  Use this `YYYY-MM-DD` as the target date everywhere below.
+
+  ## Step 2 — Fetch yesterday's data
+
+  ```
+  bun /home/peterstorm/dev/claude-plugins/reclaw/scripts/garmin-fetch.ts <yesterday>
+  ```
+  Read the result:
+  ```
+  cat ~/.cache/garmin/daily/<yesterday>.json
+  ```
+  If the fetch fails with an auth error, report the failure and stop. Partial failures (nulls) are fine.
+
+  ## Step 3 — Compare against what's already logged (the whole point)
+
+  Build `fetchedIds` = the set of `activityId` values in the fresh fetch.
+
+  Read yesterday's note at `~/dev/notes/remotevault/personal/fitness/<YYYY>/<MM>/<yesterday>.md` and
+  parse the dedup marker on its last line:
+  ```
+  <!-- garmin-sync: activityIds=[...]; lastSynced=...; backfilled=... -->
+  ```
+  Let `notedIds` = the IDs in that marker (treat a missing note or missing marker as the empty set).
+
+  Decision:
+  - **`fetchedIds ⊆ notedIds`** (the note already accounts for every activity) → respond `ALL_CLEAR`
+    and stop. This is the normal path — no late activity appeared.
+  - **`fetchedIds` has an ID not in `notedIds`** (a late activity slipped in after the 20:00 sync) →
+    **backfill it.** Proceed to Step 4.
+  - **No note exists at all** for yesterday (the nightly sync failed/was skipped) → treat this as a
+    full sync for yesterday and proceed to Step 4.
+
+  ## Step 4 — Backfill via the garmin-sync contract
+
+  Do **not** reinvent the note format. Open the canonical sync skill and follow its note-writing
+  contract exactly:
+  ```
+  cat /home/peterstorm/dev/claude-plugins/reclaw/workspace/skills/garmin-sync.yaml
+  ```
+  Execute its **Step 3 (pull historical context), Step 4 (write the daily note — wholesale
+  regeneration, never append), Step 5 (MOC — edit the existing line in place, don't duplicate), and
+  Step 6 (cortex — store a corrected summary marked as superseding)** for the target date.
+
+  Key rules for the backfill:
+  - The note date is **yesterday** (the data date), not today.
+  - Regenerate the note **wholesale** from the now-complete fetch — overwrite in place. This makes
+    double-logging structurally impossible.
+  - Set `backfilled=true` in the dedup marker and add a short blockquote near the top noting the note
+    was backfilled with the late activity (time + type).
+  - If yesterday had running or strength work, include the full Run Analysis / CrossFit-Strength
+    Analysis subsections per the garmin-sync contract — a backfilled run still deserves the same
+    analysis depth it would have gotten at 20:00.
+
+  ## Output
+
+  Respond with exactly `ALL_CLEAR` — this is a background data sync, not a user-facing notification.
+  (Most mornings this will be `ALL_CLEAR` with no changes; that is the healthy default.)

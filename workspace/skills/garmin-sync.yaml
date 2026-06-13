@@ -82,10 +82,35 @@ promptTemplate: |
 
   Build a small in-memory ledger of "movement → recent set/rep/load history" so you can answer **per-movement progressive-overload questions** in Step 4. If a movement appearing today also appears in a previous session, you must compare directly. If it's new (first appearance in 30 days), say so explicitly.
 
-  ## Step 3.5 — Check if today's note already exists
+  ## Step 3.5 — Idempotency & late-activity backfill check
 
-  Check if the target note already exists at `~/dev/notes/remotevault/personal/fitness/YYYY/MM/YYYY-MM-DD.md`.
-  If it does, respond with `ALL_CLEAR` and stop — the day has already been synced.
+  This skill is **idempotent and backfill-safe**: it may run more than once for the same date
+  (the 20:00 sync, plus the morning `garmin-catchup` re-run for yesterday). The dedup unit is the
+  **set of activity IDs**, not the mere existence of the note — because an activity logged *after*
+  the 20:00 sync (e.g. a late evening run) must be allowed to backfill into an already-written note.
+
+  Every note this skill writes carries a machine-readable marker on its **last line**:
+  ```
+  <!-- garmin-sync: activityIds=[<comma-separated ids>]; lastSynced=<ISO8601>; backfilled=<true|false> -->
+  ```
+  (`activityIds=[]` for a day with no activities.)
+
+  Decision logic:
+
+  1. Build `fetchedIds` = the set of `activityId` values from the fresh fetch (empty set if none).
+  2. Check whether the target note exists at `~/dev/notes/remotevault/personal/fitness/YYYY/MM/YYYY-MM-DD.md`.
+     - **No note** → proceed to Step 4 and write it (`backfilled=false`).
+     - **Note exists** → read its `garmin-sync:` marker and parse `notedIds`.
+       - If `fetchedIds ⊆ notedIds` (the note already accounts for every fetched activity) →
+         respond `ALL_CLEAR` and stop. Nothing changed; do **not** rewrite the note or re-run Steps 5–6.
+       - If `fetchedIds` contains any ID **not** in `notedIds` (a late activity has appeared) →
+         **regenerate the note wholesale** from the fresh, now-complete fetch (Step 4) and set
+         `backfilled=true`. Regeneration overwrites the file in place — it never appends — so an
+         activity can never be double-logged. Add a short blockquote near the top noting the note
+         was backfilled with the late activity (time + type), so the change is visible to the reader.
+       - If the note has **no marker** (legacy note written before this scheme) → treat it as
+         `notedIds = ∅`: regenerate if there are any activities, otherwise just append a fresh
+         marker without rewriting the prose.
 
   ## Step 4 — Write the daily fitness note
 
@@ -270,6 +295,20 @@ promptTemplate: |
   - VO2 max (running + cycling if available) with trend vs recent notes
   - HRV weekly average and last night value
 
+  ### Dedup marker (REQUIRED — always the last line of the note)
+
+  End every note with the machine-readable marker so future runs (and the morning
+  `garmin-catchup`) can tell whether a late activity needs backfilling:
+  ```
+  <!-- garmin-sync: activityIds=[23107915332]; lastSynced=2026-06-03T05:30:33Z; backfilled=false -->
+  ```
+  - `activityIds` = every `activityId` from the fetch that this note documents (empty `[]` if none).
+  - `lastSynced` = the fetch's `fetchedAt` timestamp.
+  - `backfilled` = `true` only when this write added an activity that a prior write missed.
+
+  This marker is the dedup key from Step 3.5 — without it, late activities can't be backfilled and
+  re-runs can't be skipped. Never omit it.
+
   ## Step 5 — Maintain the Fitness MOC
 
   Check if `~/dev/notes/remotevault/personal/fitness/MOC.md` exists.
@@ -294,9 +333,18 @@ promptTemplate: |
 
   The 1-line summary should be like: "8.2k steps, 7h12m sleep (82), 5k run 5:15/km"
 
+  **Backfill case:** if a line for this date already exists (this is a backfill re-run), **edit the
+  existing line in place** to reflect the now-complete data — do not append a second link for the
+  same date.
+
   ## Step 6 — Store in cortex
 
   Run `/remember` with a concise daily summary: "Fitness [date]: [key metrics + notable activities or trends]".
+
+  **Backfill case:** if this run backfilled a late activity, an earlier (now-incomplete) "Fitness [date]"
+  memory from the 20:00 sync likely already exists. Store the corrected summary and explicitly mark it as
+  superseding — e.g. "Fitness [date] (corrected — late run backfilled): ...". Cortex consolidation will
+  merge the pair; do not worry about the stale entry beyond flagging the supersession.
 
   Additionally, when today included strength work, store a second `/remember` entry capturing **per-movement progressive-overload signal** so future runs of this skill (and the running coach) can pull it back without re-deriving:
   "Strength [date]: Back Squat 5×5 @ 105kg (+5kg vs 2026-04-26); Pull-ups 4×8 strict (+1 rep/set); Bench 3×5 @ 75kg (maintenance). Net: overload."
