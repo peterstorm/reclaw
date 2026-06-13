@@ -1,3 +1,4 @@
 .memory/
 .claude/cortex-memory.local.md
+.claude/session-memory-extraction.json
 .pi/cortex-memory.local.md
