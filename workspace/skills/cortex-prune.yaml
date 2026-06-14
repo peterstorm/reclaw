@@ -20,7 +20,11 @@ promptTemplate: |
   bun -e "
   import Database from 'bun:sqlite';
   const db = new Database('{{cwd}}/.memory/cortex.db', { readonly: true });
-  const rows = db.query(\"SELECT id, memory_type, summary, confidence, access_count, pinned, created_at FROM memories WHERE status = 'active' ORDER BY memory_type, created_at\").all();
+  // Fresh skill-quality signals (<7d) are excluded from the evaluation set:
+  // the skill-quality-monitor needs them, so they must NOT be offered to LLM
+  // judgment. This enforces the Step 2a \"always keep\" rule in code.
+  const cutoff7 = new Date(Date.now() - 7*24*60*60*1000).toISOString();
+  const rows = db.query(\"SELECT id, memory_type, summary, confidence, access_count, pinned, created_at FROM memories WHERE status = 'active' AND NOT (tags LIKE '%\\\"skill-quality\\\"%' AND created_at >= ?) ORDER BY memory_type, created_at\").all(cutoff7);
   for (const r of rows) {
     console.log(r.memory_type + ' | ' + r.id.slice(0,8) + ' | conf=' + r.confidence + ' acc=' + r.access_count + (r.pinned ? ' PIN' : '') + ' | ' + r.summary.slice(0,140));
   }
@@ -62,7 +66,11 @@ promptTemplate: |
     query below to identify them; do not apply LLM judgment per-entry.
   - **Always keep** `skill-quality`-tagged memories from the last 7 days,
     regardless of LLM judgment about granularity or redundancy — the monitor
-    needs the full set in its window.
+    needs the full set in its window. This is enforced in code, not by you:
+    Step 1's fetch already excludes fresh `skill-quality` memories from the
+    set you evaluate, and Step 3's archive `UPDATE` refuses to touch them as a
+    final guard. Do not attempt to archive any `skill-quality` memory from the
+    last 7 days even if it looks like a one-time observation — it is by design.
 
   ```bash
   bun -e "
@@ -129,10 +137,13 @@ promptTemplate: |
   const db = new Database('{{cwd}}/.memory/cortex.db');
   const ids = [/* full UUIDs to archive */];
   const now = new Date().toISOString();
-  const stmt = db.prepare('UPDATE memories SET status = ?, updated_at = ? WHERE id = ?');
+  const cutoff7 = new Date(Date.now() - 7*24*60*60*1000).toISOString();
+  // Hard invariant: never archive a fresh (<7d) skill-quality signal, no matter
+  // what landed in the batch. The skill-quality-monitor reads this 7-day window.
+  const stmt = db.prepare(\"UPDATE memories SET status = ?, updated_at = ? WHERE id = ? AND NOT (tags LIKE '%\\\"skill-quality\\\"%' AND created_at >= ?)\");
   let count = 0;
   for (const id of ids) {
-    const result = stmt.run('archived', now, id);
+    const result = stmt.run('archived', now, id, cutoff7);
     if (result.changes > 0) count++;
   }
   console.log('Archived', count, 'memories');
