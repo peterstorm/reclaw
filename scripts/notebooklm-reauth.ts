@@ -70,9 +70,16 @@ function shimBrowsersPath(): string {
   rmSync(shim, { recursive: true, force: true });
   mkdirSync(shim, { recursive: true });
   for (const e of entries) symlinkSync(join(nixPath, e), join(shim, e));
-  symlinkSync(join(nixPath, haveShell), join(shim, `chromium_headless_shell-${wanted}`));
-  if (haveFull) symlinkSync(join(nixPath, haveFull), join(shim, `chromium-${wanted}`));
-  console.error(`[reauth] shimmed chromium revision ${wanted} -> ${haveShell}`);
+  // Alias the wanted revision onto the available one — skip if they already match
+  // (the per-entry loop above already created the identically-named link).
+  const wantedShell = join(shim, `chromium_headless_shell-${wanted}`);
+  if (!existsSync(wantedShell)) {
+    symlinkSync(join(nixPath, haveShell), wantedShell);
+    if (haveFull) symlinkSync(join(nixPath, haveFull), join(shim, `chromium-${wanted}`));
+    console.error(`[reauth] shimmed chromium revision ${wanted} -> ${haveShell}`);
+  } else {
+    console.error(`[reauth] chromium revision ${wanted} already present — no shim needed`);
+  }
   return shim;
 }
 
