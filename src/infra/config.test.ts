@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseEnvToRaw, loadConfig } from './config.js';
+import { loadConfig, parseEnvToRaw } from './config.js';
 
 const VALID_ENV = {
   TELEGRAM_TOKEN: 'bot123:ABC',
@@ -224,7 +224,11 @@ describe('loadConfig', () => {
   });
 
   it('parses GOOGLE_EMAIL and GOOGLE_PASSWORD', () => {
-    const result = loadConfig({ ...VALID_ENV, GOOGLE_EMAIL: 'bot@gmail.com', GOOGLE_PASSWORD: 'secret' });
+    const result = loadConfig({
+      ...VALID_ENV,
+      GOOGLE_EMAIL: 'bot@gmail.com',
+      GOOGLE_PASSWORD: 'secret',
+    });
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.googleEmail).toBe('bot@gmail.com');
@@ -259,6 +263,27 @@ describe('loadConfig', () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.obsidianVaultPath).toBeUndefined();
+    }
+  });
+  it('parses optional Pi provider and model overrides', () => {
+    const result = loadConfig({
+      ...VALID_ENV,
+      RECLAW_PI_PROVIDER: 'deepseek',
+      RECLAW_PI_MODEL: 'deepseek-v4-flash',
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.piProvider).toBe('deepseek');
+      expect(result.value.piModel).toBe('deepseek-v4-flash');
+    }
+  });
+
+  it('leaves Pi provider and model undefined when unset or blank', () => {
+    const result = loadConfig({ ...VALID_ENV, RECLAW_PI_PROVIDER: '   ', RECLAW_PI_MODEL: '' });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.piProvider).toBeUndefined();
+      expect(result.value.piModel).toBeUndefined();
     }
   });
 });

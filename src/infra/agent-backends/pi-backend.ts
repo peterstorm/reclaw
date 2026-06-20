@@ -5,8 +5,8 @@
  * Pi uses `--session <uuid>` (before `-p`) for session resumption,
  * `--tools` for permission flags, and `--mode json` for structured output.
  *
- * Pi uses defaults for model/provider (no --model or --provider flags)
- * and loads all features (no --no-extensions or --no-skills flags).
+ * Pi uses defaults for model/provider unless reclaw passes an explicit
+ * modelSelection (mapped to --provider/--model), and loads all features (no --no-extensions or --no-skills flags).
  *
  * STATUS — NOT YET EXERCISED IN PRODUCTION (as of 2026-06-13).
  * The backend is fully wired: `resolveBackend()` (index.ts) returns it when
@@ -19,7 +19,7 @@
  * CLI; treat their event-shape assumptions as provisional.
  */
 
-import type { AgentBackend, StreamDelta } from './types.js';
+import type { AgentBackend, AgentModelSelection, StreamDelta } from './types.js';
 
 // ─── Pi JSON Event Types ──────────────────────────────────────────────────────
 
@@ -79,7 +79,11 @@ const isMessageUpdateEvent = (parsed: unknown): parsed is PiMessageUpdateEvent =
 export const piBackend: AgentBackend = {
   name: 'pi',
 
-  buildArgs(opts: { resumeSessionId?: string; allowedTools: readonly string[] }): string[] {
+  buildArgs(opts: {
+    resumeSessionId?: string;
+    allowedTools: readonly string[];
+    modelSelection?: AgentModelSelection;
+  }): string[] {
     const args: string[] = ['pi'];
 
     // --session MUST come BEFORE -p (pi's arg parser requires this ordering)
@@ -87,11 +91,19 @@ export const piBackend: AgentBackend = {
       args.push('--session', opts.resumeSessionId);
     }
 
+    if (opts.modelSelection?.provider) {
+      args.push('--provider', opts.modelSelection.provider);
+    }
+
+    if (opts.modelSelection?.model) {
+      args.push('--model', opts.modelSelection.model);
+    }
+
     args.push('-p', '--mode', 'json');
 
     // Tools: lowercase, comma-separated
     if (opts.allowedTools.length > 0) {
-      args.push('--tools', opts.allowedTools.map(t => t.toLowerCase()).join(','));
+      args.push('--tools', opts.allowedTools.map((t) => t.toLowerCase()).join(','));
     }
 
     return args;
@@ -124,9 +136,9 @@ export const piBackend: AgentBackend = {
       }
 
       if (isMessageEndEvent(parsed)) {
-        const textParts = parsed.message.content
-          .filter(block => block.type === 'text' && typeof block.text === 'string')
-          .map(block => block.text!);
+        const textParts = parsed.message.content.flatMap((block) =>
+          block.type === 'text' && typeof block.text === 'string' ? [block.text] : [],
+        );
 
         if (textParts.length > 0) {
           text = textParts.join('\n');

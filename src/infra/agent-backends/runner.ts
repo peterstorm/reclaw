@@ -28,10 +28,15 @@ const getDefaultSpawn = (): SpawnFn => Bun.spawn as unknown as SpawnFn;
  * FR-113: Prompt delivered via stdin.
  */
 export async function runAgent(backend: AgentBackend, options: AgentOptions): Promise<AgentResult> {
-  const { prompt, cwd, allowedTools, timeoutMs, env, resumeSessionId, _spawn } = options;
+  const { prompt, cwd, allowedTools, timeoutMs, env, resumeSessionId, modelSelection, _spawn } =
+    options;
 
   const spawnFn: SpawnFn = _spawn ?? getDefaultSpawn();
-  const args = backend.buildArgs({ ...(resumeSessionId ? { resumeSessionId } : {}), allowedTools });
+  const args = backend.buildArgs({
+    ...(resumeSessionId ? { resumeSessionId } : {}),
+    allowedTools,
+    ...(modelSelection ? { modelSelection } : {}),
+  });
   const processEnv = backend.cleanEnv({ ...process.env, ...(env ?? {}) });
 
   const startMs = Date.now();
@@ -40,7 +45,11 @@ export async function runAgent(backend: AgentBackend, options: AgentOptions): Pr
   try {
     proc = spawnFn(args, { cwd, stdin: 'pipe', stdout: 'pipe', stderr: 'pipe', env: processEnv });
   } catch (spawnErr) {
-    return { ok: false, error: `Failed to spawn ${backend.name}: ${String(spawnErr)}`, timedOut: false };
+    return {
+      ok: false,
+      error: `Failed to spawn ${backend.name}: ${String(spawnErr)}`,
+      timedOut: false,
+    };
   }
 
   // Drain stderr concurrently to prevent pipe deadlocks
@@ -123,10 +132,15 @@ export async function runAgentStreaming(
   options: AgentOptions,
   onChunk: OnStreamChunk,
 ): Promise<AgentResult> {
-  const { prompt, cwd, allowedTools, timeoutMs, env, resumeSessionId, _spawn } = options;
+  const { prompt, cwd, allowedTools, timeoutMs, env, resumeSessionId, modelSelection, _spawn } =
+    options;
 
   const spawnFn: SpawnFn = _spawn ?? getDefaultSpawn();
-  const args = backend.buildArgs({ ...(resumeSessionId ? { resumeSessionId } : {}), allowedTools });
+  const args = backend.buildArgs({
+    ...(resumeSessionId ? { resumeSessionId } : {}),
+    allowedTools,
+    ...(modelSelection ? { modelSelection } : {}),
+  });
   const processEnv = backend.cleanEnv({ ...process.env, ...(env ?? {}) });
 
   const startMs = Date.now();
@@ -135,7 +149,11 @@ export async function runAgentStreaming(
   try {
     proc = spawnFn(args, { cwd, stdin: 'pipe', stdout: 'pipe', stderr: 'pipe', env: processEnv });
   } catch (spawnErr) {
-    return { ok: false, error: `Failed to spawn ${backend.name}: ${String(spawnErr)}`, timedOut: false };
+    return {
+      ok: false,
+      error: `Failed to spawn ${backend.name}: ${String(spawnErr)}`,
+      timedOut: false,
+    };
   }
 
   // Drain stderr concurrently
@@ -232,11 +250,12 @@ export async function runAgentStreaming(
 
       buffer += decoder.decode(value, { stream: true });
 
-      let newlineIdx: number;
-      while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
+      let newlineIdx = buffer.indexOf('\n');
+      while (newlineIdx !== -1) {
         const line = buffer.slice(0, newlineIdx);
         buffer = buffer.slice(newlineIdx + 1);
         processLine(line);
+        newlineIdx = buffer.indexOf('\n');
       }
     }
 

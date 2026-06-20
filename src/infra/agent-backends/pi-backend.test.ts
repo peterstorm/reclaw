@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { piBackend } from './pi-backend.js';
 
 describe('piBackend', () => {
@@ -59,6 +59,40 @@ describe('piBackend', () => {
       expect(result).toEqual(['pi', '-p', '--mode', 'json']);
       expect(result).not.toContain('--tools');
     });
+
+    it('adds provider and model flags when modelSelection is configured', () => {
+      const result = piBackend.buildArgs({
+        allowedTools: [],
+        modelSelection: { provider: 'deepseek', model: 'deepseek-v4-flash' },
+      });
+      expect(result).toEqual([
+        'pi',
+        '--provider',
+        'deepseek',
+        '--model',
+        'deepseek-v4-flash',
+        '-p',
+        '--mode',
+        'json',
+      ]);
+    });
+
+    it('keeps --session before -p when modelSelection is configured', () => {
+      const result = piBackend.buildArgs({
+        resumeSessionId: 'abc-123',
+        allowedTools: ['Read'],
+        modelSelection: { provider: 'deepseek', model: 'deepseek-v4-flash' },
+      });
+      expect(result.slice(0, 6)).toEqual([
+        'pi',
+        '--session',
+        'abc-123',
+        '--provider',
+        'deepseek',
+        '--model',
+      ]);
+      expect(result.indexOf('--session')).toBeLessThan(result.indexOf('-p'));
+    });
   });
 
   describe('cleanEnv', () => {
@@ -98,7 +132,10 @@ describe('piBackend', () => {
     it('handles multi-line output with both session and message_end', () => {
       const lines = [
         JSON.stringify({ type: 'session', id: 'sess-42' }),
-        JSON.stringify({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Hi' } }),
+        JSON.stringify({
+          type: 'message_update',
+          assistantMessageEvent: { type: 'text_delta', delta: 'Hi' },
+        }),
         JSON.stringify({
           type: 'message_end',
           message: { content: [{ type: 'text', text: 'Hello from Pi!' }] },
@@ -112,7 +149,10 @@ describe('piBackend', () => {
 
     it('returns nulls when no relevant events found', () => {
       const rawOutput = [
-        JSON.stringify({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Hi' } }),
+        JSON.stringify({
+          type: 'message_update',
+          assistantMessageEvent: { type: 'text_delta', delta: 'Hi' },
+        }),
         'some random line',
         '',
       ].join('\n');

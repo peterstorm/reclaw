@@ -27,6 +27,11 @@ export type SpawnFn = (
 
 // ─── Agent Options & Result ───────────────────────────────────────────────────
 
+export type AgentModelSelection = {
+  readonly provider?: string;
+  readonly model?: string;
+};
+
 export type AgentOptions = {
   readonly prompt: string;
   readonly cwd: string;
@@ -34,11 +39,17 @@ export type AgentOptions = {
   readonly timeoutMs: number;
   readonly env?: Record<string, string>;
   readonly resumeSessionId?: string;
+  readonly modelSelection?: AgentModelSelection;
   readonly _spawn?: SpawnFn;
 };
 
 export type AgentResult =
-  | { readonly ok: true; readonly output: string; readonly sessionId: string | null; readonly durationMs: number }
+  | {
+      readonly ok: true;
+      readonly output: string;
+      readonly sessionId: string | null;
+      readonly durationMs: number;
+    }
   | { readonly ok: false; readonly error: string; readonly timedOut: boolean };
 
 // ─── Streaming Types ──────────────────────────────────────────────────────────
@@ -73,7 +84,11 @@ export type OnStreamChunk = (chunk: StreamChunk) => void;
 
 export interface AgentBackend {
   readonly name: string;
-  buildArgs(opts: { resumeSessionId?: string; allowedTools: readonly string[] }): string[];
+  buildArgs(opts: {
+    resumeSessionId?: string;
+    allowedTools: readonly string[];
+    modelSelection?: AgentModelSelection;
+  }): string[];
   cleanEnv(env: Record<string, string | undefined>): Record<string, string | undefined>;
   parseResult(rawOutput: string): { text: string | null; sessionId: string | null };
   extractStreamDelta(line: string): StreamDelta | null;

@@ -133,13 +133,21 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
   // ── 1a. Resolve agent backend ──────────────────────────────────────────────
   const { resolveBackend, runAgent, runAgentStreaming } = await import('./infra/agent-backends/index.js');
   const backend = resolveBackend(config);
+  const modelSelection = config.piProvider !== undefined || config.piModel !== undefined
+    ? {
+        ...(config.piProvider !== undefined ? { provider: config.piProvider } : {}),
+        ...(config.piModel !== undefined ? { model: config.piModel } : {}),
+      }
+    : undefined;
+  const withModelSelection = (opts: AgentOptions): AgentOptions =>
+    modelSelection ? { ...opts, modelSelection } : opts;
   console.info(`[main] Agent backend: ${backend.name}`);
 
   const runClaudeFn: (options: AgentOptions) => Promise<AgentResult> =
-    injected.runClaudeFn ?? ((opts) => runAgent(backend, opts));
+    injected.runClaudeFn ?? ((opts) => runAgent(backend, withModelSelection(opts)));
 
   const runClaudeStreamingFn: (options: AgentOptions, onChunk: OnStreamChunk) => Promise<AgentResult> =
-    injected.runClaudeStreamingFn ?? ((opts, onChunk) => runAgentStreaming(backend, opts, onChunk));
+    injected.runClaudeStreamingFn ?? ((opts, onChunk) => runAgentStreaming(backend, withModelSelection(opts), onChunk));
 
   // ── 1b. Resolve cortex extraction (always-on, no config needed) ──────────
   const { resolveCortexExtractScript, resolveCortexCliPath, createCortexExtractor } = await import('./infra/cortex-extract.js');

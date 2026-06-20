@@ -427,6 +427,9 @@ All config is env-driven (no config file). See `src/infra/config.ts` for the Zod
 | `NOTEBOOKLM_AUTH_TOKEN` + `NOTEBOOKLM_COOKIES` | optional   | Token-based NotebookLM auth                            |
 | `GOOGLE_EMAIL` + `GOOGLE_PASSWORD`             | optional   | Fallback NotebookLM auto-login                         |
 | `GEMINI_API_KEY`                 | optional               | Used by research LLM adapter                           |
+| `AGENT_BACKEND`                 | `claude`               | Agent subprocess backend: `claude` or `pi`             |
+| `RECLAW_PI_PROVIDER`            | unset                  | Optional Pi `--provider`; unset means use Pi defaults  |
+| `RECLAW_PI_MODEL`               | unset                  | Optional Pi `--model`; unset means use Pi defaults     |
 | `LATITUDE` / `LONGITUDE` / `TIMEZONE` / `LOCATION_NAME` | Copenhagen defaults | Weather, sun-time skills        |
 
 ---
