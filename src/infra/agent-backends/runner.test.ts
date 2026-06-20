@@ -175,10 +175,7 @@ describe('runAgent', () => {
   });
 
   it('returns ok:false when stdin write fails', async () => {
-    const result = await runAgent(
-      mockBackend,
-      baseOptions({ _spawn: stdinFailSpawn() }),
-    );
+    const result = await runAgent(mockBackend, baseOptions({ _spawn: stdinFailSpawn() }));
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -190,9 +187,30 @@ describe('runAgent', () => {
     const buildArgsSpy = vi.fn(mockBackend.buildArgs);
     const spyBackend: AgentBackend = { ...mockBackend, buildArgs: buildArgsSpy };
 
-    await runAgent(spyBackend, baseOptions({ resumeSessionId: 'sess-123', allowedTools: ['Bash', 'Read'] }));
+    await runAgent(
+      spyBackend,
+      baseOptions({ resumeSessionId: 'sess-123', allowedTools: ['Bash', 'Read'] }),
+    );
 
-    expect(buildArgsSpy).toHaveBeenCalledWith({ resumeSessionId: 'sess-123', allowedTools: ['Bash', 'Read'] });
+    expect(buildArgsSpy).toHaveBeenCalledWith({
+      resumeSessionId: 'sess-123',
+      allowedTools: ['Bash', 'Read'],
+    });
+  });
+
+  it('passes modelSelection to backend.buildArgs when configured', async () => {
+    const buildArgsSpy = vi.fn(mockBackend.buildArgs);
+    const spyBackend: AgentBackend = { ...mockBackend, buildArgs: buildArgsSpy };
+
+    await runAgent(
+      spyBackend,
+      baseOptions({ modelSelection: { provider: 'deepseek', model: 'deepseek-v4-flash' } }),
+    );
+
+    expect(buildArgsSpy).toHaveBeenCalledWith({
+      allowedTools: ['Read', 'Write'],
+      modelSelection: { provider: 'deepseek', model: 'deepseek-v4-flash' },
+    });
   });
 
   it('calls backend.cleanEnv', async () => {
@@ -247,11 +265,7 @@ describe('runAgentStreaming', () => {
     const chunks: StreamChunk[] = [];
     const onChunk: OnStreamChunk = (chunk) => chunks.push({ ...chunk });
 
-    await runAgentStreaming(
-      mockBackend,
-      baseOptions({ _spawn: mockSpawn(stdout) }),
-      onChunk,
-    );
+    await runAgentStreaming(mockBackend, baseOptions({ _spawn: mockSpawn(stdout) }), onChunk);
 
     expect(chunks.length).toBeGreaterThanOrEqual(2);
     expect(chunks[0]!.thinking).toBe('analyzing ');
@@ -260,15 +274,12 @@ describe('runAgentStreaming', () => {
   });
 
   it('block_start resets current block text/thinking and increments counter', async () => {
-    const stdout = 'BLOCK:thinking\nTHINK:first\nBLOCK:text\nTEXT:answer\nBLOCK:thinking\nTHINK:second\n';
+    const stdout =
+      'BLOCK:thinking\nTHINK:first\nBLOCK:text\nTEXT:answer\nBLOCK:thinking\nTHINK:second\n';
     const chunks: StreamChunk[] = [];
     const onChunk: OnStreamChunk = (chunk) => chunks.push({ ...chunk });
 
-    await runAgentStreaming(
-      mockBackend,
-      baseOptions({ _spawn: mockSpawn(stdout) }),
-      onChunk,
-    );
+    await runAgentStreaming(mockBackend, baseOptions({ _spawn: mockSpawn(stdout) }), onChunk);
 
     // After first BLOCK:thinking
     expect(chunks[0]!.thinkingBlockCount).toBe(1);
