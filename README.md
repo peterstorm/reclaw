@@ -432,6 +432,16 @@ All config is env-driven (no config file). See `src/infra/config.ts` for the Zod
 | `RECLAW_PI_MODEL`               | unset                  | Optional Pi `--model`; unset means use Pi defaults     |
 | `LATITUDE` / `LONGITUDE` / `TIMEZONE` / `LOCATION_NAME` | Copenhagen defaults | Weather, sun-time skills        |
 
+Pi model override example for trying DeepSeek v4 Flash through reclaw:
+
+```env
+AGENT_BACKEND=pi
+RECLAW_PI_PROVIDER=deepseek
+RECLAW_PI_MODEL=deepseek-v4-flash
+```
+
+Leave `RECLAW_PI_PROVIDER` and `RECLAW_PI_MODEL` unset/blank to use Pi's own default provider/model from `~/.pi/agent/settings.json` (currently whatever Pi was last configured to use). Pi DeepSeek auth is separate: configure `DEEPSEEK_API_KEY` or store the key via Pi's `/login`.
+
 ---
 
 ## Operations
