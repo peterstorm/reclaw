@@ -1,6 +1,6 @@
 id: homelab-watchdog
 name: Homelab Watchdog
-schedule: null  # paused 2026-05-15 — was "0 */6 * * *". See decisions.md (pause pending review). Manually triggerable via /run homelab-watchdog.
+schedule: "0 10 * * *"  # daily at 10:00. Re-enabled 2026-06-27 (was paused 2026-05-15, prior "0 */6 * * *"). Manually triggerable via /run homelab-watchdog.
 permissionProfile: scheduled
 validityWindowMinutes: 30
 timeout: 120
