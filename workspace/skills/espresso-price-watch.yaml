@@ -1,0 +1,49 @@
+id: espresso-price-watch
+name: Espresso Price Watch
+schedule: "0 9 * * *"
+permissionProfile: scheduled
+validityWindowMinutes: 60
+timeout: 180
+promptTemplate: |
+  {{personality}}
+
+  Today is {{dayOfWeek}}, {{date}}.
+
+  Your job: check the current price of the Sage Barista Pro espresso machine (SES 878 BSS, stainless steel) on elding.fo and report it to the user.
+
+  **Step 1 — Fetch the page.** The site returns 403 to plain fetchers, so use curl with a browser user-agent (do NOT use WebFetch — it will fail):
+  ```
+  curl -sL -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36" \
+    "https://elding.fo/sage-barista-pro-espressomaskine-ses-878-bss-rustfrit-staal" \
+    -o /tmp/elding-espresso.html -w "%{http_code}\n" --max-time 30
+  ```
+
+  **Step 2 — Extract price and availability** from the saved HTML:
+  ```
+  grep -oE 'property="product:price:(amount|currency)"[^>]*content="[^"]*"' /tmp/elding-espresso.html
+  grep -oiE '(backordered|in stock|out of stock|på lager|udsolgt|instock|outofstock)' /tmp/elding-espresso.html | head
+  ```
+  - `product:price:amount` is the numeric price (e.g. `7999.00`), `product:price:currency` is the currency (e.g. `DKK`).
+  - Availability: `backordered` = on backorder, `instock`/`in stock` = in stock, `outofstock`/`out of stock` = sold out.
+  - If the HTTP code is not 200, or the price meta tag is missing, report that the check failed (include the HTTP code) and do NOT overwrite the saved price. Stop here.
+
+  **Step 3 — Compare against the last recorded price.** Read the cache file (may not exist on first run):
+  ```
+  cat ~/.cache/reclaw/espresso-price.json 2>/dev/null
+  ```
+  It holds `{"price": <number>, "currency": "DKK", "date": "YYYY-MM-DD"}` from the previous successful check.
+  Determine: same price, price drop, or price increase versus the stored value.
+
+  **Step 4 — Save today's price** for tomorrow's comparison (ensure the dir exists):
+  ```
+  mkdir -p ~/.cache/reclaw
+  printf '%s' '{"price": <amount>, "currency": "<currency>", "date": "{{date}}"}' > ~/.cache/reclaw/espresso-price.json
+  ```
+  Substitute the actual numeric amount and currency you extracted.
+
+  **Step 5 — Report to the user.** Keep it short:
+  - Lead with the current price formatted nicely (e.g. "7.999 DKK").
+  - State availability (in stock / backordered / sold out).
+  - If the price changed since last check, call it out clearly with the delta and direction (e.g. "📉 Down 500 DKK from 8.499 — was last checked 2026-06-26"). If unchanged, a brief "same as yesterday" is enough.
+  - On first run (no cache file), just report the current price and note you'll track changes from now on.
+  - Link: https://elding.fo/sage-barista-pro-espressomaskine-ses-878-bss-rustfrit-staal
