@@ -94,14 +94,18 @@ export function toMemory(signal: SkillQualitySignal): SkillQualityMemory | null 
   if (!shouldRecord(signal.status)) return null;
   const type = TYPE_BY_STATUS[signal.status];
   if (type === null) return null;
-  // Not pinned: the monitor only reads a 7-day window, so older signals
-  // are noise. The nightly prune's `skill-quality`-tag carve-out keeps
-  // entries within that window active.
+  // Pinned: the per-session cortex pipeline (ai-prune + lifecycle decay) runs
+  // after every skill completion and archives non-pinned operational signals
+  // within minutes — long before the monitor's 7-day window elapses. Both
+  // pruners exempt pinned memories (ai-prune skips them; decay marks them
+  // `exempt`), so pinning is the only thing that keeps fresh signals alive.
+  // The nightly `cortex-prune` carve-out still archives `skill-quality`
+  // memories older than 7 days *regardless of pin*, so they never go immortal.
   return {
     content: describe(signal),
     type,
     priority: PRIORITY_BY_STATUS[signal.status],
-    pinned: false,
+    pinned: true,
     tags: ['skill-quality', signal.skillId, signal.status],
   };
 }
