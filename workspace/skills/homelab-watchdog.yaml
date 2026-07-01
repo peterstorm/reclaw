@@ -21,9 +21,10 @@ promptTemplate: |
   ```
   df -h / | tail -1
   ```
-  Alert if usage > 85%. At 90%+ it's urgent — suggest cleanup actions:
-  - `sudo nix-collect-garbage -d` (NixOS store bloat)
-  - `sudo k3s crictl rmi --prune` (unused container images)
+  Alert if usage > 85%. At 90%+ it's urgent. Suggest cleanup actions in this order:
+  - **Biggest lever is usually `/var/data` (media server), not `/nix`.** Check `du -h -d1 /var/data 2>/dev/null | sort -rh | head`. Reclaimable space = non-hardlinked torrent files (`stat -c %h` shows links=1). The media library (`media/`) is off-limits — only torrent duplicates are safe to remove.
+  - `nix-collect-garbage -d` (NixOS store bloat) — requires sudo; surface as "ask user to run", don't claim done.
+  - `k3s crictl rmi --prune` (unused container images) — requires sudo; same caveat.
   - `kubectl delete pod` for stuck ContainerStatusUnknown pods (they leave orphaned layers)
 
   ### 2. K3s node health
@@ -107,7 +108,7 @@ promptTemplate: |
   ```
   du -sh /nix/store 2>&1 | head -1
   ```
-  Alert if > 100GB. Suggest `nix-collect-garbage -d` to reclaim space.
+  Alert if > 100GB. Suggest `nix-collect-garbage -d` to reclaim space (requires sudo — surface as "ask user to run").
 
   ## Output format
 

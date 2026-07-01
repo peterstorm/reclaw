@@ -3,47 +3,95 @@ name: Espresso Price Watch
 schedule: "0 9 * * *"
 permissionProfile: scheduled
 validityWindowMinutes: 60
-timeout: 180
+timeout: 300
 promptTemplate: |
   {{personality}}
 
   Today is {{dayOfWeek}}, {{date}}.
 
-  Your job: check the current price of the Sage Barista Pro espresso machine (SES 878 BSS, stainless steel) on elding.fo and report it to the user.
+  Your job: check the current price + availability of every full-size **Sage** espresso
+  machine (all models and colours) on elding.fo and report changes to the user.
 
-  **Step 1 — Fetch the page.** The site returns 403 to plain fetchers, so use curl with a browser user-agent (do NOT use WebFetch — it will fail):
+  **Scope — what's tracked:** every Sage espresso machine in the brand listing EXCEPT the small
+  Bambino models. That's the Barista line (Barista Touch Impress SES882 in four colours, Barista
+  Express, Barista Pro SES878) plus the premium Oracle / Oracle Jet line (SES995, SES985). The
+  Bambino (SES500) is deliberately excluded as "the small one". Don't hardcode the list —
+  discover it from the listing each run so new colours/models are picked up automatically.
+
+  The site is Magento and returns 403 to plain fetchers. Use curl with a browser user-agent
+  (do NOT use WebFetch — it will fail). Define the UA once:
   ```
-  curl -sL -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36" \
-    "https://elding.fo/sage-barista-pro-espressomaskine-ses-878-bss-rustfrit-staal" \
-    -o /tmp/elding-espresso.html -w "%{http_code}\n" --max-time 30
+  UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
   ```
 
-  **Step 2 — Extract price and availability** from the saved HTML:
+  **Step 1 — Fetch the Sage brand listing (one request gives every price).** Sage is
+  `brand_id=3769` on the espresso-machine category:
   ```
-  grep -oE 'property="product:price:(amount|currency)"[^>]*content="[^"]*"' /tmp/elding-espresso.html
-  grep -oiE '(backordered|in stock|out of stock|på lager|udsolgt|instock|outofstock)' /tmp/elding-espresso.html | head
+  curl -sL -A "$UA" \
+    "https://elding.fo/heim-havi/kaffi-te/espressomaskina?brand_id=3769" \
+    -o /tmp/elding-sage.html -w "%{http_code}\n" --max-time 30
   ```
-  - `product:price:amount` is the numeric price (e.g. `7999.00`), `product:price:currency` is the currency (e.g. `DKK`).
-  - Availability: `backordered` = on backorder, `instock`/`in stock` = in stock, `outofstock`/`out of stock` = sold out.
-  - If the HTTP code is not 200, or the price meta tag is missing, report that the check failed (include the HTTP code) and do NOT overwrite the saved price. Stop here.
+  If the HTTP code is not 200, report that the check failed (include the code) and do NOT
+  overwrite the cache. Stop here.
 
-  **Step 3 — Compare against the last recorded price.** Read the cache file (may not exist on first run):
+  **Step 2 — Extract the machines and their prices** from the listing. Each product block
+  carries `data-price-amount="<number>"`. Pair each Sage slug with its price, keeping every
+  Sage machine except the Bambino:
   ```
-  cat ~/.cache/reclaw/espresso-price.json 2>/dev/null
+  awk 'BEGIN{RS="product-item-info"} /sage-/ && !/bambino/ {
+    slug=""; price="";
+    if (match($0, /espressomaskina\/(sage-[a-z0-9-]+)"/, a)) slug=a[1];
+    if (match($0, /data-price-amount="([0-9.]+)"/, p)) price=p[1];
+    if (slug!="") print price"\t"slug;
+  }' /tmp/elding-sage.html | sort -u > /tmp/barista.tsv
+  cat /tmp/barista.tsv
   ```
-  It holds `{"price": <number>, "currency": "DKK", "date": "YYYY-MM-DD"}` from the previous successful check.
-  Determine: same price, price drop, or price increase versus the stored value.
+  Prices are in DKK (Faroese króna, pegged to DKK). If `/tmp/barista.tsv` is empty, the page
+  layout likely changed — report the failure and do NOT overwrite the cache. Stop here.
 
-  **Step 4 — Save today's price** for tomorrow's comparison (ensure the dir exists):
+  **Step 3 — Get availability per machine.** The listing's stock badge is JS-injected and not
+  in the static HTML, so fetch each product page once and read its schema availability marker
+  (`backordered` = on backorder, `instock` = in stock, `outofstock` = sold out):
+  ```
+  while IFS=$'\t' read -r price slug; do
+    curl -sL -A "$UA" "https://elding.fo/heim-havi/kaffi-te/espressomaskina/$slug" \
+      -o /tmp/pp.html --max-time 30
+    avail=$(grep -oiE '(backordered|outofstock|instock)' /tmp/pp.html | head -1)
+    printf '%s\t%s\t%s\n' "$slug" "$price" "${avail:-unknown}"
+  done < /tmp/barista.tsv
+  ```
+
+  **Step 4 — Compare against the last recorded prices.** Read the cache (may not exist on
+  first run):
+  ```
+  cat ~/.cache/reclaw/espresso-prices.json 2>/dev/null
+  ```
+  Schema: `{"date": "YYYY-MM-DD", "currency": "DKK", "machines": {"<slug>": <price>, ...}}`.
+  For each machine determine: unchanged, price drop, price increase, newly listed, or delisted
+  (in cache but missing from today's listing).
+
+  **Step 5 — Save today's prices** for tomorrow's comparison (ensure the dir exists). Write the
+  full machines map keyed by slug — substitute the real slug/price pairs you extracted:
   ```
   mkdir -p ~/.cache/reclaw
-  printf '%s' '{"price": <amount>, "currency": "<currency>", "date": "{{date}}"}' > ~/.cache/reclaw/espresso-price.json
+  cat > ~/.cache/reclaw/espresso-prices.json <<'JSON'
+  {"date": "{{date}}", "currency": "DKK", "machines": {"<slug1>": <price1>, "<slug2>": <price2>}}
+  JSON
   ```
-  Substitute the actual numeric amount and currency you extracted.
 
-  **Step 5 — Report to the user.** Keep it short:
-  - Lead with the current price formatted nicely (e.g. "7.999 DKK").
-  - State availability (in stock / backordered / sold out).
-  - If the price changed since last check, call it out clearly with the delta and direction (e.g. "📉 Down 500 DKK from 8.499 — was last checked 2026-06-26"). If unchanged, a brief "same as yesterday" is enough.
-  - On first run (no cache file), just report the current price and note you'll track changes from now on.
-  - Link: https://elding.fo/sage-barista-pro-espressomaskine-ses-878-bss-rustfrit-staal
+  **Step 6 — Report to the user.** Keep it tight and scannable:
+  - Lead with anything that CHANGED since last check — price drops/increases with the delta and
+    direction (e.g. "📉 Barista Pro: 7.499 DKK — down 500 from 7.999"), plus any new or delisted
+    models. If nothing changed, say so in one line ("All 6 Barista machines unchanged").
+  - Then a compact list/table of the current set grouped by model, with price, colour, and
+    availability. Variants that share a price (e.g. the four SES882 colours) should be grouped on
+    one line (e.g. "Barista Touch Impress (SES882) — 10.999 DKK · Almond Nougat / Brushed Steel /
+    Black Steel / Black Truffle"). Order cheapest model → priciest.
+  - Format prices nicely (e.g. "10.999 DKK"). Note availability (in stock / backordered / sold out).
+  - Derive readable model/colour names from the slug: ses882=Barista Touch Impress,
+    ses-878/ses878=Barista Pro, barista-express=Barista Express, ses985=Oracle Jet,
+    ses995=Oracle; colour suffixes alm=Almond Nougat, bss=Brushed Stainless Steel, bst=Black Steel,
+    btr=Black Truffle, soelv=Silver, sort=Black, rustfrit-staal=Stainless Steel.
+  - On first run under this schema (no cache, or old single-machine cache), just report the full
+    current set and note you'll track changes from now on.
+  - Category link: https://elding.fo/heim-havi/kaffi-te/espressomaskina?brand_id=3769
