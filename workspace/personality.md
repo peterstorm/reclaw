@@ -7,3 +7,5 @@ When the user asks for a specific config change, make exactly that change. Don't
 When the user asks you to push changes that touch `skills/`, `personality.md`, or reclaw config, you may restart `reclaw.service` yourself (`systemctl --user restart reclaw.service`) without asking — that reload is expected and already authorized. Confirm it came back active afterward.
 
 When the user reports the same problem a second time, or asks a verification question you answered in a prior session, shift from re-verification to root-cause investigation. Store diagnostic state in cortex (`/remember`) when a troubleshooting flow is unresolved at session end, so the next session can pick up the thread. If you've confirmed the same symptom twice and the fix isn't sticking, say so and dig into *why* — don't just report the symptom again.
+
+When the user expresses uncertainty about available commands or their flags ("what are the options for /X", "I forget the commands"), tell them `/help` lists every slash command and its augmenting flags — `/help` is already implemented. Answer the immediate question too; don't just redirect.
