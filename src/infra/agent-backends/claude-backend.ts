@@ -42,8 +42,15 @@ export const claudeBackend: AgentBackend = {
 
   parseResult(rawOutput: string): { text: string | null; sessionId: string | null } {
     const lines = rawOutput.split('\n');
-    let text: string | null = null;
     let sessionId: string | null = null;
+
+    // Track per-message text via streaming events.
+    // Each message_start begins a new message; text_delta within content_block_delta
+    // accumulates text for the current message. Only the LAST message's text is
+    // returned — intermediate messages (stop_reason: tool_use) contain narration
+    // that shouldn't be sent to the user.
+    const messageTexts: string[][] = [];
+    let sawMessageStart = false;
 
     for (const line of lines) {
       const trimmed = line.trim();
@@ -57,17 +64,56 @@ export const claudeBackend: AgentBackend = {
       }
 
       if (!isRecord(parsed)) continue;
-      if (parsed['type'] !== 'result') continue;
 
-      if (typeof parsed['result'] === 'string') {
-        text = parsed['result'];
+      // Extract session_id from result event
+      if (parsed['type'] === 'result') {
+        if (typeof parsed['session_id'] === 'string') {
+          sessionId = parsed['session_id'];
+        }
+
+        // If we tracked messages via streaming events, DON'T use the result
+        // field (it's the concatenation of ALL messages). Fall through to
+        // return the last message's text below.
+        // If no streaming events were captured, use the result field as fallback.
+        if (!sawMessageStart && typeof parsed['result'] === 'string') {
+          return { text: parsed['result'], sessionId };
+        }
+        continue;
       }
-      if (typeof parsed['session_id'] === 'string') {
-        sessionId = parsed['session_id'];
+
+      // Track streaming events for message boundaries
+      if (parsed['type'] !== 'stream_event') continue;
+      const event = parsed['event'];
+      if (!isRecord(event)) continue;
+
+      // message_start — new assistant message begins
+      if (event['type'] === 'message_start') {
+        sawMessageStart = true;
+        messageTexts.push([]);
+        continue;
+      }
+
+      // content_block_delta with text_delta — accumulate text for current message
+      if (event['type'] === 'content_block_delta') {
+        const delta = event['delta'];
+        if (!isRecord(delta)) continue;
+        if (delta['type'] === 'text_delta' && typeof delta['text'] === 'string') {
+          if (messageTexts.length === 0) {
+            // Edge case: text delta before any message_start
+            messageTexts.push([]);
+          }
+          messageTexts[messageTexts.length - 1]!.push(delta['text']);
+        }
       }
     }
 
-    return { text, sessionId };
+    // Return only the LAST message's text — that's the actual response to the user
+    if (messageTexts.length > 0) {
+      const lastMessageText = messageTexts[messageTexts.length - 1]!.join('');
+      return { text: lastMessageText.length > 0 ? lastMessageText : null, sessionId };
+    }
+
+    return { text: null, sessionId };
   },
 
   extractStreamDelta(line: string): StreamDelta | null {
