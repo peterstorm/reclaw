@@ -99,16 +99,20 @@ export function createCortexExtractor(
       proc.stdin.write(new TextEncoder().encode(hookInput));
       proc.stdin.end();
 
+      // Drain both pipes concurrently with exit to prevent pipe-buffer deadlock.
+      // Without draining, a child writing >64KB to stdout blocks waiting for a
+      // reader while the parent blocks on proc.exited — classic pipe deadlock.
+      const stdoutPromise = new Response(proc.stdout).text().catch(() => '');
+      const stderrPromise = new Response(proc.stderr).text().catch(() => '');
+
       const exitCode = await proc.exited;
       if (exitCode !== 0) {
-        let stderr = '';
-        try {
-          stderr = await new Response(proc.stderr).text();
-        } catch { /* ignore */ }
+        const stderr = await stderrPromise;
         console.error(`[cortex] Extract script exited with code ${exitCode}: ${stderr.trim()}`);
       } else {
         console.info(`[cortex] Extraction triggered for session ${sessionId}`);
       }
+      void stdoutPromise; // drained for back-pressure only
     })().catch((err: unknown) => {
       console.error(`[cortex] Extraction failed: ${err}`);
     });

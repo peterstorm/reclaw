@@ -121,7 +121,7 @@ export const piBackend: AgentBackend = {
 
   parseResult(rawOutput: string): { text: string | null; sessionId: string | null } {
     const lines = rawOutput.split('\n');
-    let text: string | null = null;
+    const allText: string[] = [];
     let sessionId: string | null = null;
 
     for (const line of lines) {
@@ -141,12 +141,12 @@ export const piBackend: AgentBackend = {
         );
 
         if (textParts.length > 0) {
-          text = textParts.join('\n');
+          allText.push(textParts.join('\n'));
         }
       }
     }
 
-    return { text, sessionId };
+    return { text: allText.length > 0 ? allText.join('\n') : null, sessionId };
   },
 
   extractStreamDelta(line: string): StreamDelta | null {

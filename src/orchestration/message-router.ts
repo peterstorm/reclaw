@@ -555,7 +555,7 @@ function routeStatusCommand(msg: IncomingMessage, deps: MessageRouterDeps): void
     try {
       const client = await deps.queues.chat.client;
       const pingStart = Date.now();
-      await client.ping();
+      await client.get("reclaw:healthcheck");
       redisStatus = `${Date.now() - pingStart}ms`;
     } catch (err) {
       console.error('[router] /status: redis ping failed:', err);

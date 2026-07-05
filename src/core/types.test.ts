@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   err,
-  flatMapResult,
   isChatJob,
   isScheduledJob,
   isResearchJob,
@@ -11,7 +10,6 @@ import {
   makeScheduledJob,
   makeSkillId,
   makeTelegramUserId,
-  mapResult,
   ok,
   emptySkillRegistry,
   skillRegistryFromList,
@@ -147,40 +145,6 @@ describe('ok / err', () => {
     const r = err('something went wrong');
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toBe('something went wrong');
-  });
-});
-
-describe('mapResult', () => {
-  it('transforms ok value', () => {
-    const r = mapResult(ok(2), (x) => x * 3);
-    expect(r.ok).toBe(true);
-    if (r.ok) expect(r.value).toBe(6);
-  });
-
-  it('passes through error unchanged', () => {
-    const r = mapResult(err('fail'), (x: number) => x * 3);
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toBe('fail');
-  });
-});
-
-describe('flatMapResult', () => {
-  it('chains ok results', () => {
-    const r = flatMapResult(ok(5), (x) => ok(x + 1));
-    expect(r.ok).toBe(true);
-    if (r.ok) expect(r.value).toBe(6);
-  });
-
-  it('short-circuits on first error', () => {
-    const r = flatMapResult(err('first'), (_x: number) => ok(99));
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toBe('first');
-  });
-
-  it('propagates error from inner function', () => {
-    const r = flatMapResult(ok(5), (_x) => err('inner fail'));
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toBe('inner fail');
   });
 });
 

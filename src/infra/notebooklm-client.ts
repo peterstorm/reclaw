@@ -173,8 +173,8 @@ export function isRetriableError(error: unknown): boolean {
   }
 
   // Layer 3: Duck-type fallback for future SDK versions or other libraries
-  if ('isRetryable' in error && typeof (error as any).isRetryable === 'function') {
-    return (error as any).isRetryable();
+  if ('isRetryable' in error && typeof (error as Record<string, unknown>).isRetryable === 'function') {
+    return (error as { isRetryable: () => boolean }).isRetryable();
   }
 
   // Layer 4: String heuristics for non-SDK errors (Node.js system errors, etc.)
@@ -209,9 +209,9 @@ async function safeCall<T>(fn: () => Promise<T>): Promise<Result<T, AdapterError
     // Log full error details for debugging SDK failures (e.g. gRPC error codes)
     const extras: Record<string, unknown> = {};
     if (err instanceof Error) {
-      if ('errorCode' in err) extras.errorCode = (err as any).errorCode;
-      if ('httpStatus' in err) extras.httpStatus = (err as any).httpStatus;
-      if ('rawResponse' in err) extras.rawResponse = (err as any).rawResponse;
+      if ('errorCode' in err) extras.errorCode = (err as Record<string, unknown>).errorCode;
+      if ('httpStatus' in err) extras.httpStatus = (err as Record<string, unknown>).httpStatus;
+      if ('rawResponse' in err) extras.rawResponse = (err as Record<string, unknown>).rawResponse;
     }
     console.error('[notebooklm:safeCall] SDK error:', message, Object.keys(extras).length > 0 ? extras : '');
     return { ok: false, error: { message, retriable: isRetriableError(err) } };
@@ -241,12 +241,18 @@ async function pollUntilReady(
   try {
     const sources = await sdk.sources.list(notebookId);
     const pending = sources.filter(
-      (s) => (s as unknown as { status?: string }).status !== 'COMPLETE' && (s as unknown as { status?: string }).status !== 'ready',
+      (s) => {
+        const status = (s as unknown as Record<string, unknown>).status as string | undefined;
+        return status !== 'COMPLETE' && status !== 'ready';
+      },
     );
     if (pending.length > 0) {
       const descriptions = pending
         .map(
-          (s) => `"${(s as unknown as { title?: string }).title ?? (s as unknown as { url?: string }).url ?? s.sourceId}"`,
+          (s) => {
+            const rec = s as unknown as Record<string, unknown>;
+            return `"${(rec.title as string | undefined) ?? (rec.url as string | undefined) ?? s.sourceId}"`;
+          },
         )
         .join(', ');
       pendingDetail = ` Unprocessed sources (${pending.length}): ${descriptions}.`;

@@ -355,7 +355,7 @@ async function executeAddingSources(
     };
   }
 
-  return { type: 'SOURCES_ADDED', sourceIds: addedIds, sourceUrlById };
+  return { type: 'SOURCES_ADDED', sourceUrlById };
 }
 
 /**

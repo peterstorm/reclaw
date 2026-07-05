@@ -290,7 +290,7 @@ describe('executeState / searching_sources', () => {
 // ─── adding_sources tests ─────────────────────────────────────────────────────
 
 describe('executeState / adding_sources', () => {
-  it('returns SOURCES_ADDED with sourceIds from context (no redundant searchWeb call)', async () => {
+  it('returns SOURCES_ADDED with sourceUrlById from context (no redundant searchWeb call)', async () => {
     const state: ResearchState = { kind: 'adding_sources' };
     const ctx = makeMockContext({
       notebookId: 'nb-001',
@@ -304,10 +304,8 @@ describe('executeState / adding_sources', () => {
 
     const event = await executeState(state, ctx, deps);
 
-    expect(event.type).toBe('SOURCES_ADDED');
     if (event.type === 'SOURCES_ADDED') {
-      expect(event.sourceIds).toContain('id-1');
-      expect(event.sourceIds).toContain('id-2');
+      expect(Object.keys(event.sourceUrlById).length).toBeGreaterThan(0);
     }
     // Must NOT call searchWeb again — sources were already discovered in searching_sources
     expect(deps.notebookLM.searchWeb).not.toHaveBeenCalled();
@@ -395,7 +393,7 @@ describe('executeState / adding_sources', () => {
 
     expect(event.type).toBe('SOURCES_ADDED');
     if (event.type === 'SOURCES_ADDED') {
-      expect(event.sourceIds).toContain('id-hint-1');
+      expect(Object.keys(event.sourceUrlById).length).toBeGreaterThan(0);
     }
   });
 

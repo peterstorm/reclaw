@@ -1,6 +1,6 @@
 import { Queue } from 'bullmq';
 import type { ChatJob, Job, PodcastJob, ReminderJob, RecurringReminderJob, ScheduledJob } from '../core/types.js';
-import { parseRecurringReminderJob } from '../core/job-schemas.js';
+import { parseRecurringReminderJob, parseResearchJobData } from '../core/job-schemas.js';
 import type { ResearchJobData } from '../core/research-types.js';
 import { stateProgress } from '../core/research-types.js';
 
@@ -124,14 +124,14 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
     // Set a durable marker so catch-up dedup survives BullMQ job cleanup.
     // TTL of 7 days is well beyond any validity window.
     const client = await scheduled.client;
-    await client.set(`reclaw:sched-fired:${job.id}`, '1', 'EX', 604800);
+    await client.set(`reclaw:sched-fired:${job.id}`, '1', { EX: 604800 });
   };
 
   const isScheduledJobKnown = async (jobId: string): Promise<boolean> => {
     // Check the durable marker first (reliable across BullMQ job lifecycle).
     const client = await scheduled.client;
-    const exists = await client.exists(`reclaw:sched-fired:${jobId}`);
-    if (exists > 0) return true;
+    const marker = await client.get(`reclaw:sched-fired:${jobId}`);
+    if (marker !== null) return true;
     // Fallback: check BullMQ job store (covers jobs enqueued before marker was introduced).
     const job = await scheduled.getJob(jobId);
     return job !== undefined;
@@ -143,12 +143,12 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
 
   const markScheduledJobCompleted = async (jobId: string): Promise<void> => {
     const client = await scheduled.client;
-    await client.set(`reclaw:sched-completed:${jobId}`, '1', 'EX', 604800);
+    await client.set(`reclaw:sched-completed:${jobId}`, '1', { EX: 604800 });
   };
 
   const isScheduledJobCompleted = async (jobId: string): Promise<boolean> => {
     const client = await scheduled.client;
-    return (await client.exists(`reclaw:sched-completed:${jobId}`)) > 0;
+    return (await client.get(`reclaw:sched-completed:${jobId}`)) !== null;
   };
 
   const reminder = createQueue('reclaw-reminder', connection, { ...retryOptions, ...defaultRetention });
@@ -249,13 +249,18 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
       return { active: null, waiting: waitingCount };
     }
 
-    const data = activeJob.data as ResearchJobData | undefined;
+    const parsed = parseResearchJobData(activeJob.data);
+    if (!parsed.ok) {
+      console.warn(`[queue] getResearchStatus: failed to parse active job data: ${parsed.error}`);
+      return { active: { topic: '(unknown)', state: '(unknown)', progress: 0, startedAt: '(unknown)' }, waiting: waitingCount };
+    }
+    const data = parsed.value;
     return {
       active: {
-        topic: data?.context?.topic ?? '(unknown)',
-        state: data?.state?.kind ?? '(unknown)',
-        progress: data?.state ? stateProgress(data.state) : 0,
-        startedAt: data?.context?.startedAt ?? '(unknown)',
+        topic: data.context?.topic ?? '(unknown)',
+        state: data.state?.kind ?? '(unknown)',
+        progress: data.state ? stateProgress(data.state) : 0,
+        startedAt: data.context?.startedAt ?? '(unknown)',
       },
       waiting: waitingCount,
     };

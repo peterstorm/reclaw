@@ -114,7 +114,7 @@ export type ResearchEvent =
   | { readonly type: 'TOPIC_DERIVED'; readonly topic: string; readonly topicSlug: TopicSlug }
   | { readonly type: 'NOTEBOOK_CREATED'; readonly notebookId: string }
   | { readonly type: 'SOURCES_DISCOVERED'; readonly webSources: readonly WebSource[]; readonly sessionId: string; readonly claudeDiscoveredUrls: readonly string[] }
-  | { readonly type: 'SOURCES_ADDED'; readonly sourceIds: readonly string[]; readonly sourceUrlById: Readonly<Record<string, string>> }
+  | { readonly type: 'SOURCES_ADDED'; readonly sourceUrlById: Readonly<Record<string, string>> }
   | { readonly type: 'SOURCES_READY'; readonly sources: readonly SourceMeta[] }
   | { readonly type: 'QUESTIONS_GENERATED'; readonly questions: readonly string[] }
   | { readonly type: 'QUERY_ANSWERED'; readonly question: string; readonly answer: ChatResponse }

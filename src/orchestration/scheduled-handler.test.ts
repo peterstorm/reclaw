@@ -238,6 +238,23 @@ describe('handleScheduledJob', () => {
 
     const callArgs = runClaude.mock.calls[0]![0];
     expect(callArgs.cwd).toBe('/my/workspace');
+    expect(callArgs.timeoutMs).toBe(300_000); // skill.timeout (300s) * 1000
+  });
+
+  it('falls back to global scheduledTimeoutMs when skill has no timeout', async () => {
+    const job = makeScheduledJob();
+    const telegram = makeTelegram();
+    const runClaude = makeRunClaude({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
+    const skillWithoutTimeout = makeSkillConfig({ timeout: 0 });
+
+    await handleScheduledJob(job, {
+      runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
+      telegram,
+      skillRegistry: makeRegistry([skillWithoutTimeout]),
+      config: makeConfig({ workspacePath: '/my/workspace', scheduledTimeoutMs: 200_000 }),
+    });
+
+    const callArgs = runClaude.mock.calls[0]![0];
     expect(callArgs.timeoutMs).toBe(200_000);
   });
 

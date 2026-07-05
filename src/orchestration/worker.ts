@@ -301,7 +301,11 @@ export function createWorkers(deps: WorkerDeps): Workers {
         .otherwise((k) => {
           throw new Error(`Invalid reminder job data: unexpected kind "${String(k)}"`);
         });
-      if (!result.ok) throw new Error(result.error);
+      // One-shot reminders retry on failure; recurring reminders do NOT retry
+      // because the next scheduled occurrence fires anyway (double-delivery risk).
+      if (!result.ok && kind !== 'recurring-reminder') {
+        throw new Error(result.error);
+      }
       return result;
     },
     { connection, concurrency: 1 },

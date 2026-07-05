@@ -326,6 +326,18 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
     for (let i = 0; i < finalizationPromises.length; i += BATCH_SIZE) {
       await Promise.all(finalizationPromises.slice(i, i + BATCH_SIZE));
     }
+
+    // All blocks were empty (content.length === 0) — fall through to result.output
+    if (finalizationPromises.length === 0 && placeholderMsgId !== null) {
+      const responseHtml = markdownToTelegramHtml(result.output);
+      const chunks = splitHtml(responseHtml);
+      if (chunks.length > 0) {
+        await deps.telegram.editMessage(job.chatId, placeholderMsgId, chunks[0]!, { html: true });
+        for (let i = 1; i < chunks.length; i++) {
+          await deps.telegram.sendMessage(job.chatId, chunks[i]!, { html: true });
+        }
+      }
+    }
   } else if (placeholderMsgId !== null) {
     // No streaming blocks — fall back to result.output
     const responseHtml = markdownToTelegramHtml(result.output);

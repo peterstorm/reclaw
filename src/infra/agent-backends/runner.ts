@@ -108,12 +108,12 @@ export async function runAgent(backend: AgentBackend, options: AgentOptions): Pr
   // protocol bytes downstream as if they were the answer.
   if (parsed.text === null) {
     console.warn(
-      `[runner] ${backend.name}.parseResult found no assistant text on exit-0 output (${rawOutput.length} bytes); falling back to raw stdout`,
+      `[runner] ${backend.name}.parseResult found no assistant text on exit-0 output (${rawOutput.length} bytes)`,
     );
+    return { ok: false, error: `${backend.name} produced no parseable assistant text (exit 0, ${rawOutput.length} bytes)`, timedOut: false };
   }
-  const output = parsed.text ?? rawOutput.trim();
 
-  return { ok: true, output, sessionId: parsed.sessionId, durationMs };
+  return { ok: true, output: parsed.text, sessionId: parsed.sessionId, durationMs };
 }
 
 // ─── Streaming Runner ─────────────────────────────────────────────────────────
@@ -190,15 +190,22 @@ export async function runAgentStreaming(
   const collectedLines: string[] = [];
 
   const emitChunk = (): void => {
-    onChunk({
-      phase: currentPhase,
-      thinking: accumulatedThinking,
-      text: accumulatedText,
-      currentBlockThinking,
-      currentBlockText,
-      thinkingBlockCount,
-      textBlockCount,
-    });
+    try {
+      onChunk({
+        phase: currentPhase,
+        thinking: accumulatedThinking,
+        text: accumulatedText,
+        currentBlockThinking,
+        currentBlockText,
+        thinkingBlockCount,
+        textBlockCount,
+      });
+    } catch (cbErr) {
+      // Callback faults must not propagate into the stdout read loop —
+      // a throwing onChunk (e.g. Telegram edit failure) should not abort
+      // an otherwise-healthy stream.
+      console.warn('[runner] onChunk callback threw:', cbErr);
+    }
   };
 
   const processLine = (line: string): void => {

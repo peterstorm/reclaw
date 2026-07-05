@@ -76,19 +76,6 @@ export function err<E>(error: E): Result<never, E> {
   return { ok: false, error };
 }
 
-export function mapResult<T, U, E>(
-  result: Result<T, E>,
-  f: (value: T) => U,
-): Result<U, E> {
-  return result.ok ? ok(f(result.value)) : result;
-}
-
-export function flatMapResult<T, U, E>(
-  result: Result<T, E>,
-  f: (value: T) => Result<U, E>,
-): Result<U, E> {
-  return result.ok ? f(result.value) : result;
-}
 
 // ─── Job Discriminated Union ───────────────────────────────────────────────────
 

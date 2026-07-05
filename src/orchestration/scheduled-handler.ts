@@ -99,7 +99,7 @@ export async function handleScheduledJob(job: ScheduledJob, deps: ScheduledDeps)
     prompt,
     cwd: deps.config.workspacePath,
     allowedTools,
-    timeoutMs: deps.config.scheduledTimeoutMs,
+    timeoutMs: skill.timeout ? skill.timeout * 1000 : deps.config.scheduledTimeoutMs,
   });
 
   // 7. Handle failure — no user notification for scheduled (goes to dead letter)

@@ -277,6 +277,7 @@ function handleQuerying(
         answers: nextAnswers,
         chatsUsed: ctx.chatsUsed + 1,
         lastError: null,
+        retries: clearRetries(ctx.retries, 'querying'),
       };
       return {
         state: { kind: 'querying' as const, questionsRemaining: state.questionsRemaining - 1 },
@@ -289,6 +290,7 @@ function handleQuerying(
         ...ctx,
         skippedQuestions: [...ctx.skippedQuestions, e.question],
         lastError: null,
+        retries: clearRetries(ctx.retries, 'querying'),
       };
       return {
         state: { kind: 'querying' as const, questionsRemaining: state.questionsRemaining - 1 },
