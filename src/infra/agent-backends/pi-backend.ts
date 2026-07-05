@@ -7,16 +7,6 @@
  *
  * Pi uses defaults for model/provider unless reclaw passes an explicit
  * modelSelection (mapped to --provider/--model), and loads all features (no --no-extensions or --no-skills flags).
- *
- * STATUS — NOT YET EXERCISED IN PRODUCTION (as of 2026-06-13).
- * The backend is fully wired: `resolveBackend()` (index.ts) returns it when
- * `AGENT_BACKEND=pi`, and `main.ts` routes every `runAgent`/`runAgentStreaming`
- * call through the resolved backend. But selection is GLOBAL and all-or-nothing
- * — there is no per-skill override (skill-config.ts has no `backend` field), so
- * flipping the env var would route *every* chat turn and scheduled skill to pi
- * at once. Until a per-skill canary route exists, pi runs only in unit tests.
- * Consequently the parse/stream paths below are unverified against a live pi
- * CLI; treat their event-shape assumptions as provisional.
  */
 
 import type { AgentBackend, AgentModelSelection, StreamDelta } from './types.js';
@@ -121,7 +111,11 @@ export const piBackend: AgentBackend = {
 
   parseResult(rawOutput: string): { text: string | null; sessionId: string | null } {
     const lines = rawOutput.split('\n');
-    const allText: string[] = [];
+    // Collect text from each message_end event separately. Only the LAST
+    // message's text is the actual user-facing response — intermediate messages
+    // (before tool calls) contain narration like "Let me check..." that should
+    // NOT be sent to the user. This matches the claude backend's behavior.
+    const messageTexts: string[] = [];
     let sessionId: string | null = null;
 
     for (const line of lines) {
@@ -141,12 +135,18 @@ export const piBackend: AgentBackend = {
         );
 
         if (textParts.length > 0) {
-          allText.push(textParts.join('\n'));
+          messageTexts.push(textParts.join('\n'));
         }
       }
     }
 
-    return { text: allText.length > 0 ? allText.join('\n') : null, sessionId };
+    // Return only the LAST message's text — that's the final response
+    if (messageTexts.length > 0) {
+      const lastText = messageTexts[messageTexts.length - 1]!;
+      return { text: lastText.length > 0 ? lastText : null, sessionId };
+    }
+
+    return { text: null, sessionId };
   },
 
   extractStreamDelta(line: string): StreamDelta | null {

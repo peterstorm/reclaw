@@ -147,6 +147,31 @@ describe('piBackend', () => {
       expect(result.text).toBe('Hello from Pi!');
     });
 
+    it('returns only the LAST message_end text (discards intermediate narration)', () => {
+      const lines = [
+        JSON.stringify({ type: 'session', id: 'sess-99' }),
+        // First assistant message — intermediate narration before tool call
+        JSON.stringify({
+          type: 'message_end',
+          message: { content: [{ type: 'text', text: 'Let me check the calendar...' }] },
+        }),
+        // Second assistant message — more narration before another tool call
+        JSON.stringify({
+          type: 'message_end',
+          message: { content: [{ type: 'text', text: 'Now let me gather git activity...' }] },
+        }),
+        // Final assistant message — the actual user-facing response
+        JSON.stringify({
+          type: 'message_end',
+          message: { content: [{ type: 'text', text: 'Here is your weekly summary!' }] },
+        }),
+      ];
+      const rawOutput = lines.join('\n');
+      const result = piBackend.parseResult(rawOutput);
+      expect(result.text).toBe('Here is your weekly summary!');
+      expect(result.sessionId).toBe('sess-99');
+    });
+
     it('returns nulls when no relevant events found', () => {
       const rawOutput = [
         JSON.stringify({
@@ -185,6 +210,24 @@ describe('piBackend', () => {
       });
       const result = piBackend.parseResult(rawOutput);
       expect(result.text).toBeNull();
+    });
+
+    it('skips intermediate message_end with only thinking blocks', () => {
+      const lines = [
+        // First message_end has only thinking — should be skipped entirely
+        JSON.stringify({
+          type: 'message_end',
+          message: { content: [{ type: 'thinking', text: 'reasoning...' }] },
+        }),
+        // Second message_end has text — this is the last with text, so returned
+        JSON.stringify({
+          type: 'message_end',
+          message: { content: [{ type: 'text', text: 'Final answer.' }] },
+        }),
+      ];
+      const rawOutput = lines.join('\n');
+      const result = piBackend.parseResult(rawOutput);
+      expect(result.text).toBe('Final answer.');
     });
   });
 
