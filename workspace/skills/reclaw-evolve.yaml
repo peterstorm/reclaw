@@ -22,11 +22,27 @@ promptTemplate: |
 
   ## Inputs
 
-  - Transcripts: `~/.claude/projects/-home-peterstorm-dev-claude-plugins-reclaw-workspace/*.jsonl`
+  - Transcripts (two backends — check BOTH):
+    - Claude: `~/.claude/projects/-home-peterstorm-dev-claude-plugins-reclaw-workspace/*.jsonl`
+    - Pi: `~/.pi/agent/sessions/--home-peterstorm-dev-claude-plugins-reclaw-workspace--/*.jsonl`
   - Skills: `/home/peterstorm/dev/claude-plugins/reclaw/workspace/skills/`
   - Personality: `/home/peterstorm/dev/claude-plugins/reclaw/workspace/personality.md`
   - Prior proposals: `~/dev/notes/remotevault/reclaw/evolve/`
   - Cortex memory store at `{{cwd}}/.memory/cortex.db`
+
+  ## Transcript format reference
+
+  The two backends use different JSONL schemas:
+
+  **Claude format:**
+  - User messages: `{"type":"user", "message":{"content":"..."}}`
+  - Assistant messages: `{"type":"assistant", "message":{"content":[{"type":"text","text":"..."},{"type":"tool_use","name":"Bash",...}]}}`
+  - Content is a string for user messages, array of blocks for assistant messages.
+
+  **Pi format:**
+  - User messages: `{"type":"message", "message":{"role":"user", "content":[{"type":"text","text":"..."}]}}`
+  - Assistant messages: `{"type":"message", "message":{"role":"assistant", "content":[{"type":"text","text":"..."},{"type":"toolCall","name":"bash",...}]}}`
+  - Content is always an array of typed blocks. Tool names are lowercase.
 
   ## Step 1 — Find conversational sessions from the past 7 days
 
@@ -34,33 +50,61 @@ promptTemplate: |
   conversations, (b) scheduled skill runs, (c) cortex internal LLM
   calls (consolidate/prune/extract). Only (a) is useful here.
 
+  Search BOTH transcript directories:
+
   ```bash
-  TRANSCRIPT_DIR=~/.claude/projects/-home-peterstorm-dev-claude-plugins-reclaw-workspace
-  CUTOFF=$(date -d '7 days ago' --iso-8601=seconds)
+  CLAUDE_DIR=~/.claude/projects/-home-peterstorm-dev-claude-plugins-reclaw-workspace
+  PI_DIR=~/.pi/agent/sessions/--home-peterstorm-dev-claude-plugins-reclaw-workspace--
 
-  find "$TRANSCRIPT_DIR" -name "*.jsonl" -mtime -7 -type f | while read -r f; do
-    # First user-role record; probe the session class by its first user message.
-    # NOTE: jq -rc decodes JSON strings — embedded newlines break `head -1`.
-    # Use grep -m1 to pick the first matching JSON LINE, then jq to decode.
-    FIRST=$(grep -m1 '"type":"user"' "$f" 2>/dev/null | jq -rc '.message.content // ""' 2>/dev/null)
-    [ -z "$FIRST" ] && continue
-    # Filter heuristics:
-    #   - Scheduled skill runs start with personality + "Time: ..." or "Today is ..." + "Step 1"
-    #   - Cortex internal calls start with "Classify relationships", "You are a memory pruner", "Extract memories from this"
-    case "$FIRST" in
-      *"Classify relationships between memory pairs"*) continue ;;
-      *"You are a memory pruner"*) continue ;;
-      *"Extract memories from this Claude Code session"*) continue ;;
-      *"Time: "*"Step 1"*) continue ;;
-      *"Today is"*"Step 1"*) continue ;;
-    esac
-    # Conversational sessions usually contain "You are a personal AI assistant"
-    # followed by "---" separator and a short user prompt.
-    case "$FIRST" in
-      *"You are a personal AI assistant"*"---"*) echo "$f" ;;
-    esac
-  done | sort > /tmp/reclaw-evolve-sessions.txt
+  rm -f /tmp/reclaw-evolve-sessions.txt
+  touch /tmp/reclaw-evolve-sessions.txt
 
+  # ─── Claude transcripts ───────────────────────────────────────────
+  if [ -d "$CLAUDE_DIR" ]; then
+    find "$CLAUDE_DIR" -maxdepth 1 -name "*.jsonl" -mtime -7 -type f | while read -r f; do
+      FIRST=$(grep -m1 '"type":"user"' "$f" 2>/dev/null | jq -rc '.message.content // ""' 2>/dev/null)
+      [ -z "$FIRST" ] && continue
+      # Filter out scheduled/cortex sessions
+      case "$FIRST" in
+        *"Classify relationships between memory pairs"*) continue ;;
+        *"You are a memory pruner"*) continue ;;
+        *"Extract memories from this Claude Code session"*) continue ;;
+        *"Time: "*"Step 1"*) continue ;;
+        *"Today is"*"Step 1"*) continue ;;
+      esac
+      # Conversational sessions contain the personality wrapper
+      case "$FIRST" in
+        *"You are a personal AI assistant"*"---"*) echo "claude:$f" ;;
+      esac
+    done >> /tmp/reclaw-evolve-sessions.txt
+  fi
+
+  # ─── Pi transcripts ──────────────────────────────────────────────
+  if [ -d "$PI_DIR" ]; then
+    find "$PI_DIR" -name "*.jsonl" -mtime -7 -type f | while read -r f; do
+      # Pi uses {"type":"message","message":{"role":"user","content":[...]}}
+      FIRST_LINE=$(grep -m1 '"role":"user"' "$f" 2>/dev/null)
+      [ -z "$FIRST_LINE" ] && continue
+      # Extract text from the content array
+      FIRST=$(echo "$FIRST_LINE" | jq -rc '[.message.content[]? | select(.type=="text") | .text] | join("")' 2>/dev/null)
+      [ -z "$FIRST" ] && continue
+      # Filter out scheduled/cortex sessions (same heuristics)
+      case "$FIRST" in
+        *"Classify relationships between memory pairs"*) continue ;;
+        *"You are a memory pruner"*) continue ;;
+        *"Extract memories from this Claude Code session"*) continue ;;
+        *"Extract memories from this"*"session"*) continue ;;
+        *"Time: "*"Step 1"*) continue ;;
+        *"Today is"*"Step 1"*) continue ;;
+      esac
+      # Conversational sessions contain the personality wrapper
+      case "$FIRST" in
+        *"You are a personal AI assistant"*"---"*) echo "pi:$f" ;;
+      esac
+    done >> /tmp/reclaw-evolve-sessions.txt
+  fi
+
+  sort /tmp/reclaw-evolve-sessions.txt -o /tmp/reclaw-evolve-sessions.txt
   wc -l /tmp/reclaw-evolve-sessions.txt
   ```
 
@@ -72,11 +116,24 @@ promptTemplate: |
   user's actual message. Collect every user turn across all sessions.
 
   ```bash
-  while read -r f; do
-    jq -rc --arg file "$f" '
-      select(.type=="user" and (.message.content | type == "string"))
-      | {ts: .timestamp, sid: .sessionId, file: $file, text: .message.content}
-    ' "$f" 2>/dev/null
+  while IFS= read -r entry; do
+    backend="${entry%%:*}"
+    f="${entry#*:}"
+
+    if [ "$backend" = "claude" ]; then
+      # Claude: type=user, content is a string
+      jq -rc --arg file "$f" --arg backend "claude" '
+        select(.type=="user" and (.message.content | type == "string"))
+        | {ts: .timestamp, sid: .sessionId, file: $file, backend: $backend, text: .message.content}
+      ' "$f" 2>/dev/null
+    else
+      # Pi: type=message, message.role=user, content is array of blocks
+      jq -rc --arg file "$f" --arg backend "pi" '
+        select(.type=="message" and .message.role=="user")
+        | {ts: .timestamp, sid: .id, file: $file, backend: $backend,
+           text: ([.message.content[]? | select(.type=="text") | .text] | join("\n"))}
+      ' "$f" 2>/dev/null
+    fi
   done < /tmp/reclaw-evolve-sessions.txt > /tmp/reclaw-evolve-user-turns.jsonl
 
   wc -l /tmp/reclaw-evolve-user-turns.jsonl
@@ -130,11 +187,20 @@ promptTemplate: |
   are not already encoded as a skill. These are candidate new skills.
 
   ```bash
-  # Extract assistant tool_use blocks per session, build per-session
-  # ordered tool-name sequence, then look for repeating 3-grams.
-  while read -r f; do
-    jq -rc 'select(.type=="assistant") | .message.content[]? | select(.type=="tool_use") | .name' "$f" 2>/dev/null
+  # Extract tool names from assistant messages, handling both backends
+  while IFS= read -r entry; do
+    backend="${entry%%:*}"
+    f="${entry#*:}"
+
+    if [ "$backend" = "claude" ]; then
+      # Claude: type=assistant, content[].type=tool_use, .name (capitalized)
+      jq -rc 'select(.type=="assistant") | .message.content[]? | select(.type=="tool_use") | .name' "$f" 2>/dev/null
+    else
+      # Pi: type=message, role=assistant, content[].type=toolCall, .name (lowercase)
+      jq -rc 'select(.type=="message" and .message.role=="assistant") | .message.content[]? | select(.type=="toolCall") | .name' "$f" 2>/dev/null
+    fi
   done < /tmp/reclaw-evolve-sessions.txt | \
+    tr '[:upper:]' '[:lower:]' | \
     awk 'NR>2 {print prev2, prev1, $0} {prev2=prev1; prev1=$0}' | \
     sort | uniq -c | sort -rn | head -30 > /tmp/reclaw-evolve-trigrams.txt
   ```
