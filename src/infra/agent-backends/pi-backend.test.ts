@@ -113,6 +113,7 @@ describe('piBackend', () => {
       const rawOutput = JSON.stringify({
         type: 'message_end',
         message: {
+          role: 'assistant',
           content: [{ type: 'text', text: 'Hello, world!' }],
         },
       });
@@ -138,7 +139,7 @@ describe('piBackend', () => {
         }),
         JSON.stringify({
           type: 'message_end',
-          message: { content: [{ type: 'text', text: 'Hello from Pi!' }] },
+          message: { role: 'assistant', content: [{ type: 'text', text: 'Hello from Pi!' }] },
         }),
       ];
       const rawOutput = lines.join('\n');
@@ -153,17 +154,17 @@ describe('piBackend', () => {
         // First assistant message — intermediate narration before tool call
         JSON.stringify({
           type: 'message_end',
-          message: { content: [{ type: 'text', text: 'Let me check the calendar...' }] },
+          message: { role: 'assistant', content: [{ type: 'text', text: 'Let me check the calendar...' }] },
         }),
         // Second assistant message — more narration before another tool call
         JSON.stringify({
           type: 'message_end',
-          message: { content: [{ type: 'text', text: 'Now let me gather git activity...' }] },
+          message: { role: 'assistant', content: [{ type: 'text', text: 'Now let me gather git activity...' }] },
         }),
         // Final assistant message — the actual user-facing response
         JSON.stringify({
           type: 'message_end',
-          message: { content: [{ type: 'text', text: 'Here is your weekly summary!' }] },
+          message: { role: 'assistant', content: [{ type: 'text', text: 'Here is your weekly summary!' }] },
         }),
       ];
       const rawOutput = lines.join('\n');
@@ -190,6 +191,7 @@ describe('piBackend', () => {
       const rawOutput = JSON.stringify({
         type: 'message_end',
         message: {
+          role: 'assistant',
           content: [
             { type: 'text', text: 'First paragraph.' },
             { type: 'thinking', text: 'internal thought' },
@@ -205,6 +207,7 @@ describe('piBackend', () => {
       const rawOutput = JSON.stringify({
         type: 'message_end',
         message: {
+          role: 'assistant',
           content: [{ type: 'thinking', text: 'just thinking' }],
         },
       });
@@ -217,17 +220,86 @@ describe('piBackend', () => {
         // First message_end has only thinking — should be skipped entirely
         JSON.stringify({
           type: 'message_end',
-          message: { content: [{ type: 'thinking', text: 'reasoning...' }] },
+          message: { role: 'assistant', content: [{ type: 'thinking', text: 'reasoning...' }] },
         }),
         // Second message_end has text — this is the last with text, so returned
         JSON.stringify({
           type: 'message_end',
-          message: { content: [{ type: 'text', text: 'Final answer.' }] },
+          message: { role: 'assistant', content: [{ type: 'text', text: 'Final answer.' }] },
         }),
       ];
       const rawOutput = lines.join('\n');
       const result = piBackend.parseResult(rawOutput);
       expect(result.text).toBe('Final answer.');
+    });
+
+    it('ignores the echoed user message_end (pi emits one per message, including the prompt)', () => {
+      const lines = [
+        JSON.stringify({
+          type: 'message_end',
+          message: { role: 'user', content: [{ type: 'text', text: 'run the daily skill' }] },
+        }),
+        JSON.stringify({
+          type: 'message_end',
+          message: { role: 'assistant', content: [{ type: 'text', text: 'Done, here it is.' }] },
+        }),
+      ];
+      const result = piBackend.parseResult(lines.join('\n'));
+      expect(result.text).toBe('Done, here it is.');
+    });
+
+    it('does NOT parrot the user prompt when the assistant errored with empty content', () => {
+      const lines = [
+        JSON.stringify({
+          type: 'message_end',
+          message: { role: 'user', content: [{ type: 'text', text: 'the skill prompt' }] },
+        }),
+        JSON.stringify({
+          type: 'message_end',
+          message: {
+            role: 'assistant',
+            content: [],
+            stopReason: 'error',
+            errorMessage: '429 quota exceeded\n',
+          },
+        }),
+      ];
+      const result = piBackend.parseResult(lines.join('\n'));
+      expect(result.text).toBeNull();
+      expect(result.errorMessage).toBe('429 quota exceeded');
+    });
+
+    it('prefers real assistant text over an earlier errored attempt (auto-retry succeeded)', () => {
+      const lines = [
+        JSON.stringify({
+          type: 'message_end',
+          message: { role: 'user', content: [{ type: 'text', text: 'hello' }] },
+        }),
+        JSON.stringify({
+          type: 'message_end',
+          message: {
+            role: 'assistant',
+            content: [],
+            stopReason: 'error',
+            errorMessage: '429 quota exceeded\n',
+          },
+        }),
+        JSON.stringify({
+          type: 'message_end',
+          message: { role: 'assistant', content: [{ type: 'text', text: 'Hi there!' }] },
+        }),
+      ];
+      const result = piBackend.parseResult(lines.join('\n'));
+      expect(result.text).toBe('Hi there!');
+    });
+
+    it('returns null text when only a user message_end is present', () => {
+      const rawOutput = JSON.stringify({
+        type: 'message_end',
+        message: { role: 'user', content: [{ type: 'text', text: 'just the prompt' }] },
+      });
+      const result = piBackend.parseResult(rawOutput);
+      expect(result.text).toBeNull();
     });
   });
 
@@ -274,7 +346,7 @@ describe('piBackend', () => {
 
       const messageEndLine = JSON.stringify({
         type: 'message_end',
-        message: { content: [{ type: 'text', text: 'done' }] },
+        message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] },
       });
       expect(piBackend.extractStreamDelta(messageEndLine)).toBeNull();
     });
@@ -316,7 +388,7 @@ describe('piBackend', () => {
 
       const endLine = JSON.stringify({
         type: 'message_end',
-        message: { content: [] },
+        message: { role: 'assistant', content: [] },
       });
       expect(piBackend.extractSessionId(endLine)).toBeNull();
     });

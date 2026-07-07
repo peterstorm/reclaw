@@ -21,6 +21,9 @@ type PiSessionEvent = {
 type PiMessageEndEvent = {
   readonly type: 'message_end';
   readonly message: {
+    readonly role?: string;
+    readonly stopReason?: string;
+    readonly errorMessage?: string;
     readonly content: ReadonlyArray<{ readonly type: string; readonly text?: string }>;
   };
 };
@@ -56,6 +59,13 @@ const isMessageEndEvent = (parsed: unknown): parsed is PiMessageEndEvent =>
   typeof (parsed as Record<string, unknown>).message === 'object' &&
   (parsed as Record<string, unknown>).message !== null &&
   Array.isArray(((parsed as Record<string, unknown>).message as Record<string, unknown>).content);
+
+// Pi emits a message_end for EVERY message in the turn — including an echo of
+// the user's own prompt (role: "user"). Only assistant messages are candidate
+// replies; without this filter, an errored/empty assistant turn makes the
+// user's prompt the last text-bearing message_end and it gets parroted back.
+const isAssistantMessageEnd = (event: PiMessageEndEvent): boolean =>
+  event.message.role === 'assistant';
 
 const isMessageUpdateEvent = (parsed: unknown): parsed is PiMessageUpdateEvent =>
   typeof parsed === 'object' &&
@@ -109,14 +119,19 @@ export const piBackend: AgentBackend = {
     return env;
   },
 
-  parseResult(rawOutput: string): { text: string | null; sessionId: string | null } {
+  parseResult(rawOutput: string): {
+    text: string | null;
+    sessionId: string | null;
+    errorMessage?: string | null;
+  } {
     const lines = rawOutput.split('\n');
-    // Collect text from each message_end event separately. Only the LAST
-    // message's text is the actual user-facing response — intermediate messages
-    // (before tool calls) contain narration like "Let me check..." that should
-    // NOT be sent to the user. This matches the claude backend's behavior.
+    // Collect text from each assistant message_end event separately. Only the
+    // LAST message's text is the actual user-facing response — intermediate
+    // messages (before tool calls) contain narration like "Let me check..."
+    // that should NOT be sent to the user. Matches the claude backend.
     const messageTexts: string[] = [];
     let sessionId: string | null = null;
+    let errorMessage: string | null = null;
 
     for (const line of lines) {
       const trimmed = line.trim();
@@ -129,7 +144,14 @@ export const piBackend: AgentBackend = {
         sessionId = parsed.id;
       }
 
-      if (isMessageEndEvent(parsed)) {
+      if (isMessageEndEvent(parsed) && isAssistantMessageEnd(parsed)) {
+        // Pi reports provider failures (429s, auth errors) inside an exit-0
+        // run via stopReason: "error" on the assistant message.
+        if (parsed.message.stopReason === 'error') {
+          errorMessage = parsed.message.errorMessage?.trim() || 'pi reported an agent error';
+          continue;
+        }
+
         const textParts = parsed.message.content.flatMap((block) =>
           block.type === 'text' && typeof block.text === 'string' ? [block.text] : [],
         );
@@ -143,10 +165,10 @@ export const piBackend: AgentBackend = {
     // Return only the LAST message's text — that's the final response
     if (messageTexts.length > 0) {
       const lastText = messageTexts[messageTexts.length - 1]!;
-      return { text: lastText.length > 0 ? lastText : null, sessionId };
+      return { text: lastText.length > 0 ? lastText : null, sessionId, errorMessage };
     }
 
-    return { text: null, sessionId };
+    return { text: null, sessionId, errorMessage };
   },
 
   extractStreamDelta(line: string): StreamDelta | null {

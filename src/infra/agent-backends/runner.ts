@@ -107,10 +107,11 @@ export async function runAgent(backend: AgentBackend, options: AgentOptions): Pr
   // mismatch, not a real reply. Surface it instead of silently shipping raw
   // protocol bytes downstream as if they were the answer.
   if (parsed.text === null) {
-    console.warn(
-      `[runner] ${backend.name}.parseResult found no assistant text on exit-0 output (${rawOutput.length} bytes)`,
-    );
-    return { ok: false, error: `${backend.name} produced no parseable assistant text (exit 0, ${rawOutput.length} bytes)`, timedOut: false };
+    const agentError = parsed.errorMessage
+      ? `${backend.name} agent error: ${parsed.errorMessage}`
+      : `${backend.name} produced no parseable assistant text (exit 0, ${rawOutput.length} bytes)`;
+    console.warn(`[runner] ${agentError}`);
+    return { ok: false, error: agentError, timedOut: false };
   }
 
   return { ok: true, output: parsed.text, sessionId: parsed.sessionId, durationMs };
@@ -304,6 +305,16 @@ export async function runAgentStreaming(
   const rawCollected = collectedLines.join('\n');
   const parsed = backend.parseResult(rawCollected);
   if (parsed.text === null) {
+    // No final text AND no streamed deltas: the agent produced nothing. If the
+    // backend reported an agent-level error (e.g. 429 quota), fail loudly —
+    // returning ok:true with empty output looks like "the bot ignored me".
+    if (accumulatedText.length === 0) {
+      const agentError = parsed.errorMessage
+        ? `${backend.name} agent error: ${parsed.errorMessage}`
+        : `${backend.name} produced no assistant text on exit-0 stream`;
+      console.warn(`[runner] ${agentError}`);
+      return { ok: false, error: agentError, timedOut: false };
+    }
     console.warn(
       `[runner] ${backend.name}.parseResult found no final assistant text on exit-0 stream; falling back to ${accumulatedText.length} accumulated bytes`,
     );

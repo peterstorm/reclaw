@@ -90,7 +90,16 @@ export interface AgentBackend {
     modelSelection?: AgentModelSelection;
   }): string[];
   cleanEnv(env: Record<string, string | undefined>): Record<string, string | undefined>;
-  parseResult(rawOutput: string): { text: string | null; sessionId: string | null };
+  parseResult(rawOutput: string): {
+    text: string | null;
+    sessionId: string | null;
+    /**
+     * Provider/agent-level failure reported inside an exit-0 run (e.g. pi's
+     * `stopReason: "error"` with a 429 quota message). When text is null and
+     * this is set, the run failed even though the process exited cleanly.
+     */
+    errorMessage?: string | null;
+  };
   extractStreamDelta(line: string): StreamDelta | null;
   extractSessionId(line: string): string | null;
 }
