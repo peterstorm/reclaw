@@ -1,66 +1,42 @@
 /**
- * Fire-and-forget cortex memory recorder for skill execution quality signals.
+ * Fire-and-forget recorder for skill execution quality signals.
  *
- * Spawns the cortex engine CLI's `remember` subcommand in the background.
- * Errors are logged but never propagated — quality tracking must never block
- * or fail a scheduled job.
+ * Appends one JSON line per anomalous scheduled run to a durable JSONL log
+ * (default `~/.cache/reclaw/skill-quality.jsonl`). The skill-quality-monitor
+ * reads this file for its weekly triage. Errors are logged but never propagated —
+ * quality tracking must never block or fail a scheduled job.
+ *
+ * This replaces the previous cortex-memory recorder: writing to a dedicated file
+ * (that cortex-prune never touches) removes the fragile carve-out the pruner
+ * needed to avoid eating the monitor's input, and keeps the recall surface clean.
  */
 
-import { toMemory, type SkillQualitySignal } from '../core/skill-quality.js';
+import { appendFile, mkdir } from 'node:fs/promises';
+import { dirname } from 'node:path';
+import { toRecord, type SkillQualitySignal } from '../core/skill-quality.js';
 
 export type SkillQualityRecorder = (signal: SkillQualitySignal) => void;
 
 /**
- * Create a recorder bound to a resolved cortex CLI path and project cwd.
+ * Create a recorder bound to a JSONL log path.
  *
- * The recorder filters signals through `toMemory` (anomalies-only policy);
- * non-recordable signals are silently dropped without spawning anything.
+ * The recorder filters signals through `toRecord` (anomalies-only policy);
+ * non-recordable signals are silently dropped without touching the disk.
  */
-export function createSkillQualityRecorder(
-  cliPath: string,
-  cwd: string,
-): SkillQualityRecorder {
+export function createSkillQualityRecorder(logPath: string): SkillQualityRecorder {
   return (signal: SkillQualitySignal): void => {
-    const memory = toMemory(signal);
-    if (memory === null) return;
+    const record = toRecord(signal);
+    if (record === null) return;
 
     void (async () => {
-      const args = [
-        'run',
-        cliPath,
-        'remember',
-        cwd,
-        memory.content,
-        `--type=${memory.type}`,
-        `--priority=${memory.priority}`,
-        `--tags=${memory.tags.join(',')}`,
-      ];
-      if (memory.pinned) args.push('--pinned');
-
-      const proc = Bun.spawn(['bun', ...args], {
-        stdout: 'pipe',
-        stderr: 'pipe',
-        env: process.env,
-      });
-
-      // Drain both pipes concurrently with exit. Without draining, a large
-      // stdout/stderr write fills the pipe buffer and blocks the child waiting
-      // for a reader while the parent waits for `proc.exited` — same deadlock
-      // pattern guarded against in agent-backends/runner.ts. The cortex remember
-      // CLI normally writes little, but this defends against a verbose error.
-      const stdoutPromise = new Response(proc.stdout).text().catch(() => '');
-      const stderrPromise = new Response(proc.stderr).text().catch(() => '');
-
-      const exitCode = await proc.exited;
-      if (exitCode !== 0) {
-        const stderr = await stderrPromise;
-        console.error(
-          `[skill-quality] remember exited ${exitCode} for skill=${signal.skillId} status=${signal.status}: ${stderr.trim()}`,
-        );
-      }
-      void stdoutPromise; // drained for back-pressure only — its .catch already absorbs rejections
+      // Ensure the parent dir exists (idempotent), then append a single line.
+      // The scheduled queue runs at concurrency 1, so appends never interleave.
+      await mkdir(dirname(logPath), { recursive: true });
+      await appendFile(logPath, `${JSON.stringify(record)}\n`, 'utf8');
     })().catch((err: unknown) => {
-      console.error(`[skill-quality] recorder failed: ${err}`);
+      console.error(
+        `[skill-quality] failed to append record for skill=${signal.skillId} status=${signal.status}: ${err}`,
+      );
     });
   };
 }

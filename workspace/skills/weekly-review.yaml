@@ -1,25 +1,22 @@
-id: weekly-review
 name: Weekly Review
-schedule: "0 10 * * 0"
+schedule: "30 10 * * 0"
 permissionProfile: scheduled
 validityWindowMinutes: 60
-timeout: 180
 promptTemplate: |
   {{personality}}
 
   Today is {{dayOfWeek}}, {{date}}.
 
-  Generate a weekly review summarizing what the user did this past week (Monday–Sunday). Write it to an Obsidian note and send a Telegram summary.
+  Generate a weekly review summarizing what the user did this past week (Monday through Saturday plus Sunday morning — this runs Sunday at 10:30, so the current Sunday is only partially covered). Write it to an Obsidian note and send a Telegram summary.
 
   ## Step 1 — Gather the week's data
 
   **Journal entries:**
   Daily journal notes are stored in year/month folders: `~/dev/notes/remotevault/personal/journal/YYYY/MM/YYYY-MM-DD.md`
-  Read this week's entries:
+  Read this week's entries (`-newermt` takes a time expression directly — do not pass a date through `-newer`, which expects a reference *file*):
   ```
-  find ~/dev/notes/remotevault/personal/journal -path '*/[0-9][0-9][0-9][0-9]/[0-9][0-9]/*.md' -newer $(date -d '7 days ago' +%Y-%m-%d) 2>/dev/null | sort
+  find ~/dev/notes/remotevault/personal/journal -path '*/[0-9][0-9][0-9][0-9]/[0-9][0-9]/*.md' -newermt '7 days ago' 2>/dev/null | sort
   ```
-  If the find approach doesn't work, check the current and previous month folders and filter by filename date.
 
   **Cortex memory:**
   Run `/recall` with queries: "this week", "decision", "shipped", "built", "fixed", "learned" to surface key events.

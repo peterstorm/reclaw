@@ -1,4 +1,3 @@
-id: tech-digest
 name: Daily Tech Digest
 schedule: "0 8 * * *"
 permissionProfile: scheduled
@@ -9,35 +8,50 @@ promptTemplate: |
 
   Today is {{dayOfWeek}}, {{date}}.
 
-  You are curating a daily tech digest from multiple sources. Fetch the following RSS feeds and websites, then surface the most interesting recent stories.
+  You are curating a daily tech digest. A helper script does all the fetching and
+  parsing — you never curl feeds yourself (that dumped multi-MB XML into the
+  workspace and burned the whole context parsing it).
 
-  ## Sources to fetch
+  ## Step 1 — Get candidate items
 
-  Fetch each of these (skip any that fail and note it):
+  Run the fetcher. It fetches all 11 feeds in parallel, parses each to compact
+  records, drops items older than 3 days, and drops anything already featured in a
+  previous digest (tracked in `~/.cache/reclaw/tech-digest-seen.txt`):
 
-  1. Hacker News — https://news.ycombinator.com/rss
-  2. Lobsters — https://lobste.rs/rss
-  3. Simon Willison's Weblog — https://simonwillison.net/atom/everything/
-  4. Ars Technica — https://feeds.arstechnica.com/arstechnica/index
-  5. LWN.net — https://lwn.net/headlines/rss
-  6. One Useful Thing (Ethan Mollick) — https://www.oneusefulthing.org/feed
-  7. Lilian Weng — https://lilianweng.github.io/index.xml
-  8. Zvi Mowshowitz (Don't Worry About the Vase) — https://thezvi.substack.com/feed
-  9. Latent Space — https://www.latent.space/feed
-  10. AI Snake Oil / Normal Tech — https://www.normaltech.ai/feed
-  11. Interconnects (Nathan Lambert) — https://www.interconnects.ai/feed
+  ```
+  bun /home/peterstorm/dev/claude-plugins/reclaw/scripts/fetch-feeds.ts --days 3
+  ```
 
-  ## Output format
+  Output is JSON: `{ generatedAt, count, errors: [{source, error}], items: [{source, title, link, date, summary}] }`.
 
-  Curate 5-8 of the most noteworthy items across all sources. For each:
+  - If `errors` is non-empty, note which feeds failed at the end of the digest (one line).
+  - If `count` is 0, respond with exactly ALL_CLEAR — no backticks, nothing else
+    (everything recent was already covered).
+
+  ## Step 2 — Curate
+
+  From `items`, pick the 5-8 most noteworthy. Focus on: AI/LLM developments, systems
+  programming, Linux/NixOS, developer tools, security, and notable open-source
+  releases. Deprioritize pure business/funding news, product marketing, and clickbait.
+
+  For each pick:
   - **Title** with link
   - **Source** name
-  - 2-3 sentence summary
-  - Why it matters
+  - 1-2 sentence summary (lean on the provided `summary`; keep it tight)
+  - Why it matters (one clause)
 
-  Group loosely by theme (AI/ML, Systems/Infra, Industry, etc.) rather than by source.
-
-  Focus on: AI/LLM developments, systems programming, Linux/NixOS, developer tools, security, and notable open-source releases.
-  Deprioritize: pure business/funding news, product marketing, and clickbait.
+  Group loosely by theme (AI/ML, Systems/Infra, Industry, etc.), not by source.
+  Aim for one Telegram message — if it won't fit, cut to the strongest items rather
+  than spilling to a second message.
 
   End with a one-line "TLDR of the day" — the single most important development.
+
+  ## Step 3 — Mark featured items as seen
+
+  So tomorrow's run doesn't re-surface the same stories (Mollick/Zvi/Weng post
+  infrequently and would otherwise repeat for days), feed the links you featured back
+  to the seen-cache:
+
+  ```
+  printf '%s\n' "<link1>" "<link2>" ... | bun /home/peterstorm/dev/claude-plugins/reclaw/scripts/fetch-feeds.ts --mark
+  ```

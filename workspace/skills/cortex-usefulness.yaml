@@ -1,5 +1,5 @@
 name: Cortex Usefulness Signal (v0)
-schedule: "30 1 * * *"
+schedule: "0 0 * * *"  # midnight — runs BEFORE cortex-prune (which now depends on this) so usefulness bumps land while memories are still active and prune can honor them.
 permissionProfile: scheduled
 validityWindowMinutes: 60
 timeout: 300
@@ -109,7 +109,10 @@ promptTemplate: |
   "
   ```
 
-  If the JSON output has `useful: []` (empty), output exactly `ALL_CLEAR` and stop.
+  If the JSON output has `useful: []` (empty), skip Steps 2 and 3 (nothing to map or
+  bump) but **still run the tracker in Step 2's divergence-check block** — the
+  recall-death counter must update even on a no-useful day, since recall death *looks*
+  like a quiet day. Set `matched.length = 0` for the tracker, then go to Step 4.
 
   ## Step 2: Map summaries to memory IDs
 
@@ -142,18 +145,25 @@ promptTemplate: |
   differently, or if the schema changes — and the skill would otherwise still
   report "useful detected, 0 bumped" and look healthy.
 
-  Track per-day divergence in `~/.cache/reclaw/cortex-usefulness-divergence.json`
-  (create dir/file if missing). Format:
+  This block tracks TWO independent silent-failure modes in
+  `~/.cache/reclaw/cortex-usefulness-divergence.json` (create dir/file if missing):
+
+  1. **Matcher divergence** (`streak`): `useful > 0` but `matched === 0` — Step 2's
+     summary lookup is failing (schema/format drift).
+  2. **Recall death** (`recall_dead_streak`): `files > 0` but `recall_turns === 0` —
+     Step 1's regex found transcripts but extracted zero CORTEX_RECALL blocks. This is
+     the dangerous mode: it looks identical to a quiet day (`useful: []` → `ALL_CLEAR`),
+     so without this counter a broken recall hook / changed block format would silence
+     the skill forever with no alert.
+
+  Format:
 
   ```json
-  {"streak": 0, "last_divergence_date": null, "last_match_date": "YYYY-MM-DD"}
+  {"streak": 0, "last_divergence_date": null, "last_match_date": null,
+   "recall_dead_streak": 0, "last_recall_dead_date": null, "last_recall_date": null}
   ```
 
   Update logic (run after Step 2 produces `matched`):
-  - If `useful.length === 0`: leave file unchanged (no signal either way).
-  - Else if `matched.length > 0`: reset `streak: 0`, set `last_match_date` to today.
-  - Else (`useful > 0 && matched === 0`): increment `streak`, set
-    `last_divergence_date` to today.
 
   ```bash
   bun -e "
@@ -162,13 +172,18 @@ promptTemplate: |
   import { homedir } from 'os';
   const path = join(homedir(), '.cache/reclaw/cortex-usefulness-divergence.json');
   const today = new Date().toISOString().slice(0, 10);
-  const usefulCount = USEFUL_COUNT;   // from Step 1
-  const matchedCount = MATCHED_COUNT; // from Step 2
+  const filesScanned = FILES_SCANNED;   // from Step 1 output .files
+  const recallTurns = RECALL_TURNS;     // from Step 1 output .recall_turns
+  const usefulCount = USEFUL_COUNT;     // from Step 1
+  const matchedCount = MATCHED_COUNT;   // from Step 2
   let state;
   try { state = JSON.parse(readFileSync(path, 'utf8')); }
-  catch { state = { streak: 0, last_divergence_date: null, last_match_date: null }; }
+  catch { state = {}; }
+  state = { streak: 0, last_divergence_date: null, last_match_date: null,
+            recall_dead_streak: 0, last_recall_dead_date: null, last_recall_date: null, ...state };
+  // Mode 1: matcher divergence (only meaningful when there was something to match)
   if (usefulCount === 0) {
-    // no signal — write nothing
+    // no signal — leave divergence counters untouched
   } else if (matchedCount > 0) {
     state.streak = 0;
     state.last_match_date = today;
@@ -176,14 +191,21 @@ promptTemplate: |
     state.streak = (state.streak || 0) + 1;
     state.last_divergence_date = today;
   }
+  // Mode 2: recall death (independent of usefulness — a healthy quiet day still has recall_turns > 0)
+  if (filesScanned > 0 && recallTurns === 0) {
+    state.recall_dead_streak = (state.recall_dead_streak || 0) + 1;
+    state.last_recall_dead_date = today;
+  } else if (recallTurns > 0) {
+    state.recall_dead_streak = 0;
+    state.last_recall_date = today;
+  }
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(state, null, 2));
   console.log(JSON.stringify(state));
   "
   ```
 
-  Carry the resulting `streak` into Step 4 — if `streak >= 3` the output must
-  contain a divergence warning.
+  Carry both `streak` and `recall_dead_streak` into Step 4.
 
   ## Step 3: Bump useful memories
 
@@ -211,17 +233,25 @@ promptTemplate: |
 
   ## Step 4: Output
 
-  Brief Telegram summary: files scanned, recall turns processed, surfaced total,
-  useful detected, bumps applied, and the full list of useful summaries with
-  score (sorted descending).
+  This skill is **telemetry, not a notification** — apply the bumps from Step 3 silently
+  and, on a routine day, emit nothing. Decide the output as follows:
 
-  **If `streak >= 3` from Step 2 divergence state**, prepend a single line:
+  1. **Alert conditions (emit a Telegram message).** If either is true, send only the
+     relevant warning line(s) — substitute the real integer from the tracker for
+     `<streak>` / `<recall_dead_streak>`:
 
-      ⚠️ Cortex-usefulness matcher divergence: useful>0 but matched=0 for {{streak}} days running. Step 2 lookup is failing — schema/format may have drifted. Investigate before signal becomes meaningless.
+     - `streak >= 3`:
 
-  This warning is the only case where the skill emits notification when nothing
-  was bumped. If `useful.length === 0` (and so divergence state untouched),
-  respond with exactly `ALL_CLEAR`.
+           ⚠️ Cortex-usefulness matcher divergence: useful>0 but matched=0 for <streak> days running. Step 2 lookup is failing — schema/format may have drifted. Investigate before the signal becomes meaningless.
+
+     - `recall_dead_streak >= 3`:
+
+           ⚠️ Cortex-usefulness recall death: transcripts scanned but 0 CORTEX_RECALL blocks found for <recall_dead_streak> days running. The recall hook or block format likely broke — the skill is now blind and silently reporting ALL_CLEAR. Investigate.
+
+  2. **Routine success (no alert condition).** Respond with exactly ALL_CLEAR — no
+     backticks, no formatting, nothing else. Bumps were still applied; the daily
+     files-scanned / useful / bumped stats roll up into `skill-quality-monitor`'s
+     weekly view rather than pinging the user every night.
 
   ## Tuning notes (do not output)
 

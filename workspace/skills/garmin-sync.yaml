@@ -1,9 +1,7 @@
-id: garmin-sync
 name: Garmin Daily Sync
 schedule: "0 20 * * *"
 permissionProfile: scheduled
 validityWindowMinutes: 60
-timeout: 300
 promptTemplate: |
   {{personality}}
 
@@ -40,7 +38,13 @@ promptTemplate: |
 
   ### HR Zone Reference (Garmin LTHR-derived)
 
-  These match the user's Garmin watch zones. Derived from lactate threshold heart rate (LTHR) of **175 bpm**.
+  The zones are anchored to the lactate-threshold heart rate (LTHR). **Prefer the value Garmin
+  auto-detects** — read `lactateThreshold.heartRate` from the fetched JSON and use it as the LTHR
+  so the zones track the athlete's current fitness (the running-coach treats the JSON as
+  authority; this note should not diverge). Only fall back to the table below (LTHR **175 bpm**)
+  if the JSON has no `lactateThreshold.heartRate`.
+
+  At LTHR 175 the boundaries are:
 
   | Zone | Name | BPM Range | % of LTHR |
   |------|------|-----------|-----------|
@@ -50,7 +54,8 @@ promptTemplate: |
   | Z4 | Threshold | 168–175 | 96–100% |
   | Z5 | Maximum | > 175 | > 100% |
 
-  **Always use these boundaries** when classifying time-in-zone, interpreting HR data, or referencing zones in analysis. Do not use arbitrary thresholds.
+  For a different detected LTHR, scale the boundaries by the same % columns. **Always use
+  LTHR-relative boundaries** when classifying time-in-zone — never arbitrary thresholds.
 
   ## Step 3 — Pull historical context (REQUIRED)
 
@@ -66,15 +71,21 @@ promptTemplate: |
 
   ### 3b. Last 3–5 runs (if today has a running activity)
 
-  Grep across the last ~30 days of fitness notes for run analyses:
+  Grep across the last ~30 days of fitness notes for run analyses (`-newermt` takes a time expression; `-newer` would expect a reference *file*):
   ```
-  find ~/dev/notes/remotevault/personal/fitness/ -name "*.md" -newer $(date -d '30 days ago' +%Y-%m-%d 2>/dev/null) -o -name "*.md" | sort -r | head -30
+  find ~/dev/notes/remotevault/personal/fitness/ -name "*.md" -newermt '30 days ago' 2>/dev/null | sort -r | head -30
   ```
   Open the most recent files until you have collected the last **3–5 runs** worth of: distance, avg pace, avg HR, HR zone distribution, pace:HR ratio, training effect, perceived exertion. This is the dataset for the run trend comparison in Step 4.
 
   ### 3c. Last 5–10 CrossFit/strength sessions (if today has a CrossFit/strength activity)
 
-  Strength sessions happen 2–3×/week, so a 5-note window is too short. Walk back further — up to 30 days — and read every fitness note that contains a CrossFit/Strength Analysis section. For each previous session, extract:
+  **First, `/recall` the per-movement ledger instead of re-deriving it.** Every prior run of
+  this skill stored a one-line `Strength [date]: <per-movement loads>` memory (Step 6) for
+  exactly this purpose. Run `/recall "Strength"` (and `/recall "strength ledger"`) to pull the
+  recent per-movement history back cheaply. Only fall back to reading fitness notes for
+  movements the recalled memories don't cover, or if recall returns nothing.
+
+  When you do need notes: strength sessions happen 2–3×/week, so a 5-note window is too short. Walk back further — up to 30 days — and read every fitness note that contains a CrossFit/Strength Analysis section. For each previous session, extract:
   - Date and session format (EMOM / AMRAP / For Time / Strength / Mixed)
   - Per-movement load and reps from `completedSets` (e.g. "Back Squat: 5×5 @ 100kg", "Pull-ups: 4×8 strict")
   - Total training load, anaerobic TE, duration, RPE/feel
@@ -115,7 +126,7 @@ promptTemplate: |
   ## Step 4 — Write the daily fitness note
 
   Create the note at: `~/dev/notes/remotevault/personal/fitness/YYYY/MM/YYYY-MM-DD.md`
-  where YYYY-MM-DD is the **data date** (yesterday), not today.
+  where YYYY-MM-DD is the **data date** (today, {{date}} — this sync runs at 20:00 and captures the current day).
   Create year/month directories if needed.
 
   **Frontmatter:**
@@ -328,7 +339,9 @@ promptTemplate: |
   ## Daily Notes
   ```
 
-  Append a link to today's note:
+  The MOC groups daily links under monthly headings so it doesn't grow into one
+  unbounded list that other skills' `find | head` re-read in full. Under a
+  `## YYYY-MM` heading (create it if this is the first note of the month), append:
   `- [[personal/fitness/YYYY/MM/YYYY-MM-DD|YYYY-MM-DD]] — [1-line summary]`
 
   The 1-line summary should be like: "8.2k steps, 7h12m sleep (82), 5k run 5:15/km"

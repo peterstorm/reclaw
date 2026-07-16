@@ -377,21 +377,33 @@ redis-cli -p 6380 get "reclaw:nblm-quota:$(date -u +%Y-%m-%d)"
 
 ## Skills
 
-A skill is a YAML file in `workspace/skills/` with a cron expression, a prompt, and optional metadata:
+A skill is a YAML file in `workspace/skills/`. The schema is defined in `src/core/skill-config.ts` (`SkillConfigSchema`):
 
 ```yaml
-id: morning-briefing
-cron: "0 5 * * *"           # 07:00 Europe/Copenhagen
-validForMs: 1800000         # 30 min — discard if catch-up runs later than this
-permissions: [Read, Bash, Write]
-dependsOn: garmin-sync       # optional — runs after this trigger completes
-prompt: |
+name: Morning Briefing            # required — human-readable label (logs only)
+schedule: "20 7 * * 1-5"          # cron, or null for on-demand/dependent-only. Server-local time.
+permissionProfile: scheduled      # required — 'scheduled' or 'chat' (selects the tool allowlist)
+validityWindowMinutes: 60         # optional (default 30) — catch-up discards a fire older than this
+timeout: 600                      # optional SECONDS. OMIT to inherit SCHEDULED_TIMEOUT_MS (20 min).
+dependsOn: garmin-sync            # optional — run after this skill completes; requires schedule: null
+promptTemplate: |                 # required — {{variable}} interpolation, see below
+  {{scheduledPreamble}}
   ...
 ```
 
+Key facts that bite people:
+
+- **The skill `id` is the filename** (minus `.yaml`), not a field. An `id:` key is permitted only if it *matches* the filename (validated) — otherwise the parse fails. Don't add one.
+- **`timeout` is seconds and is a ceiling, not an extension.** Setting it *lowers* the cap from the 20-minute default. Omit it for anything heavy. (A schema default used to silently cap field-less skills at 120s; that was fixed — omitting now correctly inherits the 20-minute `SCHEDULED_TIMEOUT_MS`.)
+- **`dependsOn` needs `schedule: null`.** A skill can't both be cron-scheduled and be a dependent. Chains cascade (`A → B → C`) and are restart-safe via completion markers.
+- **`promptTemplate` variables:** `{{date}}`, `{{dayOfWeek}}`, `{{personality}}`, `{{scheduledPreamble}}` (the canonical "automated job / ALL_CLEAR" contract — prefer it over hand-writing that boilerplate), `{{latitude}}`/`{{longitude}}`/`{{timezone}}`/`{{locationName}}`, and `{{workspacePath}}` (a.k.a. `{{cwd}}`). Unknown `{{vars}}` are left verbatim.
+- **`ALL_CLEAR` suppression is exact-match:** a scheduled run whose trimmed output is exactly `ALL_CLEAR` sends nothing. Any stray backtick or formatting defeats it and pages the user.
+
 `SkillWatcher` (`src/infra/skill-watcher.ts`) tails the directory and emits a fresh `SkillRegistry` on every change. The cron scheduler reconciles to the new registry: arms timers for new skills, cancels removed ones, leaves unchanged ones alone.
 
-When a cron fires, the scheduler builds a `ScheduledJob` and calls `enqueueScheduled`. The scheduled-handler reads the skill prompt + permissions and spawns Claude. Output goes to all authorized users via Telegram.
+When a cron fires, the scheduler builds a `ScheduledJob` and calls `enqueueScheduled`. The scheduled-handler interpolates the prompt, resolves the tool allowlist for the `permissionProfile` (`src/core/permissions.ts`), and spawns the agent subprocess. Output goes to all authorized users via Telegram.
+
+**Permission note (security):** on the **Claude** backend the subprocess is spawned with `--dangerously-skip-permissions`, so the allowlist is *advisory* — a scheduled skill can in practice use any tool, and fetch-heavy skills that ingest untrusted web content (hardware-intel, espresso, tech-digest) do so with full Bash/Write over `$HOME`. The **Pi** backend hard-restricts via `--tools`. Prefer fetching untrusted content through fixed scripts (e.g. `scripts/fetch-feeds.ts`, `scripts/commute-weather.ts`) that emit already-extracted text, so a prompt-injection payload never meets an unrestricted shell.
 
 Skills are not part of this repo — they live in the workspace at `~/dev/claude-plugins/reclaw/workspace/skills/`. See the workspace's `CLAUDE.md` for skill conventions.
 

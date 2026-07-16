@@ -1,4 +1,3 @@
-id: vault-lint
 name: Vault Lint
 schedule: "0 14 * * 0"
 permissionProfile: scheduled
@@ -55,38 +54,38 @@ promptTemplate: |
   ```
 
   Cap the list at the 30 most-recently-modified notes. If 0 frontier notes,
-  respond with exactly `ALL_CLEAR`.
+  respond with exactly ALL_CLEAR — no backticks, no formatting, nothing else.
 
   ## Step 2 — Pull suppression list
 
-  Pull recent vault-lint findings to suppress duplicates:
-  ```
-  /recall "vault-lint finding" --keyword --limit=30
-  ```
-
-  Build a set of {note-path, finding-type} pairs that were reported in the
-  last 4 weeks and **persist it to disk** so Steps 3–5 do a real lookup
-  rather than relying on the model remembering an intermediate output:
+  The suppression list is a **durable** append-only JSONL log at
+  `~/.cache/reclaw/vault-lint-findings.jsonl` (Step 7 appends to it; it survives
+  reboots and is never pruned). Load the pairs reported in the last 4 weeks:
 
   ```bash
   bun -e "
-  import { writeFileSync, mkdirSync } from 'fs';
-  import { dirname } from 'path';
-  // SUPPRESSIONS_JSON is the {note-path, finding-type} array you derived above.
-  const path = '/tmp/vault-lint-suppress.json';
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(SUPPRESSIONS_JSON, null, 2));
-  console.log('wrote', SUPPRESSIONS_JSON.length, 'suppressions');
+  import { readFileSync } from 'fs';
+  import { homedir } from 'os';
+  import { join } from 'path';
+  const path = join(homedir(), '.cache/reclaw/vault-lint-findings.jsonl');
+  let raw = '';
+  try { raw = readFileSync(path, 'utf8'); } catch { console.log('[]'); process.exit(0); }
+  const cutoff = Date.now() - 28*24*60*60*1000;
+  const pairs = raw.split('\n').filter(Boolean)
+    .map(l => { try { return JSON.parse(l); } catch { return null; } })
+    .filter(r => r && Date.parse(r.date) >= cutoff)
+    .map(r => ({ note: r.note, type: r.type }));
+  console.log(JSON.stringify(pairs));
   "
   ```
 
-  Steps 3–5 MUST `cat /tmp/vault-lint-suppress.json` before recording a
-  finding and skip any finding whose `{note-path, finding-type}` pair is
-  present in the file (unless the underlying issue has changed — e.g., a
-  contradiction now spans a third note that wasn't there before).
+  Steps 3–5 MUST treat any finding whose `{note, type}` pair is present in that
+  set as already-reported and skip it (unless the underlying issue has changed —
+  e.g., a contradiction now spans a third note that wasn't there before).
 
   This is a soft suppression — re-report if you have new evidence, not just
-  because time passed.
+  because time passed. (Previously this lived in cortex + `/tmp`, both of which
+  the nightly prune / reboots erased, so findings silently repeated.)
 
   ## Step 3 — Check 1: Contradictions
 
@@ -199,18 +198,30 @@ promptTemplate: |
   outdated claims with concrete supersession evidence > maybe-stale; missing
   concepts mentioned in 5+ notes > 3-note threshold).
 
-  ## Step 7 — Record findings in cortex
+  ## Step 7 — Record findings to the durable suppression log
 
-  For each finding included in the digest, run:
+  For each finding included in the digest, append one line to
+  `~/.cache/reclaw/vault-lint-findings.jsonl`. This is the suppression list Step 2
+  reads next week — it must be durable (not cortex, not `/tmp`):
 
-  `/remember "vault-lint finding {{date}}: [type] [short description]" --type=gotcha --tags=vault-lint,vault-health,<finding-type>`
+  ```bash
+  bun -e "
+  import { appendFileSync, mkdirSync } from 'fs';
+  import { homedir } from 'os';
+  import { join, dirname } from 'path';
+  const path = join(homedir(), '.cache/reclaw/vault-lint-findings.jsonl');
+  mkdirSync(dirname(path), { recursive: true });
+  // FINDINGS is [{ note, type, description }] for everything in today's digest.
+  // type ∈ contradiction | outdated | missing-concept
+  const findings = FINDINGS;
+  for (const f of findings) {
+    appendFileSync(path, JSON.stringify({ date: '{{date}}', note: f.note, type: f.type, description: f.description }) + '\n');
+  }
+  console.log('recorded', findings.length, 'findings');
+  "
+  ```
 
-  Where `<finding-type>` is one of `contradiction`, `outdated`, `missing-concept`.
-
-  This populates the suppression list for future runs and gives the user an
-  audit trail.
-
-  Do NOT remember on `ALL_CLEAR` — adds noise without value.
+  Do NOT record anything on ALL_CLEAR — adds noise without value.
 
   ## Quality guardrails
 

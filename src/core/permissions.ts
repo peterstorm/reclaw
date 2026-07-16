@@ -4,12 +4,18 @@
 // FR-104: Backend-agnostic tool names — each backend formats into its own CLI flags.
 //
 // chat:      read + write access for interactive sessions
-// scheduled: same tools — write access for automation
+// scheduled: same tools + web access — several scheduled skills (hardware-intel,
+//            self-improvement) genuinely need WebSearch/WebFetch, and memory-librarian
+//            needs `forget`. These worked on the Claude backend only because
+//            --dangerously-skip-permissions makes the allowlist advisory; on the Pi
+//            backend --tools hard-restricts, so they must be listed explicitly.
+//            Pi treats --tools as an allowlist over built-in/extension/custom tools and
+//            silently ignores names it doesn't have, so listing web tools is safe there.
 
 // ─── Tool name definitions ───────────────────────────────────────────────────
 
-const CHAT_ALLOWED_TOOLS = ['Read', 'Write', 'Bash', 'recall', 'remember'] as const;
-const SCHEDULED_ALLOWED_TOOLS = ['Read', 'Write', 'Bash', 'recall', 'remember'] as const;
+const CHAT_ALLOWED_TOOLS = ['Read', 'Write', 'Bash', 'WebSearch', 'WebFetch', 'recall', 'remember', 'forget'] as const;
+const SCHEDULED_ALLOWED_TOOLS = ['Read', 'Write', 'Bash', 'WebSearch', 'WebFetch', 'recall', 'remember', 'forget'] as const;
 
 // ─── Pure Function ────────────────────────────────────────────────────────────
 

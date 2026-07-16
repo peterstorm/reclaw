@@ -1,4 +1,3 @@
-id: self-improvement
 name: Self Improvement
 schedule: "0 2 * * 0"
 permissionProfile: scheduled
@@ -24,16 +23,27 @@ promptTemplate: |
   **Skills:** `/home/peterstorm/dev/claude-plugins/reclaw/workspace/skills/`
   - Review scheduled skill prompts for inefficiencies, unclear instructions, or missing edge cases
   - Identify skills that could be added or improved
+  - **Do not duplicate `reclaw-evolve`.** That skill already mines transcripts weekly to propose
+    skill/personality changes into `~/dev/notes/remotevault/reclaw/evolve/`. Your skills focus is
+    the *code/prompt* angle (inefficiency, unclear instructions, missing edge cases from reading
+    the yaml) — not transcript-derived behavior proposals. Before writing any skill proposal, read
+    the latest evolve note (Step 2) and skip anything it already covers.
 
   **Config & infra:**
   - Check package.json for outdated patterns or missing scripts
-  - Look at the NixOS service config if accessible
+  - Review the NixOS service config under `~/.dotfiles` (accessible — no sudo needed to read; changes require the user to rebuild)
   - Review any Docker/deployment config
 
   ## Step 2 — Existing Context
 
   **Check previous improvement notes:**
   Read any existing notes in `~/dev/notes/remotevault/reclaw/improvements/` to avoid repeating suggestions already made. Build on previous ideas rather than restating them.
+
+  **Check reclaw-evolve proposals (cross-dedup):**
+  Read the most recent note in `~/dev/notes/remotevault/reclaw/evolve/`. Any skill/personality
+  change it already proposed is out of scope here — don't re-propose it from a different angle.
+  The `config & infra` reference below (line ~29) is the NixOS service config at `~/.dotfiles`
+  (it *is* accessible; CLAUDE.md documents it).
 
   **Check the backlog:**
   Read `~/dev/notes/remotevault/reclaw/todo.md` and `~/dev/notes/remotevault/reclaw/ideas.md` for known items.

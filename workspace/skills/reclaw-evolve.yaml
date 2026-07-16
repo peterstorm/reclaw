@@ -1,9 +1,7 @@
-id: reclaw-evolve
 name: Reclaw Evolve
-schedule: "0 5 * * *"
+schedule: "0 5 * * 1"  # Monday 05:00 — weekly. The prompt mines a 7-day window; a daily cron re-mined each transcript up to 7× and spammed near-identical proposal notes.
 permissionProfile: scheduled
 validityWindowMinutes: 60
-timeout: 600
 promptTemplate: |
   {{personality}}
 
@@ -150,27 +148,54 @@ promptTemplate: |
   wrong. Grep the user turns for correction patterns (case-insensitive,
   word-boundary):
 
-  - `\bno\b`, `\bnope\b`
-  - `\bstop\b`, `\bdon'?t\b`
-  - `\bactually\b`, `\binstead\b`
+  High-precision directives (match on their own — these are almost always real corrections):
+  - `\bnope\b`
   - `\bwrong\b`, `\bnot what\b`
   - `\bredo\b`, `\bagain\b.*\bbut\b`
-  - `\bnever\b` (e.g. "never do X")
+  - `\binstead\b`
   - "you should have", "you should've", "should not have"
 
+  Noisy terms (`no`, `stop`, `don't`, `actually`, `never`) fire constantly in ordinary
+  conversation ("no ev can make those trips?", "actually that reminds me"). Only count these
+  when they co-occur with a second-person/imperative directive in the same turn — i.e. the user
+  is telling *you* to change behavior, not just using the word. Require one of
+  `you|your|should|always|instead|don.?t` nearby.
+
   ```bash
-  jq -rc 'select(.text | test("(?i)\\b(no|nope|stop|don.?t|actually|instead|wrong|redo|never|not what)\\b"))' \
+  # Pass 1: high-precision terms match anywhere in the turn.
+  # Pass 2: noisy terms only count alongside a directive context word.
+  jq -rc 'select(
+      (.text | test("(?i)\\b(nope|wrong|not what|redo|instead)\\b"))
+      or (.text | test("(?i)you should(?:'"'"'ve| have| not have)"))
+      or ((.text | test("(?i)\\b(no|stop|never)\\b")) and (.text | test("(?i)\\b(you|your|should|always|instead)\\b")))
+    )' \
     /tmp/reclaw-evolve-user-turns.jsonl > /tmp/reclaw-evolve-corrections.jsonl
   wc -l /tmp/reclaw-evolve-corrections.jsonl
   ```
 
-  Cap at 30 highest-signal events. For each, retrieve ~3 assistant
-  turns preceding the correction (the behavior that triggered it):
+  Cap at 30 highest-signal events. For each correction (it carries `file`, `ts`, and
+  `backend` from Step 2), retrieve the assistant turn immediately preceding it — that's the
+  behavior that triggered the correction. Walk the session file in order and keep the last
+  assistant text seen before the correction's timestamp:
 
   ```bash
-  # For a given file and timestamp, extract the prior assistant turn.
-  # Use jq to walk the JSONL in order and stash the last assistant text
-  # before the timestamp of interest.
+  # Usage: prior_assistant <backend> <file> <correction_ts>
+  prior_assistant() {
+    local backend="$1" f="$2" ts="$3"
+    if [ "$backend" = "claude" ]; then
+      jq -rc --arg ts "$ts" '
+        select(.type=="assistant" and .timestamp < $ts)
+        | [.message.content[]? | select(.type=="text") | .text] | join(" ")
+      ' "$f" 2>/dev/null | grep -v '^$' | tail -1
+    else
+      jq -rc --arg ts "$ts" '
+        select(.type=="message" and .message.role=="assistant" and .timestamp < $ts)
+        | [.message.content[]? | select(.type=="text") | .text] | join(" ")
+      ' "$f" 2>/dev/null | grep -v '^$' | tail -1
+    fi
+  }
+  # Example:
+  # prior_assistant "$backend" "$f" "$correction_ts"
   ```
 
   For ranking, prefer corrections that:
@@ -201,9 +226,14 @@ promptTemplate: |
     fi
   done < /tmp/reclaw-evolve-sessions.txt | \
     tr '[:upper:]' '[:lower:]' | \
+    awk '$0 != last {print} {last=$0}' | \
     awk 'NR>2 {print prev2, prev1, $0} {prev2=prev1; prev1=$0}' | \
     sort | uniq -c | sort -rn | head -30 > /tmp/reclaw-evolve-trigrams.txt
   ```
+
+  The first `awk` collapses runs of the same tool (e.g. `bash bash bash` → `bash`) before
+  forming trigrams — otherwise the top results degenerate into `bash bash bash` noise and hide
+  the real cross-tool workflows.
 
   A trigram appearing ≥3 times across distinct sessions is a candidate.
   Discard trigrams already covered by an existing skill (read
@@ -222,6 +252,14 @@ promptTemplate: |
   - **Already proposed but no decision yet** → drop, status-quo applies
 
   Only surface NEW signal or strengthened signal.
+
+  ## Step 5.5 — Bail out if nothing survived (do this BEFORE writing anything)
+
+  Count the proposals that survived Step 5. **If zero survived**, respond with exactly
+  ALL_CLEAR — no backticks, no formatting, nothing else — and stop here. Do NOT write a
+  proposal note, do NOT create/append the MOC, do NOT `/remember`, do NOT send a Telegram
+  message. An empty week must leave zero side effects; writing a `status: all-clear` note is a
+  bug, not a record. Only proceed to Step 6 when there is at least one real proposal.
 
   ## Step 6 — Write the proposal note
 
@@ -317,8 +355,8 @@ promptTemplate: |
   Full note in vault.
   ```
 
-  If no proposals survived Step 5 cross-referencing, respond with
-  exactly `ALL_CLEAR`.
+  (If no proposals survived Step 5, you already stopped at Step 5.5 with a bare ALL_CLEAR
+  and never reached this step.)
 
   ## Guardrails
 

@@ -1,6 +1,5 @@
-id: hardware-intel
 name: Hardware Market Intelligence
-schedule: "0 8 * * 1"
+schedule: "30 8 * * 1"  # Monday 08:30 — offset from tech-digest's daily 08:00 to avoid a network-heavy collision.
 permissionProfile: scheduled
 validityWindowMinutes: 240
 timeout: 600
@@ -152,13 +151,19 @@ promptTemplate: |
 
   ## Step 7 — Write vault note
 
-  Create the weekly analysis at: `~/dev/notes/remotevault/research/hardware-market/{{date}}-W$(date -d '{{date}}' +%V).md`
-  Create the `research/hardware-market/` directory if it doesn't exist.
+  First resolve the ISO week number **once** and reuse it everywhere below (don't scatter
+  command substitutions through the frontmatter — compute it, then substitute the literal value):
+  ```
+  WEEK=$(date -d '{{date}}' +%V)   # e.g. "29"
+  ```
 
-  **Frontmatter:**
+  Create the weekly analysis at: `~/dev/notes/remotevault/research/hardware-market/{{date}}-W<WEEK>.md`
+  (e.g. `2026-07-16-W29.md`). Create the `research/hardware-market/` directory if it doesn't exist.
+
+  **Frontmatter** (substitute the resolved `<WEEK>` value):
   ```yaml
   ---
-  title: "Hardware Market Intel — {{date}} W$(date -d '{{date}}' +%V)"
+  title: "Hardware Market Intel — {{date}} W<WEEK>"
   date: {{date}}
   tags: [hardware-market, weekly-intel]
   up: "[[research/hardware-market/MOC|Hardware Market Intel]]"
@@ -224,7 +229,7 @@ promptTemplate: |
   ## Reports
   ```
 
-  Append today's note: `- [[research/hardware-market/{{date}}-Www|{{date}}]] — [traffic light summary]`
+  Append today's note (use the same resolved `<WEEK>` value from Step 7 — the wikilink target must match the filename exactly): `- [[research/hardware-market/{{date}}-W<WEEK>|{{date}}]] — [traffic light summary]`
 
   ## Step 9 — Send Telegram summary
 

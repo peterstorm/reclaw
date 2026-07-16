@@ -400,7 +400,7 @@ export type SkillConfig = {
   readonly promptTemplate: string;
   readonly permissionProfile: 'chat' | 'scheduled';
   readonly validityWindowMinutes: number;
-  readonly timeout: number; // seconds
+  readonly timeout?: number; // seconds; omit to inherit SCHEDULED_TIMEOUT_MS (20 min default)
   readonly dependsOn: SkillId | null; // skill that must complete before this one runs
 };
 

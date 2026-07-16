@@ -1,9 +1,15 @@
 /**
  * Skill execution quality signals — pure formatting only.
  *
- * Emitted as cortex memories after a scheduled skill runs. Anomalies-only
- * (errors / suppressions / missing skills) so the recall surface stays clean
- * and per-run noise doesn't get pruned away. Plain successes are not recorded.
+ * Appended as JSONL records to a durable log after a scheduled skill runs.
+ * Anomalies-only (errors / suppressions / missing skills). Plain successes are
+ * not recorded.
+ *
+ * These used to be written as *pinned cortex memories*, which forced ~40 lines of
+ * carve-out logic in cortex-prune to keep the nightly pruner from eating the
+ * skill-quality-monitor's input. Moving them to a dedicated JSONL file the pruner
+ * never touches removes that cross-prompt invariant entirely and keeps the recall
+ * surface free of operational noise.
  */
 
 import type { SkillId } from './types.js';
@@ -26,24 +32,24 @@ export type SkillQualitySignal = {
   readonly timestamp: string;
 };
 
-// ─── Memory shape ────────────────────────────────────────────────────────────
+// ─── Record shape (one JSONL line) ───────────────────────────────────────────
 
-export type CortexMemoryType = 'pattern' | 'gotcha';
-
-export type SkillQualityMemory = {
-  readonly content: string;
-  readonly type: CortexMemoryType;
-  readonly priority: number;
-  readonly pinned: boolean;
-  readonly tags: ReadonlyArray<string>;
+export type SkillQualityRecord = {
+  readonly timestamp: string;
+  readonly skillId: string;
+  readonly status: SkillRunStatus;
+  readonly durationMs: number;
+  readonly outputLength: number;
+  readonly errorMessage: string | null;
+  readonly severity: number; // 5 suppressed · 7 claude_error · 8 skill_not_found
+  readonly summary: string; // human-readable one-liner for the weekly digest
 };
 
-// ─── Decision: which signals deserve a memory ────────────────────────────────
+// ─── Decision: which signals deserve a record ────────────────────────────────
 
 /**
  * Anomalies-only policy. Successful runs and validity-window misses do not
- * produce memories — they're high-volume operational noise that would either
- * pollute recall or get culled by the nightly prune.
+ * produce records — they're high-volume operational noise.
  */
 export function shouldRecord(status: SkillRunStatus): boolean {
   return status === 'suppressed' || status === 'claude_error' || status === 'skill_not_found';
@@ -51,15 +57,7 @@ export function shouldRecord(status: SkillRunStatus): boolean {
 
 // ─── Formatting ──────────────────────────────────────────────────────────────
 
-const TYPE_BY_STATUS: Record<SkillRunStatus, CortexMemoryType | null> = {
-  success: null,
-  validity_expired: null,
-  suppressed: 'pattern',
-  claude_error: 'gotcha',
-  skill_not_found: 'gotcha',
-};
-
-const PRIORITY_BY_STATUS: Record<SkillRunStatus, number> = {
+const SEVERITY_BY_STATUS: Record<SkillRunStatus, number> = {
   success: 0,
   validity_expired: 0,
   suppressed: 5,
@@ -73,39 +71,33 @@ function describe(signal: SkillQualitySignal): string {
   const ms = signal.durationMs;
   switch (signal.status) {
     case 'suppressed':
-      return `skill-quality ${id} produced ALL_CLEAR (no output) at ${at} — duration ${ms}ms`;
+      return `${id} produced ALL_CLEAR (no output) at ${at} — duration ${ms}ms`;
     case 'claude_error': {
       const reason = signal.errorMessage ?? 'unknown error';
-      return `skill-quality ${id} failed at ${at}: ${reason} — duration ${ms}ms`;
+      return `${id} failed at ${at}: ${reason} — duration ${ms}ms`;
     }
     case 'skill_not_found':
-      return `skill-quality ${id} scheduled but missing from registry at ${at}`;
+      return `${id} scheduled but missing from registry at ${at}`;
     case 'success':
     case 'validity_expired':
-      return `skill-quality ${id} ${signal.status} at ${at}`;
+      return `${id} ${signal.status} at ${at}`;
   }
 }
 
 /**
- * Build the cortex memory payload for a signal, or null if the signal
- * doesn't warrant a memory under the anomalies-only policy.
+ * Build the JSONL record for a signal, or null if the signal doesn't warrant a
+ * record under the anomalies-only policy.
  */
-export function toMemory(signal: SkillQualitySignal): SkillQualityMemory | null {
+export function toRecord(signal: SkillQualitySignal): SkillQualityRecord | null {
   if (!shouldRecord(signal.status)) return null;
-  const type = TYPE_BY_STATUS[signal.status];
-  if (type === null) return null;
-  // Pinned: the per-session cortex pipeline (ai-prune + lifecycle decay) runs
-  // after every skill completion and archives non-pinned operational signals
-  // within minutes — long before the monitor's 7-day window elapses. Both
-  // pruners exempt pinned memories (ai-prune skips them; decay marks them
-  // `exempt`), so pinning is the only thing that keeps fresh signals alive.
-  // The nightly `cortex-prune` carve-out still archives `skill-quality`
-  // memories older than 7 days *regardless of pin*, so they never go immortal.
   return {
-    content: describe(signal),
-    type,
-    priority: PRIORITY_BY_STATUS[signal.status],
-    pinned: true,
-    tags: ['skill-quality', signal.skillId, signal.status],
+    timestamp: signal.timestamp,
+    skillId: signal.skillId,
+    status: signal.status,
+    durationMs: signal.durationMs,
+    outputLength: signal.outputLength,
+    errorMessage: signal.errorMessage,
+    severity: SEVERITY_BY_STATUS[signal.status],
+    summary: describe(signal),
   };
 }

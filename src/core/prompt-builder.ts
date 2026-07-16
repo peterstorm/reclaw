@@ -6,6 +6,24 @@
 // Template interpolation uses {{variable}} syntax.
 // Unknown variables are left as-is (no crash).
 
+// ─── Shared scheduled-job preamble ─────────────────────────────────────────────
+//
+// Canonical "automated job" contract, exposed to scheduled skill templates as
+// {{scheduledPreamble}}. Centralizing it kills the divergent per-file copies (some of
+// which told the model to emit `ALL_CLEAR` *with* backticks — which defeats the runtime's
+// exact-match suppression and pages the user on a healthy run). Only buildPrompt (scheduled
+// path) substitutes it; chat uses buildChatPrompt and never sees it.
+export const SCHEDULED_PREAMBLE = [
+  'This is an automated scheduled job. There is NO user present to respond to — do not ask',
+  'questions, request confirmation, or print tables awaiting approval. Execute every step',
+  'immediately and silently, then produce your final output.',
+  '',
+  'If this skill defines a no-op / "all clear" condition, signal it by responding with EXACTLY',
+  'the token ALL_CLEAR — no backticks, no quotes, no markdown, no other text. The runtime',
+  'suppresses an output that is exactly ALL_CLEAR after trimming; any stray character defeats',
+  'the suppression and pushes a needless notification to the user.',
+].join('\n');
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type PromptContext = {
@@ -25,8 +43,8 @@ export type PromptContext = {
 /**
  * Interpolate a skill prompt template with context variables.
  * Variables are in {{variable}} format. Supported: date, dayOfWeek,
- * personality, userMessage, latitude, longitude, timezone, locationName,
- * workspacePath (also exposed as `cwd`).
+ * personality, scheduledPreamble, userMessage, latitude, longitude, timezone,
+ * locationName, workspacePath (also exposed as `cwd`).
  * Unknown variables are left unchanged.
  */
 export function buildPrompt(template: string, context: PromptContext): string {
@@ -34,6 +52,7 @@ export function buildPrompt(template: string, context: PromptContext): string {
     date: context.date,
     dayOfWeek: context.dayOfWeek,
     personality: context.personality,
+    scheduledPreamble: SCHEDULED_PREAMBLE,
   };
   if (context.userMessage !== undefined) {
     vars['userMessage'] = context.userMessage;

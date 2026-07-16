@@ -1,6 +1,5 @@
-id: espresso-price-watch
 name: Espresso Price Watch
-schedule: "0 9 * * *"
+schedule: "0 9 * * 1,4"  # Mon & Thu 09:00 — retailer prices move ~monthly, so twice a week is plenty; daily was wasted fetches.
 permissionProfile: scheduled
 validityWindowMinutes: 60
 timeout: 300
@@ -36,7 +35,8 @@ promptTemplate: |
 
   **Step 2 — Extract the machines and their prices** from the listing. Each product block
   carries `data-price-amount="<number>"`. Pair each Sage slug with its price, keeping every
-  Sage machine except the Bambino:
+  Sage machine except the Bambino. (This uses GNU awk's 3-argument `match(str, re, arr)` — the
+  host has `gawk`; if it's ever missing, fall back to `grep -oP`.)
   ```
   awk 'BEGIN{RS="product-item-info"} /sage-/ && !/bambino/ {
     slug=""; price="";
@@ -66,23 +66,32 @@ promptTemplate: |
   ```
   cat ~/.cache/reclaw/espresso-prices.json 2>/dev/null
   ```
-  Schema: `{"date": "YYYY-MM-DD", "currency": "DKK", "machines": {"<slug>": <price>, ...}}`.
-  For each machine determine: unchanged, price drop, price increase, newly listed, or delisted
-  (in cache but missing from today's listing).
+  Schema (current): `{"date": "YYYY-MM-DD", "currency": "DKK", "machines": {"<slug>": {"price": <price>, "avail": "<instock|backordered|outofstock|unknown>"}, ...}}`.
 
-  **Step 5 — Save today's prices** for tomorrow's comparison (ensure the dir exists). Write the
-  full machines map keyed by slug — substitute the real slug/price pairs you extracted:
+  **Back-compat:** an older cache may store `"<slug>": <price>` (a bare number) instead of the
+  object form. If you encounter the old shape, read the number as `price` and treat `avail` as
+  unknown for the comparison, then write the new object shape in Step 5.
+
+  For each machine determine what changed vs the cache: unchanged, price drop, price increase,
+  **availability change** (e.g. backordered → in stock, in stock → sold out), newly listed, or
+  delisted (in cache but missing from today's listing). Availability flips are as report-worthy
+  as price moves — a machine coming back in stock is exactly what the user wants to know.
+
+  **Step 5 — Save today's prices + availability** for the next comparison (ensure the dir
+  exists). Write the full machines map keyed by slug — substitute the real slug/price/avail
+  triples you extracted in Step 3:
   ```
   mkdir -p ~/.cache/reclaw
   cat > ~/.cache/reclaw/espresso-prices.json <<'JSON'
-  {"date": "{{date}}", "currency": "DKK", "machines": {"<slug1>": <price1>, "<slug2>": <price2>}}
+  {"date": "{{date}}", "currency": "DKK", "machines": {"<slug1>": {"price": <price1>, "avail": "<avail1>"}, "<slug2>": {"price": <price2>, "avail": "<avail2>"}}}
   JSON
   ```
 
   **Step 6 — Report to the user.** Keep it tight and scannable:
   - Lead with anything that CHANGED since last check — price drops/increases with the delta and
-    direction (e.g. "📉 Barista Pro: 7.499 DKK — down 500 from 7.999"), plus any new or delisted
-    models. If nothing changed, say so in one line ("All 6 Barista machines unchanged").
+    direction (e.g. "📉 Barista Pro: 7.499 DKK — down 500 from 7.999"), availability flips
+    (e.g. "✅ Oracle Jet: back in stock", "⛔ Barista Express: now sold out"), plus any new or
+    delisted models. If nothing changed, say so in one line ("All 6 Barista machines unchanged").
   - Then a compact list/table of the current set grouped by model, with price, colour, and
     availability. Variants that share a price (e.g. the four SES882 colours) should be grouped on
     one line (e.g. "Barista Touch Impress (SES882) — 10.999 DKK · Almond Nougat / Brushed Steel /

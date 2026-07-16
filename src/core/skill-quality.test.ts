@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { shouldRecord, toMemory, type SkillQualitySignal, type SkillRunStatus } from './skill-quality.js';
+import { shouldRecord, toRecord, type SkillQualitySignal, type SkillRunStatus } from './skill-quality.js';
 import type { SkillId } from './types.js';
 
 const skillId = 'morning-briefing' as SkillId;
@@ -26,48 +26,55 @@ describe('shouldRecord', () => {
   });
 });
 
-describe('toMemory', () => {
+describe('toRecord', () => {
   it('returns null for success', () => {
-    expect(toMemory(baseSignal({ status: 'success' }))).toBeNull();
+    expect(toRecord(baseSignal({ status: 'success' }))).toBeNull();
   });
 
   it('returns null for validity_expired', () => {
-    expect(toMemory(baseSignal({ status: 'validity_expired' }))).toBeNull();
+    expect(toRecord(baseSignal({ status: 'validity_expired' }))).toBeNull();
   });
 
-  it('produces a pattern memory for suppressed', () => {
-    const mem = toMemory(baseSignal({ status: 'suppressed', outputLength: 0 }));
-    expect(mem).not.toBeNull();
-    expect(mem?.type).toBe('pattern');
-    expect(mem?.tags).toEqual(['skill-quality', skillId, 'suppressed']);
-    expect(mem?.content).toContain('ALL_CLEAR');
-    expect(mem?.content).toContain('morning-briefing');
-    expect(mem?.content).toContain('1234ms');
-    expect(mem?.pinned).toBe(true);
+  it('produces a record for suppressed', () => {
+    const rec = toRecord(baseSignal({ status: 'suppressed', outputLength: 0 }));
+    expect(rec).not.toBeNull();
+    expect(rec?.status).toBe('suppressed');
+    expect(rec?.skillId).toBe('morning-briefing');
+    expect(rec?.severity).toBe(5);
+    expect(rec?.summary).toContain('ALL_CLEAR');
+    expect(rec?.summary).toContain('morning-briefing');
+    expect(rec?.summary).toContain('1234ms');
+    expect(rec?.timestamp).toBe('2026-04-25T07:00:12.000Z');
   });
 
-  it('produces a gotcha memory for claude_error including the reason', () => {
-    const mem = toMemory(
+  it('produces a record for claude_error including the reason', () => {
+    const rec = toRecord(
       baseSignal({ status: 'claude_error', errorMessage: 'subprocess timed out after 300s' }),
     );
-    expect(mem).not.toBeNull();
-    expect(mem?.type).toBe('gotcha');
-    expect(mem?.tags).toEqual(['skill-quality', skillId, 'claude_error']);
-    expect(mem?.content).toContain('subprocess timed out after 300s');
-    expect(mem?.priority).toBeGreaterThanOrEqual(7);
-    expect(mem?.pinned).toBe(true);
+    expect(rec).not.toBeNull();
+    expect(rec?.status).toBe('claude_error');
+    expect(rec?.errorMessage).toBe('subprocess timed out after 300s');
+    expect(rec?.summary).toContain('subprocess timed out after 300s');
+    expect(rec?.severity).toBeGreaterThanOrEqual(7);
   });
 
-  it('uses "unknown error" placeholder when errorMessage missing', () => {
-    const mem = toMemory(baseSignal({ status: 'claude_error', errorMessage: null }));
-    expect(mem?.content).toContain('unknown error');
+  it('uses "unknown error" placeholder in the summary when errorMessage missing', () => {
+    const rec = toRecord(baseSignal({ status: 'claude_error', errorMessage: null }));
+    expect(rec?.summary).toContain('unknown error');
+    expect(rec?.errorMessage).toBeNull();
   });
 
-  it('produces a gotcha memory for skill_not_found', () => {
-    const mem = toMemory(baseSignal({ status: 'skill_not_found' }));
-    expect(mem?.type).toBe('gotcha');
-    expect(mem?.content).toContain('missing from registry');
-    expect(mem?.tags).toEqual(['skill-quality', skillId, 'skill_not_found']);
-    expect(mem?.pinned).toBe(true);
+  it('produces a record for skill_not_found', () => {
+    const rec = toRecord(baseSignal({ status: 'skill_not_found' }));
+    expect(rec?.status).toBe('skill_not_found');
+    expect(rec?.severity).toBe(8);
+    expect(rec?.summary).toContain('missing from registry');
+  });
+
+  it('serializes cleanly to one JSONL line', () => {
+    const rec = toRecord(baseSignal({ status: 'claude_error', errorMessage: 'boom' }));
+    const line = JSON.stringify(rec);
+    expect(line).not.toContain('\n');
+    expect(JSON.parse(line).skillId).toBe('morning-briefing');
   });
 });

@@ -1,9 +1,8 @@
-id: running-coach
 name: Running Coach
 schedule: "35 7 * * 2,4,0"
 permissionProfile: scheduled
 validityWindowMinutes: 60
-timeout: 300
+timeout: 600
 promptTemplate: |
   {{personality}}
 
@@ -17,7 +16,7 @@ promptTemplate: |
   - **Training schedule:** Tuesday (CrossFit), Thursday (quality run — the main event), Sunday (CrossFit)
   - **CrossFit days:** Tue & Sun at the box. The athlete may still run on these days (before/after CrossFit, or instead of it). Check Garmin data for what actually happened.
   - **Key principle:** Thursday is the only guaranteed quality run. Every Thursday must be highly intentional about what it targets.
-  - **Key calibration signal:** Handles Runna interval paces (4:40-4:55/km) without struggling. RPE 4/10 at 4:59/km intervals (March 26) — significant headroom.
+  - **Calibration:** Derive current fitness from the most recent threshold/VO2max data and the cortex-stored 5K estimate every run — do not anchor to a fixed historical RPE. Fitness moves; let the data set the paces.
 
   ### Dynamic 5K Estimation
 
@@ -29,7 +28,7 @@ promptTemplate: |
   2. Estimate 5K race pace = threshold pace minus 10-15s/km
   3. Calculate estimated 5K time = 5 × race pace
   4. Sanity-check with Garmin VO2 Max via Jack Daniels VDOT tables:
-     - VO2Max 44 → ~25:30 | 45 → ~24:50 | 46 → ~24:10 | 47 → ~23:35 | 48 → ~23:00
+     - VO2Max 44 → ~25:30 | 45 → ~24:50 | 46 → ~24:10 | 47 → ~23:35 | 48 → ~23:00 | 49 → ~22:30 | 50 → ~21:55 | 52 → ~21:00 | 54 → ~20:10 | 55 → ~19:45
      - If the VDOT-derived 5K is wildly different (>1min off), note it but trust the threshold-derived estimate
 
   ### Pace Zones (derived from estimated 5K pace)
@@ -179,13 +178,16 @@ promptTemplate: |
   ```
 
   ### 1f. Cortex memory
-  Run `/recall` with queries: "running coach", "last workout type", "zone adjustment", "running volume", "limiter", "test result", "block review", "octopus session". Get: last Thursday workout type (rotation), current limiter assessment, last test date/results, last block review recommendation, last octopus session, recent zone adjustments, current training week/phase.
+  Each `/recall` is a round-trip, so use 3 broad queries rather than 8 narrow ones:
+  - `/recall "running coach state"` — last Thursday workout type (rotation), current training week/phase, recent zone adjustments, running volume.
+  - `/recall "limiter test block review octopus"` — current limiter assessment, last test date/results, last block review recommendation, last octopus session.
+  - `/recall "Strength"` — recent per-movement strength ledger stored by garmin-sync (so CrossFit load context in 1h can lean on memory instead of re-reading 7 days of notes).
 
   ### 1g. Existing scheduled workout on Garmin
   From cached Garmin JSON (1a), check `scheduledWorkouts`. If a workout created by this coach is already scheduled for today, report it and skip.
 
   ### 1h. CrossFit load context
-  Last 7 days of fitness notes — find activities matching `strength_training`, `hiit`, `fitness_equipment`, `training`, `indoor_cardio`, or names containing "CrossFit", "WOD", "AMRAP", "EMOM", "Metcon". Extract date, duration, aerobic/anaerobic TE, HR, RPE, training load. Sum weekly load. On Thursday: if Tuesday's anaerobic TE >3.0 or RPE >7 → flag as "heavy CrossFit load".
+  Prefer the `/recall "Strength"` result from 1f. Only if it's thin, read the last 7 days of fitness notes — find activities matching `strength_training`, `hiit`, `fitness_equipment`, `training`, `indoor_cardio`, or names containing "CrossFit", "WOD", "AMRAP", "EMOM", "Metcon". Extract date, duration, aerobic/anaerobic TE, HR, RPE, training load. Sum weekly load. On Thursday: if Tuesday's anaerobic TE >3.0 or RPE >7 → flag as "heavy CrossFit load".
 
   ## Step 2 — Adaptive Decision Making
 
@@ -293,13 +295,13 @@ promptTemplate: |
 
   ## Step 4 — Build Workout JSON (Thursday and fallback runs)
 
-  **Read the JSON reference before constructing the workout:**
+  **Read the canonical JSON reference before constructing the workout:**
 
   ```
-  cat /home/peterstorm/dev/claude-plugins/reclaw/workspace/skills/running-coach/garmin-workout-json.md
+  cat /home/peterstorm/dev/claude-plugins/reclaw/workspace/skills/shared/garmin-workout-schema.md
   ```
 
-  This file contains: the IWorkoutDetail top-level shape, ExecutableStepDTO + RepeatGroupDTO templates, step type / end condition reference, per-step gotchas (rest, cooldown lap.button, distance steps, stepOrder, childStepId), and pace target encoding rules.
+  This shared file contains: the top-level shape, ExecutableStepDTO + RepeatGroupDTO templates, step type / end condition reference, per-step gotchas (rest, cooldown lap.button, distance steps, stepOrder, childStepId), and the pace-target encoding rules under **Sport deltas → Running**.
 
   Construct the full JSON inline in your reply, following those templates exactly. For Tue/Sun fallback runs, the JSON is small enough that you can produce it from the simple shape: a single `interval` step with `no.target` and distance end condition.
 

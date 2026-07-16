@@ -1,9 +1,7 @@
-id: garmin-catchup
 name: Garmin Late-Activity Catch-up
 schedule: "0 6 * * *"
 permissionProfile: scheduled
 validityWindowMinutes: 90
-timeout: 300
 promptTemplate: |
   {{personality}}
 
@@ -19,8 +17,10 @@ promptTemplate: |
 
   ## Step 1 — Resolve yesterday's date
 
+  Anchor to the skill's run date ({{date}}) rather than the system clock, so the target is
+  consistent with the rest of the fleet regardless of host timezone:
   ```
-  date -d 'yesterday' +%F
+  date -d "{{date}} -1 day" +%F
   ```
   Use this `YYYY-MM-DD` as the target date everywhere below.
 

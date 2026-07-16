@@ -1,9 +1,8 @@
-id: morning-briefing
 name: Morning Briefing
 schedule: "20 7 * * 1-5"
 permissionProfile: scheduled
 validityWindowMinutes: 60
-timeout: 300
+timeout: 600
 promptTemplate: |
   {{personality}}
 
@@ -21,15 +20,16 @@ promptTemplate: |
   4. If cortex has nothing recent or relevant, fall back to a simple day-aware greeting that matches the energy of the day (Monday = fresh start, Wednesday = midweek, Friday = home stretch, etc).
   5. Keep it to 1-2 sentences max. Casual, not cheesy.
 
-  **Step 1 — Commute weather:** Run this curl command to get hourly weather for the route:
+  **Step 1 — Commute weather:** Get the pre-distilled 07:00/08:00 forecast for today (offset 0):
   ```
-  curl -s "https://api.open-meteo.com/v1/forecast?latitude={{latitude}}&longitude={{longitude}}&hourly=temperature_2m,apparent_temperature,precipitation_probability,precipitation,wind_speed_10m,wind_gusts_10m,weather_code&timezone={{timezone}}&forecast_days=1"
+  bun /home/peterstorm/dev/claude-plugins/reclaw/scripts/commute-weather.ts {{latitude}} {{longitude}} {{timezone}} 0
   ```
-  From the JSON response, extract the 07:00 and 08:00 hours and summarize:
-  - Temperature and feels-like
-  - Rain probability and expected mm
-  - Wind speed and gusts
-  - Clear recommendation: what to wear, whether to bring rain gear
+  The script returns JSON `{ day, hours: [...], line }` where `line` is a ready one-liner
+  (feels-like range, rain %, gusts). Use `hours` for detail and add a clear recommendation:
+  what to wear, whether to bring rain gear.
+
+  If the output has an `error` field (the `line` will be "weather unavailable"), say weather is
+  unavailable and continue with the rest of the briefing — don't abort.
 
   **Step 2 — Fitness:** Fetch today's Garmin data (this gets last night's sleep, this morning's readiness, and today's scheduled workouts):
   ```
@@ -39,17 +39,16 @@ promptTemplate: |
   ```
   cat ~/.cache/garmin/daily/{{date}}.json 2>/dev/null
   ```
-  Also read yesterday's data for steps and activity summaries (compute yesterday's date from {{date}}):
+  Also read yesterday's data for steps and activity summaries (let the shell compute the date — don't do the arithmetic yourself, it breaks at month/year boundaries):
   ```
-  cat ~/.cache/garmin/daily/YYYY-MM-DD.json 2>/dev/null
+  cat ~/.cache/garmin/daily/$(date -d "{{date}} -1 day" +%F).json 2>/dev/null
   ```
-  where YYYY-MM-DD is yesterday's date. For example if {{date}} is 2026-03-22, read 2026-03-21.
 
   From today's fetch, include a compact fitness block (4-5 lines max):
   - Last night's sleep: score and duration (e.g. "Sleep: 7h42m (score 81)")
   - Training readiness: score and level (e.g. "Readiness: 60/100 (Moderate)")
   - Resting HR (from today's data) and trend if notable (e.g. "RHR: 52 bpm — stable")
-  From yesterday's data (latest.json):
+  From yesterday's cached file:
   - Yesterday's steps
   - If there was an activity yesterday: one-line summary (e.g. "5k run: 5:12/km avg, zone 2")
   - Training status if available (e.g. "Training: Productive, VO2 max 52.3")
@@ -85,7 +84,6 @@ promptTemplate: |
 
   **Step 4 — Day overview:** Include:
   - The calendar events from step 3
-  - Key priorities or tasks from the Obsidian vault
   - Any open items from the reclaw todo at ~/dev/notes/remotevault/reclaw/todo.md
 
-  Lead with the commute weather. Be concise and actionable.
+  Lead with the commute weather. Be concise and actionable — aim to fit the whole briefing in one Telegram message (under ~25 lines).

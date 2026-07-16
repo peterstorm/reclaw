@@ -7,6 +7,10 @@ import { type Result, type SkillConfig, err, makeSkillId, ok } from './types.js'
 
 export const SkillConfigSchema = z
   .object({
+    // Optional. The authoritative id is derived from the filename; an embedded `id` is only
+    // permitted if it MATCHES (validated in parseSkillConfig). This stops a renamed file from
+    // silently carrying a stale id that cross-references in prompts then lie about.
+    id: z.string().min(1).optional(),
     name: z.string().min(1, 'name must not be empty'),
     schedule: z
       .string()
@@ -27,7 +31,11 @@ export const SkillConfigSchema = z
     promptTemplate: z.string().min(1, 'promptTemplate must not be empty'),
     permissionProfile: z.enum(['chat', 'scheduled']),
     validityWindowMinutes: z.number().int().positive().default(30),
-    timeout: z.number().int().positive().default(120),
+    // Optional with NO default: an absent timeout must fall through to the scheduled handler's
+    // SCHEDULED_TIMEOUT_MS default (20 min), not a hard 120s. A schema default here would mask
+    // that fallback (scheduled-handler: `skill.timeout ? skill.timeout * 1000 : scheduledTimeoutMs`),
+    // silently capping every skill that omits the field at 2 minutes.
+    timeout: z.number().int().positive().optional(),
     dependsOn: z.string().min(1).nullable().default(null),
   })
   .refine((data) => !(data.dependsOn !== null && data.schedule !== null), {
@@ -69,6 +77,14 @@ export function parseSkillConfig(yamlContent: string, filePath: string): Result<
     return err(`Skill config validation failed in "${filePath}": ${msg}`);
   }
 
+  // If an explicit id is present, it must match the filename-derived id.
+  if (result.data.id !== undefined && result.data.id !== idStr) {
+    return err(
+      `Skill config in "${filePath}" has id "${result.data.id}" but the filename derives "${idStr}". ` +
+        `Remove the id field (the filename is authoritative) or rename the file to match.`,
+    );
+  }
+
   // Validate dependsOn as a SkillId if present
   let dependsOnId: SkillConfig['dependsOn'] = null;
   if (result.data.dependsOn !== null) {
@@ -89,7 +105,9 @@ export function parseSkillConfig(yamlContent: string, filePath: string): Result<
     promptTemplate: result.data.promptTemplate,
     permissionProfile: result.data.permissionProfile,
     validityWindowMinutes: result.data.validityWindowMinutes,
-    timeout: result.data.timeout,
+    // Only set timeout when explicitly provided — exactOptionalPropertyTypes forbids an
+    // explicit `undefined`, and an absent key is exactly what signals "inherit the default".
+    ...(result.data.timeout !== undefined ? { timeout: result.data.timeout } : {}),
     dependsOn: dependsOnId,
   } satisfies SkillConfig);
 }

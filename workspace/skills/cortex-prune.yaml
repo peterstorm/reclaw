@@ -1,8 +1,9 @@
 name: Cortex Prune
-schedule: "0 0 * * *"
+schedule: null  # no cron — runs as a dependent of cortex-usefulness so usefulness bumps land first. memory-librarian in turn depends on this skill.
+dependsOn: cortex-usefulness
 permissionProfile: scheduled
 validityWindowMinutes: 60
-timeout: 300
+timeout: 600
 promptTemplate: |
   {{personality}}
 
@@ -20,11 +21,7 @@ promptTemplate: |
   bun -e "
   import Database from 'bun:sqlite';
   const db = new Database('{{cwd}}/.memory/cortex.db', { readonly: true });
-  // Fresh skill-quality signals (<7d) are excluded from the evaluation set:
-  // the skill-quality-monitor needs them, so they must NOT be offered to LLM
-  // judgment. This enforces the Step 2a \"always keep\" rule in code.
-  const cutoff7 = new Date(Date.now() - 7*24*60*60*1000).toISOString();
-  const rows = db.query(\"SELECT id, memory_type, summary, confidence, access_count, pinned, created_at FROM memories WHERE status = 'active' AND NOT (tags LIKE '%\\\"skill-quality\\\"%' AND created_at >= ?) ORDER BY memory_type, created_at\").all(cutoff7);
+  const rows = db.query(\"SELECT id, memory_type, summary, confidence, access_count, pinned, created_at FROM memories WHERE status = 'active' ORDER BY memory_type, created_at\").all();
   for (const r of rows) {
     console.log(r.memory_type + ' | ' + r.id.slice(0,8) + ' | conf=' + r.confidence + ' acc=' + r.access_count + (r.pinned ? ' PIN' : '') + ' | ' + r.summary.slice(0,140));
   }
@@ -34,6 +31,10 @@ promptTemplate: |
   ```
 
   Also check global DB at `~/.claude/memory/cortex-global.db` with the same query.
+
+  (Skill-quality signals no longer live in cortex — they're written to
+  `~/.cache/reclaw/skill-quality.jsonl`, which this skill never touches. There is
+  no longer any tag carve-out to worry about.)
 
   ## Step 2: Evaluate each memory
 
@@ -49,42 +50,11 @@ promptTemplate: |
   - Meta: memories about the pruning process itself
 
   **KEEP if:**
-  - Pinned (never archive pinned memories) — except `skill-quality` carve-out below
+  - Pinned (never archive pinned memories)
   - Actionable: describes a pattern, gotcha, or decision affecting future work
   - Structural: describes where things live or how systems connect (one per concept)
   - High access count: frequently accessed = clearly useful
   - Unique: no other memory covers this information
-
-  ### Step 2a: `skill-quality` carve-out (overrides pin)
-
-  Memories tagged `skill-quality` are operational signals consumed by the
-  `skill-quality-monitor`, which only reads the last 7 days. Beyond that
-  window they're pure noise. Override the standard rules for these:
-
-  - **Always archive** `skill-quality`-tagged memories whose `created_at` is
-    older than 7 days from today, **regardless of pin status**. Use the SQL
-    query below to identify them; do not apply LLM judgment per-entry.
-  - **Always keep** `skill-quality`-tagged memories from the last 7 days,
-    regardless of LLM judgment about granularity or redundancy — the monitor
-    needs the full set in its window. This is enforced in code, not by you:
-    Step 1's fetch already excludes fresh `skill-quality` memories from the
-    set you evaluate, and Step 3's archive `UPDATE` refuses to touch them as a
-    final guard. Do not attempt to archive any `skill-quality` memory from the
-    last 7 days even if it looks like a one-time observation — it is by design.
-
-  ```bash
-  bun -e "
-  import Database from 'bun:sqlite';
-  const db = new Database('{{cwd}}/.memory/cortex.db', { readonly: true });
-  const cutoff = new Date(Date.now() - 7*24*60*60*1000).toISOString();
-  // Match the exact \"skill-quality\" tag, not substrings like \"skill-quality-monitor\".
-  const rows = db.query(\"SELECT id FROM memories WHERE status='active' AND tags LIKE '%\\\"skill-quality\\\"%' AND created_at < ?\").all(cutoff);
-  console.log(JSON.stringify(rows.map(r=>r.id)));
-  db.close();
-  "
-  ```
-
-  Add the returned IDs to the Step 3 archive batch.
 
   ## Step 2.5: Code-drift check (selective)
 
@@ -127,38 +97,60 @@ promptTemplate: |
 
   Output for the batch summary: track `code-drift` archives separately so the final Telegram message can mention them.
 
-  ## Step 3: Archive directly
+  ## Step 3: Archive directly (with a restore manifest)
 
-  Archive all identified memories (from Step 2 AND Step 2.5) in a single batch — no confirmation needed:
+  Archive all identified memories (from Step 2 AND Step 2.5) in a single batch — no
+  confirmation needed. Before flipping status, append the batch (id + reason + summary)
+  to a durable manifest so any over-aggressive archive can be reverted with one command:
 
   ```bash
   bun -e "
   import Database from 'bun:sqlite';
+  import { appendFileSync, mkdirSync } from 'fs';
+  import { homedir } from 'os';
+  import { join, dirname } from 'path';
   const db = new Database('{{cwd}}/.memory/cortex.db');
-  const ids = [/* full UUIDs to archive */];
+  // Each entry: { id: '<uuid>', reason: 'redundant|stale|code-drift|...' }
+  const batch = [/* { id, reason } objects to archive */];
   const now = new Date().toISOString();
-  const cutoff7 = new Date(Date.now() - 7*24*60*60*1000).toISOString();
-  // Hard invariant: never archive a fresh (<7d) skill-quality signal, no matter
-  // what landed in the batch. The skill-quality-monitor reads this 7-day window.
-  const stmt = db.prepare(\"UPDATE memories SET status = ?, updated_at = ? WHERE id = ? AND NOT (tags LIKE '%\\\"skill-quality\\\"%' AND created_at >= ?)\");
+
+  // 1. Write the restore manifest FIRST (so we can always roll back what we touched).
+  const manifest = join(homedir(), '.cache/reclaw/prune-log.jsonl');
+  mkdirSync(dirname(manifest), { recursive: true });
+  for (const b of batch) {
+    const row = db.query('SELECT summary FROM memories WHERE id = ?').get(b.id);
+    appendFileSync(manifest, JSON.stringify({ archived_at: now, db: 'project', id: b.id, reason: b.reason, summary: row?.summary ?? null }) + '\n');
+  }
+
+  // 2. Archive.
+  const stmt = db.prepare(\"UPDATE memories SET status = ?, updated_at = ? WHERE id = ?\");
   let count = 0;
-  for (const id of ids) {
-    const result = stmt.run('archived', now, id, cutoff7);
+  for (const b of batch) {
+    const result = stmt.run('archived', now, b.id);
     if (result.changes > 0) count++;
   }
-  console.log('Archived', count, 'memories');
+  console.log('Archived', count, 'memories; manifest at', manifest);
   const remaining = db.query(\"SELECT COUNT(*) as c FROM memories WHERE status = 'active'\").get();
   console.log('Active remaining:', remaining.c);
   db.close();
   "
   ```
 
-  Do the same for global DB if needed.
+  To restore a mistakenly-archived memory: `UPDATE memories SET status='active' WHERE id='<uuid>'`
+  (the manifest at `~/.cache/reclaw/prune-log.jsonl` has the id + reason for every archive).
+
+  **Global DB:** repeat Steps 1-3 for `~/.claude/memory/cortex-global.db` (same fetch,
+  same evaluation, same archive with `db: 'global'` in the manifest). Skip only if the
+  Step 1 global fetch returned zero rows.
 
   ## Step 4: Regenerate surface
 
+  Resolve the cortex CLI dynamically (do NOT hardcode a version — the `0.1.0` path breaks
+  silently on the next cortex bump):
+
   ```bash
-  bun /home/peterstorm/.claude/plugins/cache/local/cortex/0.1.0/engine/src/cli.ts generate {{cwd}}
+  CORTEX_CLI=$(ls -d ~/.claude/plugins/cache/local/cortex/*/engine/src/cli.ts 2>/dev/null | sort -V | tail -1)
+  bun "$CORTEX_CLI" generate {{cwd}}
   ```
 
   ## Guidelines
@@ -172,4 +164,4 @@ promptTemplate: |
   ## Output
 
   - If memories were pruned: send a brief summary — how many reviewed, archived (split into normal-prune vs code-drift), remaining, and top reasons (1-3 bullet points). Keep it concise for Telegram.
-  - If nothing needed pruning: respond with exactly `ALL_CLEAR`
+  - If nothing needed pruning: respond with exactly ALL_CLEAR — no backticks, no formatting, nothing else.

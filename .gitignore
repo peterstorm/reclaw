@@ -7,3 +7,6 @@ credentials.json
 credentials.json.bak
 credentials.json.*
 .pi/cortex-memory.local.md
+
+# tech-digest: stray feed dumps (now fetched to memory by scripts/fetch-feeds.ts)
+workspace/feed_*.xml

@@ -2,7 +2,6 @@ name: Memory Librarian
 dependsOn: cortex-prune
 permissionProfile: scheduled
 validityWindowMinutes: 60
-timeout: 600
 promptTemplate: |
   {{personality}}
 
@@ -14,14 +13,29 @@ promptTemplate: |
 
   CRITICAL: This is an automated scheduled job. There is NO user present. Do NOT ask questions or request confirmation. Execute all steps silently.
 
-  ## Step 1 — Gather journal entries (last 7 days)
+  ## Step 1 — Gather journal entries (incremental, last 7 days max)
 
-  Read journal entries from the last 7 days. Check the current and previous month folders:
+  Read a cursor of the last date this skill processed, so each nightly run only
+  re-reads genuinely new/modified entries instead of re-processing the same 7 days
+  every night:
+  ```bash
+  CURSOR=$(cat ~/.cache/reclaw/librarian-cursor.txt 2>/dev/null || echo "")
+  echo "last processed: ${CURSOR:-never}"
+  ```
+
+  List candidate journal files. Check the current and previous month folders:
   ```bash
   ls ~/dev/notes/remotevault/personal/journal/$(date +%Y)/$(date +%m)/ 2>/dev/null
   ls ~/dev/notes/remotevault/personal/journal/$(date -d '7 days ago' +%Y)/$(date -d '7 days ago' +%m)/ 2>/dev/null
   ```
-  Read each file whose date falls within the 7-day window. Extract any:
+  Read each file whose date is **after the cursor** (fall back to the full 7-day window
+  if the cursor is empty or older than 7 days — never look back more than 7 days).
+  After Step 6 completes, advance the cursor to today:
+  ```bash
+  mkdir -p ~/.cache/reclaw && echo "{{date}}" > ~/.cache/reclaw/librarian-cursor.txt
+  ```
+
+  From each entry, extract any:
   - Technical solutions, gotchas, or patterns mentioned
   - Decisions and their rationale
   - Configuration details or architecture observations
@@ -161,12 +175,31 @@ promptTemplate: |
   ### MOC linking:
   After creating a note, check if the parent MOC exists. If it does, append a link to the new note. If it doesn't exist, create one with proper frontmatter.
 
-  ## Step 6 — Store promotion record in cortex
+  ## Step 6 — Record promotions to a durable log
 
-  For each promoted note, run `/remember`:
-  "Librarian promoted ({{date}}): [topic summary] → [vault path] (new|updated)"
+  For each promoted note, append one line to `~/.cache/reclaw/librarian-promotions.jsonl`.
+  This is the anti-re-promotion memory AND the audit trail. It must be durable — the old
+  approach `/remember`-ed these, but they matched cortex-prune's "session-specific / meta"
+  ARCHIVE criteria exactly and got culled within a day, so the dedup guarantee silently decayed.
 
-  This prevents future runs from re-promoting the same knowledge and provides an audit trail.
+  ```bash
+  bun -e "
+  import { appendFileSync, mkdirSync } from 'fs';
+  import { homedir } from 'os';
+  import { join, dirname } from 'path';
+  const path = join(homedir(), '.cache/reclaw/librarian-promotions.jsonl');
+  mkdirSync(dirname(path), { recursive: true });
+  // PROMOTIONS is [{ topic, vaultPath, action }] where action ∈ 'new' | 'updated'
+  const promotions = PROMOTIONS;
+  for (const p of promotions) {
+    appendFileSync(path, JSON.stringify({ date: '{{date}}', topic: p.topic, vaultPath: p.vaultPath, action: p.action }) + '\n');
+  }
+  console.log('recorded', promotions.length, 'promotions');
+  "
+  ```
+
+  In Step 4's dedup, also consult this log (`cat ~/.cache/reclaw/librarian-promotions.jsonl`)
+  so you don't re-promote a topic a prior run already handled.
 
   ## Step 7 — Output
 
@@ -179,4 +212,4 @@ promptTemplate: |
   • path/to/existing-note.md (updated)
   ```
 
-  If nothing met the quality bar, respond with exactly `ALL_CLEAR`.
+  If nothing met the quality bar, respond with exactly ALL_CLEAR — no backticks, no formatting, nothing else.

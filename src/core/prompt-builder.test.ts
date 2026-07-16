@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildChatPrompt, buildPrompt } from './prompt-builder.js';
+import { buildChatPrompt, buildPrompt, SCHEDULED_PREAMBLE } from './prompt-builder.js';
 import type { PromptContext } from './prompt-builder.js';
 
 // ─── buildPrompt ─────────────────────────────────────────────────────────────
@@ -30,6 +30,15 @@ describe('buildPrompt', () => {
   it('interpolates {{userMessage}}', () => {
     const result = buildPrompt('User asked: {{userMessage}}', baseContext);
     expect(result).toBe('User asked: What is the news today?');
+  });
+
+  it('interpolates {{scheduledPreamble}} with the canonical automated-job contract', () => {
+    const result = buildPrompt('{{scheduledPreamble}}\n\nNow do the thing.', baseContext);
+    expect(result).toBe(`${SCHEDULED_PREAMBLE}\n\nNow do the thing.`);
+    // Guards against the backtick-copy footgun the preamble exists to prevent.
+    expect(result).toContain('EXACTLY');
+    expect(result).toContain('ALL_CLEAR');
+    expect(result).not.toContain('`ALL_CLEAR`');
   });
 
   it('interpolates all variables in one template', () => {

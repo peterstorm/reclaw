@@ -55,6 +55,20 @@ describe('parseSkillConfig', () => {
     if (result.ok) expect(result.value.id).toBe('my-skill');
   });
 
+  it('accepts an explicit id that matches the filename', () => {
+    const yaml = validYaml({ id: 'morning-briefing' });
+    const result = parseSkillConfig(yaml, '/skills/morning-briefing.yaml');
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.id).toBe('morning-briefing');
+  });
+
+  it('rejects an explicit id that disagrees with the filename', () => {
+    const yaml = validYaml({ id: 'stale-old-name' });
+    const result = parseSkillConfig(yaml, '/skills/morning-briefing.yaml');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('stale-old-name');
+  });
+
   it('applies default validityWindowMinutes of 30', () => {
     // Field omitted from YAML — test with minimal valid YAML
     const r2 = parseSkillConfig(
@@ -65,13 +79,25 @@ describe('parseSkillConfig', () => {
     if (r2.ok) expect(r2.value.validityWindowMinutes).toBe(30);
   });
 
-  it('applies default timeout of 120', () => {
+  it('leaves timeout undefined when omitted, so the handler falls back to SCHEDULED_TIMEOUT_MS', () => {
     const r = parseSkillConfig(
       'name: "Test"\npromptTemplate: "Do it"\npermissionProfile: "chat"',
       '/skills/test-skill.yaml',
     );
     expect(r.ok).toBe(true);
-    if (r.ok) expect(r.value.timeout).toBe(120);
+    // No schema default: an absent timeout must be undefined so scheduled-handler's
+    // `skill.timeout ? ... : scheduledTimeoutMs` fallback (20 min) actually fires. A hard
+    // 120 default here would silently cap every field-less skill at 2 minutes.
+    if (r.ok) expect(r.value.timeout).toBeUndefined();
+  });
+
+  it('preserves an explicit timeout', () => {
+    const r = parseSkillConfig(
+      'name: "Test"\npromptTemplate: "Do it"\npermissionProfile: "chat"\ntimeout: 300',
+      '/skills/test-skill.yaml',
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.timeout).toBe(300);
   });
 
   it('accepts null schedule (on-demand only)', () => {

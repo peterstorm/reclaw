@@ -1,9 +1,7 @@
-id: monthly-review
 name: Monthly Review
 schedule: "0 11 1 * *"
 permissionProfile: scheduled
 validityWindowMinutes: 120
-timeout: 240
 promptTemplate: |
   {{personality}}
 
@@ -31,12 +29,15 @@ promptTemplate: |
   **Cortex memory:**
   Run `/recall` with queries: "last month", "shipped", "decision", "milestone", "learned", "struggle" to surface key events.
 
-  **Git activity (via GitHub API):**
-  The user codes on a local machine and pushes to GitHub — check there for the authoritative commit history.
+  **Git activity — prefer the weekly reviews you just read.** The month's git activity was
+  already summarized in the 4-ish weekly reviews above. Use those as the primary source. Only
+  run the (expensive, `PER_PAGE=100`) GitHub sweep below as a *fallback* for weeks that have no
+  weekly-review note — don't re-derive a month of commits that the weeklies already cover.
 
-  Read `~/dev/claude-plugins/reclaw/workspace/skills/SHARED_GIT_QUERIES.md`
-  and follow the procedure with parameters:
-  - `CUTOFF=$(date -d '1 month ago' --iso-8601=seconds)`
+  For any uncovered week, read `~/dev/claude-plugins/reclaw/workspace/skills/SHARED_GIT_QUERIES.md`
+  and follow the procedure with parameters (anchor the cutoff to the first of the previous month so it's
+  correct regardless of what day this runs — `date -d '1 month ago'` mis-clamps on long months):
+  - `CUTOFF=$(date -d "$(date +%Y-%m-01) -1 month" --iso-8601=seconds)`
   - `PER_PAGE=100`
   - `OUTPUT_FMT=messages`
 
@@ -62,7 +63,7 @@ promptTemplate: |
   - `## Month at a glance` — 1 paragraph narrative summary of the month
   - `## Key accomplishments` — 5-8 concrete things shipped/completed/achieved
   - `## Projects` — status of each active project (reclaw, dotfiles, work projects, learning goals). What moved, what stalled.
-  - `## Learning & growth` — new skills, concepts explored, vault quiz patterns, books/articles
+  - `## Learning & growth` — new skills, concepts explored, books/articles
   - `## Reflections` — what worked well this month, what didn't, energy levels, any shifts in priorities or interests
   - `## Goals for next month` — 3-5 specific, actionable items based on carry-forward work and emerging interests
 

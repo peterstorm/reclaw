@@ -1,84 +1,87 @@
-id: skill-quality-monitor
 name: Skill Quality Monitor
 schedule: "0 17 * * 0"
 permissionProfile: scheduled
 validityWindowMinutes: 60
-timeout: 180
+timeout: 300
 promptTemplate: |
   {{personality}}
 
   Time: {{dayOfWeek}}, {{date}}
 
   You are the skill quality monitor. Reclaw records anomalies (only) from
-  scheduled skill runs as cortex memories tagged `skill-quality`. Your job
-  is to surface degradation patterns from those signals.
+  scheduled skill runs as JSON lines in a durable log at
+  `~/.cache/reclaw/skill-quality.jsonl`. Your job is to surface degradation
+  patterns from those signals.
 
   **Suppress when healthy.** If nothing is degrading, respond with exactly
-  `ALL_CLEAR` — the runtime suppresses that and the user is not paged.
+  ALL_CLEAR — no backticks, no formatting, nothing else. The runtime suppresses
+  that and the user is not paged.
 
   ## Data model
 
-  Each anomaly memory looks like one of:
+  Each line is a JSON object written by `src/infra/skill-quality.ts`:
 
-  - `skill-quality <skill-id> produced ALL_CLEAR (no output) at <ts> — duration <ms>ms`
-    (status=suppressed; tagged `pattern`, e.g. tech-digest with no feeds reachable)
-  - `skill-quality <skill-id> failed at <ts>: <reason> — duration <ms>ms`
-    (status=claude_error; tagged `gotcha`)
-  - `skill-quality <skill-id> scheduled but missing from registry at <ts>`
-    (status=skill_not_found; tagged `gotcha`, indicates config drift)
+  ```json
+  {"timestamp":"<ISO8601>","skillId":"<id>","status":"suppressed|claude_error|skill_not_found","durationMs":<n>,"outputLength":<n>,"errorMessage":"<string|null>","severity":<5|7|8>,"summary":"<human one-liner>"}
+  ```
+
+  - `status=suppressed` (severity 5) — the skill produced ALL_CLEAR / no output
+    (e.g. tech-digest with no feeds reachable).
+  - `status=claude_error` (severity 7) — the subprocess failed; `errorMessage` has the reason.
+  - `status=skill_not_found` (severity 8) — scheduler referenced a skill missing from
+    the registry (config drift).
 
   Plain successes are NOT recorded. Absence of data for a skill = healthy.
   Do not try to compute success rates — you can't from this dataset.
 
   ## Step 1 — Pull signals from the last 7 days
 
-  The cortex memory DB is the source of truth. Query it directly — this is
-  deterministic and, unlike `/recall`, also returns archived rows (defense in
-  depth: even if a pruner archived a fresh signal, you still see it):
+  Read the log and filter to the 7-day window (the file is append-only and never
+  pruned, so old lines accumulate — always filter by timestamp):
 
   ```bash
   bun -e "
-  import { Database } from 'bun:sqlite';
-  const db = new Database('/home/peterstorm/dev/claude-plugins/reclaw/workspace/.memory/cortex.db', { readonly: true });
-  const cutoff = new Date(Date.now() - 7*24*60*60*1000).toISOString();
-  // Match the exact \"skill-quality\" tag — NOT substrings like \"skill-quality-monitor\"
-  // (this skill's own prior findings), which the trailing quote excludes.
-  const rows = db.query(\"SELECT content, status, created_at FROM memories WHERE tags LIKE '%\\\"skill-quality\\\"%' AND created_at >= ? ORDER BY created_at DESC\").all(cutoff);
+  import { readFileSync } from 'fs';
+  import { homedir } from 'os';
+  import { join } from 'path';
+  const path = join(homedir(), '.cache/reclaw/skill-quality.jsonl');
+  let raw = '';
+  try { raw = readFileSync(path, 'utf8'); } catch { console.log('NO_LOG_FILE'); process.exit(0); }
+  const cutoff = Date.now() - 7*24*60*60*1000;
+  const rows = raw.split('\n').filter(Boolean)
+    .map(l => { try { return JSON.parse(l); } catch { return null; } })
+    .filter(r => r && Date.parse(r.timestamp) >= cutoff)
+    .sort((a,b) => b.timestamp.localeCompare(a.timestamp));
   console.log('signals in 7d window:', rows.length);
-  for (const r of rows) console.log('[' + r.status + '] ' + r.created_at + '  ' + r.content);
-  db.close();
+  for (const r of rows) console.log('[' + r.status + '] ' + r.timestamp + '  ' + r.summary);
   "
   ```
 
-  Only rows whose content matches the three recorder formats above are real
-  signals. Use this set for triage in Step 2.
-
   ### Step 1b — Distinguish "healthy" from "no signal"
 
-  - **Signals found (count > 0):** proceed to Step 2. As a side check, run
-    `/recall "skill-quality" --keyword --limit=50`; if recall surfaces far
-    fewer than the direct query returned, semantic-recall is degraded (Gemini
-    rate limit / embedding mismatch). Note it, but triage the direct-query set.
-  - **Zero signals:** decide whether the system was idle or the recorder is
-    broken. Check the service log for scheduled runs in the window:
+  - **Signals found (count > 0):** proceed to Step 2.
+  - **Zero signals (or `NO_LOG_FILE`):** decide whether the system was idle or the
+    recorder is broken. Check the service log for scheduled runs in the window:
 
     ```bash
     journalctl --user -u reclaw --since "7 days ago" 2>/dev/null | grep -c "worker:scheduled"
     ```
 
-    - Count is 0 → genuinely idle → respond `ALL_CLEAR`.
+    - Count is 0 → genuinely idle → respond ALL_CLEAR.
     - Count > 0 → scheduled skills ran but produced no anomalies. Recording is
       anomalies-only, so this is normally the healthy state. Confirm the
       recorder still writes (a silent write failure looks identical to health):
 
       ```bash
-      journalctl --user -u reclaw --since "7 days ago" 2>/dev/null | grep "skill-quality.*remember exited"
+      journalctl --user -u reclaw --since "7 days ago" 2>/dev/null | grep "skill-quality.*failed to append"
       ```
 
       - Error lines present → recorder write-path is degraded. Alert with:
-        "skill-quality recorder failing — `remember` exiting non-zero; check
-        `src/infra/skill-quality.ts` wiring / cortex CLI path resolution".
-      - No error lines → healthy → respond `ALL_CLEAR`.
+        "skill-quality recorder failing — append errors in the log; check
+        `src/infra/skill-quality.ts` and `~/.cache/reclaw/` writability".
+      - No error lines, but `NO_LOG_FILE` and scheduled runs happened → the log was
+        never created; flag it as a possible wiring regression.
+      - No error lines and the file exists → healthy → respond ALL_CLEAR.
 
   ## Step 2 — Group and triage
 
