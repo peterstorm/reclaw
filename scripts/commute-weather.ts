@@ -12,7 +12,9 @@
  *
  * Prints JSON: { day, hours: [{time, tempC, feelsLikeC, precipProb, precipMm,
  *                windKmh, gustKmh, code}], line } — `line` is a ready-to-use one-liner.
- * Exits 0 with { error } (and a fallback line) on failure so callers never abort.
+ * Exits 0 on failure so the calling skill never aborts, but the failure is also
+ * written to stderr (so it lands in logs) and the fallback `line` names the reason
+ * — a broken integration must never look like a calm, dry morning.
  */
 
 type Hour = {
@@ -27,7 +29,10 @@ type Hour = {
 };
 
 function fail(msg: string): never {
-  process.stdout.write(`${JSON.stringify({ error: msg, line: 'weather unavailable' })}\n`);
+  // Surface to stderr so the failure is visible in logs, and put the reason in
+  // `line` so it shows up in the rendered briefing instead of masquerading as data.
+  process.stderr.write(`commute-weather failed: ${msg}\n`);
+  process.stdout.write(`${JSON.stringify({ error: msg, line: `weather unavailable (${msg})` })}\n`);
   process.exit(0);
 }
 

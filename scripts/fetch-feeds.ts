@@ -140,7 +140,13 @@ function parseFeed(source: string, xml: string): Item[] {
 function loadSeen(): Set<string> {
   try {
     return new Set(readFileSync(SEEN_PATH, 'utf8').split('\n').map((l) => l.trim()).filter(Boolean));
-  } catch {
+  } catch (e) {
+    // A missing cache is the normal first-run case → empty set, no noise.
+    // Any other error (permissions, corrupt/partial read) would silently defeat
+    // dedup and re-surface the whole backlog, so make it visible in logs.
+    if (!(e instanceof Error && 'code' in e && e.code === 'ENOENT')) {
+      process.stderr.write(`fetch-feeds: could not read seen-cache ${SEEN_PATH}: ${e instanceof Error ? e.message : String(e)}\n`);
+    }
     return new Set();
   }
 }
@@ -178,6 +184,22 @@ function arg(name: string): string | undefined {
   return i >= 0 ? process.argv[i + 1] : undefined;
 }
 
+/**
+ * Parse a positive-integer arg, falling back to `fallback` on absent or
+ * non-finite input. Without this guard a bad value (`--days foo`) becomes NaN,
+ * which silently filters out every dated item instead of erroring.
+ */
+function numericArg(name: string, fallback: number): number {
+  const raw = arg(name);
+  if (raw === undefined) return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    process.stderr.write(`fetch-feeds: invalid ${name} "${raw}", using ${fallback}\n`);
+    return fallback;
+  }
+  return n;
+}
+
 async function main(): Promise<void> {
   if (process.argv.includes('--mark')) {
     const stdin = readFileSync(0, 'utf8');
@@ -187,8 +209,8 @@ async function main(): Promise<void> {
     return;
   }
 
-  const days = Number(arg('--days') ?? '3');
-  const maxPerFeed = Number(arg('--max-per-feed') ?? '15');
+  const days = numericArg('--days', 3);
+  const maxPerFeed = numericArg('--max-per-feed', 15);
   const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
   const seen = loadSeen();
 
@@ -206,6 +228,13 @@ async function main(): Promise<void> {
       .slice(0, maxPerFeed);
     items.push(...recent);
   });
+
+  // If every feed failed, `count: 0` would otherwise look like a quiet news day.
+  // Surface total failure to stderr so it's distinguishable in logs (still exit 0
+  // — an empty digest is valid output the skill can degrade on).
+  if (errors.length === FEEDS.length) {
+    process.stderr.write(`fetch-feeds: all ${FEEDS.length} feeds failed — digest is empty due to fetch errors, not a quiet day\n`);
+  }
 
   // Sort newest-first; undated items sink to the bottom.
   items.sort((a, b) => (Date.parse(b.date ?? '') || 0) - (Date.parse(a.date ?? '') || 0));

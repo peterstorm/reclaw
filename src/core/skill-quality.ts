@@ -23,6 +23,13 @@ export type SkillRunStatus =
   | 'skill_not_found'
   | 'validity_expired';
 
+/**
+ * The subset of statuses that warrant a persisted record. Narrowing to this
+ * subtype lets the record type below make the impossible states (`success`,
+ * `validity_expired`) unrepresentable rather than merely unreachable.
+ */
+export type AnomalyStatus = 'suppressed' | 'claude_error' | 'skill_not_found';
+
 export type SkillQualitySignal = {
   readonly skillId: SkillId;
   readonly status: SkillRunStatus;
@@ -37,11 +44,11 @@ export type SkillQualitySignal = {
 export type SkillQualityRecord = {
   readonly timestamp: string;
   readonly skillId: string;
-  readonly status: SkillRunStatus;
+  readonly status: AnomalyStatus;
   readonly durationMs: number;
   readonly outputLength: number;
   readonly errorMessage: string | null;
-  readonly severity: number; // 5 suppressed · 7 claude_error · 8 skill_not_found
+  readonly severity: 5 | 7 | 8; // 5 suppressed · 7 claude_error · 8 skill_not_found
   readonly summary: string; // human-readable one-liner for the weekly digest
 };
 
@@ -49,17 +56,16 @@ export type SkillQualityRecord = {
 
 /**
  * Anomalies-only policy. Successful runs and validity-window misses do not
- * produce records — they're high-volume operational noise.
+ * produce records — they're high-volume operational noise. Typed as a guard so
+ * callers narrow `SkillRunStatus` to `AnomalyStatus`.
  */
-export function shouldRecord(status: SkillRunStatus): boolean {
+export function shouldRecord(status: SkillRunStatus): status is AnomalyStatus {
   return status === 'suppressed' || status === 'claude_error' || status === 'skill_not_found';
 }
 
 // ─── Formatting ──────────────────────────────────────────────────────────────
 
-const SEVERITY_BY_STATUS: Record<SkillRunStatus, number> = {
-  success: 0,
-  validity_expired: 0,
+const SEVERITY_BY_STATUS: Record<AnomalyStatus, 5 | 7 | 8> = {
   suppressed: 5,
   claude_error: 7,
   skill_not_found: 8,

@@ -21,6 +21,13 @@
   stays paused (re-enable is a separate task). Phase 7.2 per-skill backend selection remains a stretch.
 - **Done beyond plan:** fixed the stale skill-example in `README.md` (it documented a schema that no
   longer exists — `id`/`cron`/`validForMs`/`permissions`).
+- **Scripts stream in memory, not `/tmp` (correction to Phases 3.1, 3.5, 7.1).** The phase bodies below
+  describe `fetch-feeds.ts` writing to `/tmp/tech-digest/` and `commute-weather.ts` outputting "two
+  lines". As shipped, neither touches `/tmp`: `fetch-feeds.ts` streams feeds in memory and prints a
+  JSON object to stdout, and `commute-weather.ts` prints a JSON object (`{ day, hours, line }`). Also,
+  of the "fetch-heavy" trio in Phase 7.1, only tech-digest got a fetch script; espresso still curls
+  inline and hardware-intel has no fetch script yet. The in-memory-stdout approach still shrinks the
+  injection surface (untrusted XML is parsed by a fixed script, not the model), which was the goal.
 
 Ordering rationale: Phases 1–2 are pure YAML edits — hot-reloaded by the skill watcher, zero deploy risk, and they fix active bugs (starved timeouts, wrong-order cortex chain, 7× redundant evolve mining). Phase 3 adds helper scripts. Phases 4–5 are coupled runtime changes (one deploy). Phases 6–7 are dedup and hardening.
 

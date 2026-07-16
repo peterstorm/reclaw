@@ -51,17 +51,6 @@ export function resolveCortexExtractScript(): string | null {
   return existsSync(scriptPath) ? scriptPath : null;
 }
 
-/**
- * Resolve the cortex engine CLI entrypoint (cli.ts) from
- * Claude's installed_plugins.json. Returns null if not found.
- */
-export function resolveCortexCliPath(): string | null {
-  const installPath = resolveCortexInstallPath();
-  if (installPath === null) return null;
-  const cliPath = join(installPath, 'engine', 'src', 'cli.ts');
-  return existsSync(cliPath) ? cliPath : null;
-}
-
 // ─── Fire-and-forget extraction (imperative shell) ───────────────────────────
 
 /**
