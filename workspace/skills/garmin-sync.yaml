@@ -13,7 +13,7 @@ promptTemplate: |
 
   Run the Garmin fetch script with today's date (this runs at 20:00, capturing the day's data):
   ```
-  bun /home/peterstorm/dev/claude-plugins/reclaw/scripts/garmin-fetch.ts {{date}}
+  bun {{scriptsDir}}/garmin-fetch.ts {{date}}
   ```
 
   If it fails with an auth error, report the failure and stop — don't write a vault note with no data.

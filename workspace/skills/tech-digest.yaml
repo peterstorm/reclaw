@@ -19,7 +19,7 @@ promptTemplate: |
   previous digest (tracked in `~/.cache/reclaw/tech-digest-seen.txt`):
 
   ```
-  bun /home/peterstorm/dev/claude-plugins/reclaw/scripts/fetch-feeds.ts --days 3
+  bun {{scriptsDir}}/fetch-feeds.ts --days 3
   ```
 
   Output is JSON: `{ generatedAt, count, errors: [{source, error}], items: [{source, title, link, date, summary}] }`.
@@ -53,5 +53,5 @@ promptTemplate: |
   to the seen-cache:
 
   ```
-  printf '%s\n' "<link1>" "<link2>" ... | bun /home/peterstorm/dev/claude-plugins/reclaw/scripts/fetch-feeds.ts --mark
+  printf '%s\n' "<link1>" "<link2>" ... | bun {{scriptsDir}}/fetch-feeds.ts --mark
   ```

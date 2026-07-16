@@ -9,7 +9,7 @@ export const SkillConfigSchema = z
   .object({
     // Optional. The authoritative id is derived from the filename; an embedded `id` is only
     // permitted if it MATCHES (validated in parseSkillConfig). This stops a renamed file from
-    // silently carrying a stale id that cross-references in prompts then lie about.
+    // silently carrying a stale id that prompt cross-references would then lie about.
     id: z.string().min(1).optional(),
     name: z.string().min(1, 'name must not be empty'),
     schedule: z

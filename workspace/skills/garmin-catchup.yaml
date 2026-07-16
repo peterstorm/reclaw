@@ -27,7 +27,7 @@ promptTemplate: |
   ## Step 2 — Fetch yesterday's data
 
   ```
-  bun /home/peterstorm/dev/claude-plugins/reclaw/scripts/garmin-fetch.ts <yesterday>
+  bun {{scriptsDir}}/garmin-fetch.ts <yesterday>
   ```
   Read the result:
   ```

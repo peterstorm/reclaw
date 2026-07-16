@@ -126,9 +126,16 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
     console.error(`[main] Config error: ${configResult.error}`);
     process.exit(1);
   }
-  const config = configResult.value;
+  const loadedConfig = configResult.value;
+  // Fill in scriptsDir (for {{scriptsDir}} in skill templates) from the running
+  // module's location when SCRIPTS_DIR isn't set, so skills never hardcode a checkout path.
+  const { resolveScriptsDir } = await import('./infra/config.js');
+  const config: AppConfig = {
+    ...loadedConfig,
+    scriptsDir: loadedConfig.scriptsDir ?? resolveScriptsDir(),
+  };
 
-  console.info('[main] Config loaded');
+  console.info(`[main] Config loaded (scriptsDir: ${config.scriptsDir})`);
 
   // ── 1a. Resolve agent backend ──────────────────────────────────────────────
   const { resolveBackend, runAgent, runAgentStreaming } = await import('./infra/agent-backends/index.js');

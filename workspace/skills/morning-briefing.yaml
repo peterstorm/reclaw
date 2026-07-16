@@ -22,7 +22,7 @@ promptTemplate: |
 
   **Step 1 — Commute weather:** Get the pre-distilled 07:00/08:00 forecast for today (offset 0):
   ```
-  bun /home/peterstorm/dev/claude-plugins/reclaw/scripts/commute-weather.ts {{latitude}} {{longitude}} {{timezone}} 0
+  bun {{scriptsDir}}/commute-weather.ts {{latitude}} {{longitude}} {{timezone}} 0
   ```
   The script returns JSON `{ day, hours: [...], line }` where `line` is a ready one-liner
   (feels-like range, rain %, gusts). Use `hours` for detail and add a clear recommendation:
@@ -33,7 +33,7 @@ promptTemplate: |
 
   **Step 2 — Fitness:** Fetch today's Garmin data (this gets last night's sleep, this morning's readiness, and today's scheduled workouts):
   ```
-  bun /home/peterstorm/dev/claude-plugins/reclaw/scripts/garmin-fetch.ts {{date}}
+  bun {{scriptsDir}}/garmin-fetch.ts {{date}}
   ```
   Then read the result:
   ```
@@ -65,7 +65,7 @@ promptTemplate: |
 
   **Step 3 — Calendar:** Fetch today's events:
   ```
-  bun /home/peterstorm/dev/claude-plugins/reclaw/scripts/calendar-events.ts {{date}}
+  bun {{scriptsDir}}/calendar-events.ts {{date}}
   ```
   This returns JSON: `[{date, startTime, endTime, title, location, isAllDay}]`.
   List each event with time, title, and location (if present).
@@ -74,7 +74,7 @@ promptTemplate: |
 
   **Step 3b — dotslash.dev contact form:** Check for new submissions to the dotslash.dev contact form (saved on the PVC in the dotslash-dev k3s deployment):
   ```
-  bun /home/peterstorm/dev/claude-plugins/reclaw/scripts/dotslash-contacts.ts
+  bun {{scriptsDir}}/dotslash-contacts.ts
   ```
   Returns a JSON array of submissions newer than the last briefing run (the script tracks state at `~/.cache/reclaw/dotslash-contacts-last.txt`). For each entry, surface a short block with:
   - Time received (convert UTC `timestamp` to Europe/Copenhagen, e.g. "yesterday 22:14")

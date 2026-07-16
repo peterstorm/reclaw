@@ -37,7 +37,7 @@ promptTemplate: |
   **Calendar events this week:**
   Compute the date 7 days ago from {{date}}, then:
   ```
-  bun /home/peterstorm/dev/claude-plugins/reclaw/scripts/calendar-events.ts YYYY-MM-DD {{date}}
+  bun {{scriptsDir}}/calendar-events.ts YYYY-MM-DD {{date}}
   ```
   (replace first YYYY-MM-DD with 7 days ago). Returns JSON array of events for the range.
 

@@ -36,6 +36,7 @@ export type PromptContext = {
   readonly timezone?: string;
   readonly locationName?: string;
   readonly workspacePath?: string;
+  readonly scriptsDir?: string;
 };
 
 // ─── Pure Functions ───────────────────────────────────────────────────────────
@@ -44,7 +45,7 @@ export type PromptContext = {
  * Interpolate a skill prompt template with context variables.
  * Variables are in {{variable}} format. Supported: date, dayOfWeek,
  * personality, scheduledPreamble, userMessage, latitude, longitude, timezone,
- * locationName, workspacePath (also exposed as `cwd`).
+ * locationName, workspacePath (also exposed as `cwd`), scriptsDir.
  * Unknown variables are left unchanged.
  */
 export function buildPrompt(template: string, context: PromptContext): string {
@@ -72,6 +73,9 @@ export function buildPrompt(template: string, context: PromptContext): string {
   if (context.workspacePath !== undefined) {
     vars['workspacePath'] = context.workspacePath;
     vars['cwd'] = context.workspacePath;
+  }
+  if (context.scriptsDir !== undefined) {
+    vars['scriptsDir'] = context.scriptsDir;
   }
 
   return template.replace(/\{\{(\w+)\}\}/g, (match, key: string) => {

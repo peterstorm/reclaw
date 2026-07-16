@@ -89,6 +89,7 @@ export async function handleScheduledJob(job: ScheduledJob, deps: ScheduledDeps)
     timezone: deps.config.timezone,
     locationName: deps.config.locationName,
     workspacePath: deps.config.workspacePath,
+    ...(deps.config.scriptsDir !== undefined ? { scriptsDir: deps.config.scriptsDir } : {}),
   });
 
   // 5. Get allowed tools for scheduled profile (pure, FR-011)

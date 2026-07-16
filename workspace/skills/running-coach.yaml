@@ -145,7 +145,7 @@ promptTemplate: |
 
   If the cache file is missing or empty (e.g. Sunday when morning briefing doesn't run), fetch it yourself:
   ```
-  bun /home/peterstorm/dev/claude-plugins/reclaw/scripts/garmin-fetch.ts {{date}}
+  bun {{scriptsDir}}/garmin-fetch.ts {{date}}
   cat ~/.cache/garmin/daily/{{date}}.json
   ```
 
@@ -174,7 +174,7 @@ promptTemplate: |
 
   ### 1e. Today's calendar
   ```
-  bun /home/peterstorm/dev/claude-plugins/reclaw/scripts/calendar-events.ts {{date}}
+  bun {{scriptsDir}}/calendar-events.ts {{date}}
   ```
 
   ### 1f. Cortex memory
@@ -312,7 +312,7 @@ promptTemplate: |
   cat > /tmp/workout.json << 'WORKOUT_EOF'
   { ... the workout JSON ... }
   WORKOUT_EOF
-  cat /tmp/workout.json | bun /home/peterstorm/dev/claude-plugins/reclaw/scripts/garmin-schedule-workout.ts {{date}}
+  cat /tmp/workout.json | bun {{scriptsDir}}/garmin-schedule-workout.ts {{date}}
   ```
 
   If it fails:

@@ -1,3 +1,5 @@
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { type Result, err, ok } from '../core/types.js';
 
@@ -10,6 +12,10 @@ export const AppConfigSchema = z.object({
   redisPort: z.number().int().min(1).max(65535).default(6379),
   workspacePath: z.string().default('/workspace'),
   skillsDir: z.string().default('/workspace/skills'),
+  // Directory holding the repo's helper scripts (fetch-feeds, commute-weather, …),
+  // exposed to skill templates as {{scriptsDir}} so they don't hardcode a checkout
+  // path. Unset in env → resolved from the running module's location (see main.ts).
+  scriptsDir: z.string().optional(),
   personalityPath: z.string().default('/workspace/personality.md'),
   chatTimeoutMs: z.number().int().positive().default(3_600_000), // 1 hour
   scheduledTimeoutMs: z.number().int().positive().default(1_200_000), // 20 minutes
@@ -115,6 +121,7 @@ export function parseEnvToRaw(env: Record<string, string | undefined>): {
     redisPort: parseNumericEnv('REDIS_PORT', env.REDIS_PORT, errors),
     workspacePath: env.WORKSPACE_PATH,
     skillsDir: env.SKILLS_DIR,
+    scriptsDir: parseOptionalString(env.SCRIPTS_DIR),
     personalityPath: env.PERSONALITY_PATH,
     chatTimeoutMs: parseNumericEnv('CHAT_TIMEOUT_MS', env.CHAT_TIMEOUT_MS, errors),
     scheduledTimeoutMs: parseNumericEnv('SCHEDULED_TIMEOUT_MS', env.SCHEDULED_TIMEOUT_MS, errors),
@@ -152,4 +159,14 @@ export function loadConfig(
     return err(`Config validation failed: ${msg}`);
   }
   return ok(parsed.data);
+}
+
+/**
+ * Resolve the repo's scripts directory from this module's on-disk location
+ * (`<repoRoot>/src/infra/config.ts` → `<repoRoot>/scripts`). Independent of the
+ * process cwd, so it holds whether the service is started from the repo root or
+ * elsewhere. Used as the default for `scriptsDir` when `SCRIPTS_DIR` is unset.
+ */
+export function resolveScriptsDir(): string {
+  return join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts');
 }
