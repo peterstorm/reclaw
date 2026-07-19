@@ -206,6 +206,48 @@ describe('claudeBackend', () => {
       // Last message had no text_delta, so text is null
       expect(text).toBeNull();
     });
+
+    it('captures errorMessage from an is_error result frame and does not treat it as text', () => {
+      const rawOutput = JSON.stringify({
+        type: 'result',
+        subtype: 'error_during_execution',
+        is_error: true,
+        result: 'Credit balance is too low',
+        session_id: 'sess-err',
+      });
+
+      const { text, errorMessage, sessionId } = claudeBackend.parseResult(rawOutput);
+      expect(text).toBeNull();
+      expect(errorMessage).toBe('Credit balance is too low');
+      expect(sessionId).toBe('sess-err');
+    });
+
+    it('falls back to subtype when an error frame has no result text', () => {
+      const rawOutput = JSON.stringify({
+        type: 'result',
+        subtype: 'error_max_turns',
+        is_error: true,
+        session_id: 'sess-err2',
+      });
+
+      const { text, errorMessage } = claudeBackend.parseResult(rawOutput);
+      expect(text).toBeNull();
+      expect(errorMessage).toBe('error_max_turns');
+    });
+
+    it('leaves errorMessage null on a successful result frame', () => {
+      const rawOutput = JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        result: 'All good',
+        session_id: 'sess-ok',
+      });
+
+      const { text, errorMessage } = claudeBackend.parseResult(rawOutput);
+      expect(text).toBe('All good');
+      expect(errorMessage).toBeNull();
+    });
   });
 
   describe('extractStreamDelta', () => {

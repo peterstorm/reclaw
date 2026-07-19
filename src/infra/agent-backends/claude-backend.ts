@@ -40,9 +40,14 @@ export const claudeBackend: AgentBackend = {
     return rest;
   },
 
-  parseResult(rawOutput: string): { text: string | null; sessionId: string | null } {
+  parseResult(rawOutput: string): {
+    text: string | null;
+    sessionId: string | null;
+    errorMessage?: string | null;
+  } {
     const lines = rawOutput.split('\n');
     let sessionId: string | null = null;
+    let errorMessage: string | null = null;
 
     // Track per-message text via streaming events.
     // Each message_start begins a new message; text_delta within content_block_delta
@@ -71,12 +76,29 @@ export const claudeBackend: AgentBackend = {
           sessionId = parsed['session_id'];
         }
 
+        // Agent-level failure inside an otherwise-parseable stream. The CLI
+        // signals this with is_error:true and/or a non-success subtype
+        // (e.g. "error_during_execution", "error_max_turns"). Capture the
+        // human-readable reason so the runner can surface *why* it failed
+        // instead of an opaque "exited with code N:". Do NOT treat the
+        // `result` string as assistant text in this case — it's the error.
+        const isError = parsed['is_error'] === true;
+        const subtype = typeof parsed['subtype'] === 'string' ? parsed['subtype'] : null;
+        if (isError || (subtype !== null && subtype !== 'success')) {
+          const resultText =
+            typeof parsed['result'] === 'string' && parsed['result'].trim() !== ''
+              ? parsed['result'].trim()
+              : null;
+          errorMessage = resultText ?? subtype ?? 'unknown agent error';
+          continue;
+        }
+
         // If we tracked messages via streaming events, DON'T use the result
         // field (it's the concatenation of ALL messages). Fall through to
         // return the last message's text below.
         // If no streaming events were captured, use the result field as fallback.
         if (!sawMessageStart && typeof parsed['result'] === 'string') {
-          return { text: parsed['result'], sessionId };
+          return { text: parsed['result'], sessionId, errorMessage: null };
         }
         continue;
       }
@@ -110,10 +132,14 @@ export const claudeBackend: AgentBackend = {
     // Return only the LAST message's text — that's the actual response to the user
     if (messageTexts.length > 0) {
       const lastMessageText = messageTexts[messageTexts.length - 1]!.join('');
-      return { text: lastMessageText.length > 0 ? lastMessageText : null, sessionId };
+      return {
+        text: lastMessageText.length > 0 ? lastMessageText : null,
+        sessionId,
+        errorMessage,
+      };
     }
 
-    return { text: null, sessionId };
+    return { text: null, sessionId, errorMessage };
   },
 
   extractStreamDelta(line: string): StreamDelta | null {

@@ -17,6 +17,39 @@ import type { AgentBackend, AgentOptions, AgentResult, OnStreamChunk, SpawnFn } 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const getDefaultSpawn = (): SpawnFn => Bun.spawn as unknown as SpawnFn;
 
+// ─── Diagnostics ──────────────────────────────────────────────────────────────
+
+/**
+ * Build a human-readable failure detail for a nonzero subprocess exit.
+ *
+ * Claude routinely exits nonzero with an EMPTY stderr, emitting its real
+ * diagnostic as a structured error frame on *stdout*. Reporting only stderr
+ * yields the opaque "exited with code 1:" seen in production. Prefer, in order:
+ * stderr → the backend's parsed errorMessage → the tail of raw stdout. Capped
+ * so a runaway stream can't bloat the error string / logs.
+ */
+function buildExitDetail(
+  backend: AgentBackend,
+  stderrText: string,
+  rawStdout: string,
+): string {
+  const stderr = stderrText.trim();
+  if (stderr !== '') return stderr.slice(0, 800);
+
+  const parsedErr = backend.parseResult(rawStdout).errorMessage?.trim();
+  if (parsedErr) return parsedErr.slice(0, 800);
+
+  const tail = rawStdout
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l !== '')
+    .slice(-3)
+    .join(' | ');
+  if (tail !== '') return tail.slice(0, 800);
+
+  return '(no diagnostic output on stderr or stdout)';
+}
+
 // ─── Non-Streaming Runner ─────────────────────────────────────────────────────
 
 /**
@@ -96,7 +129,7 @@ export async function runAgent(backend: AgentBackend, options: AgentOptions): Pr
     const stderrText = await stderrPromise;
     return {
       ok: false,
-      error: `${backend.name} exited with code ${exitCode}: ${stderrText.trim()}`,
+      error: `${backend.name} exited with code ${exitCode}: ${buildExitDetail(backend, stderrText, rawOutput)}`,
       timedOut: false,
     };
   }
@@ -292,7 +325,7 @@ export async function runAgentStreaming(
     const stderrText = await stderrPromise;
     return {
       ok: false,
-      error: `${backend.name} exited with code ${exitCode}: ${stderrText.trim()}`,
+      error: `${backend.name} exited with code ${exitCode}: ${buildExitDetail(backend, stderrText, collectedLines.join('\n'))}`,
       timedOut: false,
     };
   }

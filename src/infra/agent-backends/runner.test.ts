@@ -161,6 +161,36 @@ describe('runAgent', () => {
     expect(result.error).toContain('something went wrong');
   });
 
+  it('surfaces parsed errorMessage on non-zero exit when stderr is empty', async () => {
+    // Claude fast-fails with an empty stderr and its real reason in a stdout
+    // error frame. The runner must recover it via backend.parseResult.
+    const errBackend: AgentBackend = {
+      ...mockBackend,
+      parseResult: () => ({ text: null, sessionId: null, errorMessage: 'Credit balance is too low' }),
+    };
+    const result = await runAgent(
+      errBackend,
+      baseOptions({ _spawn: mockSpawn('{"type":"result","is_error":true}', 1, '') }),
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain('exited with code 1');
+    expect(result.error).toContain('Credit balance is too low');
+  });
+
+  it('falls back to stdout tail on non-zero exit when stderr and errorMessage are both empty', async () => {
+    const result = await runAgent(
+      mockBackend,
+      baseOptions({ _spawn: mockSpawn('some trailing diagnostic line\n', 1, '') }),
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain('exited with code 1');
+    expect(result.error).toContain('some trailing diagnostic line');
+  });
+
   it('returns ok:false when spawn throws', async () => {
     const result = await runAgent(
       mockBackend,
@@ -405,5 +435,22 @@ describe('runAgentStreaming', () => {
     expect(result.timedOut).toBe(false);
     expect(result.error).toContain('process error');
     expect(result.error).toContain('code 1');
+  });
+
+  it('recovers the stdout error frame on non-zero exit with empty stderr during streaming', async () => {
+    const errBackend: AgentBackend = {
+      ...mockBackend,
+      parseResult: () => ({ text: null, sessionId: null, errorMessage: 'overloaded_error' }),
+    };
+    const result = await runAgentStreaming(
+      errBackend,
+      baseOptions({ _spawn: mockSpawn('TEXT:partial\n', 1, '') }),
+      () => {},
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain('code 1');
+    expect(result.error).toContain('overloaded_error');
   });
 });
