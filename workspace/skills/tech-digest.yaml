@@ -28,30 +28,40 @@ promptTemplate: |
   - If `count` is 0, respond with exactly ALL_CLEAR — no backticks, nothing else
     (everything recent was already covered).
 
-  ## Step 2 — Curate
+  ## Step 2 — Pick your items
 
   From `items`, pick the 5-8 most noteworthy. Focus on: AI/LLM developments, systems
   programming, Linux/NixOS, developer tools, security, and notable open-source
   releases. Deprioritize pure business/funding news, product marketing, and clickbait.
 
-  For each pick:
-  - **Title** with link
-  - **Source** name
-  - 1-2 sentence summary (lean on the provided `summary`; keep it tight)
-  - Why it matters (one clause)
-
   Group loosely by theme (AI/ML, Systems/Infra, Industry, etc.), not by source.
-  Aim for one Telegram message — if it won't fit, cut to the strongest items rather
-  than spilling to a second message.
-
-  End with a one-line "TLDR of the day" — the single most important development.
+  Don't write the digest yet — that's the final step.
 
   ## Step 3 — Mark featured items as seen
 
   So tomorrow's run doesn't re-surface the same stories (Mollick/Zvi/Weng post
-  infrequently and would otherwise repeat for days), feed the links you featured back
-  to the seen-cache:
+  infrequently and would otherwise repeat for days), feed the links you picked back
+  to the seen-cache **now, before writing the digest**:
 
   ```
   printf '%s\n' "<link1>" "<link2>" ... | bun {{scriptsDir}}/fetch-feeds.ts --mark
   ```
+
+  ## Step 4 — Write the digest (this is your FINAL message)
+
+  CRITICAL: reclaw relays only your LAST assistant message to Telegram. Any text you
+  emit after this — a "done" confirmation, a tool call followed by more prose —
+  REPLACES the digest and the user gets a link-free stub instead. So the digest MUST
+  be the last thing you say. Marking-as-seen (Step 3) happens first precisely so no
+  tool call comes after the digest. Do not append a closing line.
+
+  For each pick:
+  - **Title** as a markdown link `[Title](link)` — every item needs its real URL
+  - **Source** name
+  - 1-2 sentence summary (lean on the provided `summary`; keep it tight)
+  - Why it matters (one clause)
+
+  Aim for one Telegram message — if it won't fit, cut to the strongest items rather
+  than spilling to a second message. If any feeds failed (Step 1 `errors`), add one
+  line noting which. End with a one-line "TLDR of the day" — the single most important
+  development. Then stop.
