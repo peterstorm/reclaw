@@ -1,5 +1,5 @@
 name: Espresso Price Watch
-schedule: "0 9 * * 1,4"  # Mon & Thu 09:00 — retailer prices move ~monthly, so twice a week is plenty; daily was wasted fetches.
+schedule: null
 permissionProfile: scheduled
 validityWindowMinutes: 60
 timeout: 300
@@ -51,16 +51,29 @@ promptTemplate: |
   layout likely changed — report the failure and do NOT overwrite the cache. Stop here.
 
   **Step 3 — Get availability per machine.** The listing's stock badge is JS-injected and not
-  in the static HTML, so fetch each product page once and read its schema availability marker
-  (`backordered` = on backorder, `instock` = in stock, `outofstock` = sold out):
+  in the static HTML, so fetch each product page once and read its stock-message class. The
+  markup is `<div class="availability stock-message <state> stock-message-NNNN" title="...">`,
+  where `<state>` is `available` (Á goymslu = in stock) or `backordered` (Veiting: 1-2 vikur).
+  Do NOT grep for a bare `instock`/`outofstock` schema.org marker — the site dropped those in
+  July 2026 and a bare grep silently yields `unknown` for every in-stock machine:
   ```
+  : > /tmp/avail.tsv
   while IFS=$'\t' read -r price slug; do
     curl -sL -A "$UA" "https://elding.fo/heim-havi/kaffi-te/espressomaskina/$slug" \
       -o /tmp/pp.html --max-time 30
-    avail=$(grep -oiE '(backordered|outofstock|instock)' /tmp/pp.html | head -1)
-    printf '%s\t%s\t%s\n' "$slug" "$price" "${avail:-unknown}"
+    state=$(grep -oE 'class="availability stock-message ([a-z-]+)' /tmp/pp.html | head -1 | awk '{print $NF}')
+    case "$state" in
+      available) avail=instock ;;
+      backordered) avail=backordered ;;
+      unavailable|out-of-stock|outofstock) avail=outofstock ;;
+      *) avail="${state:-unknown}" ;;
+    esac
+    printf '%s\t%s\t%s\n' "$slug" "$price" "$avail" >> /tmp/avail.tsv
   done < /tmp/barista.tsv
+  cat /tmp/avail.tsv
   ```
+  If every machine comes back `unknown`, the stock markup changed again — investigate the
+  actual product-page HTML rather than reporting `unknown` as a real availability state.
 
   **Step 4 — Compare against the last recorded prices.** Read the cache (may not exist on
   first run):
