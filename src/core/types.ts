@@ -393,6 +393,8 @@ export type PermissionProfile = {
 // ─── Skill Config ──────────────────────────────────────────────────────────────
 
 /** Parsed from a YAML file in workspace/skills/. */
+export type AgentBackendName = 'claude' | 'pi';
+
 export type SkillConfig = {
   readonly id: SkillId;
   readonly name: string;
@@ -401,6 +403,7 @@ export type SkillConfig = {
   readonly permissionProfile: 'chat' | 'scheduled';
   readonly validityWindowMinutes: number;
   readonly timeout?: number; // seconds; omit to inherit SCHEDULED_TIMEOUT_MS (20 min default)
+  readonly backend?: AgentBackendName; // optional per-skill backend override; omit to use AGENT_BACKEND
   readonly dependsOn: SkillId | null; // skill that must complete before this one runs
 };
 

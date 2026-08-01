@@ -101,6 +101,7 @@ export async function handleScheduledJob(job: ScheduledJob, deps: ScheduledDeps)
     cwd: deps.config.workspacePath,
     allowedTools,
     timeoutMs: skill.timeout ? skill.timeout * 1000 : deps.config.scheduledTimeoutMs,
+    ...(skill.backend !== undefined ? { backend: skill.backend } : {}),
   });
 
   // 7. Handle failure — no user notification for scheduled (goes to dead letter)

@@ -36,6 +36,7 @@ export const SkillConfigSchema = z
     // that fallback (scheduled-handler: `skill.timeout ? skill.timeout * 1000 : scheduledTimeoutMs`),
     // silently capping every skill that omits the field at 2 minutes.
     timeout: z.number().int().positive().optional(),
+    backend: z.enum(['claude', 'pi']).optional(),
     dependsOn: z.string().min(1).nullable().default(null),
   })
   .refine((data) => !(data.dependsOn !== null && data.schedule !== null), {
@@ -108,6 +109,7 @@ export function parseSkillConfig(yamlContent: string, filePath: string): Result<
     // Only set timeout when explicitly provided — exactOptionalPropertyTypes forbids an
     // explicit `undefined`, and an absent key is exactly what signals "inherit the default".
     ...(result.data.timeout !== undefined ? { timeout: result.data.timeout } : {}),
+    ...(result.data.backend !== undefined ? { backend: result.data.backend } : {}),
     dependsOn: dependsOnId,
   } satisfies SkillConfig);
 }

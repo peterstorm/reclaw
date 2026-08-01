@@ -241,6 +241,41 @@ describe('handleScheduledJob', () => {
     expect(callArgs.timeoutMs).toBe(300_000); // skill.timeout (300s) * 1000
   });
 
+  it('passes a per-skill backend override to the agent runner', async () => {
+    const job = makeScheduledJob();
+    const telegram = makeTelegram();
+    const runClaude = makeRunClaude({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
+    const piSkill = makeSkillConfig({ backend: 'pi' });
+
+    await handleScheduledJob(job, {
+      runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
+      telegram,
+      skillRegistry: makeRegistry([piSkill]),
+      config: makeConfig({ agentBackend: 'claude' }),
+    });
+
+    const callArgs = runClaude.mock.calls.at(0)?.[0];
+    expect(callArgs).toBeDefined();
+    expect(callArgs?.backend).toBe('pi');
+  });
+
+  it('omits backend when skill has no override, preserving global AGENT_BACKEND fallback', async () => {
+    const job = makeScheduledJob();
+    const telegram = makeTelegram();
+    const runClaude = makeRunClaude({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
+
+    await handleScheduledJob(job, {
+      runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
+      telegram,
+      skillRegistry: makeRegistry(),
+      config: makeConfig({ agentBackend: 'pi' }),
+    });
+
+    const callArgs = runClaude.mock.calls.at(0)?.[0];
+    expect(callArgs).toBeDefined();
+    expect(callArgs?.backend).toBeUndefined();
+  });
+
   it('falls back to global scheduledTimeoutMs when skill has no timeout', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();

@@ -3,6 +3,7 @@ schedule: "0 9 * * 1,4"  # Mon & Thu 09:00 — retailer prices move ~monthly, so
 permissionProfile: scheduled
 validityWindowMinutes: 60
 timeout: 300
+backend: pi
 promptTemplate: |
   {{personality}}
 

@@ -100,6 +100,33 @@ describe('parseSkillConfig', () => {
     if (r.ok) expect(r.value.timeout).toBe(300);
   });
 
+  it('parses an optional per-skill backend override', () => {
+    const r = parseSkillConfig(
+      'name: "Test"\npromptTemplate: "Do it"\npermissionProfile: "scheduled"\nbackend: pi',
+      '/skills/test-skill.yaml',
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.backend).toBe('pi');
+  });
+
+  it('leaves backend undefined when omitted, so handlers use AGENT_BACKEND', () => {
+    const r = parseSkillConfig(
+      'name: "Test"\npromptTemplate: "Do it"\npermissionProfile: "scheduled"',
+      '/skills/test-skill.yaml',
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.backend).toBeUndefined();
+  });
+
+  it('rejects invalid per-skill backend values', () => {
+    const r = parseSkillConfig(
+      'name: "Test"\npromptTemplate: "Do it"\npermissionProfile: "scheduled"\nbackend: openai',
+      '/skills/test-skill.yaml',
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('backend');
+  });
+
   it('accepts null schedule (on-demand only)', () => {
     const yaml = validYaml({ schedule: null });
     const result = parseSkillConfig(yaml, '/skills/ondemand.yaml');

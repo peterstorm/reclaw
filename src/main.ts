@@ -9,7 +9,7 @@ import type { SkillWatcher } from './infra/skill-watcher.js';
 import type { SessionStore } from './infra/session-store.js';
 import type { CronScheduler } from './orchestration/scheduler.js';
 import type { Workers, createWorkers } from './orchestration/worker.js';
-import type { Result, ScheduledJob } from './core/types.js';
+import type { AgentBackendName, Result, ScheduledJob } from './core/types.js';
 import type { AgentOptions, AgentResult, OnStreamChunk } from './infra/agent-backends/index.js';
 import type { handleChatJob } from './orchestration/chat-handler.js';
 import type { handleScheduledJob } from './orchestration/scheduled-handler.js';
@@ -139,7 +139,7 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
 
   // ── 1a. Resolve agent backend ──────────────────────────────────────────────
   const { resolveBackend, runAgent, runAgentStreaming } = await import('./infra/agent-backends/index.js');
-  const backend = resolveBackend(config);
+  const defaultBackend = resolveBackend(config);
   const modelSelection = config.piProvider !== undefined || config.piModel !== undefined
     ? {
         ...(config.piProvider !== undefined ? { provider: config.piProvider } : {}),
@@ -148,13 +148,25 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
     : undefined;
   const withModelSelection = (opts: AgentOptions): AgentOptions =>
     modelSelection ? { ...opts, modelSelection } : opts;
-  console.info(`[main] Agent backend: ${backend.name}`);
+  console.info(`[main] Agent backend: ${defaultBackend.name}`);
+
+  const resolveBackendForOptions = (opts: AgentOptions): AgentBackendName =>
+    opts.backend ?? config.agentBackend;
 
   const runClaudeFn: (options: AgentOptions) => Promise<AgentResult> =
-    injected.runClaudeFn ?? ((opts) => runAgent(backend, withModelSelection(opts)));
+    injected.runClaudeFn ?? ((opts) =>
+      runAgent(
+        resolveBackend({ agentBackend: resolveBackendForOptions(opts) }),
+        withModelSelection(opts),
+      ));
 
   const runClaudeStreamingFn: (options: AgentOptions, onChunk: OnStreamChunk) => Promise<AgentResult> =
-    injected.runClaudeStreamingFn ?? ((opts, onChunk) => runAgentStreaming(backend, withModelSelection(opts), onChunk));
+    injected.runClaudeStreamingFn ?? ((opts, onChunk) =>
+      runAgentStreaming(
+        resolveBackend({ agentBackend: resolveBackendForOptions(opts) }),
+        withModelSelection(opts),
+        onChunk,
+      ));
 
   // ── 1b. Resolve cortex extraction (always-on, no config needed) ──────────
   const { resolveCortexExtractScript, createCortexExtractor } = await import('./infra/cortex-extract.js');

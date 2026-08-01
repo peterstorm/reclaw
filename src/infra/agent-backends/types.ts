@@ -6,6 +6,8 @@
  * allowing consumers to remain agnostic to the underlying CLI tool.
  */
 
+import type { AgentBackendName } from '../../core/types.js';
+
 // ─── Subprocess Spawn ─────────────────────────────────────────────────────────
 
 export type SpawnFn = (
@@ -40,6 +42,7 @@ export type AgentOptions = {
   readonly env?: Record<string, string>;
   readonly resumeSessionId?: string;
   readonly modelSelection?: AgentModelSelection;
+  readonly backend?: AgentBackendName;
   readonly _spawn?: SpawnFn;
 };
 
