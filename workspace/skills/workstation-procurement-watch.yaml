@@ -1,0 +1,593 @@
+name: Workstation Procurement Watch
+schedule: "45 9 * * *"  # Daily 09:45 — alert-only daily; full investment-style report on Mondays.
+permissionProfile: scheduled
+validityWindowMinutes: 240
+timeout: 900
+promptTemplate: |
+  {{personality}}
+
+  Today is {{dayOfWeek}}, {{date}}.
+
+  You are running the Workstation Procurement Watch skill — a continuous market intelligence and deal-finding system for identifying the cheapest possible upgrade path from the user's current workstation to a quiet, reliable **4× RTX 6000 PRO Blackwell** AI workstation.
+
+  This is not a listing notifier. Behave like an investment analyst: maintain historical prices, compare alternatives, identify genuine bargains, and recommend the best purchase strategy over time.
+
+  ## Current hardware baseline
+
+  Current workstation:
+  - **2 × NVIDIA RTX 6000 PRO Blackwell Workstation Edition**
+  - **Ryzen 9 9950X3D**
+  - **ASUS ProArt X870**
+  - **96 GB DDR5**
+  - **Seasonic 1600W Titanium**
+  - Fast NVMe SSDs
+
+  Long-term goal:
+  - **4 × RTX 6000 PRO Blackwell**
+  - Quiet tower workstation
+  - Native PCIe x16 connectivity where realistically possible
+  - Reliable 24/7 local AI workstation
+  - Lowest total cost of ownership, not just lowest sticker price
+
+  ## Core thesis
+
+  Continuously compare:
+  - keeping the current workstation
+  - component purchases
+  - Threadripper PRO / WRX90 builds
+  - EPYC workstation/server builds
+  - complete workstations
+  - boutique builders
+  - enterprise refurbishers
+  - enterprise liquidation / auction opportunities
+  - roadmap-triggered depreciation windows
+
+  The most valuable alerts are **mispriced opportunities**: listings materially below recent market averages, liquidation windows, cancelled builds, B-stock/demo units, and previous-generation depreciation triggered by new NVIDIA/AMD/workstation roadmap events.
+
+  ## Historical pricing database
+
+  Store every listing discovered in `~/.cache/reclaw/workstation-procurement.json`. Create the parent directory if needed.
+
+  For every listing maintain:
+  - normalized item key
+  - raw title/specs
+  - asking price
+  - sold price where available
+  - date first seen
+  - date last seen
+  - country
+  - currency
+  - DKK equivalent
+  - shipping
+  - VAT/import assumptions
+  - condition: new / used / refurbished / B-stock / demo / showroom / cancelled order / engineering sample / unknown
+  - seller reputation
+  - listing age
+  - source marketplace/vendor
+  - direct URL
+  - status: `new`, `seen`, `sold`, `removed`, `below_target`, `bargain_candidate`, `blocked`
+
+  Compute per normalized item where sample size permits:
+  - 7-day average
+  - 30-day average
+  - 90-day average
+  - lowest ever seen
+  - highest ever seen
+  - average time before sale
+  - market trend: rising / falling / flat / sparse
+  - supply trend: increasing / decreasing / scarce / unknown
+
+  Never alert merely because something exists. Alert because it is objectively a bargain versus explicit target, recent averages, historical low, component-build alternative, or roadmap timing.
+
+  ## Immediate price targets
+
+  Notify immediately when any of these are met or clearly beaten:
+
+  | Item | Alert threshold |
+  |------|-----------------|
+  | Threadripper PRO 7955WX | <= 9,000 DKK |
+  | Threadripper PRO 7965WX | <= 13,000 DKK |
+  | Threadripper PRO 9955WX | <= 11,000 DKK |
+  | WRX90 motherboard | <= 7,000 DKK |
+  | 128 GB ECC RAM | <= 3,500 DKK |
+  | Complete WRX90 workstation | <= 30,000 DKK |
+  | Dell Precision 7875 | <= 30,000 DKK |
+  | ThinkStation P8 | <= 25,000 DKK |
+  | EPYC CPU + motherboard | <= 15,000 DKK |
+  | RTX 6000 PRO Blackwell | >= 20% below observed historical average |
+
+  If a threshold is hit, the final Telegram message must start with:
+  `🚨 Workstation price target hit`
+  and include item, price, threshold/average comparison, seller/source, direct URL, confidence, and recommended action.
+
+  ## Step 0 — Previous context
+
+  Recall previous procurement context from cortex:
+  ```
+  /recall "workstation procurement"
+  /recall "Threadripper PRO WRX90 7955WX 7965WX 9955WX 9965WX 9975WX"
+  /recall "EPYC workstation SP5 motherboard bundle"
+  /recall "Dell Precision 7875 ThinkStation P8 HP Z6 G5 A"
+  /recall "RTX 6000 PRO Blackwell RTX 6000 Ada L40S H100 H200 B200"
+  /recall "enterprise liquidation AI workstation auction"
+  /recall "PCIe lanes PSU case 4 GPU workstation"
+  /recall "boutique AI workstation builders refurbishers"
+  ```
+
+  Read prior vault notes and listing cache:
+  ```
+  ls ~/dev/notes/remotevault/research/workstation-procurement/ 2>/dev/null | sort | tail -5
+  test -f ~/.cache/reclaw/workstation-procurement.json && jq '.' ~/.cache/reclaw/workstation-procurement.json
+  ```
+
+  ## Step 1 — Marketplace monitoring
+
+  Continuously search these marketplaces where accessible:
+  - eBay Germany
+  - eBay Netherlands
+  - eBay France
+  - eBay UK
+  - Kleinanzeigen
+  - Marktplaats
+  - DBA
+  - Facebook Marketplace
+  - LeBonCoin
+  - Ricardo
+  - 2dehands / 2ememain
+  - Wallapop
+  - Finn.no
+  - Blocket
+  - Gumtree
+  - Yahoo Auctions Japan where relevant
+
+  Also check price/retail aggregators when useful:
+  - PriceRunner, Proshop, Computersalg, Komplett, Dustin, Alternate, Amazon DE
+
+  If a source blocks automated access, record `blocked` in the data quality section and use search snippets or alternate sources only with lower confidence.
+
+  ## Step 2 — Enterprise refurbishers
+
+  Monitor:
+  - Bargain Hardware
+  - Techbuyer
+  - ETB Technologies
+  - ServerMonkey
+  - UnixSurplus
+  - IT Creations
+  - xByte
+  - NewServerLife
+
+  Watch for language indicating:
+  - refurbished
+  - liquidation
+  - clearance
+  - overstock
+  - demo
+  - showroom
+  - cancelled orders
+  - B-stock
+
+  Prioritize complete systems and bundles that reduce platform risk or undercut component-by-component pricing.
+
+  ## Step 3 — European and US AI workstation builders
+
+  Monitor European builders:
+  - Comino
+  - Boston Limited
+  - ClusterVision
+  - Transtec
+  - MEGWARE
+  - Tarox
+  - SysGen
+  - ICP Deutschland
+  - AIC Europe
+
+  Monitor US/reference builders:
+  - Exxact
+  - Lambda
+  - BOXX
+  - Puget Systems
+  - Velocity Micro
+  - Falcon Northwest
+
+  Watch for:
+  - outlet listings
+  - B-stock
+  - refurbished systems
+  - cancelled builds
+  - demo units
+  - showroom systems
+  - engineering samples (flag separately; higher risk)
+  - reference-build pricing for comparison against DIY component cost
+
+  ## Step 4 — Complete workstation monitoring (highest priority)
+
+  Search for:
+  - Threadripper workstation
+  - Threadripper Pro workstation
+  - WRX90 workstation
+  - SP5 workstation
+  - AI workstation
+  - deep learning workstation
+  - GPU workstation
+
+  Specifically monitor:
+  - Dell Precision 7875
+  - HP Z6 G5 A
+  - Lenovo ThinkStation P8
+  - Lenovo P620
+  - BOXX
+  - Exxact
+  - Lambda
+  - Comino
+  - Boston Limited
+
+  Compare complete workstation pricing against buying components individually. Include estimated resale value of unwanted CPUs/GPUs/RAM if a complete system is bought as a donor platform.
+
+  ## Step 5 — Component monitoring
+
+  **Threadripper PRO CPUs:**
+  - 7955WX
+  - 7965WX
+  - 9955WX
+  - 9965WX
+  - 9975WX
+
+  **EPYC CPUs:**
+  - 9124
+  - 9174F
+  - 9224
+  - 9254
+  - 9354
+
+  Track market price, supply, sold listings, and bundles.
+
+  **Motherboards:**
+  - ASUS Pro WS WRX90E-SAGE SE
+  - ASRock WRX90 WS EVO
+  - SP5 workstation boards
+  - Supermicro H13 series
+  - Gigabyte MZ series
+
+  Track availability, price trend, BIOS revisions, bundled RAM, and bundled CPUs.
+
+  **GPUs:**
+  - RTX 6000 PRO Blackwell
+  - RTX 6000 Ada
+  - L40S
+  - H100 PCIe
+  - H200
+  - B200
+
+  Watch used prices, liquidation sales, engineering firms selling hardware, AI startups shutting down, render farms, and universities.
+
+  **ECC memory:**
+  - 128 GB DDR5 ECC RDIMM
+  - 256 GB DDR5 ECC RDIMM
+  - 512 GB DDR5 ECC RDIMM
+
+  **Cases/chassis:**
+  - Phanteks Enthoo Pro 2 Server
+  - Corsair 9000D
+  - Supermicro workstation chassis
+  - used workstation chassis capable of 4 GPUs
+  - any quiet tower chassis with credible 4× dual-slot blower GPU thermals
+
+  **Power supplies:**
+  - 1600W+
+  - 2000W
+  - 2200W
+  - 2400W
+  - 2800W
+  - dual PSU adapters
+  - dual PSU workstation builds
+
+  ## Step 6 — AI workstation community monitoring
+
+  Weekly search Reddit:
+  - LocalLLaMA
+  - threadripper
+  - homelab
+  - homelabsales
+  - BlackwellPerformance
+
+  Weekly search forums:
+  - Level1Techs
+  - ServeTheHome
+
+  Watch for:
+  - 4 GPU builds
+  - RTX 6000 PRO builds
+  - WRX90 builds
+  - EPYC builds
+  - cooling and airflow reports
+  - BIOS issues
+  - PCIe lane discoveries
+  - PSU recommendations
+  - case recommendations
+
+  Treat community findings as practical risk signals. They can override a nominal bargain if the build path is noisy, unstable, or lane-constrained.
+
+  ## Step 7 — Vendor and firmware monitoring
+
+  Monitor:
+  - NVIDIA
+  - AMD
+  - ASUS
+  - ASRock
+  - Supermicro
+  - Gigabyte
+  - SilverStone
+  - Phanteks
+  - Corsair
+  - Seasonic
+
+  Watch for:
+  - BIOS releases
+  - AGESA updates
+  - firmware updates
+  - compatibility fixes
+  - PCIe bifurcation / lane-topology fixes
+  - GPU spacing / 4-GPU compatibility fixes
+  - AI workstation announcements
+  - quiet workstation chassis/PSU announcements
+
+  Use direct vendor support/news pages where possible. For each meaningful change, record vendor, product, version/date, link, and likely impact on WRX90/EPYC/4× GPU build risk.
+
+  ## Step 8 — Enterprise liquidation monitoring
+
+  Search for organizations selling AI infrastructure or high-end workstation fleets:
+  - engineering firms
+  - animation studios
+  - VFX companies
+  - AI startups
+  - universities
+  - research labs
+  - rendering companies
+
+  Watch for:
+  - auction listings
+  - liquidation sales
+  - bankruptcy/administration notices
+  - surplus disposal portals
+  - lots containing Dell Precision, ThinkStation P-series, HP Z, Supermicro GPU workstations/servers, WRX80/WRX90, EPYC/SP5, RTX A6000/6000 Ada/RTX 6000 PRO systems
+
+  Check auction/liquidation sources where possible:
+  - Lauritz / Auktionshuset and Nordic auction houses
+  - Troostwijk
+  - Surplex
+  - Kitmondo
+  - Bidspotter
+  - EquipNet
+  - Hilco
+  - GoIndustry DoveBid
+  - university surplus portals
+
+  Capture direct links, sale deadlines, lot contents, buyer fees, VAT, shipping/pickup constraints, and resale/liquidation risk.
+
+  ## Step 9 — Roadmap meta-monitor
+
+  Monitor NVIDIA, AMD, and workstation roadmap news. When any of these occur, automatically tighten monitoring and make it prominent:
+  - new RTX PRO generation announced
+  - new RTX PRO generation starts shipping
+  - new Threadripper PRO generation announced or starts shipping
+  - new EPYC generation/platform announced or starts shipping
+  - major OEM refresh of Dell Precision / ThinkStation / HP Z / Supermicro workstations
+
+  Roadmap-triggered depreciation is a core thesis: previous-generation workstations and CPUs often drop fastest right after successor availability becomes credible. This timing can save tens of thousands of kroner.
+
+  ## Step 10 — PCIe lane / PSU / case analysis
+
+  Track discoveries that affect whether a build can actually support a quiet, reliable 4× RTX 6000 PRO Blackwell setup:
+
+  **PCIe lane discoveries:**
+  - CPU lane count and usable slot topology
+  - WRX90/EPYC board slot spacing
+  - x16/x16/x16/x16 feasibility
+  - bifurcation support
+  - chipset-lane gotchas
+  - mechanical clearance for four dual-slot GPUs
+  - NVMe tradeoffs when all GPU slots are populated
+
+  **PSU recommendations:**
+  - 4× RTX 6000 PRO power budget plus CPU/platform headroom
+  - ATX 3.x / 12V-2x6 support
+  - redundant PSU options
+  - acoustic profile under sustained 1.5–2.5kW workstation load
+  - vendor reliability: Seasonic, Corsair, SilverStone, Supermicro server PSUs
+
+  **Case/chassis recommendations:**
+  - quiet thermal design
+  - 4× dual-slot / blower GPU support
+  - WRX90/SSI-EEB/EEB compatibility
+  - front-to-back airflow
+  - rack vs tower tradeoffs
+
+  Do not recommend a bargain if the lane/PSU/case path makes it unreliable or noisy unless the caveat is explicit.
+
+  ## Step 11 — Decision engine
+
+  Every Monday, and on any day with a major price-target hit, compare:
+
+  | Option | Meaning |
+  |--------|---------|
+  | A | Keep current workstation |
+  | B | Upgrade to Threadripper PRO |
+  | C | Upgrade to EPYC |
+  | D | Buy complete workstation |
+  | E | Wait |
+
+  Estimate for each option:
+  - total upgrade cost
+  - performance for local AI / multi-GPU workloads
+  - resale value / salvage value
+  - future expandability
+  - quiet/reliability risk
+  - platform risk / BIOS maturity
+  - procurement risk
+  - total cost of ownership
+  - value score
+
+  Use this rubric unless better data is available:
+  ```
+  Value score =
+    (performance_score × 0.25) +
+    (expandability_score × 0.20) +
+    (price_score × 0.25) +
+    (resale_score × 0.10) +
+    (quiet_reliability_score × 0.10) +
+    (timing_score × 0.10) -
+    (risk_penalty × 0.20)
+  ```
+
+  Scores are 0–10. Explain the score in plain English. Option A uses the current workstation listed above as the baseline.
+
+  ## Step 12 — Weekly report
+
+  On Mondays, write a full report to:
+  `~/dev/notes/remotevault/research/workstation-procurement/{{date}}-W<WEEK>.md`
+
+  Resolve week once first:
+  ```
+  WEEK=$(date -d '{{date}}' +%V)
+  ```
+
+  Frontmatter:
+  ```yaml
+  ---
+  title: "Workstation Procurement Watch — {{date}} W<WEEK>"
+  date: {{date}}
+  tags: [workstation-procurement, weekly-intel, hardware-market]
+  up: "[[research/workstation-procurement/MOC|Workstation Procurement Watch]]"
+  ---
+  ```
+
+  Required sections:
+
+  ### Executive Summary
+  - best option today
+  - top bargain(s)
+  - immediate target hits
+  - whether to buy now or wait
+
+  ### Best Bargains Found
+  Direct links to every recommended listing. Include price, target/average comparison, confidence, and expiry/sale deadline.
+
+  ### New Listings
+  Listings not seen in prior cache/report.
+
+  ### Sold Listings
+  Sold/completed listings found this run; use them to update true market price.
+
+  ### Sold / Removed Listings From Cache
+  Cached listings that disappeared or are marked sold; infer demand and price floors.
+
+  ### Historical Pricing Changes
+  Table with item, 7/30/90-day averages where available, prior price, current price, delta, source.
+
+  ### Supply / Roadmap Changes
+  Vendor updates, BIOS/AGESA/firmware, AI workstation announcements, and roadmap depreciation signals.
+
+  ### Marketplace / Refurbisher / Builder Sweep
+  Summarize marketplaces, refurbishers, boutique builders, and blocked sources checked.
+
+  ### Enterprise Liquidation Leads
+  Auctions/liquidations, source, deadline, lot contents, fees, pickup/shipping constraints, estimated resale/liquidation risk.
+
+  ### Community Intelligence
+  Reddit/forum findings on 4-GPU builds, thermals, PCIe lanes, BIOS, PSU, and cases.
+
+  ### PCIe / PSU / Case Findings
+  Practical build discoveries and recommendation changes.
+
+  ### Complete Workstation vs Component Cost
+  Compare complete systems against DIY/donor-platform cost.
+
+  ### Decision Engine
+  Compare Options A–E with cost/performance/resale/expandability/risk/value score. Recommend one best option.
+
+  ### Recommended Purchases
+  Only include items with direct links and rationale. If no purchase is recommended, state exactly what price/event would change the decision.
+
+  ### Waiting Strategy
+  What to watch next week and which targets are closest.
+
+  ### Data Quality / Blockers
+  Note blocked sites, stale listings, missing sold-price data, and confidence.
+
+  Update or create MOC at:
+  `~/dev/notes/remotevault/research/workstation-procurement/MOC.md`
+
+  MOC frontmatter if missing:
+  ```yaml
+  ---
+  title: Workstation Procurement Watch
+  date: {{date}}
+  tags: [moc, workstation-procurement, hardware-market]
+  up: "[[research/MOC|Research]]"
+  ---
+  ```
+
+  Append today's report link with a one-line decision summary.
+
+  ## Step 13 — Daily alert behavior
+
+  On non-Monday runs:
+  - If no threshold is hit, no major roadmap trigger appears, and no unusually asymmetric bargain is found, output exactly `ALL_CLEAR`.
+  - If a threshold or major opportunity is found, send a compact Telegram alert and update cache/vault as needed.
+  - Do not send a full weekly report on non-Mondays unless the opportunity is time-sensitive and material.
+
+  ## Step 14 — Telegram summary format
+
+  **Daily alert format:**
+  ```
+  🚨 Workstation price target hit
+
+  [Item] — [price] ([threshold or % below average])
+  Source: [seller/source]
+  Link: [URL]
+  Confidence: [high/medium/low]
+  Why it matters: [1-2 lines]
+  Recommended action: [buy / verify / wait]
+  ```
+
+  **Monday report format:**
+  ```
+  🖥️ Workstation Procurement Watch — Week WW, YYYY
+
+  Best option: [A/B/C/D/E] — [short rationale]
+
+  Best bargains:
+  • [item] — [price] — [why] — [link/status]
+
+  Target hits:
+  • [none or item]
+
+  Market direction:
+  • Threadripper PRO: ↑/↓/→
+  • EPYC: ↑/↓/→
+  • Complete workstations: ↑/↓/→
+  • RTX 6000 PRO Blackwell: ↑/↓/→
+
+  Recommended strategy:
+  [concise buy/wait guidance]
+
+  Full report saved to vault.
+  ```
+
+  ## Step 15 — Store in cortex
+
+  On Monday runs or any alert, run `/remember`:
+  `Workstation procurement {{date}}: best option [A-E], target hits [items/none], top bargains [items/prices], market direction [summary], next trigger [threshold or roadmap event].`
+
+  ## Quality guardrails
+
+  Before finalizing:
+  - Every recommended listing has a direct URL.
+  - Every alert is compared to an explicit target, historical average, or component-build alternative.
+  - Historical average calculations state the observed sample used.
+  - Current-workstation baseline is used when evaluating Option A.
+  - The decision engine does not ignore quiet/reliability/PCIe constraints.
+  - Engineering samples are flagged separately as higher-risk.
+  - The weekly recommendation is actionable today.
+  - Stale, blocked, or sparse data is clearly labeled.
