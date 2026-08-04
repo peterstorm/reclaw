@@ -1,5 +1,5 @@
 name: Hardware Market Intelligence
-schedule: "30 8 * * 1"  # Monday 08:30 — offset from tech-digest's daily 08:00 to avoid a network-heavy collision.
+schedule: null
 permissionProfile: scheduled
 validityWindowMinutes: 240
 timeout: 600
