@@ -204,6 +204,24 @@ const yesterday = (): Date => {
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Retries a flaky call with backoff. Garmin's preauth/profile endpoints intermittently 400/5xx on transient blips. */
+const withRetry = async <T>(label: string, fn: () => Promise<T>, attempts: number, delayMs: number): Promise<T> => {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      if (i < attempts - 1) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error(`[WARN] ${label} attempt ${i + 1}/${attempts} failed: ${msg}, retrying in ${delayMs}ms...`);
+        await delay(delayMs);
+      }
+    }
+  }
+  throw lastErr;
+};
+
 const tryFetch = async <T>(
   label: string,
   fn: () => Promise<T>,
@@ -449,30 +467,33 @@ async function main(): Promise<void> {
 
   const client = new GarminConnect({ username: email, password: password });
 
+  const freshLogin = async (): Promise<void> => {
+    // Garmin's preauth endpoint intermittently 400s on transient blips — worth retrying
+    // before treating it as a real auth failure.
+    await withRetry("login", () => client.login(email, password), 3, 5000);
+    await client.exportTokenToFile(tokenDir);
+    await chmod(join(tokenDir, "oauth1_token.json"), 0o600);
+    await chmod(join(tokenDir, "oauth2_token.json"), 0o600);
+    console.error("[INFO] Login successful, tokens cached");
+  };
+
   // Try loading cached tokens first
   const hasTokens = existsSync(join(tokenDir, "oauth2_token.json"));
   if (hasTokens) {
     console.error("[INFO] Loading cached tokens...");
     try {
       await client.loadTokenByFile(tokenDir);
-      // Verify tokens work with a lightweight call
-      await client.getUserProfile();
+      // Verify tokens work with a lightweight call — retry first, since a transient
+      // failure here shouldn't fall through to a full re-login (the flakier path).
+      await withRetry("getUserProfile", () => client.getUserProfile(), 3, 2000);
       console.error("[INFO] Cached tokens valid");
     } catch {
       console.error("[INFO] Cached tokens expired, logging in fresh...");
-      await client.login(email, password);
-      await client.exportTokenToFile(tokenDir);
-      await chmod(join(tokenDir, "oauth1_token.json"), 0o600);
-      await chmod(join(tokenDir, "oauth2_token.json"), 0o600);
-      console.error("[INFO] Login successful, tokens cached");
+      await freshLogin();
     }
   } else {
     console.error("[INFO] No cached tokens, logging in...");
-    await client.login(email, password);
-    await client.exportTokenToFile(tokenDir);
-    await chmod(join(tokenDir, "oauth1_token.json"), 0o600);
-    await chmod(join(tokenDir, "oauth2_token.json"), 0o600);
-    console.error("[INFO] Login successful, tokens cached");
+    await freshLogin();
   }
 
   const dateArg = process.argv[2];
@@ -768,7 +789,7 @@ async function main(): Promise<void> {
   }
 
   // Output to stdout for callers that want it
-  console.log(json);
+  process.stdout.write(`${json}\n`);
 }
 
 main().catch((e) => {
