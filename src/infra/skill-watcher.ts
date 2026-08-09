@@ -79,16 +79,35 @@ export function createSkillWatcher(skillsDir: string): SkillWatcher {
   let readyResolve: (() => void) | null = null;
   const readyPromise = new Promise<void>((resolve) => { readyResolve = resolve; });
   let scanComplete = false;
+  // Whether the initial scan has been applied. Until it has, the registry is a
+  // partial view and listeners are not told about it — see notifyHandlers.
+  let initialLoadApplied = false;
+
   const resolveReadyIfSettled = (): void => {
-    if (scanComplete && debounceTimers.size === 0) {
-      readyResolve?.();
+    if (!scanComplete || debounceTimers.size > 0) return;
+    if (!initialLoadApplied) {
+      initialLoadApplied = true;
+      // One notification carrying the complete initial registry, emitted before
+      // ready() resolves so listeners are up to date the moment callers proceed.
+      notifyHandlers(registry);
     }
+    readyResolve?.();
   };
 
   // Notify all registered change listeners.
   // Iterate a snapshot so a handler that mutates `changeHandlers` (e.g. removes
   // itself) cannot skip subsequent handlers in this notification pass.
+  //
+  // Suppressed during the initial scan. Each file loads independently, so
+  // notifying per file announced the registry once per skill while it was still
+  // filling — every listener ran against a view already known to be incomplete.
+  // For the one real listener (scheduler.reconcile) that meant rebuilding the
+  // dependency map and cron entries ~21 times per start, and logging a
+  // dependency-missing warning for every skill whose `dependsOn` target simply
+  // had not been read yet. The warning described the loading order, not the
+  // configuration, but was indistinguishable from a genuine misconfiguration.
   const notifyHandlers = (reg: SkillRegistry): void => {
+    if (!initialLoadApplied) return;
     for (const handler of [...changeHandlers]) {
       handler(reg);
     }

@@ -137,6 +137,67 @@ describe('createSkillWatcher', () => {
     }
   });
 
+  // Regression: onRegistryChange fired once per file during the initial scan, so
+  // every listener ran against a knowingly-partial registry N times per start.
+  // For scheduler.reconcile that meant rebuilding the dependency map ~21 times
+  // and warning about dependencies whose target file simply hadn't loaded yet.
+  it('notifies listeners exactly once for the initial scan, with the complete registry', async () => {
+    writeFileSync(join(tempDir, 'morning-briefing.yaml'), validYaml);
+    writeFileSync(join(tempDir, 'second-skill.yaml'), validYaml);
+    writeFileSync(join(tempDir, 'third-skill.yaml'), validYaml);
+
+    const watcher = createSkillWatcher(tempDir);
+    const sizes: number[] = [];
+    watcher.onRegistryChange((registry) => { sizes.push(registry.size); });
+    watcher.start();
+
+    try {
+      await watcher.ready();
+      // One notification, and it already carries every skill — no partial views.
+      expect(sizes).toEqual([3]);
+    } finally {
+      await watcher.stop();
+    }
+  });
+
+  it('notifies listeners before ready() resolves, so callers proceed against a reconciled registry', async () => {
+    writeFileSync(join(tempDir, 'morning-briefing.yaml'), validYaml);
+
+    const watcher = createSkillWatcher(tempDir);
+    let notified = false;
+    watcher.onRegistryChange(() => { notified = true; });
+    watcher.start();
+
+    try {
+      await watcher.ready();
+      expect(notified).toBe(true);
+    } finally {
+      await watcher.stop();
+    }
+  });
+
+  it('still notifies per change after the initial scan', async () => {
+    writeFileSync(join(tempDir, 'morning-briefing.yaml'), validYaml);
+
+    const watcher = createSkillWatcher(tempDir);
+    const sizes: number[] = [];
+    watcher.onRegistryChange((registry) => { sizes.push(registry.size); });
+    watcher.start();
+
+    try {
+      await watcher.ready();
+      expect(sizes).toEqual([1]);
+
+      writeFileSync(join(tempDir, 'second-skill.yaml'), validYaml);
+      await waitForSkillCount(watcher.getRegistry, 2);
+
+      // Suppression applies to the initial scan only; live edits still propagate.
+      expect(sizes).toEqual([1, 2]);
+    } finally {
+      await watcher.stop();
+    }
+  });
+
   it('ready() resolves when the skills directory is empty', async () => {
     const watcher = createSkillWatcher(tempDir);
     watcher.start();
