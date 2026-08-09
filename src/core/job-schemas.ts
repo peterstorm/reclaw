@@ -33,6 +33,11 @@ const ScheduledJobSchema = z.object({
   skillId: skillId,
   triggeredAt: z.string().min(1),
   validUntil: z.string().min(1),
+  // Defaulted rather than required so jobs already persisted in Redis from
+  // before this field existed still parse. Treating them as cron-fired is
+  // correct: manual runs are enqueued and consumed within seconds, so none
+  // can be sitting in the queue across this deploy.
+  trigger: z.enum(['cron', 'manual']).default('cron'),
 });
 
 const ReminderJobSchema = z.object({

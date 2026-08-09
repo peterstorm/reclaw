@@ -47,6 +47,7 @@ const scheduledJob: ScheduledJob = {
   skillId: 'morning-briefing' as import('../core/types.js').SkillId,
   triggeredAt: '2026-02-26T06:00:00Z',
   validUntil: '2026-02-26T06:30:00Z',
+  trigger: 'cron',
 };
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -141,7 +142,7 @@ describe('createQueues', () => {
     );
   });
 
-  it('enqueueScheduled adds job to scheduled queue with job id and deduplication', async () => {
+  it('enqueueScheduled deduplicates cron-fired jobs per skill', async () => {
     const queues = createQueues(redisConnection);
     await queues.enqueueScheduled(scheduledJob);
 
@@ -150,6 +151,25 @@ describe('createQueues', () => {
       scheduledJob,
       { jobId: scheduledJob.id, deduplication: { id: scheduledJob.skillId } },
     );
+  });
+
+  // Regression: skill-level deduplication used to be applied unconditionally, so
+  // a manual /run issued while a cron job for the same skill was still in the
+  // dedup window was silently coalesced away. The user saw "Triggered <skill>"
+  // and the run never happened.
+  it('enqueueScheduled does NOT deduplicate a manual /run', async () => {
+    const queues = createQueues(redisConnection);
+    const manualJob: ScheduledJob = { ...scheduledJob, trigger: 'manual' };
+
+    await queues.enqueueScheduled(manualJob);
+
+    expect(mockQueueAdd).toHaveBeenCalledWith(
+      manualJob.id,
+      manualJob,
+      { jobId: manualJob.id },
+    );
+    const opts = mockQueueAdd.mock.calls[0]![2] as Record<string, unknown>;
+    expect(opts).not.toHaveProperty('deduplication');
   });
 
   it('enqueueChat resolves without throwing', async () => {

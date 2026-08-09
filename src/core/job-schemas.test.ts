@@ -170,6 +170,28 @@ describe('parseScheduledJob', () => {
   it('rejects wrong kind', () => {
     expect(parseScheduledJob({ ...validScheduledData(), kind: 'chat' }).ok).toBe(false);
   });
+
+  it('preserves an explicit manual trigger', () => {
+    const result = parseScheduledJob({ ...validScheduledData(), trigger: 'manual' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.trigger).toBe('manual');
+  });
+
+  // Jobs enqueued before `trigger` existed are still sitting in Redis across the
+  // deploy that introduced it. They must parse, not dead-letter, and they were
+  // all cron-fired.
+  it('defaults a job with no trigger field to cron (backwards compatibility)', () => {
+    const { trigger: _, ...legacy } = { ...validScheduledData(), trigger: 'cron' };
+    const result = parseScheduledJob(legacy);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.trigger).toBe('cron');
+  });
+
+  it('rejects an unrecognised trigger rather than silently defaulting it', () => {
+    expect(parseScheduledJob({ ...validScheduledData(), trigger: 'webhook' }).ok).toBe(false);
+  });
 });
 
 // ─── parseReminderJob ───────────────────────────────────────────────────────

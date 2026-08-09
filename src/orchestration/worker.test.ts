@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { chatIdOrFallback, createWorkers, formatDeadLetterMessage, type BullWorkerLike, type WorkerFactory } from './worker.js';
 import type { AppConfig } from '../infra/config.js';
 import type { TelegramAdapter } from '../infra/telegram.js';
-import type { ChatJob, JobId, JobResult, RecurringReminderJob, ReminderJob, ScheduledJob, SkillId, TelegramUserId } from '../core/types.js';
+import type { ChatJob, JobId, JobResult, RecurringReminderJob, ReminderJob, ScheduledJob, ScheduledOutcome, SkillId, TelegramUserId } from '../core/types.js';
 
 // ─── Test data ────────────────────────────────────────────────────────────────
 
@@ -38,6 +38,7 @@ const scheduledJob: ScheduledJob = {
   skillId: 'morning-briefing' as SkillId,
   triggeredAt: '2026-02-26T06:00:00Z',
   validUntil: '2026-02-26T06:30:00Z',
+  trigger: 'cron',
 };
 
 // ─── Fake worker factory ──────────────────────────────────────────────────────
@@ -106,7 +107,7 @@ describe('createWorkers', () => {
 
   beforeEach(() => {
     chatHandler = vi.fn().mockResolvedValue({ ok: true, response: 'chat response' } as JobResult);
-    scheduledHandler = vi.fn().mockResolvedValue({ ok: true, response: 'scheduled response' } as JobResult);
+    scheduledHandler = vi.fn().mockResolvedValue({ kind: 'completed', response: 'scheduled response' } as ScheduledOutcome);
     reminderHandler = vi.fn().mockResolvedValue({ ok: true, response: 'reminder response' } as JobResult);
     recurringReminderHandler = vi.fn().mockResolvedValue({ ok: true, response: 'recurring response' } as JobResult);
     researchHandler = vi.fn().mockResolvedValue({ hubPath: '/vault/ai-agents/_index.md', topic: 'AI agents' });
@@ -231,7 +232,7 @@ describe('createWorkers', () => {
 
     const result = await scheduledWorker!.processor(bullJob);
     expect(scheduledHandler).toHaveBeenCalledWith(scheduledJob);
-    expect(result).toEqual({ ok: true, response: 'scheduled response' });
+    expect(result).toEqual({ kind: 'completed', response: 'scheduled response' });
   });
 
   // ── Completion hooks (event-driven fan-out) ──────────────────────────────
@@ -273,7 +274,7 @@ describe('createWorkers', () => {
   });
 
   it('scheduled worker does NOT call completion hooks on handler failure', async () => {
-    scheduledHandler = vi.fn().mockResolvedValue({ ok: false, error: 'handler failed' } as JobResult);
+    scheduledHandler = vi.fn().mockResolvedValue({ kind: 'failed', error: 'handler failed' } as ScheduledOutcome);
     const markCompleted = vi.fn().mockResolvedValue(undefined);
     const onCompleted = vi.fn();
 
@@ -301,6 +302,48 @@ describe('createWorkers', () => {
     };
 
     await expect(scheduledWorker!.processor(bullJob)).rejects.toThrow('handler failed');
+    expect(markCompleted).not.toHaveBeenCalled();
+    expect(onCompleted).not.toHaveBeenCalled();
+  });
+
+  // Regression: a skipped job used to be reported as a failure, so throwing here
+  // sent BullMQ into 3 retries with exponential backoff and then dead-lettered
+  // with a user-facing Telegram alert — for a job that correctly chose not to run
+  // and whose precondition (the validity window) can never become true again.
+  it('scheduled worker resolves without throwing when the handler skips, and fires no completion hooks', async () => {
+    scheduledHandler = vi.fn().mockResolvedValue({ kind: 'skipped', reason: 'validity-window-expired' } as ScheduledOutcome);
+    const markCompleted = vi.fn().mockResolvedValue(undefined);
+    const onCompleted = vi.fn();
+
+    createWorkers({
+      redisConnection: { host: 'localhost', port: 6379 },
+      chatHandler,
+      scheduledHandler,
+      reminderHandler,
+      recurringReminderHandler,
+      researchHandler,
+      podcastHandler,
+      telegram: mockTelegram,
+      config: mockConfig,
+      workerFactory: fakeFactory.factory,
+      markScheduledJobCompleted: markCompleted,
+      onScheduledJobCompleted: onCompleted,
+    });
+
+    const scheduledWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-scheduled');
+    const bullJob: FakeBullJob = {
+      data: scheduledJob,
+      id: scheduledJob.id,
+      opts: { attempts: 3 },
+      attemptsMade: 1,
+    };
+
+    // Resolving (not rejecting) is what tells BullMQ never to retry this job.
+    await expect(scheduledWorker!.processor(bullJob)).resolves.toEqual({
+      kind: 'skipped',
+      reason: 'validity-window-expired',
+    });
+    // The skill body never ran, so nothing downstream of it may observe a completion.
     expect(markCompleted).not.toHaveBeenCalled();
     expect(onCompleted).not.toHaveBeenCalled();
   });
@@ -334,7 +377,7 @@ describe('createWorkers', () => {
 
     // Should NOT throw — callback error is caught and logged
     const result = await scheduledWorker!.processor(bullJob);
-    expect(result).toEqual({ ok: true, response: 'scheduled response' });
+    expect(result).toEqual({ kind: 'completed', response: 'scheduled response' });
     expect(markCompleted).toHaveBeenCalledWith(scheduledJob.id);
     expect(onCompleted).toHaveBeenCalledWith(scheduledJob);
   });
@@ -369,7 +412,7 @@ describe('createWorkers', () => {
   });
 
   it('scheduled worker throws on handler failure', async () => {
-    scheduledHandler = vi.fn().mockResolvedValue({ ok: false, error: 'subprocess timed out' } as JobResult);
+    scheduledHandler = vi.fn().mockResolvedValue({ kind: 'failed', error: 'subprocess timed out' } as ScheduledOutcome);
 
     createWorkers({
       redisConnection: { host: 'localhost', port: 6379 },

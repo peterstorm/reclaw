@@ -120,6 +120,7 @@ function buildScheduledJob(
     skillId: skill.id,
     triggeredAt: triggeredIso,
     validUntil: validUntilIso,
+    trigger: 'cron',
   });
 
   if (!result.ok) {

@@ -61,6 +61,7 @@ describe('isIso8601 (informal date rejection)', () => {
       skillId: skillId.value,
       triggeredAt: '2024-01-15',
       validUntil: '2024-01-16',
+      trigger: 'cron',
     });
     expect(r.ok).toBe(true);
   });
@@ -295,6 +296,7 @@ describe('makeScheduledJob', () => {
       skillId: validSkillId(),
       triggeredAt: triggered.toISOString(),
       validUntil: validUntil.toISOString(),
+      trigger: 'cron',
     });
     expect(r.ok).toBe(true);
     if (r.ok) {
@@ -309,6 +311,7 @@ describe('makeScheduledJob', () => {
       skillId: validSkillId(),
       triggeredAt: 'bad',
       validUntil: new Date().toISOString(),
+      trigger: 'cron',
     });
     expect(r.ok).toBe(false);
   });
@@ -319,6 +322,7 @@ describe('makeScheduledJob', () => {
       skillId: validSkillId(),
       triggeredAt: new Date().toISOString(),
       validUntil: 'bad',
+      trigger: 'cron',
     });
     expect(r.ok).toBe(false);
   });
@@ -330,6 +334,7 @@ describe('makeScheduledJob', () => {
       skillId: validSkillId(),
       triggeredAt: t,
       validUntil: t, // same timestamp
+      trigger: 'cron',
     });
     expect(r.ok).toBe(false);
   });
@@ -340,6 +345,7 @@ describe('makeScheduledJob', () => {
       skillId: validSkillId(),
       triggeredAt: new Date('2026-02-26T08:00:00.000Z').toISOString(),
       validUntil: new Date('2026-02-26T07:00:00.000Z').toISOString(),
+      trigger: 'cron',
     });
     expect(r.ok).toBe(false);
   });
@@ -367,6 +373,7 @@ describe('isChatJob / isScheduledJob', () => {
       skillId: validSkillId(),
       triggeredAt: new Date('2026-02-26T08:00:00.000Z').toISOString(),
       validUntil: new Date('2026-02-26T09:00:00.000Z').toISOString(),
+      trigger: 'cron',
     });
     if (!r.ok) throw new Error('setup');
     expect(isScheduledJob(r.value)).toBe(true);
@@ -603,6 +610,7 @@ describe('isResearchJob', () => {
       skillId: skillId.value,
       triggeredAt: '2026-03-04T10:00:00Z',
       validUntil: '2026-03-04T10:30:00Z',
+      trigger: 'cron',
     });
     expect(r.ok).toBe(true);
     if (r.ok) {

@@ -91,12 +91,23 @@ export type ChatJob = {
 };
 
 /** A scheduled job: triggered by cron. */
+/**
+ * What caused a scheduled job to be enqueued.
+ *
+ * Load-bearing, not descriptive: cron-fired jobs are deduplicated per skill so
+ * that catch-up after an outage cannot stack duplicate runs, whereas a manual
+ * `/run` is an explicit instruction the user just typed and must never be
+ * silently coalesced into an unrelated in-flight run of the same skill.
+ */
+export type ScheduledTrigger = 'cron' | 'manual';
+
 export type ScheduledJob = {
   readonly kind: 'scheduled';
   readonly id: JobId;
   readonly skillId: SkillId;
   readonly triggeredAt: string; // ISO 8601
   readonly validUntil: string; // ISO 8601 — if processed after this, discard
+  readonly trigger: ScheduledTrigger;
 };
 
 /** A reminder job: one-off delayed message, fires once. */
@@ -208,6 +219,7 @@ export function makeScheduledJob(params: {
   skillId: SkillId;
   triggeredAt: string;
   validUntil: string;
+  trigger: ScheduledTrigger;
 }): Result<ScheduledJob, string> {
   if (!isIso8601(params.triggeredAt)) {
     return err(`triggeredAt must be ISO 8601, got: ${params.triggeredAt}`);
@@ -226,6 +238,7 @@ export function makeScheduledJob(params: {
     skillId: params.skillId,
     triggeredAt: params.triggeredAt,
     validUntil: params.validUntil,
+    trigger: params.trigger,
   });
 }
 
@@ -375,6 +388,50 @@ export function jobResultOk(response: string): JobResult {
 
 export function jobResultErr(error: string): JobResult {
   return { ok: false, error };
+}
+
+// ─── Scheduled Job Outcome ─────────────────────────────────────────────────────
+
+/**
+ * Why a scheduled job ran to completion without executing its skill.
+ *
+ * A skip is a deliberate, correct non-event — not a failure. Modelled as a
+ * closed union so the set of legitimate reasons stays auditable; anything
+ * outside it is a genuine failure and must retry.
+ */
+export type SkipReason =
+  /** FR-023: the job fired outside its validity window (e.g. after a long outage). */
+  | 'validity-window-expired';
+
+/**
+ * Terminal outcome of a scheduled job.
+ *
+ * Deliberately NOT `JobResult`. Scheduled jobs have a third terminal state that
+ * chat, reminder and podcast jobs do not: a skip. Collapsing skip into failure
+ * makes BullMQ retry a job whose precondition is monotonically unsatisfiable —
+ * a validity window only ever recedes further into the past — burning three
+ * backoff cycles before dead-lettering and firing a user-facing alert about a
+ * non-event.
+ *
+ * The three cases also carry different side-effect obligations in the worker:
+ * only `completed` may set the Redis completion marker and fan out to dependent
+ * skills. A skipped job never ran, so its dependents must not fire.
+ */
+export type ScheduledOutcome =
+  | { readonly kind: 'completed'; readonly response: string }
+  | { readonly kind: 'skipped'; readonly reason: SkipReason }
+  | { readonly kind: 'failed'; readonly error: string };
+
+export function scheduledCompleted(response: string): ScheduledOutcome {
+  return { kind: 'completed', response };
+}
+
+export function scheduledSkipped(reason: SkipReason): ScheduledOutcome {
+  return { kind: 'skipped', reason };
+}
+
+export function scheduledFailed(error: string): ScheduledOutcome {
+  return { kind: 'failed', error };
 }
 
 // ─── Permission Profile ────────────────────────────────────────────────────────

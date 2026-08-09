@@ -30,6 +30,7 @@ const makeScheduledJob = (overrides: Partial<ScheduledJob> = {}): ScheduledJob =
   // triggeredAt = 1 minute ago — within the 60-minute validity window
   triggeredAt: new Date(Date.now() - 60_000).toISOString(),
   validUntil: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(),
+  trigger: 'cron',
   ...overrides,
 });
 
@@ -114,13 +115,13 @@ describe('handleScheduledJob', () => {
       config: makeConfig(),
     });
 
-    expect(result.ok).toBe(true);
-    if (result.ok) {
+    expect(result.kind).toBe('completed');
+    if (result.kind === 'completed') {
       expect(result.response).toBe('Morning briefing content');
     }
   });
 
-  it('returns error when validity window expired, skips silently (FR-023)', async () => {
+  it('skips (does not fail) when validity window expired, so BullMQ never retries (FR-023)', async () => {
     const job = makeScheduledJob({
       // triggered 2 hours ago — outside 60-minute validity window
       triggeredAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
@@ -136,9 +137,9 @@ describe('handleScheduledJob', () => {
       config: makeConfig(),
     });
 
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error).toBe('validity window expired');
+    expect(result.kind).toBe('skipped');
+    if (result.kind === 'skipped') {
+      expect(result.reason).toBe('validity-window-expired');
     }
     // Never calls runClaude or sends telegram message
     expect(runClaude).not.toHaveBeenCalled();
@@ -158,8 +159,8 @@ describe('handleScheduledJob', () => {
       config: makeConfig(),
     });
 
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
       expect(result.error).toBe('skill not found');
     }
     expect(runClaude).not.toHaveBeenCalled();
@@ -179,7 +180,7 @@ describe('handleScheduledJob', () => {
       config: makeConfig(),
     });
 
-    expect(result.ok).toBe(true);
+    expect(result.kind).toBe('completed');
     // Prompt has empty personality interpolated
     const callArgs = runClaude.mock.calls[0]![0];
     expect(callArgs.prompt).toContain('Personality: ');
@@ -326,8 +327,8 @@ describe('handleScheduledJob', () => {
       config: makeConfig(),
     });
 
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
       expect(result.error).toBe('timeout');
     }
     // No telegram notification for scheduled failures (goes to dead letter)
@@ -347,8 +348,8 @@ describe('handleScheduledJob', () => {
       config: makeConfig(),
     });
 
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
       expect(result.error).toBe('claude exited with code 1');
     }
     expect(telegram.sendMessage).not.toHaveBeenCalled();
@@ -369,7 +370,7 @@ describe('handleScheduledJob', () => {
       config: makeConfig(),
     });
 
-    expect(result.ok).toBe(true);
+    expect(result.kind).toBe('completed');
     expect(telegram.sendChunkedMessage).not.toHaveBeenCalled();
     expect(telegram.sendMessage).not.toHaveBeenCalled();
   });
@@ -386,7 +387,7 @@ describe('handleScheduledJob', () => {
       config: makeConfig(),
     });
 
-    expect(result.ok).toBe(true);
+    expect(result.kind).toBe('completed');
     expect(telegram.sendChunkedMessage).not.toHaveBeenCalled();
   });
 
@@ -402,7 +403,7 @@ describe('handleScheduledJob', () => {
       config: makeConfig({ authorizedUserIds: [42] }),
     });
 
-    expect(result.ok).toBe(true);
+    expect(result.kind).toBe('completed');
     expect(telegram.sendChunkedMessage).toHaveBeenCalledOnce();
   });
 
@@ -473,7 +474,7 @@ describe('handleScheduledJob', () => {
       config: makeConfig(),
     });
 
-    expect(result.ok).toBe(true);
+    expect(result.kind).toBe('completed');
   });
 
   // ─── Message→session mapping tests ────────────────────────────────────────
@@ -552,7 +553,7 @@ describe('handleScheduledJob', () => {
       config: makeConfig({ authorizedUserIds: [42] }),
     });
 
-    expect(result.ok).toBe(true);
+    expect(result.kind).toBe('completed');
   });
 
   it('does not save mapping when output is ALL_CLEAR', async () => {
@@ -692,6 +693,6 @@ describe('handleScheduledJob', () => {
       config: makeConfig(),
     });
 
-    expect(result.ok).toBe(true);
+    expect(result.kind).toBe('completed');
   });
 });

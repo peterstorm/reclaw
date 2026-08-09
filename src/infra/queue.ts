@@ -119,7 +119,13 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
   const enqueueScheduled = async (job: ScheduledJob): Promise<void> => {
     await scheduled.add(job.id, job, {
       jobId: job.id,
-      deduplication: { id: job.skillId },
+      // Skill-level deduplication exists so that catch-up after an outage
+      // cannot stack several cron-fired runs of the same skill. It must NOT
+      // apply to a manual /run: that is an explicit command the user just
+      // typed, and coalescing it into an unrelated in-flight run of the same
+      // skill discards it silently — the user is told "Triggered <skill>" and
+      // then nothing ever happens.
+      ...(job.trigger === 'cron' ? { deduplication: { id: job.skillId } } : {}),
     });
     // Set a durable marker so catch-up dedup survives BullMQ job cleanup.
     // TTL of 7 days is well beyond any validity window.

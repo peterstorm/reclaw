@@ -4,7 +4,7 @@ import { localDate, localDayOfWeek } from '../core/clock.js';
 import { getAllowedTools } from '../core/permissions.js';
 import { splitMessage } from '../core/message-splitter.js';
 import { isWithinValidityWindow } from '../core/schedule.js';
-import { jobResultOk, jobResultErr, type ScheduledJob, type JobResult, type SkillRegistry } from '../core/types.js';
+import { scheduledCompleted, scheduledSkipped, scheduledFailed, type ScheduledJob, type ScheduledOutcome, type SkillRegistry } from '../core/types.js';
 import type { AgentOptions, AgentResult } from '../infra/agent-backends/index.js';
 import type { TelegramAdapter } from '../infra/telegram.js';
 import type { AppConfig } from '../infra/config.js';
@@ -43,7 +43,7 @@ const SUPPRESS_SENTINEL = 'ALL_CLEAR';
  * FR-011: Apply 'scheduled' permission profile.
  * FR-023: Skip silently if outside validity window.
  */
-export async function handleScheduledJob(job: ScheduledJob, deps: ScheduledDeps): Promise<JobResult> {
+export async function handleScheduledJob(job: ScheduledJob, deps: ScheduledDeps): Promise<ScheduledOutcome> {
   const startedAt = performance.now();
   const emit = (status: SkillRunStatus, outputLength: number, errorMessage: string | null): void => {
     deps.recordSkillQuality?.({
@@ -60,7 +60,12 @@ export async function handleScheduledJob(job: ScheduledJob, deps: ScheduledDeps)
   const skill = deps.skillRegistry.get(job.skillId);
   if (skill === undefined) {
     emit('skill_not_found', 0, null);
-    return jobResultErr('skill not found');
+    // Deliberately a failure, not a skip: the registry is populated
+    // asynchronously by the skill watcher, so a miss here can be a transient
+    // startup race rather than a deleted skill. Retrying gives the watcher time
+    // to catch up; a genuinely deleted skill still dead-letters with a signal
+    // the operator wants to see.
+    return scheduledFailed('skill not found');
   }
 
   // 2. Check validity window (FR-023) — skip silently if expired
@@ -68,7 +73,10 @@ export async function handleScheduledJob(job: ScheduledJob, deps: ScheduledDeps)
   const now = new Date();
   if (!isWithinValidityWindow(triggeredAt, skill.validityWindowMinutes, now)) {
     emit('validity_expired', 0, null);
-    return jobResultErr('validity window expired');
+    // Skip, not fail: the window only recedes, so every retry is guaranteed to
+    // land further outside it. Failing here costs three backoff cycles and a
+    // dead-letter alert for a job that correctly chose not to run.
+    return scheduledSkipped('validity-window-expired');
   }
 
   // 3. Load personality — fallback to empty string on read error (FR-009)
@@ -107,7 +115,7 @@ export async function handleScheduledJob(job: ScheduledJob, deps: ScheduledDeps)
   // 7. Handle failure — no user notification for scheduled (goes to dead letter)
   if (!result.ok) {
     emit('claude_error', 0, result.error);
-    return jobResultErr(result.error);
+    return scheduledFailed(result.error);
   }
 
   // 8. Suppress notification if output is the ALL_CLEAR sentinel (alert-only skills)
@@ -141,5 +149,5 @@ export async function handleScheduledJob(job: ScheduledJob, deps: ScheduledDeps)
 
   // 11. Emit quality signal and return success
   emit(isSuppressed ? 'suppressed' : 'success', result.output.length, null);
-  return jobResultOk(result.output);
+  return scheduledCompleted(result.output);
 }

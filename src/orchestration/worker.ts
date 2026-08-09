@@ -1,7 +1,7 @@
 import { match } from 'ts-pattern';
 import type { AppConfig } from '../infra/config.js';
 import type { TelegramAdapter } from '../infra/telegram.js';
-import type { ChatJob, JobResult, PodcastJob, RecurringReminderJob, ReminderJob, ScheduledJob } from '../core/types.js';
+import type { ChatJob, JobResult, PodcastJob, RecurringReminderJob, ReminderJob, ScheduledJob, ScheduledOutcome } from '../core/types.js';
 import type { ResearchJobData } from '../core/research-types.js';
 import type { ResearchJobLike } from './research-handler.js';
 import { parseChatJob, parsePodcastJob, parseScheduledJob, parseReminderJob, parseRecurringReminderJob, parseResearchJobData } from '../core/job-schemas.js';
@@ -42,7 +42,7 @@ export type WorkerFactory = (
 type WorkerDeps = {
   readonly redisConnection: { host: string; port: number };
   readonly chatHandler: (job: ChatJob) => Promise<JobResult>;
-  readonly scheduledHandler: (job: ScheduledJob) => Promise<JobResult>;
+  readonly scheduledHandler: (job: ScheduledJob) => Promise<ScheduledOutcome>;
   readonly reminderHandler: (job: ReminderJob) => Promise<JobResult>;
   readonly recurringReminderHandler: (job: RecurringReminderJob) => Promise<JobResult>;
   readonly researchHandler: (job: ResearchJobLike) => Promise<{ hubPath: string | null; topic: string }>;
@@ -241,10 +241,21 @@ export function createWorkers(deps: WorkerDeps): Workers {
       if (!parsed.ok) throw new Error(parsed.error);
       const scheduledJob = parsed.value;
       console.log(`[worker:scheduled] Processing job ${job.id ?? 'unknown'} skill=${scheduledJob.skillId}`);
-      const result = await scheduledHandler(scheduledJob);
-      if (!result.ok) {
-        throw new Error(result.error);
+      const outcome = await scheduledHandler(scheduledJob);
+
+      // Throwing is how this processor tells BullMQ to retry, so only a genuine
+      // failure may throw. A skip is a successful non-event: it must not retry,
+      // must not dead-letter, and must not resolve dependents — the skill body
+      // never ran, so anything downstream of it has nothing to consume.
+      if (outcome.kind === 'failed') {
+        throw new Error(outcome.error);
       }
+      // The skip is already recorded on the structured channel by the handler's
+      // `validity_expired` quality signal, so it needs no log line here.
+      if (outcome.kind === 'skipped') {
+        return outcome;
+      }
+
       // Mark completed in Redis. If this throws (e.g. transient Redis flap
       // mid-handler), surface the error but don't re-fail the whole job —
       // the skill body has already run and BullMQ would otherwise retry it.
@@ -263,7 +274,7 @@ export function createWorkers(deps: WorkerDeps): Workers {
       } catch (callbackErr) {
         console.error(`[worker:scheduled] onScheduledJobCompleted callback failed for ${scheduledJob.skillId}:`, callbackErr);
       }
-      return result;
+      return outcome;
     },
     { connection, concurrency: 1, lockDuration: longLockMs, stalledInterval: longLockMs },
   );

@@ -662,6 +662,7 @@ describe('decideCatchUp', () => {
     skillId: 'prune' as SkillId,
     triggeredAt: '2026-04-06T00:00:00.000Z',
     validUntil: '2026-04-06T01:00:00.000Z',
+    trigger: 'cron',
   };
 
   const depJob1: ScheduledJob = {
@@ -670,6 +671,7 @@ describe('decideCatchUp', () => {
     skillId: 'librarian' as SkillId,
     triggeredAt: '2026-04-06T00:00:00.000Z',
     validUntil: '2026-04-06T01:00:00.000Z',
+    trigger: 'cron',
   };
 
   const depJob2: ScheduledJob = {
@@ -678,6 +680,7 @@ describe('decideCatchUp', () => {
     skillId: 'indexer' as SkillId,
     triggeredAt: '2026-04-06T00:00:00.000Z',
     validUntil: '2026-04-06T01:00:00.000Z',
+    trigger: 'cron',
   };
 
   it('enqueues standalone when trigger not fired', () => {
