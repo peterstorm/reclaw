@@ -65,9 +65,25 @@ export function createSkillWatcher(skillsDir: string): SkillWatcher {
   let watcher: FSWatcher | null = null;
   // Per-file debounce timers to avoid one file's event cancelling another's
   const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  // Promise that resolves when chokidar finishes its initial scan
+  // Promise that resolves once the initial scan has been fully *applied*.
+  //
+  // Chokidar's `ready` event only means "every initial path has been emitted",
+  // not "every initial path has been loaded". Because add events go through the
+  // 100ms debounce below, resolving directly on `ready` handed callers a
+  // registry that was still empty or partial — and main.ts awaits this promise
+  // specifically so that workers start with a populated registry, so scheduled
+  // jobs firing in that window failed with 'skill not found'.
+  //
+  // Both conditions must therefore hold: chokidar has finished scanning, and no
+  // debounced load is still pending.
   let readyResolve: (() => void) | null = null;
   const readyPromise = new Promise<void>((resolve) => { readyResolve = resolve; });
+  let scanComplete = false;
+  const resolveReadyIfSettled = (): void => {
+    if (scanComplete && debounceTimers.size === 0) {
+      readyResolve?.();
+    }
+  };
 
   // Notify all registered change listeners.
   // Iterate a snapshot so a handler that mutates `changeHandlers` (e.g. removes
@@ -86,7 +102,13 @@ export function createSkillWatcher(skillsDir: string): SkillWatcher {
     }
     const timer = setTimeout(() => {
       debounceTimers.delete(filePath);
-      fn();
+      try {
+        fn();
+      } finally {
+        // Runs even if the load throws, so one bad file can never leave the
+        // ready promise pending forever.
+        resolveReadyIfSettled();
+      }
     }, 100);
     debounceTimers.set(filePath, timer);
   };
@@ -147,7 +169,10 @@ export function createSkillWatcher(skillsDir: string): SkillWatcher {
     });
 
     watcher.on('ready', () => {
-      readyResolve?.();
+      scanComplete = true;
+      // Resolves immediately when the directory held no skills; otherwise the
+      // last debounced load to settle resolves it.
+      resolveReadyIfSettled();
     });
 
     watcher.on('error', (error: unknown) => {
@@ -160,6 +185,10 @@ export function createSkillWatcher(skillsDir: string): SkillWatcher {
       clearTimeout(timer);
     }
     debounceTimers.clear();
+    // Discarding those timers means nothing is left to settle the ready promise.
+    // Release anyone still awaiting it rather than deadlocking a shutdown that
+    // raced startup; the registry is simply whatever loaded before the stop.
+    readyResolve?.();
     if (watcher !== null) {
       await watcher.close();
       watcher = null;

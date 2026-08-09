@@ -115,6 +115,66 @@ describe('createSkillWatcher', () => {
     }
   });
 
+  // Regression: ready() resolved on chokidar's 'ready' event, which fires when
+  // the initial paths have been *emitted*, not loaded — the add handlers were
+  // still sitting in the 100ms debounce. main.ts awaits this promise precisely
+  // so workers start against a populated registry, so the race surfaced as
+  // scheduled jobs failing with 'skill not found' right after a restart.
+  it('ready() does not resolve until the initial scan has been applied to the registry', async () => {
+    writeFileSync(join(tempDir, 'morning-briefing.yaml'), validYaml);
+    writeFileSync(join(tempDir, 'second-skill.yaml'), validYaml);
+    writeFileSync(join(tempDir, 'third-skill.yaml'), validYaml);
+
+    const watcher = createSkillWatcher(tempDir);
+    watcher.start();
+
+    try {
+      await watcher.ready();
+      // Asserted with no intervening wait: awaiting ready() must be sufficient.
+      expect(watcher.getRegistry().size).toBe(3);
+    } finally {
+      await watcher.stop();
+    }
+  });
+
+  it('ready() resolves when the skills directory is empty', async () => {
+    const watcher = createSkillWatcher(tempDir);
+    watcher.start();
+
+    try {
+      await watcher.ready();
+      expect(watcher.getRegistry().size).toBe(0);
+    } finally {
+      await watcher.stop();
+    }
+  });
+
+  it('ready() resolves rather than hanging when an invalid file never enters the registry', async () => {
+    writeFileSync(join(tempDir, 'morning-briefing.yaml'), validYaml);
+    writeFileSync(join(tempDir, 'broken.yaml'), invalidYaml);
+
+    const watcher = createSkillWatcher(tempDir);
+    watcher.start();
+
+    try {
+      await watcher.ready();
+      expect(watcher.getRegistry().size).toBe(1);
+    } finally {
+      await watcher.stop();
+    }
+  });
+
+  it('ready() resolves after stop(), so a shutdown racing startup cannot deadlock', async () => {
+    writeFileSync(join(tempDir, 'morning-briefing.yaml'), validYaml);
+
+    const watcher = createSkillWatcher(tempDir);
+    watcher.start();
+    const readyPromise = watcher.ready();
+    await watcher.stop();
+
+    await expect(readyPromise).resolves.toBeUndefined();
+  });
+
   it('detects a newly added YAML file', async () => {
     const watcher = createSkillWatcher(tempDir);
     watcher.start();
