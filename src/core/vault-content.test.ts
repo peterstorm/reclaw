@@ -6,7 +6,8 @@ import {
   buildEmergencyNote,
   buildAllVaultNotes,
 } from './vault-content.js';
-import type { ResearchContext, QualityResult, SourceMeta, ChatResponse } from './research-types.js';
+import { resolveAnswerCitations } from './citation-resolver.js';
+import type { ResearchContext, QualityResult, ResolvedNote, SourceMeta, ChatResponse } from './research-types.js';
 import type { TopicSlug } from './topic-slug.js';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
@@ -526,6 +527,77 @@ describe('buildAllVaultNotes', () => {
     expect(firstSourceNote).toBeDefined();
     // Source at index 0 is cited by [1]
     expect(firstSourceNote!.content).toContain('## Passage 1');
+  });
+
+  // Regression: source notes used to derive their anchors as `sourceIndex + 1`,
+  // while the wikilinks carried the NotebookLM passage number. Those agree only
+  // when no passage map was supplied. With one — the normal research path, see
+  // research-states.ts — every link pointed at a heading that was never written,
+  // so the whole run's citations were dead in Obsidian.
+  it('anchors match the wikilinks when passage numbers differ from source positions', () => {
+    // Passage 15 belongs to source index 1; passage 3 belongs to source index 0.
+    const passageMap = new Map([[15, 1], [3, 0]]);
+    const answer = 'ML uses statistical models [15] as shown earlier [3].';
+    const resolution = resolveAnswerCitations(answer, sources, passageMap);
+
+    // Mirror what executeResolvingCitations checkpoints into the job state.
+    const preResolved: ResolvedNote = {
+      type: 'qa',
+      filename: 'How does ML work?',
+      content: resolution.resolvedText,
+      citedPassages: [...resolution.citedPassagesBySource].map(([sourceIndex, passages]) => ({
+        sourceIndex,
+        passages: [...passages],
+      })),
+    };
+
+    const ctx = makeContext({
+      answers: { 'How does ML work?': chatResponse(answer, [15, 3]) },
+    });
+    const notes = buildAllVaultNotes(ctx, goodQuality, [preResolved]);
+
+    const youtubeNote = notes.find((n) => n.relativePath.includes('Sources/YouTube Tutorial.md'));
+    const firstNote = notes.find((n) => n.relativePath.includes('Sources/First Article.md'));
+    expect(youtubeNote).toBeDefined();
+    expect(firstNote).toBeDefined();
+
+    // The passage number, not the source position.
+    expect(youtubeNote!.content).toContain('## Passage 15');
+    expect(youtubeNote!.content).not.toContain('## Passage 2');
+    expect(firstNote!.content).toContain('## Passage 3');
+    expect(firstNote!.content).not.toContain('## Passage 1');
+  });
+
+  it('every generated passage wikilink resolves to a heading in its source note', () => {
+    const passageMap = new Map([[15, 1], [3, 0], [16, 1]]);
+    const answer = 'First [3], then [15], and also [16].';
+    const resolution = resolveAnswerCitations(answer, sources, passageMap);
+    const preResolved: ResolvedNote = {
+      type: 'qa',
+      filename: 'How does ML work?',
+      content: resolution.resolvedText,
+      citedPassages: [...resolution.citedPassagesBySource].map(([sourceIndex, passages]) => ({
+        sourceIndex,
+        passages: [...passages],
+      })),
+    };
+
+    const ctx = makeContext({
+      answers: { 'How does ML work?': chatResponse(answer, [3, 15, 16]) },
+    });
+    const notes = buildAllVaultNotes(ctx, goodQuality, [preResolved]);
+    const sourceNotes = notes.filter((n) => n.relativePath.includes('/Sources/'));
+    const qaNotes = notes.filter((n) => n.relativePath.includes('/QA/'));
+
+    const links = qaNotes.flatMap((n) => [...n.content.matchAll(/\[\[([^\]#]+)#Passage (\d+)\]\]/g)]);
+    expect(links.length).toBe(3);
+
+    for (const [, title, passage] of links) {
+      const target = sourceNotes.find((sn) => sn.relativePath.includes(`Sources/${title}.md`));
+      expect(target, `no source note for "${title!}"`).toBeDefined();
+      expect(target!.content, `missing anchor for [[${title!}#Passage ${passage!}]]`)
+        .toContain(`## Passage ${passage!}`);
+    }
   });
 
   it('produces no source notes when context has no sources', () => {

@@ -19,9 +19,26 @@ import type { SourceMeta } from './research-types.js';
 export type CitationResolutionResult = {
   /** Answer text with all [N] markers replaced by [[Source Title#Passage N]] wikilinks. */
   readonly resolvedText: string;
-  /** 0-indexed source indices that were cited (i.e. N-1 for citation [N]). */
-  readonly citedSourceIndices: Set<number>;
+  /**
+   * For each cited source (0-indexed), the passage numbers actually emitted in
+   * `[[Title#Passage N]]` wikilinks pointing at it.
+   *
+   * This is the single source of truth for both "which sources were cited"
+   * (the key set) and "which `## Passage N` anchors those sources must carry"
+   * (the values). Returning only the source indices — as this type used to —
+   * forced callers to reconstruct the anchor numbers as `sourceIndex + 1`,
+   * which is correct only when no passageToSourceMap was supplied. With a map,
+   * N is a NotebookLM passage number (frequently 40+) that has no relationship
+   * to the source's position, so every generated wikilink pointed at a heading
+   * that was never written.
+   */
+  readonly citedPassagesBySource: ReadonlyMap<number, ReadonlySet<number>>;
 };
+
+/** The 0-indexed sources cited in a resolution result. */
+export function citedSourceIndicesOf(result: CitationResolutionResult): ReadonlySet<number> {
+  return new Set(result.citedPassagesBySource.keys());
+}
 
 /**
  * Map from 1-indexed passage number to 0-indexed source index.
@@ -106,17 +123,18 @@ export function extractPassageToSourceMap(
  *   for each passage number. Falls back to sources[N-1] when no map entry.
  * - Replaces each citation number with [[Source Title#Passage N]].
  * - If N is out of range (source doesn't exist), leaves [N] as-is.
- * - Returns the resolved text and the set of 0-indexed source indices cited.
+ * - Returns the resolved text and, per cited source, the passage numbers used
+ *   in its wikilinks — the exact anchors that source note must contain.
  *
  * Multiple occurrences of the same [N] in the same answer are all replaced
- * and counted once in citedSourceIndices.
+ * and recorded once per (source, passage) pair.
  */
 export function resolveAnswerCitations(
   answerText: string,
   sources: readonly SourceMeta[],
   passageToSourceMap?: PassageToSourceMap,
 ): CitationResolutionResult {
-  const citedSourceIndices = new Set<number>();
+  const citedPassagesBySource = new Map<number, Set<number>>();
 
   // Match citation markers: [N], [N, M], [N-M], [N, M-O, P], etc.
   // Content must be digits separated by commas, hyphens/en-dashes, and spaces.
@@ -131,7 +149,15 @@ export function resolveAnswerCitations(
         if (source === undefined) {
           return `[${n}]`;
         }
-        citedSourceIndices.add(sourceIndex);
+        // Record the passage number exactly as it is about to appear in the
+        // wikilink, so the source note's anchors are generated from the links
+        // themselves rather than recomputed from the source's position.
+        const passages = citedPassagesBySource.get(sourceIndex);
+        if (passages === undefined) {
+          citedPassagesBySource.set(sourceIndex, new Set([n]));
+        } else {
+          passages.add(n);
+        }
         const noteTitle = sanitizeTitleForWikilink(source.title);
         return `[[${noteTitle}#Passage ${n}]]`;
       });
@@ -145,7 +171,7 @@ export function resolveAnswerCitations(
     },
   );
 
-  return { resolvedText, citedSourceIndices };
+  return { resolvedText, citedPassagesBySource };
 }
 
 /**

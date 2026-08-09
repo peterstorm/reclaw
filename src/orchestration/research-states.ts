@@ -548,13 +548,19 @@ async function executeResolvingCitations(
   for (const [question, response] of Object.entries(ctx.answers)) {
     const passageMap = extractPassageToSourceMap(response.rawData, ctx.sources);
     console.log(`[research:citations] Resolving: "${question.slice(0, 60)}..." — ${passageMap.size} passage→source mappings`);
-    const { resolvedText, citedSourceIndices } = resolveAnswerCitations(response.text, ctx.sources, passageMap);
-    console.log(`[research:citations] -> cited source indices: [${Array.from(citedSourceIndices).join(', ')}]`);
+    const { resolvedText, citedPassagesBySource } = resolveAnswerCitations(response.text, ctx.sources, passageMap);
+    console.log(`[research:citations] -> cited source indices: [${[...citedPassagesBySource.keys()].join(', ')}]`);
     resolvedNotes.push({
       type: 'qa',
       filename: question,
       content: resolvedText,
-      citedSourceIndices: Array.from(citedSourceIndices),
+      // Persist the passage numbers, not just the source indices: source notes'
+      // `## Passage N` anchors are generated from these, and with a passage map
+      // N cannot be recomputed from the source's position in the list.
+      citedPassages: [...citedPassagesBySource].map(([sourceIndex, passages]) => ({
+        sourceIndex,
+        passages: [...passages],
+      })),
     });
   }
 

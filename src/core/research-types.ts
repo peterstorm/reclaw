@@ -39,11 +39,31 @@ export type TraceEvent = {
   readonly chatsUsed?: number;
 };
 
+/**
+ * A citation from a resolved answer: which source was cited, and with which
+ * passage numbers.
+ *
+ * Plain arrays rather than Map/Set because ResolvedNote is JSON-serialized into
+ * the research job's Redis checkpoint and read back on resume.
+ */
+export type CitedPassages = {
+  readonly sourceIndex: number;
+  /** Passage numbers used in this source's wikilinks — i.e. the exact `## Passage N` anchors it needs. */
+  readonly passages: readonly number[];
+};
+
 /** A note resolved from citation markers, ready to write to the vault. */
 export type ResolvedNote = {
   readonly type: 'hub' | 'source' | 'qa';
   readonly filename: string;
   readonly content: string;
+  readonly citedPassages?: readonly CitedPassages[];
+  /**
+   * Superseded by `citedPassages`, which carries the passage numbers too.
+   * Retained only so a research job checkpointed before that field existed can
+   * still resume; such a note falls back to the old `sourceIndex + 1` anchor
+   * derivation, because its real passage numbers were never persisted.
+   */
   readonly citedSourceIndices?: readonly number[];
 };
 

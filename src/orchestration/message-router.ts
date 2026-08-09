@@ -7,7 +7,7 @@ import { parsePodcastCommand, audioFormatToCode, audioLengthToCode } from '../co
 import { parseAskCommand } from '../core/ask-request.js';
 import { findNotebookByTopic } from '../infra/research-vault-lookup.js';
 import { appendAskAnswer } from '../infra/research-qa-writer.js';
-import { resolveAnswerCitations, extractPassageToSourceMap } from '../core/citation-resolver.js';
+import { resolveAnswerCitations, extractPassageToSourceMap, citedSourceIndicesOf } from '../core/citation-resolver.js';
 import { splitMessage } from '../core/message-splitter.js';
 import type { SourceMeta } from '../core/research-types.js';
 import type { TelegramAdapter } from '../infra/telegram.js';
@@ -424,15 +424,17 @@ async function runAsk(msg: IncomingMessage, deps: MessageRouterDeps): Promise<vo
   const sources = sourcesResult.ok ? sourcesResult.value : [];
 
   const passageMap = extractPassageToSourceMap(chatResult.value.rawData, sources);
-  const { resolvedText, citedSourceIndices } = resolveAnswerCitations(
+  const resolution = resolveAnswerCitations(
     chatResult.value.text,
     sources,
     passageMap,
   );
+  const { resolvedText } = resolution;
+  const cited = citedSourceIndicesOf(resolution);
 
   // Persist Q&A to the vault so /ask answers accumulate alongside the
   // canonical research output. Best-effort — never blocks the user reply.
-  const citedSources = [...citedSourceIndices]
+  const citedSources = [...cited]
     .sort((a, b) => a - b)
     .map((i) => sources[i])
     .filter((s): s is SourceMeta => s !== undefined);
@@ -451,7 +453,7 @@ async function runAsk(msg: IncomingMessage, deps: MessageRouterDeps): Promise<vo
       console.error('[router] /ask: persistence threw:', e);
     });
 
-  const reply = formatAskReply(resolvedText, sources, citedSourceIndices, lookup.value);
+  const reply = formatAskReply(resolvedText, sources, cited, lookup.value);
   const chunks = splitMessage(reply);
   await deps.telegram.sendChunkedMessage(msg.chatId, chunks);
 }
@@ -639,6 +641,7 @@ function routeRunCommand(msg: IncomingMessage, deps: MessageRouterDeps): void {
     skillId: skill.id,
     triggeredAt: triggeredIso,
     validUntil: validUntilIso,
+    trigger: 'manual',
   });
 
   if (!scheduledJobResult.ok) {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   resolveAnswerCitations,
+  citedSourceIndicesOf,
   extractPassageToSourceMap,
   generatePassageAnchors,
   sanitizeTitleForWikilink,
@@ -80,35 +81,35 @@ describe('resolveAnswerCitations', () => {
 
   describe('citedSourceIndices set', () => {
     it('returns empty set for text with no citations', () => {
-      const { citedSourceIndices } = resolveAnswerCitations('No citations here.', sources);
+      const citedSourceIndices = citedSourceIndicesOf(resolveAnswerCitations('No citations here.', sources));
       expect(citedSourceIndices.size).toBe(0);
     });
 
     it('returns index 0 for [1]', () => {
-      const { citedSourceIndices } = resolveAnswerCitations('[1]', sources);
+      const citedSourceIndices = citedSourceIndicesOf(resolveAnswerCitations('[1]', sources));
       expect(citedSourceIndices.has(0)).toBe(true);
     });
 
     it('returns index 1 for [2]', () => {
-      const { citedSourceIndices } = resolveAnswerCitations('[2]', sources);
+      const citedSourceIndices = citedSourceIndicesOf(resolveAnswerCitations('[2]', sources));
       expect(citedSourceIndices.has(1)).toBe(true);
     });
 
     it('returns all cited indices for multiple citations', () => {
-      const { citedSourceIndices } = resolveAnswerCitations('[1] [3]', sources);
+      const citedSourceIndices = citedSourceIndicesOf(resolveAnswerCitations('[1] [3]', sources));
       expect(citedSourceIndices.has(0)).toBe(true);
       expect(citedSourceIndices.has(2)).toBe(true);
       expect(citedSourceIndices.size).toBe(2);
     });
 
     it('deduplicates repeated citations (same index counted once)', () => {
-      const { citedSourceIndices } = resolveAnswerCitations('[1] [1] [1]', sources);
+      const citedSourceIndices = citedSourceIndicesOf(resolveAnswerCitations('[1] [1] [1]', sources));
       expect(citedSourceIndices.size).toBe(1);
       expect(citedSourceIndices.has(0)).toBe(true);
     });
 
     it('does not include out-of-range indices', () => {
-      const { citedSourceIndices } = resolveAnswerCitations('[1] [99]', sources);
+      const citedSourceIndices = citedSourceIndicesOf(resolveAnswerCitations('[1] [99]', sources));
       expect(citedSourceIndices.size).toBe(1);
       expect(citedSourceIndices.has(0)).toBe(true);
     });
@@ -131,7 +132,7 @@ describe('resolveAnswerCitations', () => {
     });
 
     it('tracks all cited indices from multi-citation groups', () => {
-      const { citedSourceIndices } = resolveAnswerCitations('[1, 2, 3]', sources);
+      const citedSourceIndices = citedSourceIndicesOf(resolveAnswerCitations('[1, 2, 3]', sources));
       expect(citedSourceIndices.has(0)).toBe(true);
       expect(citedSourceIndices.has(1)).toBe(true);
       expect(citedSourceIndices.has(2)).toBe(true);
@@ -157,7 +158,9 @@ describe('resolveAnswerCitations', () => {
 
   describe('edge cases', () => {
     it('handles empty answer text', () => {
-      const { resolvedText, citedSourceIndices } = resolveAnswerCitations('', sources);
+      const _r = resolveAnswerCitations('', sources);
+      const resolvedText = _r.resolvedText;
+      const citedSourceIndices = citedSourceIndicesOf(_r);
       expect(resolvedText).toBe('');
       expect(citedSourceIndices.size).toBe(0);
     });
@@ -224,7 +227,7 @@ describe('resolveAnswerCitations', () => {
 
     it('reports correct citedSourceIndices from passageToSourceMap', () => {
       const map = new Map([[1, 2], [2, 2]]); // both passages from Third Source
-      const { citedSourceIndices } = resolveAnswerCitations('[1] [2]', sources, map);
+      const citedSourceIndices = citedSourceIndicesOf(resolveAnswerCitations('[1] [2]', sources, map));
       expect(citedSourceIndices.size).toBe(1);
       expect(citedSourceIndices.has(2)).toBe(true);
     });
@@ -240,7 +243,9 @@ describe('resolveAnswerCitations', () => {
     it('resolves passages beyond source count when map is provided', () => {
       // 3 sources but passage [15] maps to source index 1
       const map = new Map([[15, 1]]);
-      const { resolvedText, citedSourceIndices } = resolveAnswerCitations('See [15].', sources, map);
+      const _r = resolveAnswerCitations('See [15].', sources, map);
+      const resolvedText = _r.resolvedText;
+      const citedSourceIndices = citedSourceIndicesOf(_r);
       expect(resolvedText).toBe('See [[Second Source#Passage 15]].');
       expect(citedSourceIndices.has(1)).toBe(true);
     });
