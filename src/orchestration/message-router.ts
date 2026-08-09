@@ -625,10 +625,17 @@ function routeRunCommand(msg: IncomingMessage, deps: MessageRouterDeps): void {
   const triggeredIso = triggeredAt.toISOString();
   const validUntilIso = new Date(triggeredAt.getTime() + skill.validityWindowMinutes * 60 * 1000).toISOString();
 
-  // Distinct ID prefix so a manual trigger never collides with the cron-fired
-  // job ID for the same skill at the same minute.
+  // Distinct ID so a manual trigger never collides with the cron-fired job ID
+  // for the same skill at the same minute: the cron form ends in a bare
+  // timestamp (`scheduled:<skill>:<ts>`), this one in `run-<ts>-<nonce>`.
+  //
+  // The `run` marker MUST stay inside the third segment rather than becoming a
+  // fourth (`scheduled:<skill>:run:<ts>`, as it was from 2026-05-03 to
+  // 2026-08-09): BullMQ rejects a custom id whose colons imply anything other
+  // than three segments, and that extra colon broke `/run` for every skill.
+  // makeJobId now enforces the rule so this fails at construction, not at add().
   const sanitized = triggeredIso.replaceAll(':', '-');
-  const jobIdRaw = `scheduled:${skill.id}:run:${sanitized}-${crypto.randomUUID().slice(0, 8)}`;
+  const jobIdRaw = `scheduled:${skill.id}:run-${sanitized}-${crypto.randomUUID().slice(0, 8)}`;
   const jobIdResult = makeJobId(jobIdRaw);
   if (!jobIdResult.ok) {
     console.error(`[router] /run: failed to make jobId: ${jobIdResult.error}`);

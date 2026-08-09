@@ -108,6 +108,44 @@ describe('makeJobId', () => {
     const r = makeJobId('   ');
     expect(r.ok).toBe(false);
   });
+
+  // BullMQ (Job.addJob) rejects an integer id, and rejects a colon-bearing id
+  // unless it has exactly 3 segments. Those checks used to live only inside
+  // BullMQ, so a bad id threw at enqueue time instead of at construction —
+  // which is how /run stayed broken for every skill from 2026-05-03 to
+  // 2026-08-09 behind a generic "Failed to enqueue manual run".
+  it('rejects an integer string, which BullMQ refuses as a custom id', () => {
+    const r = makeJobId('12345');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('integer');
+  });
+
+  it('accepts exactly 3 colon-separated segments', () => {
+    expect(makeJobId('scheduled:credential-health:2026-08-09T05-30-00.000Z').ok).toBe(true);
+  });
+
+  it.each([
+    ['two segments', 'scheduled:credential-health'],
+    ['four segments', 'scheduled:credential-health:run:2026-08-09T05-30-00.000Z'],
+    ['five segments', 'a:b:c:d:e'],
+  ])('rejects %s, which BullMQ would throw on at enqueue time', (_label, raw) => {
+    const r = makeJobId(raw);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('segments');
+  });
+
+  // Regression guard covering every id format the fleet actually constructs. If
+  // a new job kind adds a segment, it fails here rather than in production.
+  it.each([
+    ['chat', 'chat:5061662914:1786652577520-abcd1234'],
+    ['reminder', 'reminder:5061662914:1786652577520-abcd1234'],
+    ['recurring reminder', 'recur:5061662914:1786652577520-abcd1234'],
+    ['podcast', 'podcast:5061662914:1786652577520-abcd1234'],
+    ['cron-fired skill', 'scheduled:garmin-sync:2026-08-09T20-00-00.000Z'],
+    ['manual /run', 'scheduled:garmin-sync:run-2026-08-09T20-00-00.000Z-abcd1234'],
+  ])('accepts the live %s id format', (_label, raw) => {
+    expect(makeJobId(raw).ok).toBe(true);
+  });
 });
 
 describe('makeSkillId', () => {

@@ -27,11 +27,43 @@ export function makeTelegramUserId(raw: number): Result<TelegramUserId, string> 
 
 /**
  * Construct a JobId from a raw string.
- * Validates: non-empty string.
+ *
+ * Validates: non-empty, and acceptable to BullMQ as a custom job id. Every id
+ * built here is handed to `queue.add({ jobId })`, which enforces two rules of
+ * its own (`Job.addJob`, bullmq 5.x):
+ *
+ *   - an id that parses as an integer is rejected outright;
+ *   - an id containing ':' is rejected UNLESS it has exactly three
+ *     colon-separated segments — a compatibility carve-out for BullMQ's own
+ *     legacy repeatable-job ids, not a general allowance.
+ *
+ * Those rules used to live only inside BullMQ, so a malformed id passed
+ * construction, passed every type check, and then threw from deep inside
+ * `add()` at enqueue time. That is exactly how `/run <skill>` stayed broken for
+ * every skill from 2026-05-03 (`f06a1c0`, which introduced a four-segment
+ * manual-run id) to 2026-08-09: the throw landed in a `.catch` that could only
+ * say "Failed to enqueue manual run", and nothing else in the fleet used a
+ * four-segment id, so cron firing kept working and hid it.
+ *
+ * Encoding the constraint here makes an unusable id unrepresentable: it fails
+ * at construction with a message naming the problem, on a path every caller
+ * already handles.
  */
 export function makeJobId(raw: string): Result<JobId, string> {
   if (raw.trim().length === 0) {
     return { ok: false, error: 'JobId must not be empty.' };
+  }
+  if (`${Number.parseInt(raw, 10)}` === raw) {
+    return { ok: false, error: `JobId must not be an integer string (BullMQ rejects it): "${raw}"` };
+  }
+  const segments = raw.split(':');
+  if (segments.length !== 1 && segments.length !== 3) {
+    return {
+      ok: false,
+      error:
+        `JobId "${raw}" has ${segments.length} colon-separated segments; ` +
+        'BullMQ accepts a custom id with either no colons or exactly 3 segments.',
+    };
   }
   return { ok: true, value: raw as JobId };
 }
