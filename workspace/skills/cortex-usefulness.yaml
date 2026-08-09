@@ -16,21 +16,47 @@ promptTemplate: |
   no confirmation prompts. Bump magnitude is intentionally small for v0 — wrong
   classifications cost little.
 
+  Each step writes its output to a file under `~/.cache/reclaw/cortex-usefulness/`
+  and the next step reads it. Run the commands **verbatim** — there are no
+  placeholders to substitute. This is deliberate: summaries contain double quotes,
+  apostrophes and `$`, and pasting them into a `bun -e "..."` shell string (as this
+  skill used to require) breaks the command outright or silently mangles the text.
+
   ## Step 1: Detect surfaced→used pairs
 
-  Run this Bun helper. It parses transcripts touched in the last 24h, finds the
-  CORTEX_RECALL block in each `attachment` of type UserPromptSubmit, then computes
-  Jaccard token overlap between each surfaced memory's summary and the next
-  assistant turn's text. Returns a deduplicated list of useful summaries with score.
+  Run this Bun helper. It parses transcripts touched in the last 24h from **both**
+  agent backends, finds the CORTEX_RECALL block in each, then computes Jaccard
+  token overlap between each surfaced memory's summary and the next assistant
+  turn's text. Returns a deduplicated list of useful summaries with score.
+
+  Both backends must be scanned because `AGENT_BACKEND` decides where reclaw's own
+  scheduled runs are recorded, and it has been flipped between `claude` and `pi`
+  more than once. Scanning only Claude — as this skill did until 2026-08-09 —
+  silently dropped every autonomous run while the Claude directory kept producing
+  enough unrelated sessions to keep the recall-death alarm quiet. The two backends
+  record the recall surface in different envelopes:
+
+  | Backend | Recall record | Assistant turn |
+  |---|---|---|
+  | claude | `type: attachment`, `attachment.hookEvent: UserPromptSubmit`, text in `attachment.content` | `type: assistant`, blocks in `message.content` |
+  | pi | `type: custom_message`, `customType: cortex-memory`, text in `content` | `type: message`, `message.role: assistant`, blocks in `message.content` |
+
+  In both cases assistant text lives in blocks carrying a `.text` field; thinking
+  blocks carry `.thinking` instead and are correctly ignored.
 
   ```bash
   bun -e "
-  import { readFileSync } from 'fs';
+  import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+  import { join } from 'path';
+  import { homedir } from 'os';
   import { execSync } from 'child_process';
 
-  const dir = '/home/peterstorm/.claude/projects/-home-peterstorm-dev-claude-plugins-reclaw-workspace';
-  const files = execSync('find ' + dir + ' -maxdepth 1 -name \"*.jsonl\" -mtime -1', { encoding: 'utf8' })
-    .split('\n').filter(Boolean);
+  const RUN_DIR = join(homedir(), '.cache/reclaw/cortex-usefulness');
+
+  const BACKENDS = [
+    { backend: 'claude', dir: '/home/peterstorm/.claude/projects/-home-peterstorm-dev-claude-plugins-reclaw-workspace' },
+    { backend: 'pi',     dir: '/home/peterstorm/.pi/agent/sessions/--home-peterstorm-dev-claude-plugins-reclaw-workspace--' },
+  ];
 
   // Stop words mirror prompt-recall STOP_WORDS subset
   const STOP = new Set(['the','a','an','is','are','was','were','be','to','of','and','or','in','on','for','with','that','this','it','as','at','by','from','but','if','then','also','can','will','would','should','could','have','has','had','do','does','did','not','no','yes','use','make','get','set','run','show','tell','what','how','where','when','why','who','which']);
@@ -44,42 +70,77 @@ promptTemplate: |
     return inter / new Set([...a, ...b]).size;
   }
 
-  // Recall block lives in attachment.content (UserPromptSubmit hook output),
-  // NOT in user message.content. The hook injects via stdout which the harness
-  // captures as a hook_success attachment in the transcript.
   const RECALL_RE = /<!-- CORTEX_RECALL_START -->([\s\S]*?)<!-- CORTEX_RECALL_END -->/;
   const THRESHOLD = 0.10; // calibrated 2026-05-07 against ~24h of transcripts: catches ~1% of surfaced as 'useful', mostly genuine
 
+  // Per-backend envelope readers. Return the recall text, or null if this record
+  // is not a recall surface for that backend.
+  function recallContent(backend, obj) {
+    if (backend === 'claude') {
+      if (obj.type === 'attachment' && obj.attachment?.hookEvent === 'UserPromptSubmit') return obj.attachment.content || '';
+      return null;
+    }
+    if (obj.type === 'custom_message' && obj.customType === 'cortex-memory') return obj.content || '';
+    return null;
+  }
+
+  // Return the assistant turn's plain text, or null if this record is not an
+  // assistant turn for that backend.
+  function assistantText(backend, obj) {
+    const msg = backend === 'claude'
+      ? (obj.type === 'assistant' ? obj.message : null)
+      : (obj.type === 'message' && obj.message?.role === 'assistant' ? obj.message : null);
+    if (!msg) return null;
+    const c = msg.content;
+    if (typeof c === 'string') return c;
+    if (Array.isArray(c)) return c.map(b => b.text || '').join(' ');
+    return '';
+  }
+
   const bestPerSummary = new Map();
+  const byBackend = {};
+  let totalFiles = 0;
   let totalSurfaced = 0;
-  let recallTurns = 0;
+  let totalRecallTurns = 0;
 
-  for (const file of files) {
-    let raw;
-    try { raw = readFileSync(file, 'utf8'); } catch { continue; }
+  for (const { backend, dir } of BACKENDS) {
+    let files = [];
+    try {
+      files = execSync('find ' + dir + ' -maxdepth 1 -name \"*.jsonl\" -mtime -1 2>/dev/null', { encoding: 'utf8' })
+        .split('\n').filter(Boolean);
+    } catch { files = []; }  // directory absent for a backend that has never run
 
-    let currentRecall = null;
-    for (const line of raw.split('\n').filter(Boolean)) {
-      let obj;
-      try { obj = JSON.parse(line); } catch { continue; }
+    let recallTurns = 0;
+    let surfaced_total = 0;
 
-      if (obj.type === 'attachment' && obj.attachment?.hookEvent === 'UserPromptSubmit') {
-        const m = (obj.attachment.content || '').match(RECALL_RE);
-        if (!m) continue;
-        const surfaced = [];
-        const re = /^- \[\w+\] (.+)$/gm;
-        let mm;
-        while ((mm = re.exec(m[1])) !== null) surfaced.push(mm[1]);
-        if (surfaced.length > 0) {
-          currentRecall = surfaced;
-          recallTurns++;
-          totalSurfaced += surfaced.length;
+    for (const file of files) {
+      let raw;
+      try { raw = readFileSync(file, 'utf8'); } catch { continue; }
+
+      let currentRecall = null;
+      for (const line of raw.split('\n').filter(Boolean)) {
+        let obj;
+        try { obj = JSON.parse(line); } catch { continue; }
+
+        const recall = recallContent(backend, obj);
+        if (recall !== null) {
+          const m = recall.match(RECALL_RE);
+          if (!m) continue;
+          const surfaced = [];
+          const re = /^- \[\w+\] (.+)$/gm;
+          let mm;
+          while ((mm = re.exec(m[1])) !== null) surfaced.push(mm[1]);
+          if (surfaced.length > 0) {
+            currentRecall = surfaced;
+            recallTurns++;
+            surfaced_total += surfaced.length;
+          }
+          continue;
         }
-      } else if (obj.type === 'assistant' && currentRecall) {
-        const c = obj.message?.content;
-        const text = typeof c === 'string' ? c
-          : Array.isArray(c) ? c.map(b => b.text || '').join(' ')
-          : '';
+
+        if (!currentRecall) continue;
+        const text = assistantText(backend, obj);
+        if (text === null) continue;
         // Skip tool-only / empty assistant turns but DON'T clear currentRecall —
         // attribute the recall to the next turn that actually has text.
         if (!text) continue;
@@ -94,18 +155,35 @@ promptTemplate: |
         currentRecall = null;
       }
     }
+
+    byBackend[backend] = { files: files.length, recall_turns: recallTurns, surfaced_total };
+    totalFiles += files.length;
+    totalRecallTurns += recallTurns;
+    totalSurfaced += surfaced_total;
   }
 
   const useful = [...bestPerSummary.entries()]
     .map(([summary, score]) => ({ summary, score: Number(score.toFixed(3)) }))
     .sort((a, b) => b.score - a.score);
 
-  console.log(JSON.stringify({
-    files: files.length,
-    recall_turns: recallTurns,
+  // A backend that produced transcripts but no recall blocks is parser drift for
+  // THAT backend. Reported separately because the aggregate hides it: a healthy
+  // second backend keeps recall_turns > 0 and the alarm silent.
+  const deadBackends = Object.entries(byBackend)
+    .filter(([, s]) => s.files > 0 && s.recall_turns === 0)
+    .map(([b]) => b);
+
+  const result = {
+    files: totalFiles,
+    recall_turns: totalRecallTurns,
     surfaced_total: totalSurfaced,
+    by_backend: byBackend,
+    dead_backends: deadBackends,
     useful: useful,
-  }, null, 2));
+  };
+  mkdirSync(RUN_DIR, { recursive: true });
+  writeFileSync(join(RUN_DIR, 'step1.json'), JSON.stringify(result, null, 2));
+  console.log(JSON.stringify(result, null, 2));
   "
   ```
 
@@ -117,22 +195,40 @@ promptTemplate: |
   ## Step 2: Map summaries to memory IDs
 
   For each `useful.summary`, look up the matching active memory ID in the cortex DB.
-  Match on exact summary equality. Skip candidates that don't match (memory may
+  Match on exact summary equality. Skip candidates that don't match (the memory may
   have been archived since the recall).
 
+  Exact equality is correct even for summaries ending in `...`. Verified 2026-08-09:
+  those are truncated when *written* to cortex (24 of 423 active memories are stored
+  clipped to 200 chars including the ellipsis), so the recall surface renders them
+  verbatim and they compare equal. Do not "fix" this with prefix matching — there is
+  no truncation happening between the store and the surface.
+
+  The `unmatched` count is reported so the routine case (archived since recall) stays
+  distinguishable from the pathological one (`matched === 0`, caught by the divergence
+  tracker below).
+
   ```bash
-  # Replace SUMMARIES_JSON with the JSON-encoded array of summaries from Step 1
   bun -e "
   import Database from 'bun:sqlite';
+  import { readFileSync, writeFileSync } from 'fs';
+  import { join } from 'path';
+  import { homedir } from 'os';
+  const RUN_DIR = join(homedir(), '.cache/reclaw/cortex-usefulness');
+  const step1 = JSON.parse(readFileSync(join(RUN_DIR, 'step1.json'), 'utf8'));
+  const summaries = step1.useful.map(u => u.summary);
   const db = new Database('{{cwd}}/.memory/cortex.db', { readonly: true });
-  const summaries = SUMMARIES_JSON;
-  const stmt = db.prepare(\"SELECT id, summary FROM memories WHERE status = 'active' AND summary = ?\");
+  const active = db.prepare(\"SELECT id, summary FROM memories WHERE status = 'active'\").all();
+  const byExact = new Map(active.map(r => [r.summary, r.id]));
   const matched = [];
+  let unmatched = 0;
   for (const s of summaries) {
-    const row = stmt.get(s);
-    if (row) matched.push(row.id);
+    const id = byExact.get(s);
+    if (id !== undefined) matched.push(id);
+    else unmatched++;
   }
-  console.log(JSON.stringify(matched));
+  writeFileSync(join(RUN_DIR, 'matched.json'), JSON.stringify(matched));
+  console.log(JSON.stringify({ matched: matched.length, unmatched }));
   db.close();
   "
   ```
@@ -150,17 +246,23 @@ promptTemplate: |
 
   1. **Matcher divergence** (`streak`): `useful > 0` but `matched === 0` — Step 2's
      summary lookup is failing (schema/format drift).
-  2. **Recall death** (`recall_dead_streak`): `files > 0` but `recall_turns === 0` —
-     Step 1's regex found transcripts but extracted zero CORTEX_RECALL blocks. This is
-     the dangerous mode: it looks identical to a quiet day (`useful: []` → `ALL_CLEAR`),
-     so without this counter a broken recall hook / changed block format would silence
-     the skill forever with no alert.
+  2. **Recall death** (`recall_dead_streak`): a backend where `files > 0` but
+     `recall_turns === 0` — Step 1 found that backend's transcripts but extracted zero
+     CORTEX_RECALL blocks from them. This is the dangerous mode: it looks identical to a
+     quiet day (`useful: []` → `ALL_CLEAR`), so without this counter a broken recall
+     hook / changed block format would silence the skill forever with no alert.
+
+     Evaluated **per backend** (`dead_backends` from Step 1), not on the aggregate.
+     That is exactly how this skill's Pi blindness went unnoticed for months: with
+     only an aggregate counter, the Claude directory's unrelated sessions kept
+     `recall_turns > 0` while every `pi` transcript went unparsed.
 
   Format:
 
   ```json
   {"streak": 0, "last_divergence_date": null, "last_match_date": null,
-   "recall_dead_streak": 0, "last_recall_dead_date": null, "last_recall_date": null}
+   "recall_dead_streak": 0, "last_recall_dead_date": null, "last_recall_date": null,
+   "dead_backends": []}
   ```
 
   Update logic (run after Step 2 produces `matched`):
@@ -170,17 +272,22 @@ promptTemplate: |
   import { readFileSync, writeFileSync, mkdirSync } from 'fs';
   import { dirname, join } from 'path';
   import { homedir } from 'os';
+  const RUN_DIR = join(homedir(), '.cache/reclaw/cortex-usefulness');
   const path = join(homedir(), '.cache/reclaw/cortex-usefulness-divergence.json');
   const today = new Date().toISOString().slice(0, 10);
-  const filesScanned = FILES_SCANNED;   // from Step 1 output .files
-  const recallTurns = RECALL_TURNS;     // from Step 1 output .recall_turns
-  const usefulCount = USEFUL_COUNT;     // from Step 1
-  const matchedCount = MATCHED_COUNT;   // from Step 2
+  const step1 = JSON.parse(readFileSync(join(RUN_DIR, 'step1.json'), 'utf8'));
+  // matched.json is absent when Step 2 was skipped for an empty useful list.
+  let matchedIds = [];
+  try { matchedIds = JSON.parse(readFileSync(join(RUN_DIR, 'matched.json'), 'utf8')); } catch { matchedIds = []; }
+  const deadBackends = step1.dead_backends;
+  const usefulCount = step1.useful.length;
+  const matchedCount = matchedIds.length;
   let state;
   try { state = JSON.parse(readFileSync(path, 'utf8')); }
   catch { state = {}; }
   state = { streak: 0, last_divergence_date: null, last_match_date: null,
-            recall_dead_streak: 0, last_recall_dead_date: null, last_recall_date: null, ...state };
+            recall_dead_streak: 0, last_recall_dead_date: null, last_recall_date: null,
+            dead_backends: [], ...state };
   // Mode 1: matcher divergence (only meaningful when there was something to match)
   if (usefulCount === 0) {
     // no signal — leave divergence counters untouched
@@ -191,13 +298,17 @@ promptTemplate: |
     state.streak = (state.streak || 0) + 1;
     state.last_divergence_date = today;
   }
-  // Mode 2: recall death (independent of usefulness — a healthy quiet day still has recall_turns > 0)
-  if (filesScanned > 0 && recallTurns === 0) {
+  // Mode 2: recall death, evaluated per backend. Any backend that produced
+  // transcripts but no recall blocks counts as dead, even if the other backend
+  // is healthy — that masking is precisely what hid the Pi gap.
+  if (deadBackends.length > 0) {
     state.recall_dead_streak = (state.recall_dead_streak || 0) + 1;
     state.last_recall_dead_date = today;
-  } else if (recallTurns > 0) {
+    state.dead_backends = deadBackends;
+  } else {
     state.recall_dead_streak = 0;
     state.last_recall_date = today;
+    state.dead_backends = [];
   }
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(state, null, 2));
@@ -217,8 +328,11 @@ promptTemplate: |
   ```bash
   bun -e "
   import Database from 'bun:sqlite';
+  import { readFileSync } from 'fs';
+  import { join } from 'path';
+  import { homedir } from 'os';
+  const ids = JSON.parse(readFileSync(join(homedir(), '.cache/reclaw/cortex-usefulness/matched.json'), 'utf8'));
   const db = new Database('{{cwd}}/.memory/cortex.db');
-  const ids = IDS_JSON; // matched IDs from Step 2
   const now = new Date().toISOString();
   const stmt = db.prepare('UPDATE memories SET access_count = access_count + 2, last_accessed_at = ?, updated_at = ? WHERE id = ?');
   let count = 0;
@@ -244,9 +358,9 @@ promptTemplate: |
 
            ⚠️ Cortex-usefulness matcher divergence: useful>0 but matched=0 for <streak> days running. Step 2 lookup is failing — schema/format may have drifted. Investigate before the signal becomes meaningless.
 
-     - `recall_dead_streak >= 3`:
+     - `recall_dead_streak >= 3` — substitute the real backend names for `<dead_backends>`:
 
-           ⚠️ Cortex-usefulness recall death: transcripts scanned but 0 CORTEX_RECALL blocks found for <recall_dead_streak> days running. The recall hook or block format likely broke — the skill is now blind and silently reporting ALL_CLEAR. Investigate.
+           ⚠️ Cortex-usefulness recall death on backend(s) <dead_backends>: transcripts scanned but 0 CORTEX_RECALL blocks found for <recall_dead_streak> days running. The recall hook or that backend's transcript format likely changed — usefulness signal from those runs is being dropped silently. Investigate.
 
   2. **Routine success (no alert condition).** Respond with exactly ALL_CLEAR — no
      backticks, no formatting, nothing else. Bumps were still applied; the daily
