@@ -1,5 +1,5 @@
 name: Workstation Procurement Watch
-schedule: "45 9 * * *"  # Daily 09:45 — alert-only daily; full investment-style report on Mondays.
+schedule: "45 9 * * *"  # Daily 09:45. Two distinct modes, see "Run mode": Monday = full ~55-source sweep + report; other days = targeted watch of the cached list + the 10 price targets only. The daily run is deliberately cheap — running the full sweep daily cannot fit the 900s timeout.
 permissionProfile: scheduled
 validityWindowMinutes: 240
 timeout: 900
@@ -11,6 +11,30 @@ promptTemplate: |
   You are running the Workstation Procurement Watch skill — a continuous market intelligence and deal-finding system for identifying the cheapest possible upgrade path from the user's current workstation to a quiet, reliable **4× RTX 6000 PRO Blackwell** AI workstation.
 
   This is not a listing notifier. Behave like an investment analyst: maintain historical prices, compare alternatives, identify genuine bargains, and recommend the best purchase strategy over time.
+
+  ## Run mode — decide this FIRST, before any other step
+
+  Today is **{{dayOfWeek}}**. The mode below decides which steps execute at all.
+  This is a scope gate, not a formatting preference.
+
+  | Mode | When | Steps that run |
+  |---|---|---|
+  | **FULL SWEEP** | Monday | Steps 0–15 |
+  | **TARGETED WATCH** | every other day | Steps 0, T, 11 (only on a hit), 13, 14, 15 (only on an alert) |
+
+  On a TARGETED WATCH day, Steps 1, 2, 3, 4, 5, 6, 7, 8, 9 and 10 **do not run**.
+  Do not partially run them, do not "quickly check a few" of their sources, and do
+  not substitute a shallower version. Skip to Step T.
+
+  Why this gate exists: Steps 1–10 name roughly 55 distinct sources — 15
+  marketplaces, 8 refurbishers, 14 builders, 8+ auction houses, 3 community
+  forums, 9 vendor feeds — each implying at least one web round-trip, inside a
+  900-second wall clock. Run daily that budget cannot be met, so the run either
+  times out (which BullMQ then retries, re-paying the whole cost) or silently
+  covers a fraction of the sources while reporting as though it covered them all.
+  A skill whose job is "never miss a bargain" must not have an unstated,
+  invisible coverage shortfall. The weekly cadence matches the decision engine
+  (Step 11) and weekly report (Step 12), which were already Monday-only.
 
   ## Current hardware baseline
 
@@ -120,7 +144,32 @@ promptTemplate: |
   test -f ~/.cache/reclaw/workstation-procurement.json && jq '.' ~/.cache/reclaw/workstation-procurement.json
   ```
 
-  ## Step 1 — Marketplace monitoring
+  ## Step T — Targeted watch (TARGETED WATCH days only; skip on Monday)
+
+  The daily job is to catch a price-target hit or a genuinely asymmetric bargain
+  before it disappears — not to re-survey the market. Bounded work only:
+
+  1. **Re-check the cached watch list.** From
+     `~/.cache/reclaw/workstation-procurement.json`, take entries whose status is
+     `new`, `seen`, `below_target` or `bargain_candidate` and whose URL is still
+     worth revisiting. Re-fetch those URLs directly. Update `status`, `sold price`,
+     `date last seen`, and mark `sold`/`removed` where the listing is gone.
+     Cap at the 25 most relevant — prefer entries closest to their threshold, then
+     most recently seen. If more than 25 qualify, say so in the coverage line.
+
+  2. **Check the immediate price targets.** For each row in the "Immediate price
+     targets" table, run one targeted search for that item. These ten thresholds are
+     the same-day promise of this skill; nothing else is.
+
+  3. **Nothing else.** No marketplace enumeration, no builder sweep, no forum
+     reading, no vendor firmware feeds, no liquidation crawl, no roadmap scan.
+     Those are Monday's job.
+
+  Then evaluate: does anything hit a threshold, or sit materially below its own
+  recent average? If yes, go to Step 11 for that item only, then Step 14. If no,
+  output exactly `ALL_CLEAR` per Step 13.
+
+  ## Step 1 — Marketplace monitoring (FULL SWEEP / Monday only)
 
   Continuously search these marketplaces where accessible:
   - eBay Germany
@@ -145,7 +194,7 @@ promptTemplate: |
 
   If a source blocks automated access, record `blocked` in the data quality section and use search snippets or alternate sources only with lower confidence.
 
-  ## Step 2 — Enterprise refurbishers
+  ## Step 2 — Enterprise refurbishers (FULL SWEEP / Monday only)
 
   Monitor:
   - Bargain Hardware
@@ -169,7 +218,7 @@ promptTemplate: |
 
   Prioritize complete systems and bundles that reduce platform risk or undercut component-by-component pricing.
 
-  ## Step 3 — European and US AI workstation builders
+  ## Step 3 — European and US AI workstation builders (FULL SWEEP / Monday only)
 
   Monitor European builders:
   - Comino
@@ -200,7 +249,7 @@ promptTemplate: |
   - engineering samples (flag separately; higher risk)
   - reference-build pricing for comparison against DIY component cost
 
-  ## Step 4 — Complete workstation monitoring (highest priority)
+  ## Step 4 — Complete workstation monitoring (FULL SWEEP / Monday only; highest priority)
 
   Search for:
   - Threadripper workstation
@@ -224,7 +273,7 @@ promptTemplate: |
 
   Compare complete workstation pricing against buying components individually. Include estimated resale value of unwanted CPUs/GPUs/RAM if a complete system is bought as a donor platform.
 
-  ## Step 5 — Component monitoring
+  ## Step 5 — Component monitoring (FULL SWEEP / Monday only)
 
   **Threadripper PRO CPUs:**
   - 7955WX
@@ -282,7 +331,7 @@ promptTemplate: |
   - dual PSU adapters
   - dual PSU workstation builds
 
-  ## Step 6 — AI workstation community monitoring
+  ## Step 6 — AI workstation community monitoring (FULL SWEEP / Monday only)
 
   Weekly search Reddit:
   - LocalLLaMA
@@ -308,7 +357,7 @@ promptTemplate: |
 
   Treat community findings as practical risk signals. They can override a nominal bargain if the build path is noisy, unstable, or lane-constrained.
 
-  ## Step 7 — Vendor and firmware monitoring
+  ## Step 7 — Vendor and firmware monitoring (FULL SWEEP / Monday only)
 
   Monitor:
   - NVIDIA
@@ -334,7 +383,7 @@ promptTemplate: |
 
   Use direct vendor support/news pages where possible. For each meaningful change, record vendor, product, version/date, link, and likely impact on WRX90/EPYC/4× GPU build risk.
 
-  ## Step 8 — Enterprise liquidation monitoring
+  ## Step 8 — Enterprise liquidation monitoring (FULL SWEEP / Monday only)
 
   Search for organizations selling AI infrastructure or high-end workstation fleets:
   - engineering firms
@@ -365,7 +414,7 @@ promptTemplate: |
 
   Capture direct links, sale deadlines, lot contents, buyer fees, VAT, shipping/pickup constraints, and resale/liquidation risk.
 
-  ## Step 9 — Roadmap meta-monitor
+  ## Step 9 — Roadmap meta-monitor (FULL SWEEP / Monday only)
 
   Monitor NVIDIA, AMD, and workstation roadmap news. When any of these occur, automatically tighten monitoring and make it prominent:
   - new RTX PRO generation announced
@@ -376,7 +425,7 @@ promptTemplate: |
 
   Roadmap-triggered depreciation is a core thesis: previous-generation workstations and CPUs often drop fastest right after successor availability becomes credible. This timing can save tens of thousands of kroner.
 
-  ## Step 10 — PCIe lane / PSU / case analysis
+  ## Step 10 — PCIe lane / PSU / case analysis (FULL SWEEP / Monday only)
 
   Track discoveries that affect whether a build can actually support a quiet, reliable 4× RTX 6000 PRO Blackwell setup:
 
@@ -515,6 +564,10 @@ promptTemplate: |
   ### Data Quality / Blockers
   Note blocked sites, stale listings, missing sold-price data, and confidence.
 
+  Open with the `Coverage:` line — mode, sources visited vs named, and anything
+  skipped for time listed separately from anything blocked. A reader must be able
+  to tell an exhaustive week from a truncated one without rerunning the skill.
+
   Update or create MOC at:
   `~/dev/notes/remotevault/research/workstation-procurement/MOC.md`
 
@@ -530,12 +583,16 @@ promptTemplate: |
 
   Append today's report link with a one-line decision summary.
 
-  ## Step 13 — Daily alert behavior
+  ## Step 13 — Daily alert behavior (TARGETED WATCH days)
 
-  On non-Monday runs:
-  - If no threshold is hit, no major roadmap trigger appears, and no unusually asymmetric bargain is found, output exactly `ALL_CLEAR`.
+  After Step T:
+  - If no threshold is hit and no unusually asymmetric bargain is found, output exactly `ALL_CLEAR`.
   - If a threshold or major opportunity is found, send a compact Telegram alert and update cache/vault as needed.
-  - Do not send a full weekly report on non-Mondays unless the opportunity is time-sensitive and material.
+  - Never send a full weekly report on a TARGETED WATCH day. If an opportunity is
+    genuinely time-sensitive and material, alert on that item alone — do not
+    escalate into a market survey.
+  - A roadmap trigger is not a daily concern: Step 9 is Monday-only, so absence of
+    roadmap news on a TARGETED WATCH day means "not checked", not "nothing happened".
 
   ## Step 14 — Telegram summary format
 
@@ -549,6 +606,8 @@ promptTemplate: |
   Confidence: [high/medium/low]
   Why it matters: [1-2 lines]
   Recommended action: [buy / verify / wait]
+
+  Coverage: targeted watch — [N] cached listings re-checked, [M]/10 price targets searched
   ```
 
   **Monday report format:**
@@ -572,6 +631,8 @@ promptTemplate: |
   Recommended strategy:
   [concise buy/wait guidance]
 
+  Coverage: full sweep — [N]/[M] sources visited[, skipped for time: ...][, blocked: ...]
+
   Full report saved to vault.
   ```
 
@@ -580,9 +641,33 @@ promptTemplate: |
   On Monday runs or any alert, run `/remember`:
   `Workstation procurement {{date}}: best option [A-E], target hits [items/none], top bargains [items/prices], market direction [summary], next trigger [threshold or roadmap event].`
 
+  ## Time budget and coverage honesty
+
+  This skill runs under a 900-second timeout. Exceeding it is not a soft failure:
+  the job is killed and re-queued, so a run that overruns is re-paid from the
+  start rather than resumed.
+
+  On a FULL SWEEP, treat roughly two-thirds of the budget as the limit for
+  Steps 1–10. If you reach it with sources still unvisited, **stop sweeping** and
+  proceed to Steps 11–15 with what you have. Do not push on and risk the kill.
+
+  Whatever the mode, the run must state its own coverage. Missing coverage has to
+  be visible, because a partial sweep and a complete one otherwise produce
+  identical-looking output:
+
+  - Every report and vault note carries a `Coverage:` line naming the mode, the
+    number of sources actually visited versus named for that mode, and any source
+    skipped for time as distinct from `blocked`.
+  - "Skipped for time" and "blocked/unreachable" are different findings and are
+    never merged.
+  - `ALL_CLEAR` on a TARGETED WATCH day asserts only that the cached watch list and
+    the ten price targets were checked. It never implies the wider market was.
+
   ## Quality guardrails
 
   Before finalizing:
+  - The run mode was decided before Step 0 and the executed steps match it.
+  - A coverage statement is present, per "Time budget and coverage honesty".
   - Every recommended listing has a direct URL.
   - Every alert is compared to an explicit target, historical average, or component-build alternative.
   - Historical average calculations state the observed sample used.
