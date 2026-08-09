@@ -1,5 +1,5 @@
 name: Espresso Price Watch
-schedule: null
+schedule: null  # paused 2026-08-02 (a156774) — was "0 9 * * 1,4" (Mon & Thu 09:00). Reason not recorded at the time; the same commit also fixed the stock-message parsing, so the skill was left working, not broken. Manually triggerable via /run espresso-price-watch. Known open debt if re-enabled: no alert escalation and no shrink/price-per-kg detection (see improvements 2026-07-26 / 08-02) — unreachable while paused.
 permissionProfile: scheduled
 validityWindowMinutes: 60
 timeout: 300

@@ -1,5 +1,5 @@
 name: Hardware Market Intelligence
-schedule: null
+schedule: null  # paused 2026-08-04 (2060da8) — was "30 8 * * 1" (Monday 08:30, offset from tech-digest's daily 08:00). Paused the same day workstation-procurement-watch was added; the two overlap on RTX 6000 PRO Blackwell but that skill does NOT replace this one — RTX 5090, NVMe and DDR5 price-trend tracking and the whole composite pressure-index model exist only here. See decisions.md 2026-08-04. Manually triggerable via /run hardware-intel.
 permissionProfile: scheduled
 validityWindowMinutes: 240
 timeout: 600
