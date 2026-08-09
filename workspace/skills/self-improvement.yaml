@@ -10,6 +10,20 @@ promptTemplate: |
 
   You are running a weekly self-improvement analysis of the reclaw system. Your job is to critically examine the codebase, identify improvements, research new ideas, and produce an actionable improvement note.
 
+  ## Environment constraints
+
+  Applies to every step — to the commands you run *and* to anything you recommend:
+
+  - **There is no `python3` (or `python`) on PATH.** This is a NixOS host and the
+    interpreter is not installed. Any inline `python3 -c ...` you reach for to
+    inspect data will fail outright, and a proposal whose tooling assumes Python
+    is not actionable here. Use `jq` for JSON, or `bun`/`node` for anything more
+    involved — reclaw depends on Bun, so it is always present.
+  - Prefer `bun` over `node` for one-off scripts, matching the rest of the repo.
+  - This also binds Step 3: a Python-only library or tool is not a candidate for
+    this stack however good it is. Say so explicitly rather than proposing it and
+    leaving the constraint to be rediscovered at implementation time.
+
   ## Step 1 — Codebase Audit
 
   Examine the reclaw source code and workspace for improvement opportunities:
@@ -81,6 +95,8 @@ promptTemplate: |
   - Look for interesting open-source projects in the personal assistant / AI agent space
 
   Pick 2-3 genuinely interesting external findings — don't pad with generic advice.
+  Screen each against "Environment constraints" above before including it: no
+  Python-based tooling, and nothing that assumes an interpreter this host lacks.
 
   ## Step 4 — Write the Improvement Note
 

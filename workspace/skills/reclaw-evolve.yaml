@@ -284,18 +284,62 @@ promptTemplate: |
   - **Pattern**: 1-line description of the behavior the user wants
     changed
   - **Evidence**: 2-3 quoted user messages with timestamps + session IDs
-  - **Proposed change**: concrete diff. Either:
-    - Personality edit: "add line X to `personality.md` after line N"
-    - Skill edit: "in `skills/<id>.yaml` line N, change `<before>` to `<after>`"
-    - New rule for cortex: "add tag-filter for <pattern>"
+  - **Proposed change**: an applicable unified diff — see "Proposal format"
+    below. Not a description of an edit.
   - **Confidence**: low / medium / high
+
+  #### Proposal format — diffs, not instructions
+
+  Every proposed edit to a tracked file is a fenced `diff` block in unified
+  format, with repo-relative paths and at least 3 lines of context:
+
+  ```diff
+  --- a/workspace/personality.md
+  +++ b/workspace/personality.md
+  @@
+   <context line>
+   <context line>
+   <context line>
+  +<the added line>
+   <context line>
+  ```
+
+  Rules:
+  - Paths are relative to the repo root (`workspace/personality.md`,
+    `workspace/skills/<id>.yaml`) so the block applies directly.
+  - **Never anchor on line numbers in prose.** "Add this after line 7" is not an
+    edit instruction, it is a puzzle. These notes are written weekly and reviewed
+    later, and any intervening commit invalidates the number silently — the edit
+    then lands in the wrong place with no error. Context lines are self-locating
+    and fail loudly instead.
+  - One diff block per file; multiple hunks in one block are fine.
+  - A change with no diff is not a proposal. Either produce the diff or drop the
+    item — prose like "consider tightening the tone here" belongs under Evidence.
+  - Non-file proposals (e.g. a new cortex tag-filter) give the exact command or
+    config to run, in a fenced block.
+
+  Verify every diff before writing the note:
+
+  ```bash
+  # Write each proposed diff to a file and check it applies. Never report a diff
+  # that fails this — fix it, or drop the proposal.
+  cd ~/dev/claude-plugins/reclaw && git apply --check /tmp/evolve-proposal-N.diff \
+    && echo "APPLIES CLEAN" || echo "BROKEN — fix or drop"
+  ```
+
+  A proposal that does not survive `git apply --check` is worse than none: it
+  looks actionable, spends a human's attempt, and fails at the point of use.
 
   ### New skill candidates (from tool-sequence mining)
   For each candidate:
   - **Trigger**: when the user asks for X
   - **Sequence**: the recurring tool flow
   - **Frequency**: N occurrences across M sessions
-  - **Proposed skill**: id, schedule (if applicable), 1-paragraph sketch
+  - **Proposed skill**: id, schedule (if applicable), 1-paragraph sketch.
+    A new skill is a new file, so give the complete `skills/<id>.yaml` body in a
+    fenced `yaml` block rather than a diff — same standard as above: the reviewer
+    should be able to save it and run `/run <id>`, not reconstruct it from a
+    description.
 
   ### Drop candidates
   Skills with zero conversational invocation and zero scheduled hits in
