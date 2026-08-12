@@ -60,9 +60,14 @@ promptTemplate: |
 
   ### 6. Cloudflare Tunnel
   ```
-  systemctl list-units --type=service --no-pager 2>&1 | grep cloudflared
+  kubectl -n cloudflared get deploy cloudflared -o custom-columns=NAME:.metadata.name,READY:.status.readyReplicas,AVAILABLE:.status.availableReplicas,DESIRED:.spec.replicas 2>&1
   ```
-  Alert if no cloudflared service is active/running. The unit name includes the tunnel UUID (e.g. `cloudflared-tunnel-<uuid>.service`), so match by prefix not exact name. The tunnel is the sole ingress — if it's down, nothing external works.
+  ```
+  kubectl -n cloudflared get pods -l app=cloudflared 2>&1
+  ```
+  Alert if the deployment has fewer ready/available replicas than desired, or if the current pod is CrashLoopBackOff/Error/Pending. Cloudflared is Kubernetes-managed on this homelab, not a NixOS systemd unit; do not check `systemctl` for cloudflared. The tunnel is the sole ingress — if it's down, nothing external works. For failures, inspect:
+  `kubectl -n cloudflared logs deploy/cloudflared --tail=80`
+
 
   ### 7. System resources
   ```
