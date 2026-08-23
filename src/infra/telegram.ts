@@ -12,11 +12,14 @@ import {
   makeTelegramUpdateId,
 } from '../core/types.js';
 import {
-  MAX_PDF_BYTES,
-  type PdfTextExtractor,
-  extractPdfText,
-  formatPdfExtractionError,
-} from './pdf-text.js';
+  documentIngressPolicy,
+  extractDocumentText,
+  formatDocumentClaimError,
+  formatDocumentExtractionError,
+  formatSpooledDocumentText,
+  parseSupportedDocument,
+} from './document-text.js';
+import type { PdfTextExtractor } from './pdf-text.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -58,8 +61,8 @@ export type TelegramAdapter = {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-/** Durable default spool for photos accepted before BullMQ processing. */
-export const DEFAULT_IMAGE_DIR = join(homedir(), '.local', 'state', 'reclaw', 'images');
+/** Durable default spool for attachments accepted before BullMQ processing. */
+export const DEFAULT_ATTACHMENT_DIR = join(homedir(), '.local', 'state', 'reclaw', 'images');
 
 /** Telegram's maximum message length. */
 const TELEGRAM_MAX_LENGTH = 4096;
@@ -72,10 +75,7 @@ const RATE_LIMIT_MAX_RETRIES = 3;
 
 /** Default backoff schedule (seconds) when retry_after is not available. */
 const RATE_LIMIT_BACKOFF_S = [1, 2, 4] as const;
-const PDF_MIME_TYPE = 'application/pdf';
-const PDF_MAGIC = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]); // %PDF-
-const PDF_DOWNLOAD_TIMEOUT_MS = 20_000;
-const PDF_TOO_LARGE_MESSAGE = `That PDF is too large. The limit is ${MAX_PDF_BYTES / 1024 / 1024} MB.`;
+const DOCUMENT_DOWNLOAD_TIMEOUT_MS = 20_000;
 
 // ─── Helpers (pure) ───────────────────────────────────────────────────────────
 
@@ -89,16 +89,6 @@ function isAuthorized(userId: number, authorizedUserIds: ReadonlySet<number>): b
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
-}
-
-function isClaimedPdf(fileName: string | undefined, mimeType: string | undefined): boolean {
-  return (
-    mimeType?.toLowerCase() === PDF_MIME_TYPE || fileName?.toLowerCase().endsWith('.pdf') === true
-  );
-}
-
-function hasPdfMagic(data: Uint8Array): boolean {
-  return PDF_MAGIC.every((byte, index) => data[index] === byte);
 }
 
 type TelegramReplyMessage = {
@@ -142,7 +132,7 @@ async function readBoundedBody(
     if (next.done) break;
     totalBytes += next.value.byteLength;
     if (totalBytes > maxBytes) {
-      await reader.cancel('PDF exceeds configured byte limit');
+      await reader.cancel('Document exceeds configured byte limit');
       return { ok: false };
     }
     chunks.push(next.value);
@@ -157,14 +147,14 @@ async function readBoundedBody(
   return { ok: true, data };
 }
 
-/** Idempotently remove one file only when its canonical target is in the spool. */
-export async function removeSpooledImage(
+/** Idempotently remove one file only when its canonical target is in the attachment spool. */
+export async function removeSpooledFile(
   path: string,
-  imageDir = DEFAULT_IMAGE_DIR,
+  attachmentDir = DEFAULT_ATTACHMENT_DIR,
 ): Promise<void> {
   try {
     const [canonicalRoot, canonicalFile] = await Promise.all([
-      realpath(imageDir),
+      realpath(attachmentDir),
       realpath(resolve(path)),
     ]);
     const fromRoot = relative(canonicalRoot, canonicalFile);
@@ -174,7 +164,7 @@ export async function removeSpooledImage(
       fromRoot.startsWith(`..${sep}`) ||
       isAbsolute(fromRoot)
     ) {
-      throw new Error(`Refusing to remove file outside Telegram image spool: ${path}`);
+      throw new Error(`Refusing to remove file outside Telegram attachment spool: ${path}`);
     }
     await unlink(canonicalFile);
   } catch (error) {
@@ -235,15 +225,15 @@ export function createTelegramAdapter(config: {
    * root, which owns the graceful-shutdown sequence (queue drain, Redis close).
    */
   onFatalError?: (err: unknown) => void;
-  /** Persistent spool override, primarily for isolated tests. */
-  imageDir?: string;
+  /** Persistent attachment spool override, primarily for isolated tests. */
+  attachmentDir?: string;
   /** PDF parser override used by isolated Telegram adapter tests. */
   pdfTextExtractor?: PdfTextExtractor;
 }): TelegramAdapter {
   const bot = new Bot(config.token);
   const userIdSet: ReadonlySet<number> = new Set(config.authorizedUserIds as readonly number[]);
-  const imageDir = config.imageDir ?? DEFAULT_IMAGE_DIR;
-  const pdfTextExtractor = config.pdfTextExtractor ?? extractPdfText;
+  const attachmentDir = config.attachmentDir ?? DEFAULT_ATTACHMENT_DIR;
+  const pdfTextExtractor = config.pdfTextExtractor;
 
   let messageHandler:
     | ((msg: TelegramIncomingMessage) => Promise<TelegramIncomingDisposition | undefined>)
@@ -289,8 +279,8 @@ export function createTelegramAdapter(config: {
   };
 
   const writeSpooledFile = async (filePath: string, data: Uint8Array | string): Promise<void> => {
-    await mkdir(imageDir, { recursive: true, mode: 0o700 });
-    await chmod(imageDir, 0o700);
+    await mkdir(attachmentDir, { recursive: true, mode: 0o700 });
+    await chmod(attachmentDir, 0o700);
     const temporaryPath = `${filePath}.tmp-${crypto.randomUUID()}`;
     try {
       await writeFile(temporaryPath, data, { mode: 0o600 });
@@ -353,13 +343,13 @@ export function createTelegramAdapter(config: {
     const buffer = Buffer.from(await response.arrayBuffer());
     const candidateExtension = file.file_path.split('.').pop()?.toLowerCase() ?? '';
     const extension = /^[a-z0-9]{1,5}$/.test(candidateExtension) ? candidateExtension : 'jpg';
-    const filePath = join(imageDir, `${updateId}.${extension}`);
+    const filePath = join(attachmentDir, `${updateId}.${extension}`);
     await writeSpooledFile(filePath, buffer);
     return filePath;
   }
 
-  // Handle PDF documents from authorized users. Raw PDFs are validated and
-  // converted to bounded plain text before entering the durable chat queue.
+  // Convert supported documents to bounded text before the durable queue boundary.
+  // The generic download/spool lifecycle is shared; only extraction varies by format.
   bot.on('message:document', async (ctx) => {
     console.info(`[telegram] Received document from userId=${ctx.from?.id} chatId=${ctx.chat.id}`);
     const userId = ctx.from?.id;
@@ -379,16 +369,20 @@ export function createTelegramAdapter(config: {
       throw new Error('Telegram ingress is stopping');
     }
 
-    const document = ctx.message.document;
-    if (!isClaimedPdf(document.file_name, document.mime_type)) {
+    const telegramDocument = ctx.message.document;
+    const document = parseSupportedDocument(telegramDocument.file_name, telegramDocument.mime_type);
+    if (!document.ok) {
       await trackUpdate(chatId, async () => {
-        await sendMessage(chatId, 'I can currently read PDF documents only.');
+        await sendMessage(chatId, formatDocumentClaimError(document.error));
       });
       return;
     }
-    if (document.file_size !== undefined && document.file_size > MAX_PDF_BYTES) {
+
+    const policy = documentIngressPolicy(document.value);
+    const tooLargeMessage = `That ${policy.label} is too large. The limit is ${policy.maxBytes / 1024 / 1024} MB.`;
+    if (telegramDocument.file_size !== undefined && telegramDocument.file_size > policy.maxBytes) {
       await trackUpdate(chatId, async () => {
-        await sendMessage(chatId, PDF_TOO_LARGE_MESSAGE);
+        await sendMessage(chatId, tooLargeMessage);
       });
       return;
     }
@@ -397,47 +391,33 @@ export function createTelegramAdapter(config: {
     if (handler === null) throw new Error('Telegram message handler is not registered');
 
     await trackUpdate(chatId, async () => {
-      const file = await bot.api.getFile(document.file_id);
+      const file = await bot.api.getFile(telegramDocument.file_id);
       if (!file.file_path) throw new Error('Telegram getFile returned no file_path');
       const url = `https://api.telegram.org/file/bot${config.token}/${file.file_path}`;
       const response = await fetch(url, {
-        signal: AbortSignal.timeout(PDF_DOWNLOAD_TIMEOUT_MS),
+        signal: AbortSignal.timeout(DOCUMENT_DOWNLOAD_TIMEOUT_MS),
       });
-      if (!response.ok) throw new Error(`PDF download failed: ${response.status}`);
+      if (!response.ok) throw new Error(`${policy.label} download failed: ${response.status}`);
 
       const contentLength = Number(response.headers.get('content-length'));
-      if (Number.isFinite(contentLength) && contentLength > MAX_PDF_BYTES) {
-        await sendMessage(chatId, PDF_TOO_LARGE_MESSAGE);
+      if (Number.isFinite(contentLength) && contentLength > policy.maxBytes) {
+        await sendMessage(chatId, tooLargeMessage);
         return;
       }
-      const body = await readBoundedBody(response, MAX_PDF_BYTES);
+      const body = await readBoundedBody(response, policy.maxBytes);
       if (!body.ok) {
-        await sendMessage(chatId, PDF_TOO_LARGE_MESSAGE);
-        return;
-      }
-      if (!hasPdfMagic(body.data)) {
-        await sendMessage(
-          chatId,
-          'That file is labelled as a PDF, but its contents are not a PDF.',
-        );
+        await sendMessage(chatId, tooLargeMessage);
         return;
       }
 
-      const extracted = await pdfTextExtractor(body.data);
+      const extracted = await extractDocumentText(document.value, body.data, pdfTextExtractor);
       if (!extracted.ok) {
-        await sendMessage(chatId, formatPdfExtractionError(extracted.error));
+        await sendMessage(chatId, formatDocumentExtractionError(extracted.error));
         return;
       }
 
-      const filePath = join(imageDir, `${updateId.value}.pdf.txt`);
-      const text = [
-        `Extracted from a ${extracted.value.totalPages}-page PDF.`,
-        '',
-        '--- BEGIN UNTRUSTED PDF CONTENT ---',
-        extracted.value.text,
-        '--- END UNTRUSTED PDF CONTENT ---',
-      ].join('\n');
-      await writeSpooledFile(filePath, text);
+      const filePath = join(attachmentDir, `${updateId.value}.${policy.spoolSuffix}`);
+      await writeSpooledFile(filePath, formatSpooledDocumentText(extracted.value));
 
       const caption = ctx.message.caption ?? '';
       const replyContext = replyContextFromTelegram(ctx.message.reply_to_message, userId);
@@ -450,7 +430,7 @@ export function createTelegramAdapter(config: {
         documentPaths: [filePath],
       });
       if (disposition?.kind === 'remove-source-files') {
-        await removeSpooledImage(filePath, imageDir);
+        await removeSpooledFile(filePath, attachmentDir);
       }
     });
   });
@@ -497,7 +477,7 @@ export function createTelegramAdapter(config: {
         imagePaths: [filePath],
       });
       if (disposition?.kind === 'remove-source-files') {
-        await removeSpooledImage(filePath, imageDir);
+        await removeSpooledFile(filePath, attachmentDir);
       }
     });
   });

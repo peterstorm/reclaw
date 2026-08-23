@@ -37,7 +37,7 @@ import {
 } from '../core/types.js';
 import type { AppConfig } from '../infra/config.js';
 import type { SessionStore } from '../infra/session-store.js';
-import { type TelegramAdapter, removeSpooledImage } from '../infra/telegram.js';
+import { type TelegramAdapter, removeSpooledFile } from '../infra/telegram.js';
 import type { ChatActivityOutcome } from './chat-handler.js';
 import { handleDeliveryJob } from './delivery-handler.js';
 import type { ResearchJobLike } from './research-handler.js';
@@ -357,7 +357,7 @@ export function createWorkers(deps: WorkerDeps): Workers {
       // this direct confined cleanup prevents the recreated stable spool path
       // from becoming orphaned behind an already-completed delivery ID.
       if (reusedActivity) {
-        await Promise.all(chatJobSourcePaths(chatJob).map((path) => removeSpooledImage(path)));
+        await Promise.all(chatJobSourcePaths(chatJob).map((path) => removeSpooledFile(path)));
       }
 
       // ActivityResult is already durable. Telegram preview failure or a crash
@@ -405,7 +405,7 @@ export function createWorkers(deps: WorkerDeps): Workers {
     onFinalFailure: async (data) => {
       const parsed = parseChatJob(data);
       if (!parsed.ok) return;
-      await Promise.all(chatJobSourcePaths(parsed.value).map((path) => removeSpooledImage(path)));
+      await Promise.all(chatJobSourcePaths(parsed.value).map((path) => removeSpooledFile(path)));
     },
   });
 
@@ -577,7 +577,7 @@ export function createWorkers(deps: WorkerDeps): Workers {
         {
           telegram,
           sessionStore,
-          removeFile: removeSpooledImage,
+          removeFile: removeSpooledFile,
           ...(triggerCortexExtraction === undefined ? {} : { triggerCortexExtraction }),
         },
       );

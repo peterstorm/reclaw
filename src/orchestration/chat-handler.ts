@@ -35,7 +35,7 @@ import type {
 } from '../infra/agent-backends/index.js';
 import type { AppConfig } from '../infra/config.js';
 import type { SessionStore } from '../infra/session-store.js';
-import { type TelegramAdapter, removeSpooledImage } from '../infra/telegram.js';
+import { type TelegramAdapter, removeSpooledFile } from '../infra/telegram.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -76,7 +76,7 @@ async function cleanupSourceFiles(paths: readonly string[]): Promise<void> {
   if (paths.length === 0) return;
   await Promise.all(
     paths.map((path) =>
-      removeSpooledImage(path).catch((error: NodeJS.ErrnoException) => {
+      removeSpooledFile(path).catch((error: NodeJS.ErrnoException) => {
         console.warn(`[chat] confined attachment cleanup failed (${error.code ?? 'UNKNOWN'})`);
       }),
     ),

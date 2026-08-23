@@ -97,7 +97,7 @@ Delivery variants are a closed union:
 - `cortex`
 - `file-cleanup`
 
-File cleanup is not a generic unlink capability: every target is canonicalized and must resolve inside the Telegram attachment spool (photos and extracted PDF text) before deletion. Missing files are idempotent success; direct and symlinked escapes fail closed. Terminal Telegram redelivery removes a recreated source immediately, and a chat source replay that finds an existing `ActivityResult` also performs confined cleanup directly; both close the gap where the stable cleanup delivery already completed and therefore cannot be enqueued again.
+File cleanup is not a generic unlink capability: every target is canonicalized and must resolve inside the Telegram attachment spool (photos and bounded PDF/Markdown text) before deletion. Missing files are idempotent success; direct and symlinked escapes fail closed. Terminal Telegram redelivery removes a recreated source immediately, and a chat source replay that finds an existing `ActivityResult` also performs confined cleanup directly; both close the gap where the stable cleanup delivery already completed and therefore cannot be enqueued again.
 
 The queue retries eight times with exponential backoff starting at 15 seconds.
 Completed and failed delivery records are retained for 30 days, matching the

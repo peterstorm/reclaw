@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { splitMessage } from '../core/message-splitter.js';
 import { makeTelegramUserId } from '../core/types.js';
+import { MAX_MARKDOWN_BYTES } from './document-text.js';
 import type { TelegramAdapter } from './telegram.js';
 
 // ─── Grammy mock ──────────────────────────────────────────────────────────────
@@ -49,7 +50,7 @@ vi.mock('grammy', () => ({
 
 // ─── Import adapter AFTER mock registration ───────────────────────────────────
 
-const { createTelegramAdapter, removeSpooledImage } = await import('./telegram.js');
+const { createTelegramAdapter, removeSpooledFile } = await import('./telegram.js');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -65,7 +66,7 @@ function makeAdapter(): TelegramAdapter {
   return createTelegramAdapter({
     token: 'test-token',
     authorizedUserIds: [userIdResult.value],
-    imageDir: '/tmp/reclaw-images',
+    attachmentDir: '/tmp/reclaw-images',
     pdfTextExtractor: mockPdfTextExtractor,
   });
 }
@@ -431,7 +432,7 @@ describe('sendChunkedMessage integrates with splitMessage', () => {
   }, 5000);
 });
 
-// ─── PDF document handler ───────────────────────────────────────────────────
+// ─── Document handler ───────────────────────────────────────────────────────
 
 describe('message:document handler', () => {
   beforeEach(() => {
@@ -445,6 +446,17 @@ describe('message:document handler', () => {
     file_name: 'report.pdf',
     mime_type: 'application/pdf',
     file_size: 128,
+  };
+  const sampleMarkdown = {
+    file_id: 'markdown-file',
+    file_name: 'notes.md',
+    mime_type: 'text/markdown',
+    file_size: 128,
+  };
+  const sampleMarkdownWithoutSize = {
+    file_id: sampleMarkdown.file_id,
+    file_name: sampleMarkdown.file_name,
+    mime_type: sampleMarkdown.mime_type,
   };
 
   it('extracts PDF text, spools it atomically, and calls the durable handler', async () => {
@@ -479,9 +491,9 @@ describe('message:document handler', () => {
         documentPaths: ['/tmp/reclaw-images/1003.pdf.txt'],
       });
       const spooled = await readFile('/tmp/reclaw-images/1003.pdf.txt', 'utf8');
-      expect(spooled).toContain('--- BEGIN UNTRUSTED PDF CONTENT ---');
+      expect(spooled).toContain('--- BEGIN UNTRUSTED DOCUMENT CONTENT ---');
       expect(spooled).toContain('Extracted PDF text');
-      expect(spooled).toContain('--- END UNTRUSTED PDF CONTENT ---');
+      expect(spooled).toContain('--- END UNTRUSTED DOCUMENT CONTENT ---');
     } finally {
       mockFetch.mockRestore();
       await rm('/tmp/reclaw-images/1003.pdf.txt', { force: true });
@@ -506,7 +518,182 @@ describe('message:document handler', () => {
     }
   });
 
-  it('acknowledges unsupported documents with a PDF-only response', async () => {
+  it('decodes Markdown, shares the durable spool path, and preserves the caption', async () => {
+    const adapter = makeAdapter();
+    const handler = vi.fn().mockResolvedValue(undefined);
+    adapter.onMessage(handler);
+    mockGetFile.mockResolvedValueOnce({ file_path: 'documents/notes.md' });
+    const markdown = '# Release notes\n\n- Durable Markdown ingestion';
+    const mockFetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(new TextEncoder().encode(markdown)));
+
+    try {
+      await simulateDocument(123456, 789, sampleMarkdown, 'Review this');
+
+      expect(mockPdfTextExtractor).not.toHaveBeenCalled();
+      expect(handler).toHaveBeenCalledWith({
+        updateId: 1003,
+        userId: 123456,
+        chatId: 789,
+        text: 'Review this',
+        documentPaths: ['/tmp/reclaw-images/1003.md.txt'],
+      });
+      const spooled = await readFile('/tmp/reclaw-images/1003.md.txt', 'utf8');
+      expect(spooled).toContain('Decoded from an uploaded Markdown document.');
+      expect(spooled).toContain('--- BEGIN UNTRUSTED DOCUMENT CONTENT ---');
+      expect(spooled).toContain('> # Release notes');
+      expect(spooled).toContain('> - Durable Markdown ingestion');
+      expect(spooled).toContain('--- END UNTRUSTED DOCUMENT CONTENT ---');
+    } finally {
+      mockFetch.mockRestore();
+      await rm('/tmp/reclaw-images/1003.md.txt', { force: true });
+    }
+  });
+
+  it('removes a recreated Markdown spool when routing finds a terminal duplicate', async () => {
+    const adapter = makeAdapter();
+    adapter.onMessage(vi.fn().mockResolvedValue({ kind: 'remove-source-files' }));
+    mockGetFile.mockResolvedValueOnce({ file_path: 'documents/notes.md' });
+    const mockFetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(new TextEncoder().encode('# Notes')));
+
+    try {
+      await simulateDocument(123456, 789, sampleMarkdown);
+      expect(existsSync('/tmp/reclaw-images/1003.md.txt')).toBe(false);
+    } finally {
+      mockFetch.mockRestore();
+      await rm('/tmp/reclaw-images/1003.md.txt', { force: true });
+    }
+  });
+
+  it('rejects binary content masquerading as Markdown without enqueueing it', async () => {
+    const adapter = makeAdapter();
+    const handler = vi.fn();
+    adapter.onMessage(handler);
+    mockGetFile.mockResolvedValueOnce({ file_path: 'documents/notes.md' });
+    const mockFetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(new Uint8Array([0x61, 0x00, 0x62])));
+
+    try {
+      await simulateDocument(123456, 789, sampleMarkdown);
+      expect(mockSendMessage).toHaveBeenCalledWith(789, expect.stringContaining('binary data'), {
+        parse_mode: 'HTML',
+      });
+      expect(handler).not.toHaveBeenCalled();
+    } finally {
+      mockFetch.mockRestore();
+    }
+  });
+
+  it('rejects oversized Markdown before downloading it', async () => {
+    const adapter = makeAdapter();
+    const handler = vi.fn();
+    adapter.onMessage(handler);
+
+    await simulateDocument(123456, 789, {
+      ...sampleMarkdown,
+      file_size: 2 * 1024 * 1024,
+    });
+
+    expect(mockSendMessage).toHaveBeenCalledWith(789, expect.stringContaining('too large'), {
+      parse_mode: 'HTML',
+    });
+    expect(mockGetFile).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('rejects an oversized Markdown content-length when Telegram omits file_size', async () => {
+    const adapter = makeAdapter();
+    const handler = vi.fn();
+    adapter.onMessage(handler);
+    mockGetFile.mockResolvedValueOnce({ file_path: 'documents/notes.md' });
+    const mockFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(new TextEncoder().encode('# Notes'), {
+        headers: { 'content-length': String(MAX_MARKDOWN_BYTES + 1) },
+      }),
+    );
+
+    try {
+      await simulateDocument(123456, 789, sampleMarkdownWithoutSize);
+      expect(mockSendMessage).toHaveBeenCalledWith(789, expect.stringContaining('too large'), {
+        parse_mode: 'HTML',
+      });
+      expect(handler).not.toHaveBeenCalled();
+    } finally {
+      mockFetch.mockRestore();
+    }
+  });
+
+  it('stops a streamed Markdown body that exceeds its byte limit', async () => {
+    const adapter = makeAdapter();
+    const handler = vi.fn();
+    adapter.onMessage(handler);
+    mockGetFile.mockResolvedValueOnce({ file_path: 'documents/notes.md' });
+    const mockFetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(new Uint8Array(MAX_MARKDOWN_BYTES + 1).fill(0x61)));
+
+    try {
+      await simulateDocument(123456, 789, sampleMarkdownWithoutSize);
+      expect(mockSendMessage).toHaveBeenCalledWith(789, expect.stringContaining('too large'), {
+        parse_mode: 'HTML',
+      });
+      expect(handler).not.toHaveBeenCalled();
+    } finally {
+      mockFetch.mockRestore();
+    }
+  });
+
+  it('acknowledges conflicting filename and MIME claims without downloading', async () => {
+    const adapter = makeAdapter();
+    const handler = vi.fn();
+    adapter.onMessage(handler);
+
+    await simulateDocument(123456, 789, {
+      ...sampleMarkdown,
+      mime_type: 'application/pdf',
+    });
+
+    expect(mockSendMessage).toHaveBeenCalledWith(789, expect.stringContaining('disagree'), {
+      parse_mode: 'HTML',
+    });
+    expect(mockGetFile).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      label: 'invalid UTF-8',
+      body: new Uint8Array([0xc3, 0x28]),
+      expected: 'valid UTF-8',
+    },
+    {
+      label: 'empty text',
+      body: new TextEncoder().encode('  \n\t'),
+      expected: 'readable text',
+    },
+  ])('rejects Markdown with $label without enqueueing', async ({ body, expected }) => {
+    const adapter = makeAdapter();
+    const handler = vi.fn();
+    adapter.onMessage(handler);
+    mockGetFile.mockResolvedValueOnce({ file_path: 'documents/notes.md' });
+    const mockFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(body));
+
+    try {
+      await simulateDocument(123456, 789, sampleMarkdown);
+      expect(mockSendMessage).toHaveBeenCalledWith(789, expect.stringContaining(expected), {
+        parse_mode: 'HTML',
+      });
+      expect(handler).not.toHaveBeenCalled();
+    } finally {
+      mockFetch.mockRestore();
+    }
+  });
+
+  it('acknowledges unsupported documents with the supported-format response', async () => {
     const adapter = makeAdapter();
     const handler = vi.fn();
     adapter.onMessage(handler);
@@ -517,11 +704,9 @@ describe('message:document handler', () => {
       mime_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     });
 
-    expect(mockSendMessage).toHaveBeenCalledWith(
-      789,
-      expect.stringContaining('PDF documents only'),
-      { parse_mode: 'HTML' },
-    );
+    expect(mockSendMessage).toHaveBeenCalledWith(789, expect.stringContaining('PDF and Markdown'), {
+      parse_mode: 'HTML',
+    });
     expect(mockGetFile).not.toHaveBeenCalled();
     expect(handler).not.toHaveBeenCalled();
   });
@@ -582,6 +767,25 @@ describe('message:document handler', () => {
     });
     expect(handler).not.toHaveBeenCalled();
     mockFetch.mockRestore();
+  });
+
+  it('propagates document HTTP failures so Telegram can redeliver the update', async () => {
+    const adapter = makeAdapter();
+    const handler = vi.fn();
+    adapter.onMessage(handler);
+    mockGetFile.mockResolvedValueOnce({ file_path: 'documents/notes.md' });
+    const mockFetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('unavailable', { status: 503 }));
+
+    try {
+      await expect(simulateDocument(123456, 789, sampleMarkdown)).rejects.toThrow(
+        'Markdown download failed: 503',
+      );
+      expect(handler).not.toHaveBeenCalled();
+    } finally {
+      mockFetch.mockRestore();
+    }
   });
 
   it('silently discards PDF documents from unauthorized users', async () => {
@@ -697,13 +901,13 @@ describe('message:photo handler', () => {
   });
 });
 
-describe('removeSpooledImage', () => {
+describe('removeSpooledFile', () => {
   it('removes a canonical file inside the configured spool', async () => {
     const root = await mkdtemp(join(tmpdir(), 'reclaw-spool-'));
     const file = join(root, 'telegram-1.jpg');
     await writeFile(file, 'image');
     try {
-      await removeSpooledImage(file, root);
+      await removeSpooledFile(file, root);
       expect(existsSync(file)).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -713,7 +917,7 @@ describe('removeSpooledImage', () => {
   it('is idempotent when the file is already absent', async () => {
     const root = await mkdtemp(join(tmpdir(), 'reclaw-spool-'));
     try {
-      await expect(removeSpooledImage(join(root, 'missing.jpg'), root)).resolves.toBeUndefined();
+      await expect(removeSpooledFile(join(root, 'missing.jpg'), root)).resolves.toBeUndefined();
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -728,11 +932,11 @@ describe('removeSpooledImage', () => {
     await writeFile(secret, 'keep');
     await symlink(outside, join(root, 'escape'), 'dir');
     try {
-      await expect(removeSpooledImage(secret, root)).rejects.toThrow(
-        'outside Telegram image spool',
+      await expect(removeSpooledFile(secret, root)).rejects.toThrow(
+        'outside Telegram attachment spool',
       );
-      await expect(removeSpooledImage(join(root, 'escape', 'secret.txt'), root)).rejects.toThrow(
-        'outside Telegram image spool',
+      await expect(removeSpooledFile(join(root, 'escape', 'secret.txt'), root)).rejects.toThrow(
+        'outside Telegram attachment spool',
       );
       expect(existsSync(secret)).toBe(true);
     } finally {

@@ -24,7 +24,7 @@ import type {
 import { makeClaudeSessionId } from '../core/types.js';
 import type { AppConfig } from '../infra/config.js';
 import type { SessionStore } from '../infra/session-store.js';
-import { DEFAULT_IMAGE_DIR, type TelegramAdapter } from '../infra/telegram.js';
+import { DEFAULT_ATTACHMENT_DIR, type TelegramAdapter } from '../infra/telegram.js';
 import {
   type BullWorkerLike,
   type WorkerFactory,
@@ -336,13 +336,13 @@ describe('createWorkers', () => {
     expect(result).toEqual({ kind: 'chat-completed', response: 'chat response' });
   });
 
-  it('persists PDF text cleanup as a durable delivery', async () => {
+  it('persists document text cleanup as a durable delivery', async () => {
     chatHandler.mockResolvedValue({
       kind: 'completed',
       response: 'document summary',
       sessionId: null,
       telegramOperations: [],
-      sourcePaths: ['/state/reclaw/1003.pdf.txt'],
+      sourcePaths: ['/state/reclaw/1003.md.txt'],
       drainPreviews: vi.fn().mockResolvedValue(undefined),
     });
     makeWorkers();
@@ -350,7 +350,7 @@ describe('createWorkers', () => {
     if (chatWorker === undefined) throw new Error('Chat worker was not created');
 
     await chatWorker.processor({
-      data: { ...chatJob, documentPaths: ['/state/reclaw/1003.pdf.txt'] },
+      data: { ...chatJob, documentPaths: ['/state/reclaw/1003.md.txt'] },
       id: chatJob.id,
       opts: { attempts: 3 },
       attemptsMade: 1,
@@ -360,14 +360,42 @@ describe('createWorkers', () => {
     expect(activity?.deliveries).toContainEqual(
       expect.objectContaining({
         kind: 'file-cleanup',
-        paths: ['/state/reclaw/1003.pdf.txt'],
+        paths: ['/state/reclaw/1003.md.txt'],
       }),
     );
   });
 
+  it('cleans document text after the final failed chat attempt', async () => {
+    const sourcePath = join(
+      DEFAULT_ATTACHMENT_DIR,
+      `worker-final-failure-${crypto.randomUUID()}.md.txt`,
+    );
+    await mkdir(DEFAULT_ATTACHMENT_DIR, { recursive: true });
+    await writeFile(sourcePath, 'failed attachment');
+    makeWorkers();
+    const failedHandler = requireWorker('reclaw-chat').eventHandlers.get('failed');
+    if (failedHandler === undefined) throw new Error('Failed handler was not registered');
+
+    try {
+      await failedHandler(
+        {
+          data: { ...chatJob, documentPaths: [sourcePath] },
+          id: chatJob.id,
+          opts: { attempts: 3 },
+          attemptsMade: 3,
+        },
+        new Error('final failure'),
+      );
+      expect(existsSync(sourcePath)).toBe(false);
+      expect(mockTelegram.sendMessage).toHaveBeenCalledOnce();
+    } finally {
+      await rm(sourcePath, { force: true });
+    }
+  });
+
   it('cleans a recreated attachment when a retained activity suppresses re-execution', async () => {
-    const sourcePath = join(DEFAULT_IMAGE_DIR, `worker-replay-${crypto.randomUUID()}.pdf.txt`);
-    await mkdir(DEFAULT_IMAGE_DIR, { recursive: true });
+    const sourcePath = join(DEFAULT_ATTACHMENT_DIR, `worker-replay-${crypto.randomUUID()}.pdf.txt`);
+    await mkdir(DEFAULT_ATTACHMENT_DIR, { recursive: true });
     await writeFile(sourcePath, 'recreated attachment');
     const activityId = makeActivityId('chat', chatJob.id);
     activityStore.set(activityId, {

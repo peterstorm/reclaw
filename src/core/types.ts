@@ -237,7 +237,7 @@ export type ChatJob = {
   readonly conversation: ConversationTarget;
   readonly replyContext?: ReplyContext;
   readonly imagePaths?: readonly string[];
-  /** Plain-text files extracted from PDFs at the authenticated ingress boundary. */
+  /** Bounded text spooled from supported documents at the authenticated ingress boundary. */
   readonly documentPaths?: readonly string[];
 };
 

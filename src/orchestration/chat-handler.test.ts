@@ -224,10 +224,10 @@ describe('handleChatJob', () => {
     expect(callArgs.prompt).toContain('What is the capital of France?');
   });
 
-  it('includes extracted PDF text in both fresh and resumed prompts', async () => {
+  it('includes extracted document text in both fresh and resumed prompts', async () => {
     const job = makeChatJob({
       text: 'Summarize this',
-      documentPaths: ['/state/report.pdf.txt'],
+      documentPaths: ['/state/notes.md.txt'],
     });
     const sessionStore = makeSessionStore();
     sessionStore.getCurrent.mockResolvedValue({
@@ -254,7 +254,7 @@ describe('handleChatJob', () => {
     });
 
     expect(runClaudeStreaming.mock.calls[0]?.[0].prompt).toContain(
-      '[Read extracted PDF text: /state/report.pdf.txt]',
+      '[Read extracted document text: /state/notes.md.txt]',
     );
   });
 
