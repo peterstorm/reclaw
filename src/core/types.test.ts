@@ -1,22 +1,47 @@
 import { describe, expect, it } from 'vitest';
 import {
+  MAX_REPLY_CONTEXT_CHARS,
+  chatJobSourcePaths,
+  emptySkillRegistry,
   err,
   isChatJob,
-  isScheduledJob,
   isResearchJob,
-  makeChatJob,
+  isScheduledJob,
+  jobResultErr,
+  jobResultOk,
+  makeChatJob as makeChatJobCore,
   makeJobId,
+  makeReplyContext,
   makeResearchJob,
   makeScheduledJob,
   makeSkillId,
+  makeTelegramIngressJobId,
+  makeTelegramUpdateId,
   makeTelegramUserId,
   ok,
-  emptySkillRegistry,
   skillRegistryFromList,
-  jobResultOk,
-  jobResultErr,
 } from './types.js';
-import type { JobId, SkillConfig, SkillId, TelegramUserId } from './types.js';
+import type {
+  ConversationGeneration,
+  ConversationRevision,
+  JobId,
+  SkillConfig,
+  SkillId,
+  TelegramUserId,
+} from './types.js';
+
+const INITIAL_CONVERSATION = {
+  generation: 0 as ConversationGeneration,
+  revision: 0 as ConversationRevision,
+  backend: 'claude' as const,
+  sessionId: null,
+};
+
+const makeChatJob = (
+  params: Omit<Parameters<typeof makeChatJobCore>[0], 'conversation'> & {
+    readonly conversation?: Parameters<typeof makeChatJobCore>[0]['conversation'];
+  },
+) => makeChatJobCore({ conversation: INITIAL_CONVERSATION, ...params });
 
 // ─── isIso8601 (via makeChatJob / makeScheduledJob) ───────────────────────────
 
@@ -48,7 +73,13 @@ describe('isIso8601 (informal date rejection)', () => {
 
   it('accepts ISO 8601 date-time with Z', () => {
     const { id, userId } = validSetup();
-    const r = makeChatJob({ id, userId, text: 'hi', chatId: 1, receivedAt: '2024-01-15T10:30:00Z' });
+    const r = makeChatJob({
+      id,
+      userId,
+      text: 'hi',
+      chatId: 1,
+      receivedAt: '2024-01-15T10:30:00Z',
+    });
     expect(r.ok).toBe(true);
   });
 
@@ -90,6 +121,73 @@ describe('makeTelegramUserId', () => {
     const r = makeTelegramUserId(1.5);
     expect(r.ok).toBe(false);
   });
+});
+
+describe('Telegram ingress identity', () => {
+  it('accepts non-negative safe update IDs', () => {
+    expect(makeTelegramUpdateId(0).ok).toBe(true);
+    expect(makeTelegramUpdateId(2_147_483_647).ok).toBe(true);
+  });
+
+  it.each([-1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1])(
+    'rejects malformed update ID %s',
+    (raw) => expect(makeTelegramUpdateId(raw).ok).toBe(false),
+  );
+
+  it('derives a stable BullMQ-compatible ID from update ID and work kind', () => {
+    const updateId = makeTelegramUpdateId(42);
+    if (!updateId.ok) throw new Error(updateId.error);
+
+    expect(makeTelegramIngressJobId(updateId.value, 'chat')).toEqual({
+      ok: true,
+      value: 'telegram:42:chat',
+    });
+    expect(makeTelegramIngressJobId(updateId.value, 'chat')).toEqual(
+      makeTelegramIngressJobId(updateId.value, 'chat'),
+    );
+  });
+});
+
+describe('makeReplyContext', () => {
+  it('constructs trimmed textual context', () => {
+    expect(
+      makeReplyContext({ messageId: 42, author: 'assistant', text: '  Garmin failed  ' }),
+    ).toEqual({
+      ok: true,
+      value: {
+        kind: 'text',
+        messageId: 42,
+        author: 'assistant',
+        text: 'Garmin failed',
+        truncated: false,
+      },
+    });
+  });
+
+  it('bounds quoted text and records truncation', () => {
+    const result = makeReplyContext({
+      messageId: 42,
+      author: 'assistant',
+      text: 'x'.repeat(MAX_REPLY_CONTEXT_CHARS + 1),
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok || result.value.kind !== 'text') return;
+    expect(result.value.text).toHaveLength(MAX_REPLY_CONTEXT_CHARS);
+    expect(result.value.truncated).toBe(true);
+  });
+
+  it('models replies without text or captions explicitly', () => {
+    expect(makeReplyContext({ messageId: 42, author: 'other' })).toEqual({
+      ok: true,
+      value: { kind: 'non-text', messageId: 42, author: 'other' },
+    });
+  });
+
+  it.each([0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])(
+    'rejects invalid Telegram message ID %s',
+    (messageId) =>
+      expect(makeReplyContext({ messageId, author: 'user', text: 'reply' }).ok).toBe(false),
+  );
 });
 
 describe('makeJobId', () => {
@@ -282,7 +380,22 @@ describe('makeChatJob', () => {
     }
   });
 
-  it('rejects empty text with empty imagePaths', () => {
+  it('accepts empty text when a PDF text attachment is present', () => {
+    const r = makeChatJob({
+      id: validJobId(),
+      userId: validUserId(),
+      text: '',
+      chatId: 1,
+      receivedAt: new Date().toISOString(),
+      documentPaths: ['/state/reclaw/1001.pdf.txt'],
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.documentPaths).toEqual(['/state/reclaw/1001.pdf.txt']);
+    }
+  });
+
+  it('rejects empty text with empty attachment arrays', () => {
     const r = makeChatJob({
       id: validJobId(),
       userId: validUserId(),
@@ -290,6 +403,7 @@ describe('makeChatJob', () => {
       chatId: 1,
       receivedAt: new Date().toISOString(),
       imagePaths: [],
+      documentPaths: [],
     });
     expect(r.ok).toBe(false);
   });
@@ -322,6 +436,40 @@ describe('makeChatJob', () => {
       expect(r.value.text).toBe('Check this out');
       expect(r.value.imagePaths).toEqual(['/tmp/a.jpg', '/tmp/b.jpg']);
     }
+  });
+
+  it('preserves bounded reply context in the durable chat job', () => {
+    const replyContext = makeReplyContext({
+      messageId: 42,
+      author: 'assistant',
+      text: 'Garmin sync failed',
+    });
+    if (!replyContext.ok) throw new Error(replyContext.error);
+    const result = makeChatJob({
+      id: validJobId(),
+      userId: validUserId(),
+      text: 'Please rerun',
+      chatId: 1,
+      receivedAt: new Date().toISOString(),
+      replyContext: replyContext.value,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.replyContext).toEqual(replyContext.value);
+  });
+
+  it('lists image and PDF text files for durable cleanup', () => {
+    const r = makeChatJob({
+      id: validJobId(),
+      userId: validUserId(),
+      text: 'Compare these',
+      chatId: 1,
+      receivedAt: new Date().toISOString(),
+      imagePaths: ['/state/photo.jpg'],
+      documentPaths: ['/state/report.pdf.txt'],
+    });
+    if (!r.ok) throw new Error(r.error);
+
+    expect(chatJobSourcePaths(r.value)).toEqual(['/state/photo.jpg', '/state/report.pdf.txt']);
   });
 });
 
@@ -456,6 +604,7 @@ describe('skillRegistryFromList', () => {
       permissionProfile: 'chat',
       validityWindowMinutes: 30,
       timeout: 120,
+      environment: [],
       dependsOn: null,
     };
   }

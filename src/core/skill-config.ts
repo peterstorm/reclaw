@@ -1,6 +1,7 @@
 import { parseExpression } from 'cron-parser';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
+import { SKILL_ENVIRONMENT_VARIABLES } from './agent-environment.js';
 import { type Result, type SkillConfig, err, makeSkillId, ok } from './types.js';
 
 // ─── Zod Schema ───────────────────────────────────────────────────────────────
@@ -37,6 +38,7 @@ export const SkillConfigSchema = z
     // silently capping every skill that omits the field at 2 minutes.
     timeout: z.number().int().positive().optional(),
     backend: z.enum(['claude', 'pi']).optional(),
+    environment: z.array(z.enum(SKILL_ENVIRONMENT_VARIABLES)).default([]),
     dependsOn: z.string().min(1).nullable().default(null),
   })
   .refine((data) => !(data.dependsOn !== null && data.schedule !== null), {
@@ -50,7 +52,10 @@ export const SkillConfigSchema = z
  * Parse a YAML skill config file. Returns a Result<SkillConfig, string>.
  * The SkillId is derived from the filePath basename (without extension).
  */
-export function parseSkillConfig(yamlContent: string, filePath: string): Result<SkillConfig, string> {
+export function parseSkillConfig(
+  yamlContent: string,
+  filePath: string,
+): Result<SkillConfig, string> {
   // Derive skill id from filename
   const basename = filePath.split('/').pop() ?? filePath;
   const idStr = basename.replace(/\.ya?ml$/i, '');
@@ -81,8 +86,7 @@ export function parseSkillConfig(yamlContent: string, filePath: string): Result<
   // If an explicit id is present, it must match the filename-derived id.
   if (result.data.id !== undefined && result.data.id !== idStr) {
     return err(
-      `Skill config in "${filePath}" has id "${result.data.id}" but the filename derives "${idStr}". ` +
-        `Remove the id field (the filename is authoritative) or rename the file to match.`,
+      `Skill config in "${filePath}" has id "${result.data.id}" but the filename derives "${idStr}". Remove the id field (the filename is authoritative) or rename the file to match.`,
     );
   }
 
@@ -110,6 +114,7 @@ export function parseSkillConfig(yamlContent: string, filePath: string): Result<
     // explicit `undefined`, and an absent key is exactly what signals "inherit the default".
     ...(result.data.timeout !== undefined ? { timeout: result.data.timeout } : {}),
     ...(result.data.backend !== undefined ? { backend: result.data.backend } : {}),
+    environment: result.data.environment,
     dependsOn: dependsOnId,
   } satisfies SkillConfig);
 }
@@ -118,9 +123,10 @@ export function parseSkillConfig(yamlContent: string, filePath: string): Result<
  * Parse an array of file entries (path + content). Returns valid configs and
  * error strings for malformed files. Never throws. Satisfies FR-054.
  */
-export function parseSkillDirectory(
-  files: ReadonlyArray<{ path: string; content: string }>,
-): { valid: readonly SkillConfig[]; errors: readonly string[] } {
+export function parseSkillDirectory(files: ReadonlyArray<{ path: string; content: string }>): {
+  valid: readonly SkillConfig[];
+  errors: readonly string[];
+} {
   const valid: SkillConfig[] = [];
   const errors: string[] = [];
 

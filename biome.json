@@ -1,5 +1,10 @@
 {
   "$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
   "organizeImports": {
     "enabled": true
   },
@@ -34,6 +39,26 @@
     }
   },
   "files": {
-    "ignore": ["node_modules", "dist", "*.yaml", "*.yml", "*.md"]
+    "ignore": [
+      "node_modules",
+      "dist",
+      ".claude",
+      ".memory",
+      ".pi",
+      "workspace/.claude",
+      "workspace/.memory",
+      "workspace/.pi",
+      "workspace/result",
+      "*.yaml",
+      "*.yml",
+      "*.md",
+      "credentials.json",
+      "credentials.json.*",
+      ".env",
+      ".env.*",
+      "*.pem",
+      "*.key",
+      "*.p12"
+    ]
   }
 }

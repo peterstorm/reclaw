@@ -1,17 +1,26 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { routeMessage, type IncomingMessage, type MessageRouterDeps } from './message-router.js';
-import type { TelegramAdapter } from '../infra/telegram.js';
-import type { SessionStore } from '../infra/session-store.js';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  type ConversationGeneration,
+  type ConversationRevision,
+  makeTelegramUpdateId,
+} from '../core/types.js';
+import type { NotebookLMAdapter } from '../infra/notebooklm-client.js';
 import type { Queues } from '../infra/queue.js';
 import type { QuotaTracker } from '../infra/quota-tracker.js';
-import type { NotebookLMAdapter } from '../infra/notebooklm-client.js';
+import type { SessionStore } from '../infra/session-store.js';
+import type { TelegramAdapter } from '../infra/telegram.js';
+import { type IncomingMessage, type MessageRouterDeps, routeMessage } from './message-router.js';
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
+const updateIdResult = makeTelegramUpdateId(1001);
+if (!updateIdResult.ok) throw new Error(updateIdResult.error);
+
 const makeMsg = (overrides: Partial<IncomingMessage> = {}): IncomingMessage => ({
+  updateId: updateIdResult.value,
   userId: 123,
   chatId: 456,
   text: 'Hello, world!',
@@ -27,13 +36,32 @@ const makeTelegram = (): TelegramAdapter => ({
   onMessage: vi.fn(),
 });
 
-const makeSessionStore = (): SessionStore => ({
-  getSession: vi.fn().mockResolvedValue(null),
-  saveSession: vi.fn().mockResolvedValue(undefined),
-  deleteSession: vi.fn().mockResolvedValue(undefined),
-  saveMessageSession: vi.fn().mockResolvedValue(undefined),
-  getMessageSession: vi.fn().mockResolvedValue(null),
-});
+const makeSessionStore = (): SessionStore & {
+  getCurrent: ReturnType<typeof vi.fn>;
+  advance: ReturnType<typeof vi.fn>;
+  commitSession: ReturnType<typeof vi.fn>;
+  saveMessageReference: ReturnType<typeof vi.fn>;
+  getMessageReference: ReturnType<typeof vi.fn>;
+} => {
+  const current = {
+    schemaVersion: 1 as const,
+    generation: 0 as ConversationGeneration,
+    revision: 0 as ConversationRevision,
+    backend: 'pi' as const,
+    sessionId: null,
+    lastActivityAt: '2026-08-14T10:00:00.000Z',
+  };
+  return {
+    getCurrent: vi.fn().mockResolvedValue(current),
+    advance: vi.fn().mockResolvedValue({
+      ...current,
+      generation: 1 as ConversationGeneration,
+    }),
+    commitSession: vi.fn(),
+    saveMessageReference: vi.fn(),
+    getMessageReference: vi.fn().mockResolvedValue(null),
+  };
+};
 
 const makeQueues = (): Queues => ({
   chat: {} as Queues['chat'],
@@ -41,6 +69,12 @@ const makeQueues = (): Queues => ({
   reminder: {} as Queues['reminder'],
   research: {} as Queues['research'],
   podcast: {} as Queues['podcast'],
+  delivery: {} as Queues['delivery'],
+  activityResults: {
+    find: vi.fn().mockResolvedValue(null),
+    saveIfAbsent: vi.fn(),
+  },
+  deliveryOutbox: { enqueue: vi.fn().mockResolvedValue(undefined) },
   enqueueChat: vi.fn().mockResolvedValue(undefined),
   enqueueScheduled: vi.fn().mockResolvedValue(undefined),
   isScheduledJobKnown: vi.fn().mockResolvedValue(false),
@@ -68,6 +102,7 @@ const makeDeps = (overrides: Partial<MessageRouterDeps> = {}): MessageRouterDeps
   sessionStore: makeSessionStore(),
   queues: makeQueues(),
   quotaTracker: makeQuotaTracker(),
+  agentBackend: 'pi',
   ...overrides,
 });
 
@@ -91,15 +126,20 @@ describe('routeMessage', () => {
   });
 
   describe('/new command', () => {
-    it('clears session and sends confirmation', async () => {
+    it('idempotently advances the conversation generation and sends confirmation', async () => {
       const deps = makeDeps();
-      routeMessage(makeMsg({ text: '/new' }), deps);
+      await routeMessage(makeMsg({ text: '/new' }), deps);
 
-      // Wait for async chain
-      await vi.waitFor(() => {
-        expect(deps.sessionStore.deleteSession).toHaveBeenCalledWith(456);
-      });
-      expect(deps.telegram.sendMessage).toHaveBeenCalledWith(456, expect.stringContaining('Session cleared'));
+      expect(deps.sessionStore.advance).toHaveBeenCalledWith(
+        456,
+        'telegram:1001:chat',
+        { kind: 'fresh', backend: 'pi' },
+        expect.any(String),
+      );
+      expect(deps.telegram.sendMessage).toHaveBeenCalledWith(
+        456,
+        expect.stringContaining('fresh generation'),
+      );
     });
   });
 
@@ -123,7 +163,10 @@ describe('routeMessage', () => {
       routeMessage(makeMsg({ text: '/remind list' }), deps);
 
       await vi.waitFor(() => {
-        expect(deps.telegram.sendMessage).toHaveBeenCalledWith(456, expect.stringContaining('drink water'));
+        expect(deps.telegram.sendMessage).toHaveBeenCalledWith(
+          456,
+          expect.stringContaining('drink water'),
+        );
       });
     });
 
@@ -134,17 +177,23 @@ describe('routeMessage', () => {
       await vi.waitFor(() => {
         expect(deps.queues.cancelRecurringReminder).toHaveBeenCalledWith('recur:123:abc');
       });
-      expect(deps.telegram.sendMessage).toHaveBeenCalledWith(456, expect.stringContaining('Cancelled'));
+      expect(deps.telegram.sendMessage).toHaveBeenCalledWith(
+        456,
+        expect.stringContaining('Cancelled'),
+      );
     });
 
-    it('enqueues one-shot reminder with duration', async () => {
+    it('enqueues one-shot reminder with a stable update-derived identity', async () => {
       const deps = makeDeps();
-      routeMessage(makeMsg({ text: '/remind 30m water the plants' }), deps);
+      await routeMessage(makeMsg({ text: '/remind 30m water the plants' }), deps);
 
-      await vi.waitFor(() => {
-        expect(deps.queues.enqueueReminder).toHaveBeenCalled();
-      });
-      expect(deps.telegram.sendMessage).toHaveBeenCalledWith(456, expect.stringContaining("I'll remind you in"));
+      expect(deps.queues.enqueueReminder).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'telegram:1001:reminder' }),
+      );
+      expect(deps.telegram.sendMessage).toHaveBeenCalledWith(
+        456,
+        expect.stringContaining("I'll remind you in"),
+      );
     });
 
     it('sends error for invalid remind command', async () => {
@@ -152,7 +201,10 @@ describe('routeMessage', () => {
       routeMessage(makeMsg({ text: '/remind' }), deps);
 
       await vi.waitFor(() => {
-        expect(deps.telegram.sendMessage).toHaveBeenCalledWith(456, expect.stringContaining('Usage'));
+        expect(deps.telegram.sendMessage).toHaveBeenCalledWith(
+          456,
+          expect.stringContaining('Usage'),
+        );
       });
       expect(deps.queues.enqueueReminder).not.toHaveBeenCalled();
     });
@@ -166,33 +218,48 @@ describe('routeMessage', () => {
       await vi.waitFor(() => {
         expect(deps.queues.getResearchStatus).toHaveBeenCalled();
       });
-      expect(deps.telegram.sendMessage).toHaveBeenCalledWith(456, 'No research jobs running or queued.');
+      expect(deps.telegram.sendMessage).toHaveBeenCalledWith(
+        456,
+        'No research jobs running or queued.',
+      );
     });
 
     it('reports active research job', async () => {
       const deps = makeDeps();
       (deps.queues.getResearchStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
-        active: { topic: 'AI safety', state: 'researching', progress: 50, startedAt: '2026-03-05T10:00:00Z' },
+        active: {
+          topic: 'AI safety',
+          state: 'researching',
+          progress: 50,
+          startedAt: '2026-03-05T10:00:00Z',
+        },
         waiting: 0,
       });
 
       routeMessage(makeMsg({ text: '/research-status' }), deps);
 
       await vi.waitFor(() => {
-        expect(deps.telegram.sendMessage).toHaveBeenCalledWith(456, expect.stringContaining('AI safety'));
+        expect(deps.telegram.sendMessage).toHaveBeenCalledWith(
+          456,
+          expect.stringContaining('AI safety'),
+        );
       });
     });
   });
 
   describe('/research command', () => {
-    it('enqueues research job and confirms', async () => {
+    it('enqueues research job under the stable Telegram update identity and confirms', async () => {
       const deps = makeDeps();
-      routeMessage(makeMsg({ text: '/research AI safety in production systems' }), deps);
+      await routeMessage(makeMsg({ text: '/research AI safety in production systems' }), deps);
 
-      await vi.waitFor(() => {
-        expect(deps.queues.enqueueResearch).toHaveBeenCalled();
-      });
-      expect(deps.telegram.sendMessage).toHaveBeenCalledWith(456, expect.stringContaining('Research enqueued'));
+      expect(deps.queues.enqueueResearch).toHaveBeenCalledWith(
+        'telegram:1001:research',
+        expect.objectContaining({ prompt: 'AI safety in production systems' }),
+      );
+      expect(deps.telegram.sendMessage).toHaveBeenCalledWith(
+        456,
+        expect.stringContaining('Research enqueued'),
+      );
     });
 
     it('rejects when quota is too low', async () => {
@@ -202,7 +269,10 @@ describe('routeMessage', () => {
       routeMessage(makeMsg({ text: '/research AI safety' }), deps);
 
       await vi.waitFor(() => {
-        expect(deps.telegram.sendMessage).toHaveBeenCalledWith(456, expect.stringContaining('quota too low'));
+        expect(deps.telegram.sendMessage).toHaveBeenCalledWith(
+          456,
+          expect.stringContaining('quota too low'),
+        );
       });
       expect(deps.queues.enqueueResearch).not.toHaveBeenCalled();
     });
@@ -219,22 +289,68 @@ describe('routeMessage', () => {
   });
 
   describe('reply-to-message routing', () => {
-    it('looks up session for replied-to message before enqueueing chat', async () => {
+    it('branches to the replied-to conversation before enqueueing chat', async () => {
       const deps = makeDeps();
-      (deps.sessionStore.getMessageSession as ReturnType<typeof vi.fn>).mockResolvedValue('session-abc');
-
-      routeMessage(makeMsg({ text: 'follow up', replyToMessageId: 789 }), deps);
-
-      await vi.waitFor(() => {
-        expect(deps.sessionStore.getMessageSession).toHaveBeenCalledWith(789);
+      (deps.sessionStore.getMessageReference as ReturnType<typeof vi.fn>).mockResolvedValue({
+        schemaVersion: 1,
+        backend: 'claude',
+        sessionId: 'session-abc',
       });
-      expect(deps.sessionStore.saveSession).toHaveBeenCalledWith(
+      (deps.sessionStore.advance as ReturnType<typeof vi.fn>).mockResolvedValue({
+        schemaVersion: 1,
+        generation: 4,
+        revision: 0,
+        backend: 'claude',
+        sessionId: 'session-abc',
+        lastActivityAt: '2026-08-14T10:00:00.000Z',
+      });
+
+      const replyContext = {
+        kind: 'text' as const,
+        messageId: 789,
+        author: 'assistant' as const,
+        text: 'Earlier scheduled result',
+        truncated: false,
+      };
+      await routeMessage(makeMsg({ text: 'follow up', replyContext }), deps);
+
+      expect(deps.sessionStore.getMessageReference).toHaveBeenCalledWith(456, 789);
+      expect(deps.sessionStore.advance).toHaveBeenCalledWith(
         456,
-        expect.objectContaining({ sessionId: 'session-abc' }),
+        'telegram:1001:chat',
+        { kind: 'resume', backend: 'claude', sessionId: 'session-abc' },
+        expect.any(String),
       );
-      await vi.waitFor(() => {
-        expect(deps.queues.enqueueChat).toHaveBeenCalled();
-      });
+      expect(deps.queues.enqueueChat).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conversation: {
+            generation: 4,
+            revision: 0,
+            backend: 'claude',
+            sessionId: 'session-abc',
+          },
+          replyContext,
+        }),
+      );
+    });
+
+    it('keeps quoted text when the replied-to message has no saved session mapping', async () => {
+      const deps = makeDeps();
+      const replyContext = {
+        kind: 'text' as const,
+        messageId: 999,
+        author: 'assistant' as const,
+        text: 'Garmin sync failed: timeout',
+        truncated: false,
+      };
+
+      await routeMessage(makeMsg({ text: 'Please rerun', replyContext }), deps);
+
+      expect(deps.sessionStore.getMessageReference).toHaveBeenCalledWith(456, 999);
+      expect(deps.sessionStore.advance).not.toHaveBeenCalled();
+      expect(deps.queues.enqueueChat).toHaveBeenCalledWith(
+        expect.objectContaining({ replyContext }),
+      );
     });
   });
 
@@ -262,14 +378,15 @@ describe('routeMessage', () => {
       }
     };
 
-    const makeNotebookLM = (answerText: string): NotebookLMAdapter => ({
-      chat: vi.fn().mockResolvedValue({
-        ok: true,
-        value: { text: answerText, citations: [], rawData: {} },
-      }),
-      listSources: vi.fn().mockResolvedValue({ ok: true, value: [] }),
-      // The router only uses chat + listSources; cast through unknown for the rest.
-    } as unknown as NotebookLMAdapter);
+    const makeNotebookLM = (answerText: string): NotebookLMAdapter =>
+      ({
+        chat: vi.fn().mockResolvedValue({
+          ok: true,
+          value: { text: answerText, citations: [], rawData: {} },
+        }),
+        listSources: vi.fn().mockResolvedValue({ ok: true, value: [] }),
+        // The router only uses chat + listSources; cast through unknown for the rest.
+      }) as unknown as NotebookLMAdapter;
 
     it('chunks long /ask replies into multiple Telegram messages', async () => {
       // Long enough that resolvedText alone overflows 4096-char Telegram limit.
@@ -286,7 +403,10 @@ describe('routeMessage', () => {
           expect(deps.telegram.sendChunkedMessage).toHaveBeenCalled();
         });
 
-        const call = (deps.telegram.sendChunkedMessage as ReturnType<typeof vi.fn>).mock.calls[0]!;
+        const call = (deps.telegram.sendChunkedMessage as ReturnType<typeof vi.fn>).mock.calls.at(
+          0,
+        );
+        if (call === undefined) throw new Error('Expected a chunked /ask response');
         const [chatId, chunks] = call as [number, readonly string[]];
         expect(chatId).toBe(456);
         expect(chunks.length).toBeGreaterThan(1);
@@ -339,7 +459,10 @@ describe('routeMessage', () => {
           expect(deps.telegram.sendChunkedMessage).toHaveBeenCalled();
         });
 
-        const call = (deps.telegram.sendChunkedMessage as ReturnType<typeof vi.fn>).mock.calls[0]!;
+        const call = (deps.telegram.sendChunkedMessage as ReturnType<typeof vi.fn>).mock.calls.at(
+          0,
+        );
+        if (call === undefined) throw new Error('Expected a chunked /ask response');
         const [, chunks] = call as [number, readonly string[]];
         expect(chunks.length).toBe(1);
         expect(chunks[0]).toContain('short answer.');
@@ -464,6 +587,38 @@ describe('routeMessage', () => {
       }
     });
 
+    it('warns when source lookup fails but still delivers the NotebookLM answer', async () => {
+      const notebook = {
+        chat: vi.fn().mockResolvedValue({
+          ok: true,
+          value: { text: 'Answer without source metadata.', citations: [], rawData: {} },
+        }),
+        listSources: vi.fn().mockResolvedValue({
+          ok: false,
+          error: { message: 'source API unavailable' },
+        }),
+      } as unknown as NotebookLMAdapter;
+      const deps = makeDeps({
+        vaultBasePath: vaultDir,
+        getNotebookLM: () => Promise.resolve(notebook),
+      });
+
+      try {
+        await routeMessage(makeMsg({ text: `/ask ${slug} What happened?` }), deps);
+
+        expect(deps.telegram.sendMessage).toHaveBeenCalledWith(
+          456,
+          expect.stringMatching(/source lookup failed.*source API unavailable/i),
+        );
+        expect(deps.telegram.sendChunkedMessage).toHaveBeenCalledWith(
+          456,
+          expect.arrayContaining([expect.stringContaining('Answer without source metadata.')]),
+        );
+      } finally {
+        cleanup();
+      }
+    });
+
     it('surfaces NotebookLM chat errors back to Telegram', async () => {
       const notebook = {
         chat: vi.fn().mockResolvedValue({
@@ -494,13 +649,85 @@ describe('routeMessage', () => {
   });
 
   describe('default chat routing', () => {
-    it('enqueues a chat job for regular text', async () => {
+    it('enqueues a chat job with the stable Telegram update identity', async () => {
       const deps = makeDeps();
-      routeMessage(makeMsg({ text: 'Hello!' }), deps);
+      await routeMessage(makeMsg({ text: 'Hello!' }), deps);
 
-      await vi.waitFor(() => {
-        expect(deps.queues.enqueueChat).toHaveBeenCalled();
-      });
+      expect(deps.queues.enqueueChat).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'telegram:1001:chat' }),
+      );
+    });
+
+    it('preserves extracted PDF text paths in the durable chat job', async () => {
+      const deps = makeDeps();
+      await routeMessage(
+        makeMsg({ text: '', documentPaths: ['/state/reclaw/1001.pdf.txt'] }),
+        deps,
+      );
+
+      expect(deps.queues.enqueueChat).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: '',
+          documentPaths: ['/state/reclaw/1001.pdf.txt'],
+        }),
+      );
+    });
+
+    it('returns cleanup ownership when a terminal duplicate no longer needs its recreated spool file', async () => {
+      const deps = makeDeps();
+      (deps.queues.enqueueChat as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+        'terminal-duplicate',
+      );
+
+      const result = await routeMessage(
+        makeMsg({ text: 'Repeat', documentPaths: ['/state/reclaw/1001.pdf.txt'] }),
+        deps,
+      );
+
+      expect(result).toEqual({ kind: 'remove-source-files' });
+    });
+
+    it('treats command-like PDF captions as chat so the attachment has a cleanup owner', async () => {
+      const deps = makeDeps();
+      await routeMessage(
+        makeMsg({ text: '/help', documentPaths: ['/state/reclaw/1001.pdf.txt'] }),
+        deps,
+      );
+
+      expect(deps.queues.enqueueChat).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: '/help',
+          documentPaths: ['/state/reclaw/1001.pdf.txt'],
+        }),
+      );
+      expect(deps.telegram.sendMessage).not.toHaveBeenCalledWith(
+        456,
+        expect.stringContaining('Available commands'),
+      );
+    });
+
+    it('derives the same job identity when Telegram redelivers an update', async () => {
+      const deps = makeDeps();
+      const msg = makeMsg({ text: 'Deliver exactly once' });
+
+      await routeMessage(msg, deps);
+      await routeMessage(msg, deps);
+
+      const ids = (deps.queues.enqueueChat as ReturnType<typeof vi.fn>).mock.calls.map(
+        ([job]) => (job as { id: string }).id,
+      );
+      expect(ids).toEqual(['telegram:1001:chat', 'telegram:1001:chat']);
+    });
+
+    it('rejects when durable enqueue fails', async () => {
+      const deps = makeDeps();
+      (deps.queues.enqueueChat as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+        new Error('redis unavailable'),
+      );
+
+      await expect(routeMessage(makeMsg({ text: 'Do not acknowledge me' }), deps)).rejects.toThrow(
+        'redis unavailable',
+      );
     });
 
     it('does not call any command handlers for regular text', async () => {
@@ -510,7 +737,7 @@ describe('routeMessage', () => {
       await vi.waitFor(() => {
         expect(deps.queues.enqueueChat).toHaveBeenCalled();
       });
-      expect(deps.sessionStore.deleteSession).not.toHaveBeenCalled();
+      expect(deps.sessionStore.advance).not.toHaveBeenCalled();
       expect(deps.queues.enqueueReminder).not.toHaveBeenCalled();
       expect(deps.queues.enqueueResearch).not.toHaveBeenCalled();
     });

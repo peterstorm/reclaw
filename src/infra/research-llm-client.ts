@@ -1,15 +1,16 @@
 // ─── Research LLM Client ──────────────────────────────────────────────────────
 //
-// Thin adapter that uses the existing runClaude() subprocess for question
-// generation and query reformulation.
+// Thin adapter that uses the configured agent subprocess for question
+// generation, query reformulation, and web source discovery.
 //
 // FR-020: Generate 3 to 5 topic-specific research questions per job.
 // FR-021: Use a lightweight language model call (not the full chat subprocess).
 // AD-4: Question generation uses existing runClaude() subprocess for LLM calls.
 
-import type { AgentOptions, AgentResult } from './agent-backends/index.js';
-import type { Result } from '../core/types.js';
+import { formatAgentFailure } from '../core/agent-failure.js';
 import type { SourceMeta } from '../core/research-types.js';
+import type { Result } from '../core/types.js';
+import type { AgentOptions, AgentResult } from './agent-backends/index.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -86,9 +87,7 @@ export function buildGenerateQuestionsPrompt(
       ? sources.map((s, i) => `${i + 1}. ${s.title}`).join('\n')
       : '(no sources listed yet)';
 
-  const focusSection = prompt
-    ? `\nResearch focus: ${prompt}\n`
-    : '';
+  const focusSection = prompt ? `\nResearch focus: ${prompt}\n` : '';
 
   return `You are a research question generator. Generate 3 to 5 focused, specific research questions for the topic below.
 
@@ -117,9 +116,7 @@ export function buildReformulateQueryPrompt(
   previousError: string,
   prompt?: string | null,
 ): string {
-  const contextSection = prompt
-    ? `\nResearch focus: ${prompt}`
-    : '';
+  const contextSection = prompt ? `\nResearch focus: ${prompt}` : '';
 
   return `You are a search query optimizer. A web search for a research topic failed. Suggest a better search query.
 
@@ -164,13 +161,8 @@ Requirements:
  * Build the source discovery prompt for Claude web search.
  * Instructs Claude to search the web and return a JSON array of relevant URLs.
  */
-export function buildDiscoverSourcesPrompt(
-  topic: string,
-  prompt?: string | null,
-): string {
-  const focusSection = prompt
-    ? `\nResearch focus: ${prompt}\n`
-    : '';
+export function buildDiscoverSourcesPrompt(topic: string, prompt?: string | null): string {
+  const focusSection = prompt ? `\nResearch focus: ${prompt}\n` : '';
 
   return `You are a research source discoverer. Search the web to find high-quality, authoritative sources about the topic below.
 
@@ -193,9 +185,7 @@ Example output format:
  * Parse a JSON array of strings from Claude's output.
  * Returns an error string if parsing fails or result is invalid.
  */
-export function parseQuestionsFromOutput(
-  output: string,
-): Result<readonly string[], string> {
+export function parseQuestionsFromOutput(output: string): Result<readonly string[], string> {
   // Extract the largest JSON array from the output (greedy match captures the
   // outermost array rather than a small nested sub-array).
   const match = output.match(/\[[\s\S]*\]/);
@@ -237,10 +227,7 @@ export function parseQuestionsFromOutput(
  * Parse a single-line string response from Claude.
  * Trims whitespace and validates non-empty.
  */
-export function parseSingleLineResponse(
-  output: string,
-  label: string,
-): Result<string, string> {
+export function parseSingleLineResponse(output: string, label: string): Result<string, string> {
   const trimmed = output.trim();
   if (!trimmed) {
     return { ok: false, error: `Empty ${label} response from Claude` };
@@ -260,9 +247,7 @@ const MAX_CLAUDE_DISCOVERED_URLS = 15;
  * Parse a JSON array of URL strings from Claude's web search output.
  * Filters to valid HTTP(S) URLs and deduplicates.
  */
-export function parseDiscoveredUrlsFromOutput(
-  output: string,
-): Result<readonly string[], string> {
+export function parseDiscoveredUrlsFromOutput(output: string): Result<readonly string[], string> {
   const match = output.match(/\[[\s\S]*\]/);
   if (!match) {
     return {
@@ -308,16 +293,16 @@ export function parseDiscoveredUrlsFromOutput(
 // ─── Factory ──────────────────────────────────────────────────────────────────
 
 /**
- * Create a research LLM adapter backed by the Claude CLI subprocess.
+ * Create a research LLM adapter backed by the configured agent subprocess.
  *
- * @param cwd                - Working directory for the Claude subprocess.
+ * @param cwd                - Working directory for the agent subprocess.
  * @param timeoutMs          - Timeout for each subprocess call (default: 30 seconds).
- * @param webSearchTimeoutMs - Timeout for Claude web search calls (default: 120 seconds).
+ * @param webSearchTimeoutMs - Timeout for agent web search calls (default: 120 seconds).
  */
 export function createResearchLLMAdapter(
   cwd: string,
-  timeoutMs = 30_000,
-  webSearchTimeoutMs = 120_000,
+  timeoutMs: number,
+  webSearchTimeoutMs: number,
   runFn: (options: AgentOptions) => Promise<AgentResult>,
 ): ResearchLLMAdapter {
   const baseOptions: Omit<AgentOptions, 'prompt'> = {
@@ -337,7 +322,7 @@ export function createResearchLLMAdapter(
     const claudeResult = await runFn({ ...baseOptions, prompt: claudePrompt });
 
     if (!claudeResult.ok) {
-      throw new Error(`Claude subprocess failed: ${claudeResult.error}`);
+      throw new Error(`Claude subprocess failed: ${formatAgentFailure(claudeResult.failure)}`);
     }
 
     const trimmed = claudeResult.output.trim().split('\n')[0]?.trim() ?? '';
@@ -359,7 +344,7 @@ export function createResearchLLMAdapter(
     if (!claudeResult.ok) {
       return {
         ok: false,
-        error: `Claude subprocess failed: ${claudeResult.error}`,
+        error: `Claude subprocess failed: ${formatAgentFailure(claudeResult.failure)}`,
       };
     }
 
@@ -377,7 +362,7 @@ export function createResearchLLMAdapter(
     if (!claudeResult.ok) {
       return {
         ok: false,
-        error: `Claude subprocess failed: ${claudeResult.error}`,
+        error: `Claude subprocess failed: ${formatAgentFailure(claudeResult.failure)}`,
       };
     }
 
@@ -394,7 +379,7 @@ export function createResearchLLMAdapter(
     if (!claudeResult.ok) {
       return {
         ok: false,
-        error: `Claude subprocess failed: ${claudeResult.error}`,
+        error: `Claude subprocess failed: ${formatAgentFailure(claudeResult.failure)}`,
       };
     }
 
@@ -411,12 +396,18 @@ export function createResearchLLMAdapter(
     if (!claudeResult.ok) {
       return {
         ok: false,
-        error: `Claude web search subprocess failed: ${claudeResult.error}`,
+        error: `Claude web search subprocess failed: ${formatAgentFailure(claudeResult.failure)}`,
       };
     }
 
     return parseDiscoveredUrlsFromOutput(claudeResult.output);
   };
 
-  return { deriveTopic, generateQuestions, reformulateQuery, rephraseQuestion, discoverSourceUrls } as const;
+  return {
+    deriveTopic,
+    generateQuestions,
+    reformulateQuery,
+    rephraseQuestion,
+    discoverSourceUrls,
+  } as const;
 }

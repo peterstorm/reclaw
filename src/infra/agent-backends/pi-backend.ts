@@ -101,21 +101,23 @@ export const piBackend: AgentBackend = {
 
     args.push('-p', '--mode', 'json');
 
-    // Tools: lowercase, comma-separated
+    // Pi's --tools is a strict allowlist. Omitting it restores Pi's default
+    // tools, so an intentionally empty list must use the explicit --no-tools
+    // flag rather than relying on absence.
     if (opts.allowedTools.length > 0) {
       args.push('--tools', opts.allowedTools.map((t) => t.toLowerCase()).join(','));
+    } else {
+      args.push('--no-tools');
     }
 
     return args;
   },
 
   cleanEnv(env: Record<string, string | undefined>): Record<string, string | undefined> {
-    // Intentional pass-through, NOT an unfinished stub. The claude backend
-    // strips CLAUDECODE / CLAUDE_CODE_ENTRYPOINT because the Claude CLI refuses
-    // to run when it detects it was launched from inside another Claude session.
-    // Pi has no equivalent self-detection guard, so there are no variables to
-    // remove — and the claude-specific markers are inert noise to pi. If a
-    // future pi version grows such a guard, strip the offending vars here.
+    // The shared runner has already applied the closed environment policy. Pi
+    // has no backend-specific nested-invocation markers to remove, so preserve
+    // that filtered object unchanged. If a future Pi version adds such a guard,
+    // remove only its marker here.
     return env;
   },
 
@@ -163,8 +165,8 @@ export const piBackend: AgentBackend = {
     }
 
     // Return only the LAST message's text — that's the final response
-    if (messageTexts.length > 0) {
-      const lastText = messageTexts[messageTexts.length - 1]!;
+    const lastText = messageTexts.at(-1);
+    if (lastText !== undefined) {
       return { text: lastText.length > 0 ? lastText : null, sessionId, errorMessage };
     }
 

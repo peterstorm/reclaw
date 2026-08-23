@@ -1,7 +1,10 @@
 .memory/
 .claude/cortex-memory.local.md
+.claude/plans/
+.claude/reviews/
 node_modules/
 dist/
+workspace/result
 trigger-skill.ts
 credentials.json
 credentials.json.bak

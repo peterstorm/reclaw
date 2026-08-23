@@ -1,23 +1,33 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
+import type { SourceMeta } from '../core/research-types.js';
+import type { AgentOptions } from './agent-backends/index.js';
 import {
+  buildDiscoverSourcesPrompt,
   buildGenerateQuestionsPrompt,
   buildReformulateQueryPrompt,
   buildRephraseQuestionPrompt,
-  buildDiscoverSourcesPrompt,
+  createResearchLLMAdapter,
+  parseDiscoveredUrlsFromOutput,
   parseQuestionsFromOutput,
   parseSingleLineResponse,
-  parseDiscoveredUrlsFromOutput,
-  createResearchLLMAdapter,
 } from './research-llm-client.js';
-import type { SourceMeta } from '../core/research-types.js';
-import type { AgentOptions } from './agent-backends/index.js';
 
 // ─── Test fixtures ────────────────────────────────────────────────────────────
 
 const mockSources: readonly SourceMeta[] = [
-  { id: 's1', title: 'Introduction to AI Agents', url: 'https://example.com/ai-agents', sourceType: 'web' },
+  {
+    id: 's1',
+    title: 'Introduction to AI Agents',
+    url: 'https://example.com/ai-agents',
+    sourceType: 'web',
+  },
   { id: 's2', title: 'Deep Learning Overview', url: 'https://example.com/dl', sourceType: 'web' },
-  { id: 's3', title: 'AI Safety Research', url: 'https://youtube.com/watch?v=abc', sourceType: 'youtube' },
+  {
+    id: 's3',
+    title: 'AI Safety Research',
+    url: 'https://youtube.com/watch?v=abc',
+    sourceType: 'youtube',
+  },
 ];
 
 // ─── buildGenerateQuestionsPrompt tests ───────────────────────────────────────
@@ -59,7 +69,11 @@ describe('buildGenerateQuestionsPrompt', () => {
   });
 
   it('includes research focus when prompt is provided', () => {
-    const prompt = buildGenerateQuestionsPrompt('AI agents', mockSources, 'Focus on safety implications');
+    const prompt = buildGenerateQuestionsPrompt(
+      'AI agents',
+      mockSources,
+      'Focus on safety implications',
+    );
     expect(prompt).toContain('Research focus: Focus on safety implications');
     expect(prompt).toContain('Prioritize questions aligned with the research focus');
   });
@@ -75,7 +89,10 @@ describe('buildGenerateQuestionsPrompt', () => {
 
 describe('buildReformulateQueryPrompt', () => {
   it('includes the original topic', () => {
-    const prompt = buildReformulateQueryPrompt('AI safety in autonomous systems', 'No results found');
+    const prompt = buildReformulateQueryPrompt(
+      'AI safety in autonomous systems',
+      'No results found',
+    );
     expect(prompt).toContain('AI safety in autonomous systems');
   });
 
@@ -310,7 +327,8 @@ describe('parseDiscoveredUrlsFromOutput', () => {
   });
 
   it('extracts JSON array embedded in surrounding text', () => {
-    const output = 'Here are the sources:\n["https://example.com/a", "https://example.com/b"]\nDone!';
+    const output =
+      'Here are the sources:\n["https://example.com/a", "https://example.com/b"]\nDone!';
     const result = parseDiscoveredUrlsFromOutput(output);
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -376,7 +394,10 @@ describe('createResearchLLMAdapter', () => {
   });
 
   it('generateQuestions returns error when agent subprocess fails', async () => {
-    const failRunFn = async () => ({ ok: false as const, error: 'spawn failed', timedOut: false });
+    const failRunFn = async () => ({
+      ok: false as const,
+      failure: { kind: 'spawn' as const, backend: 'claude', detail: 'spawn failed' },
+    });
     const adapter = createResearchLLMAdapter('/tmp', 100, 120_000, failRunFn);
     const result = await adapter.generateQuestions('AI agents', []);
     expect(result.ok).toBe(false);
@@ -417,7 +438,10 @@ describe('Prompt quality', () => {
   });
 
   it('discoverSources prompt includes research focus when prompt is provided', () => {
-    const prompt = buildDiscoverSourcesPrompt('quantum computing', 'Focus on quantum error correction');
+    const prompt = buildDiscoverSourcesPrompt(
+      'quantum computing',
+      'Focus on quantum error correction',
+    );
     expect(prompt).toContain('Research focus: Focus on quantum error correction');
     expect(prompt).toContain('Prioritize sources aligned with the research focus');
   });

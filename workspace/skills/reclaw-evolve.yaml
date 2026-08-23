@@ -247,8 +247,8 @@ promptTemplate: |
   each candidate from Steps 3-4, check whether it was:
 
   - **Already proposed and approved/shipped** → drop (don't re-propose)
-  - **Already proposed and rejected** → drop, unless new evidence strengthens
-    the case substantially (note the prior rejection)
+  - **Already proposed and declined** → drop, unless new evidence strengthens
+    the case substantially (note the prior decline)
   - **Already proposed but no decision yet** → drop, status-quo applies
 
   Only surface NEW signal or strengthened signal.
@@ -371,8 +371,8 @@ promptTemplate: |
 
   Weekly transcript-mined proposals for reclaw skill/personality changes.
   Each note proposes specific edits for human review. Approved items are
-  applied manually and the note marked `status: shipped`. Rejected items
-  marked `status: rejected` so future runs skip re-proposing.
+  applied manually and the note marked `status: shipped`. Declined items
+  are marked `status: declined`; observed statuses are `pending | shipped | declined | all-clear`.
 
   ## Notes
   ```

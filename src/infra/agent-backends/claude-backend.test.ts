@@ -14,7 +14,10 @@ describe('claudeBackend', () => {
         '--output-format',
         'stream-json',
         '--include-partial-messages',
-        '--dangerously-skip-permissions',
+        '--permission-mode',
+        'dontAsk',
+        '--tools',
+        'Read,Write,Bash',
         '--allowedTools',
         'Read,Write,Bash',
       ]);
@@ -41,11 +44,68 @@ describe('claudeBackend', () => {
       expect(args[toolsIdx + 1]).toBe('Read,Write,Bash,recall,remember');
     });
 
-    it('omits --allowedTools flag when allowedTools is empty', () => {
+    it('disables all tools and permission prompts when allowedTools is empty', () => {
       const args = claudeBackend.buildArgs({ allowedTools: [] });
 
-      expect(args).toContain('--dangerously-skip-permissions');
+      expect(args).toContain('--permission-mode');
+      expect(args).toContain('dontAsk');
+      expect(args).not.toContain('--dangerously-skip-permissions');
       expect(args).not.toContain('--allowedTools');
+      expect(args.slice(args.indexOf('--tools'), args.indexOf('--tools') + 2)).toEqual([
+        '--tools',
+        '',
+      ]);
+    });
+
+    it('limits Claude built-ins separately from extension and alternate-backend tools', () => {
+      const args = claudeBackend.buildArgs({
+        allowedTools: ['Read', 'Bash', 'subagent', 'recall', 'remember'],
+      });
+
+      expect(args.slice(args.indexOf('--tools'), args.indexOf('--tools') + 2)).toEqual([
+        '--tools',
+        'Read,Bash',
+      ]);
+      expect(
+        args.slice(args.indexOf('--allowedTools'), args.indexOf('--allowedTools') + 2),
+      ).toEqual(['--allowedTools', 'Read,Bash,subagent,recall,remember']);
+    });
+
+    it('enables the native editing, skill, and delegation tools used by interactive chat', () => {
+      const args = claudeBackend.buildArgs({
+        allowedTools: [
+          'Read',
+          'Write',
+          'Edit',
+          'Bash',
+          'Glob',
+          'Grep',
+          'Task',
+          'Skill',
+          'TodoWrite',
+          'NotebookEdit',
+          'subagent',
+        ],
+      });
+
+      expect(args.slice(args.indexOf('--tools'), args.indexOf('--tools') + 2)).toEqual([
+        '--tools',
+        'Read,Write,Edit,Bash,Glob,Grep,Task,Skill,TodoWrite,NotebookEdit',
+      ]);
+    });
+
+    it('enables a built-in family once while preserving selectors for permission checks', () => {
+      const args = claudeBackend.buildArgs({
+        allowedTools: ['WebSearch(*)', 'WebSearch', 'Bash(git:*)'],
+      });
+
+      expect(args.slice(args.indexOf('--tools'), args.indexOf('--tools') + 2)).toEqual([
+        '--tools',
+        'WebSearch,Bash',
+      ]);
+      expect(
+        args.slice(args.indexOf('--allowedTools'), args.indexOf('--allowedTools') + 2),
+      ).toEqual(['--allowedTools', 'WebSearch(*),WebSearch,Bash(git:*)']);
     });
   });
 
@@ -85,14 +145,22 @@ describe('claudeBackend', () => {
 
   describe('parseResult', () => {
     it('extracts text from result line when no streaming events present (fallback)', () => {
-      const rawOutput = JSON.stringify({ type: 'result', result: 'Hello world', session_id: 'sess-1' });
+      const rawOutput = JSON.stringify({
+        type: 'result',
+        result: 'Hello world',
+        session_id: 'sess-1',
+      });
 
       const { text } = claudeBackend.parseResult(rawOutput);
       expect(text).toBe('Hello world');
     });
 
     it('extracts sessionId from result line', () => {
-      const rawOutput = JSON.stringify({ type: 'result', result: 'Hello', session_id: 'sess-abc-123' });
+      const rawOutput = JSON.stringify({
+        type: 'result',
+        result: 'Hello',
+        session_id: 'sess-abc-123',
+      });
 
       const { sessionId } = claudeBackend.parseResult(rawOutput);
       expect(sessionId).toBe('sess-abc-123');
@@ -101,17 +169,60 @@ describe('claudeBackend', () => {
     it('returns only LAST message text when multiple messages exist (tool use)', () => {
       // Simulates: message 1 has "Let me check..." (intermediate), message 2 has "Done." (final)
       const rawOutput = [
-        JSON.stringify({ type: 'stream_event', event: { type: 'message_start', message: { id: 'msg1', role: 'assistant' } } }),
-        JSON.stringify({ type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'thinking' } } }),
-        JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'I need to check...' } } }),
-        JSON.stringify({ type: 'stream_event', event: { type: 'content_block_start', index: 1, content_block: { type: 'text' } } }),
-        JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'Let me check the config...' } } }),
-        JSON.stringify({ type: 'stream_event', event: { type: 'content_block_start', index: 2, content_block: { type: 'tool_use' } } }),
+        JSON.stringify({
+          type: 'stream_event',
+          event: { type: 'message_start', message: { id: 'msg1', role: 'assistant' } },
+        }),
+        JSON.stringify({
+          type: 'stream_event',
+          event: { type: 'content_block_start', index: 0, content_block: { type: 'thinking' } },
+        }),
+        JSON.stringify({
+          type: 'stream_event',
+          event: {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'thinking_delta', thinking: 'I need to check...' },
+          },
+        }),
+        JSON.stringify({
+          type: 'stream_event',
+          event: { type: 'content_block_start', index: 1, content_block: { type: 'text' } },
+        }),
+        JSON.stringify({
+          type: 'stream_event',
+          event: {
+            type: 'content_block_delta',
+            index: 1,
+            delta: { type: 'text_delta', text: 'Let me check the config...' },
+          },
+        }),
+        JSON.stringify({
+          type: 'stream_event',
+          event: { type: 'content_block_start', index: 2, content_block: { type: 'tool_use' } },
+        }),
         // Tool result comes back, then new message:
-        JSON.stringify({ type: 'stream_event', event: { type: 'message_start', message: { id: 'msg2', role: 'assistant' } } }),
-        JSON.stringify({ type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'text' } } }),
-        JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Done. Here is your answer.' } } }),
-        JSON.stringify({ type: 'result', result: 'Let me check the config...\n\nDone. Here is your answer.', session_id: 'sess-xyz' }),
+        JSON.stringify({
+          type: 'stream_event',
+          event: { type: 'message_start', message: { id: 'msg2', role: 'assistant' } },
+        }),
+        JSON.stringify({
+          type: 'stream_event',
+          event: { type: 'content_block_start', index: 0, content_block: { type: 'text' } },
+        }),
+        JSON.stringify({
+          type: 'stream_event',
+          event: {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'text_delta', text: 'Done. Here is your answer.' },
+          },
+        }),
+        JSON.stringify({
+          type: 'result',
+          result: 'Let me check the config...\n\nDone. Here is your answer.',
+          session_id: 'sess-xyz',
+        }),
       ].join('\n');
 
       const { text, sessionId } = claudeBackend.parseResult(rawOutput);
@@ -122,16 +233,57 @@ describe('claudeBackend', () => {
     it('returns only LAST message text with multiple tool-use rounds', () => {
       const rawOutput = [
         // Message 1: intermediate
-        JSON.stringify({ type: 'stream_event', event: { type: 'message_start', message: { id: 'msg1', role: 'assistant' } } }),
-        JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Step 1...' } } }),
+        JSON.stringify({
+          type: 'stream_event',
+          event: { type: 'message_start', message: { id: 'msg1', role: 'assistant' } },
+        }),
+        JSON.stringify({
+          type: 'stream_event',
+          event: {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'text_delta', text: 'Step 1...' },
+          },
+        }),
         // Message 2: intermediate
-        JSON.stringify({ type: 'stream_event', event: { type: 'message_start', message: { id: 'msg2', role: 'assistant' } } }),
-        JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Step 2...' } } }),
+        JSON.stringify({
+          type: 'stream_event',
+          event: { type: 'message_start', message: { id: 'msg2', role: 'assistant' } },
+        }),
+        JSON.stringify({
+          type: 'stream_event',
+          event: {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'text_delta', text: 'Step 2...' },
+          },
+        }),
         // Message 3: final
-        JSON.stringify({ type: 'stream_event', event: { type: 'message_start', message: { id: 'msg3', role: 'assistant' } } }),
-        JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Final ' } } }),
-        JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'answer.' } } }),
-        JSON.stringify({ type: 'result', result: 'Step 1...\nStep 2...\nFinal answer.', session_id: 'sess-multi' }),
+        JSON.stringify({
+          type: 'stream_event',
+          event: { type: 'message_start', message: { id: 'msg3', role: 'assistant' } },
+        }),
+        JSON.stringify({
+          type: 'stream_event',
+          event: {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'text_delta', text: 'Final ' },
+          },
+        }),
+        JSON.stringify({
+          type: 'stream_event',
+          event: {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'text_delta', text: 'answer.' },
+          },
+        }),
+        JSON.stringify({
+          type: 'result',
+          result: 'Step 1...\nStep 2...\nFinal answer.',
+          session_id: 'sess-multi',
+        }),
       ].join('\n');
 
       const { text } = claudeBackend.parseResult(rawOutput);
@@ -140,11 +292,34 @@ describe('claudeBackend', () => {
 
     it('handles single message correctly (no tool use)', () => {
       const rawOutput = [
-        JSON.stringify({ type: 'stream_event', event: { type: 'message_start', message: { id: 'msg1', role: 'assistant' } } }),
-        JSON.stringify({ type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'thinking' } } }),
-        JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'thinking...' } } }),
-        JSON.stringify({ type: 'stream_event', event: { type: 'content_block_start', index: 1, content_block: { type: 'text' } } }),
-        JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'Here is the answer.' } } }),
+        JSON.stringify({
+          type: 'stream_event',
+          event: { type: 'message_start', message: { id: 'msg1', role: 'assistant' } },
+        }),
+        JSON.stringify({
+          type: 'stream_event',
+          event: { type: 'content_block_start', index: 0, content_block: { type: 'thinking' } },
+        }),
+        JSON.stringify({
+          type: 'stream_event',
+          event: {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'thinking_delta', thinking: 'thinking...' },
+          },
+        }),
+        JSON.stringify({
+          type: 'stream_event',
+          event: { type: 'content_block_start', index: 1, content_block: { type: 'text' } },
+        }),
+        JSON.stringify({
+          type: 'stream_event',
+          event: {
+            type: 'content_block_delta',
+            index: 1,
+            delta: { type: 'text_delta', text: 'Here is the answer.' },
+          },
+        }),
         JSON.stringify({ type: 'result', result: 'Here is the answer.', session_id: 'sess-1' }),
       ].join('\n');
 
@@ -169,11 +344,7 @@ describe('claudeBackend', () => {
     });
 
     it('returns nulls when no result line exists', () => {
-      const rawOutput = [
-        '{"type":"stream_event","event":{}}',
-        'some random text',
-        '',
-      ].join('\n');
+      const rawOutput = ['{"type":"stream_event","event":{}}', 'some random text', ''].join('\n');
 
       const { text, sessionId } = claudeBackend.parseResult(rawOutput);
       expect(text).toBeNull();
@@ -182,9 +353,26 @@ describe('claudeBackend', () => {
 
     it('ignores thinking deltas when accumulating per-message text', () => {
       const rawOutput = [
-        JSON.stringify({ type: 'stream_event', event: { type: 'message_start', message: { id: 'msg1', role: 'assistant' } } }),
-        JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'internal reasoning' } } }),
-        JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'visible response' } } }),
+        JSON.stringify({
+          type: 'stream_event',
+          event: { type: 'message_start', message: { id: 'msg1', role: 'assistant' } },
+        }),
+        JSON.stringify({
+          type: 'stream_event',
+          event: {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'thinking_delta', thinking: 'internal reasoning' },
+          },
+        }),
+        JSON.stringify({
+          type: 'stream_event',
+          event: {
+            type: 'content_block_delta',
+            index: 1,
+            delta: { type: 'text_delta', text: 'visible response' },
+          },
+        }),
         JSON.stringify({ type: 'result', result: 'visible response', session_id: 'sess-1' }),
       ].join('\n');
 
@@ -194,11 +382,31 @@ describe('claudeBackend', () => {
 
     it('returns null text when last message has no text content', () => {
       const rawOutput = [
-        JSON.stringify({ type: 'stream_event', event: { type: 'message_start', message: { id: 'msg1', role: 'assistant' } } }),
-        JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'intermediate' } } }),
+        JSON.stringify({
+          type: 'stream_event',
+          event: { type: 'message_start', message: { id: 'msg1', role: 'assistant' } },
+        }),
+        JSON.stringify({
+          type: 'stream_event',
+          event: {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'text_delta', text: 'intermediate' },
+          },
+        }),
         // Second message with only thinking (edge case)
-        JSON.stringify({ type: 'stream_event', event: { type: 'message_start', message: { id: 'msg2', role: 'assistant' } } }),
-        JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'hmm' } } }),
+        JSON.stringify({
+          type: 'stream_event',
+          event: { type: 'message_start', message: { id: 'msg2', role: 'assistant' } },
+        }),
+        JSON.stringify({
+          type: 'stream_event',
+          event: {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'thinking_delta', thinking: 'hmm' },
+          },
+        }),
         JSON.stringify({ type: 'result', result: 'intermediate', session_id: 'sess-1' }),
       ].join('\n');
 

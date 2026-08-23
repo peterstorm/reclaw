@@ -11,9 +11,15 @@
 
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
-import type { VaultNote } from '../core/vault-content.js';
-import { ok, err } from '../core/types.js';
+import { err, ok } from '../core/types.js';
 import type { Result } from '../core/types.js';
+import type { VaultNote } from '../core/vault-content.js';
+import { type VaultFilePath, parseVaultRelativePath } from '../core/vault-path.js';
+import {
+  type VaultWorkspace,
+  createVaultWorkspace,
+  formatVaultPathError,
+} from './vault-workspace.js';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -46,35 +52,43 @@ export type VaultWriterAdapter = {
   readonly appendToNote: (
     absolutePath: string,
     content: string,
+    basePath: string,
   ) => Promise<Result<void, string>>;
 };
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
-/**
- * Write a single VaultNote to the filesystem.
- * Creates parent directories recursively if they don't exist.
- * Overwrites any existing file (idempotent — safe to retry).
- */
-async function writeVaultNote(note: VaultNote, basePath: string): Promise<void> {
-  const absolutePath = path.join(basePath, note.relativePath);
-  const dir = path.dirname(absolutePath);
+type PreparedVaultNote = {
+  readonly note: VaultNote;
+  readonly absolutePath: VaultFilePath;
+};
 
-  // Create directory tree if needed
-  await fs.mkdir(dir, { recursive: true });
-
-  // Write file content (overwrites if exists — idempotent for retries)
-  await fs.writeFile(absolutePath, note.content, 'utf8');
+/** Write one already-preflighted note. */
+async function writeVaultNote(prepared: PreparedVaultNote): Promise<void> {
+  await fs.mkdir(path.dirname(prepared.absolutePath), { recursive: true });
+  await fs.writeFile(prepared.absolutePath, prepared.note.content, 'utf8');
 }
 
-/**
- * Find the hub note (_index.md) in a list of vault notes and return
- * its absolute path.
- */
-function findHubPath(notes: readonly VaultNote[], basePath: string): string | null {
-  const hubNote = notes.find((n) => n.relativePath.endsWith('_index.md'));
-  if (!hubNote) return null;
-  return path.join(basePath, hubNote.relativePath);
+/** Parse and canonically contain every note before the first write occurs. */
+async function prepareVaultNotes(
+  notes: readonly VaultNote[],
+  workspace: VaultWorkspace,
+): Promise<Result<readonly PreparedVaultNote[], string>> {
+  const prepared: PreparedVaultNote[] = [];
+  for (const note of notes) {
+    const relativePath = parseVaultRelativePath(note.relativePath);
+    if (!relativePath.ok) {
+      return err(`Invalid vault note path "${note.relativePath}": ${relativePath.error}`);
+    }
+    const absolutePath = await workspace.resolveFileForWrite(relativePath.value);
+    if (!absolutePath.ok) return err(formatVaultPathError(absolutePath.error));
+    prepared.push({ note, absolutePath: absolutePath.value });
+  }
+  return ok(prepared);
+}
+
+function findHubPath(notes: readonly PreparedVaultNote[]): VaultFilePath | null {
+  return notes.find((entry) => entry.note.relativePath.endsWith('_index.md'))?.absolutePath ?? null;
 }
 
 /**
@@ -82,8 +96,7 @@ function findHubPath(notes: readonly VaultNote[], basePath: string): string | nu
  * Returns the number of errors on the last attempt, or throws if exhausted.
  */
 async function writeNotesWithRetry(
-  notes: readonly VaultNote[],
-  basePath: string,
+  notes: readonly PreparedVaultNote[],
   maxRetries: number,
 ): Promise<void> {
   let lastError: unknown;
@@ -93,9 +106,9 @@ async function writeNotesWithRetry(
 
     for (const note of notes) {
       try {
-        await writeVaultNote(note, basePath);
+        await writeVaultNote(note);
       } catch (e) {
-        errors.push({ note, error: e });
+        errors.push({ note: note.note, error: e });
       }
     }
 
@@ -122,14 +135,6 @@ async function writeNotesWithRetry(
 /**
  * Create a VaultWriterAdapter that writes notes to the real filesystem.
  *
- * Usage:
- *   const writer = createVaultWriter();
- *   const result = await writer.writeNotes(notes, '/path/to/vault');
- *   if (result.ok) { console.log('Hub at:', result.value); }
- *   else {
- *     // Fall back to emergency note
- *     const emergency = await writer.writeEmergencyNote(emergencyNote, basePath);
- *   }
  */
 export function createVaultWriter(): VaultWriterAdapter {
   const writeNotes = async (
@@ -140,14 +145,20 @@ export function createVaultWriter(): VaultWriterAdapter {
       return err('writeNotes called with empty notes array');
     }
 
-    // Guard: verify hub note exists BEFORE any I/O
-    const hubPath = findHubPath(notes, basePath);
-    if (!hubPath) {
+    // Guard: verify hub note exists BEFORE any I/O.
+    if (!notes.some((note) => note.relativePath.endsWith('_index.md'))) {
       return err('No hub note (_index.md) found in notes array');
     }
 
+    const workspace = await createVaultWorkspace(basePath);
+    if (!workspace.ok) return err(formatVaultPathError(workspace.error));
+    const prepared = await prepareVaultNotes(notes, workspace.value);
+    if (!prepared.ok) return prepared;
+    const hubPath = findHubPath(prepared.value);
+    if (hubPath === null) return err('No hub note (_index.md) found in prepared notes');
+
     try {
-      await writeNotesWithRetry(notes, basePath, MAX_WRITE_RETRIES);
+      await writeNotesWithRetry(prepared.value, MAX_WRITE_RETRIES);
       return ok(hubPath);
     } catch (e) {
       const errorMsg = e instanceof Error ? e.message : String(e);
@@ -159,10 +170,16 @@ export function createVaultWriter(): VaultWriterAdapter {
     note: VaultNote,
     basePath: string,
   ): Promise<Result<string, string>> => {
+    const workspace = await createVaultWorkspace(basePath);
+    if (!workspace.ok) return err(formatVaultPathError(workspace.error));
+    const prepared = await prepareVaultNotes([note], workspace.value);
+    if (!prepared.ok) return prepared;
+    const target = prepared.value[0];
+    if (target === undefined) return err('Emergency note preparation produced no target');
+
     try {
-      await writeVaultNote(note, basePath);
-      const absolutePath = path.join(basePath, note.relativePath);
-      return ok(absolutePath);
+      await writeVaultNote(target);
+      return ok(target.absolutePath);
     } catch (e) {
       const errorMsg = e instanceof Error ? e.message : String(e);
       return err(`Emergency note write failed: ${errorMsg}`);
@@ -172,9 +189,15 @@ export function createVaultWriter(): VaultWriterAdapter {
   const appendToNote = async (
     absolutePath: string,
     content: string,
+    basePath: string,
   ): Promise<Result<void, string>> => {
+    const workspace = await createVaultWorkspace(basePath);
+    if (!workspace.ok) return err(formatVaultPathError(workspace.error));
+    const target = await workspace.value.resolveExistingAbsoluteFile(absolutePath);
+    if (!target.ok) return err(formatVaultPathError(target.error));
+
     try {
-      await fs.appendFile(absolutePath, content, 'utf8');
+      await fs.appendFile(target.value, content, 'utf8');
       return ok(undefined);
     } catch (e) {
       const errorMsg = e instanceof Error ? e.message : String(e);

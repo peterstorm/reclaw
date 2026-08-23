@@ -1,5 +1,33 @@
 import { describe, expect, it } from 'vitest';
-import { generateTopicSlug } from './topic-slug.js';
+import { generateTopicSlug, parseTopicSlugReference } from './topic-slug.js';
+
+// ─── parseTopicSlugReference ─────────────────────────────────────────────────
+
+describe('parseTopicSlugReference', () => {
+  it.each([
+    ['my-topic', 'my-topic'],
+    ['reclaw/research/my-topic', 'my-topic'],
+    ['reclaw/research/my-topic/_index', 'my-topic'],
+    ['reclaw\\research\\my-topic\\_index.md', 'my-topic'],
+  ])('parses %j as %j', (raw, expected) => {
+    expect(parseTopicSlugReference(raw)).toEqual({ ok: true, value: expected });
+  });
+
+  it.each([
+    '',
+    '../outside',
+    'reclaw/research/../../outside',
+    '/reclaw/research/topic',
+    'nested/topic',
+    'Uppercase',
+    'two--hyphens',
+    '-leading',
+    'trailing-',
+    'a'.repeat(61),
+  ])('rejects unsafe or non-canonical topic reference %j', (raw) => {
+    expect(parseTopicSlugReference(raw).ok).toBe(false);
+  });
+});
 
 // ─── generateTopicSlug ────────────────────────────────────────────────────────
 
@@ -56,7 +84,7 @@ describe('generateTopicSlug', () => {
 
   it('does not add trailing hyphen after truncation', () => {
     // 58 'a's + space + 'b' = 60 chars before truncation produces a hyphen at position 59
-    const topic = 'a'.repeat(58) + ' b';
+    const topic = `${'a'.repeat(58)} b`;
     const slug = generateTopicSlug(topic);
     expect(slug.endsWith('-')).toBe(false);
     expect(slug.length).toBeLessThanOrEqual(60);

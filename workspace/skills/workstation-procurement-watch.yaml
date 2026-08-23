@@ -1,5 +1,5 @@
 name: Workstation Procurement Watch
-schedule: "45 9 * * *"  # Daily 09:45. Two distinct modes, see "Run mode": Monday = full ~55-source sweep + report; other days = targeted watch of the cached list + the 10 price targets only. The daily run is deliberately cheap — running the full sweep daily cannot fit the 900s timeout.
+schedule: "45 9 * * *"  # Daily 09:45. Two distinct modes, see "Run mode": Monday = full ~55-source sweep + report; other days = targeted watch of the cached list + the 14 price targets only. The daily run is deliberately cheap — running the full sweep daily cannot fit the 900s timeout.
 permissionProfile: scheduled
 validityWindowMinutes: 240
 timeout: 900
@@ -8,7 +8,7 @@ promptTemplate: |
 
   Today is {{dayOfWeek}}, {{date}}.
 
-  You are running the Workstation Procurement Watch skill — a continuous market intelligence and deal-finding system for identifying the cheapest possible upgrade path from the user's current workstation to a quiet, reliable **4× RTX 6000 PRO Blackwell** AI workstation.
+  You are running the Workstation Procurement Watch skill — a continuous market intelligence and deal-finding system for identifying the cheapest possible upgrade path from the user's current workstation to either a quiet, reliable **4× NVIDIA RTX PRO 6000 Blackwell-family** AI workstation or a **four-node NVIDIA GB10 compact AI cluster**.
 
   This is not a listing notifier. Behave like an investment analyst: maintain historical prices, compare alternatives, identify genuine bargains, and recommend the best purchase strategy over time.
 
@@ -39,18 +39,19 @@ promptTemplate: |
   ## Current hardware baseline
 
   Current workstation:
-  - **2 × NVIDIA RTX 6000 PRO Blackwell Workstation Edition**
-  - **Ryzen 9 9950X3D**
+  - **2 × NVIDIA RTX PRO 6000 Blackwell Workstation Edition**
+  - **Ryzen 9 9950X**
   - **ASUS ProArt X870**
   - **96 GB DDR5**
   - **Seasonic 1600W Titanium**
   - Fast NVMe SSDs
 
-  Long-term goal:
-  - **4 × RTX 6000 PRO Blackwell**
-  - Quiet tower workstation
-  - Native PCIe x16 connectivity where realistically possible
-  - Reliable 24/7 local AI workstation
+  Long-term goals:
+  - **4 × NVIDIA RTX PRO 6000 Blackwell-family GPUs**, with exact variant compatibility evaluated rather than treating the family as interchangeable
+  - **4 compact NVIDIA GB10 systems total**, acquired over time as NVIDIA DGX Spark, ASUS Ascent GX10, or a deliberately evaluated mix
+  - Quiet tower workstation or quiet four-node cluster
+  - Native PCIe x16 connectivity where realistically possible for the workstation path; validated high-speed interconnects for the compact-system path
+  - Reliable 24/7 local AI operation
   - Lowest total cost of ownership, not just lowest sticker price
 
   ## Core thesis
@@ -61,6 +62,7 @@ promptTemplate: |
   - Threadripper PRO / WRX90 builds
   - EPYC workstation/server builds
   - complete workstations
+  - NVIDIA DGX Spark and ASUS Ascent GX10 compact GB10 systems, individually and in multi-unit lots
   - boutique builders
   - enterprise refurbishers
   - enterprise liquidation / auction opportunities
@@ -90,8 +92,25 @@ promptTemplate: |
   - source marketplace/vendor
   - direct URL
   - status: `new`, `seen`, `sold`, `removed`, `below_target`, `bargain_candidate`, `blocked`
+  - for RTX PRO 6000 Blackwell listings: `gpuVariant` (`workstation`, `max_q_workstation`, `server`, or `unknown`), `gpuMemoryGb`, `cooling` (`double_flow_through`, `active`, `passive`, or `unknown`), `tgpWattsMin`, `tgpWattsMax`, `formFactor`, `powerConnector`, `partNumber`, and `variantConfidence` (`high`, `medium`, or `low`)
 
-  Compute per normalized item where sample size permits:
+  RTX PRO 6000 Blackwell normalized keys are variant-specific:
+  - `gpu-rtx-pro-6000-blackwell-workstation`
+  - `gpu-rtx-pro-6000-blackwell-max-q`
+  - `gpu-rtx-pro-6000-blackwell-server`
+  - `gpu-rtx-pro-6000-blackwell-unknown`
+
+  Compact GB10 system normalized key prefixes are model-specific:
+  - `system-nvidia-dgx-spark`
+  - `system-asus-ascent-gx10`
+
+  For compact-system listings also store `systemModel` (`nvidia_dgx_spark`, `asus_ascent_gx10`, or `unknown`), `configurationCohortKey`, `unifiedMemoryGb`, `storageTb`, `networking`, `quantityAvailable`, `unitPriceDkk`, `lotPriceDkk`, `landedUnitPriceDkk`, and `retailBaselineDkk`. Derive a stable cohort key from model plus material configuration, for example `system-nvidia-dgx-spark-128gb-4tb-cx7`; compute averages on that cohort key, never on the bare model prefix. Preserve each storage/configuration as a distinct comparison cohort where it materially changes price.
+
+  The authoritative acquisition ledger is the `Compact GB10 Acquisition Ledger` section in `~/dev/notes/remotevault/research/workstation-procurement/MOC.md`. It contains `target_quantity`, `acquired_units`, and derived `remaining_quantity`. Only user-confirmed acquisitions may change `acquired_units`; never infer ownership from a listing becoming sold/removed. At cache top level maintain `compactSystemGoal` as a derived mirror of that vault ledger for fast targeted-watch access. If cache and vault disagree, the vault ledger wins and repairs the cache. Track progress against this **four-system total acquisition goal**. A mixed DGX Spark/GX10 set is allowed only after software, networking, and operational compatibility are evaluated explicitly.
+
+  Reclassify older generic cache entries from their raw title/specs when evidence is explicit. Never infer Workstation Edition from the bare family name. Preserve ambiguous entries under `unknown`, and exclude them from variant price averages until verified. Never blend RTX PRO 6000 Blackwell variants with each other or with RTX 6000 Ada, RTX A6000, or Quadro RTX 6000. Never blend DGX Spark and ASUS Ascent GX10 price populations, storage configurations, accessories, support packages, or bare GB10 development boards.
+
+  Compute per normalized item—and per compact-system `configurationCohortKey`—where sample size permits:
   - 7-day average
   - 30-day average
   - 90-day average
@@ -118,11 +137,17 @@ promptTemplate: |
   | Dell Precision 7875 | <= 30,000 DKK |
   | ThinkStation P8 | <= 25,000 DKK |
   | EPYC CPU + motherboard | <= 15,000 DKK |
-  | RTX 6000 PRO Blackwell | >= 20% below observed historical average |
+  | RTX PRO 6000 Blackwell Workstation Edition | >= 20% below that exact variant's observed historical average |
+  | RTX PRO 6000 Blackwell Max-Q Workstation Edition | >= 20% below that exact variant's observed historical average |
+  | RTX PRO 6000 Blackwell Server Edition | >= 20% below that exact variant's observed historical average, with passive-cooling deployment cost included |
+  | NVIDIA DGX Spark | Single unit at >= 20% below that exact configuration's verified current EU retail baseline or observed 30-day average; multi-unit lot filling the remaining four-system goal at >= 15% below baseline per landed unit |
+  | ASUS Ascent GX10 | Single unit at >= 20% below that exact configuration's verified current EU retail baseline or observed 30-day average; multi-unit lot filling the remaining four-system goal at >= 15% below baseline per landed unit |
+
+  Use a VAT-inclusive Danish price when available; otherwise convert a verified VAT-inclusive EU retail price to DKK and record the source/date. Do not invent a baseline from search snippets. If neither a credible retail baseline nor enough historical samples exists, collect the listing as price history but do not claim a threshold hit.
 
   If a threshold is hit, the final Telegram message must start with:
   `🚨 Workstation price target hit`
-  and include item, price, threshold/average comparison, seller/source, direct URL, confidence, and recommended action.
+  and include item, configuration, available quantity, landed unit price, lot/four-unit total where relevant, threshold/average comparison, seller/source, direct URL, confidence, and recommended action.
 
   ## Step 0 — Previous context
 
@@ -132,17 +157,21 @@ promptTemplate: |
   /recall "Threadripper PRO WRX90 7955WX 7965WX 9955WX 9965WX 9975WX"
   /recall "EPYC workstation SP5 motherboard bundle"
   /recall "Dell Precision 7875 ThinkStation P8 HP Z6 G5 A"
-  /recall "RTX 6000 PRO Blackwell RTX 6000 Ada L40S H100 H200 B200"
+  /recall "RTX PRO 6000 Blackwell Workstation Max-Q Server Edition RTX 6000 Ada L40S H100 H200 B200"
+  /recall "NVIDIA DGX Spark Project DIGITS ASUS Ascent GX10 GB10 four node cluster"
   /recall "enterprise liquidation AI workstation auction"
   /recall "PCIe lanes PSU case 4 GPU workstation"
   /recall "boutique AI workstation builders refurbishers"
   ```
 
-  Read prior vault notes and listing cache:
+  Read prior vault notes, the authoritative compact-system acquisition ledger, and listing cache:
   ```
   ls ~/dev/notes/remotevault/research/workstation-procurement/ 2>/dev/null | sort | tail -5
+  test -f ~/dev/notes/remotevault/research/workstation-procurement/MOC.md && cat ~/dev/notes/remotevault/research/workstation-procurement/MOC.md
   test -f ~/.cache/reclaw/workstation-procurement.json && jq '.' ~/.cache/reclaw/workstation-procurement.json
   ```
+
+  Reconcile `compactSystemGoal` from the vault ledger before calculating remaining quantity. Cache loss must not reset acquisition history.
 
   ## Step T — Targeted watch (TARGETED WATCH days only; skip on Monday)
 
@@ -158,8 +187,10 @@ promptTemplate: |
      most recently seen. If more than 25 qualify, say so in the coverage line.
 
   2. **Check the immediate price targets.** For each row in the "Immediate price
-     targets" table, run one targeted search for that item. These ten thresholds are
-     the same-day promise of this skill; nothing else is.
+     targets" table, run one targeted search for that item. These fourteen thresholds are
+     the same-day promise of this skill; nothing else is. The three RTX PRO 6000
+     Blackwell variants and the two compact GB10 system models are separate searches
+     and separate price populations.
 
   3. **Nothing else.** No marketplace enumeration, no builder sweep, no forum
      reading, no vendor firmware feeds, no liquidation crawl, no roadmap scan.
@@ -259,6 +290,9 @@ promptTemplate: |
   - AI workstation
   - deep learning workstation
   - GPU workstation
+  - NVIDIA DGX Spark / Project DIGITS
+  - ASUS Ascent GX10 / ASUS GX10
+  - GB10 compact AI system lots
 
   Specifically monitor:
   - Dell Precision 7875
@@ -270,8 +304,10 @@ promptTemplate: |
   - Lambda
   - Comino
   - Boston Limited
+  - NVIDIA DGX Spark
+  - ASUS Ascent GX10
 
-  Compare complete workstation pricing against buying components individually. Include estimated resale value of unwanted CPUs/GPUs/RAM if a complete system is bought as a donor platform.
+  Compare complete workstation pricing against buying components individually. Include estimated resale value of unwanted CPUs/GPUs/RAM if a complete system is bought as a donor platform. For compact systems, compare one-unit and four-unit landed cost, and prefer sellers that can credibly supply enough identical units to reduce cluster heterogeneity.
 
   ## Step 5 — Component monitoring (FULL SWEEP / Monday only)
 
@@ -301,14 +337,24 @@ promptTemplate: |
   Track availability, price trend, BIOS revisions, bundled RAM, and bundled CPUs.
 
   **GPUs:**
-  - RTX 6000 PRO Blackwell
+  - NVIDIA RTX PRO 6000 Blackwell Workstation Edition — 96 GB, 600W, 5.4×12-inch dual-slot, double flow-through cooling; direct match for the two current GPUs
+  - NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition — 96 GB, 300W, 4.4×10.5-inch dual-slot, active cooling; evaluate as a quieter/lower-power four-GPU alternative, not as a price-equivalent Workstation Edition
+  - NVIDIA RTX PRO 6000 Blackwell Server Edition — 96 GB, configurable 400-600W, 4.4×10.5-inch dual-slot, passive cooling; only viable with validated high-static-pressure front-to-back airflow
   - RTX 6000 Ada
   - L40S
   - H100 PCIe
   - H200
   - B200
 
+  Search each Blackwell variant independently using the official `RTX PRO 6000` ordering plus common seller aliases such as `RTX 6000 PRO`, `Blackwell Max-Q`, `MaxQ`, `Workstation Edition`, and `Server Edition`. Verify the exact variant from product text, dimensions, cooling design, TGP, part number, and photos where possible. A bare `RTX PRO 6000 Blackwell` title remains `unknown`; do not silently classify it. Use NVIDIA's family page as the canonical specification source: `https://www.nvidia.com/en-us/products/workstations/professional-desktop-gpus/rtx-pro-6000-family/`.
+
   Watch used prices, liquidation sales, engineering firms selling hardware, AI startups shutting down, render farms, and universities.
+
+  **Compact NVIDIA GB10 systems (separate price populations):**
+  - NVIDIA DGX Spark — include the former `Project DIGITS` name only as a search alias; verify the finished DGX Spark system rather than assuming every DIGITS/GB10 result is equivalent
+  - ASUS Ascent GX10 — include `ASUS GX10` and `Ascent GX10` aliases; verify exact storage, memory, networking, warranty region, and bundled software/support
+
+  Search official NVIDIA/ASUS stores, Danish/EU retailers, system integrators, open-box/refurbished stock, business liquidations, and multi-unit lots. Record available quantity even for a single-unit listing. Normalize prices per landed unit and calculate the cost to reach four systems. Exclude accessories, docks, support renewals, reservation deposits, empty enclosures, bare GB10 boards, and other similarly named ASUS products. Keep each exact model/configuration separate; do not let a cheaper storage configuration distort another configuration's average.
 
   **ECC memory:**
   - 128 GB DDR5 ECC RDIMM
@@ -346,7 +392,8 @@ promptTemplate: |
 
   Watch for:
   - 4 GPU builds
-  - RTX 6000 PRO builds
+  - RTX PRO 6000 Blackwell Workstation, Max-Q, and Server Edition builds
+  - four-node DGX Spark / ASUS Ascent GX10 clusters, including mixed-model interoperability
   - WRX90 builds
   - EPYC builds
   - cooling and airflow reports
@@ -379,6 +426,7 @@ promptTemplate: |
   - PCIe bifurcation / lane-topology fixes
   - GPU spacing / 4-GPU compatibility fixes
   - AI workstation announcements
+  - DGX Spark / ASUS Ascent GX10 firmware, software-stack, interconnect, availability, and successor changes
   - quiet workstation chassis/PSU announcements
 
   Use direct vendor support/news pages where possible. For each meaningful change, record vendor, product, version/date, link, and likely impact on WRX90/EPYC/4× GPU build risk.
@@ -399,7 +447,7 @@ promptTemplate: |
   - liquidation sales
   - bankruptcy/administration notices
   - surplus disposal portals
-  - lots containing Dell Precision, ThinkStation P-series, HP Z, Supermicro GPU workstations/servers, WRX80/WRX90, EPYC/SP5, RTX A6000/6000 Ada/RTX 6000 PRO systems
+  - lots containing Dell Precision, ThinkStation P-series, HP Z, Supermicro GPU workstations/servers, WRX80/WRX90, EPYC/SP5, RTX A6000/6000 Ada, any exact RTX PRO 6000 Blackwell variant, NVIDIA DGX Spark, or ASUS Ascent GX10
 
   Check auction/liquidation sources where possible:
   - Lauritz / Auktionshuset and Nordic auction houses
@@ -422,12 +470,13 @@ promptTemplate: |
   - new Threadripper PRO generation announced or starts shipping
   - new EPYC generation/platform announced or starts shipping
   - major OEM refresh of Dell Precision / ThinkStation / HP Z / Supermicro workstations
+  - a GB10 compact-system successor or material DGX Spark / ASUS Ascent GX10 refresh is announced or starts shipping
 
   Roadmap-triggered depreciation is a core thesis: previous-generation workstations and CPUs often drop fastest right after successor availability becomes credible. This timing can save tens of thousands of kroner.
 
   ## Step 10 — PCIe lane / PSU / case analysis (FULL SWEEP / Monday only)
 
-  Track discoveries that affect whether a build can actually support a quiet, reliable 4× RTX 6000 PRO Blackwell setup:
+  Track discoveries that affect whether a build can actually support a quiet, reliable 4× RTX PRO 6000 Blackwell-family setup. Evaluate Workstation, Max-Q Workstation, and Server Edition separately:
 
   **PCIe lane discoveries:**
   - CPU lane count and usable slot topology
@@ -439,7 +488,8 @@ promptTemplate: |
   - NVMe tradeoffs when all GPU slots are populated
 
   **PSU recommendations:**
-  - 4× RTX 6000 PRO power budget plus CPU/platform headroom
+  - variant-specific four-GPU power budget plus CPU/platform headroom; never apply Max-Q assumptions to Workstation/Server Edition
+  - connector count, cable routing, circuit requirements, and transient headroom for the exact GPU variant
   - ATX 3.x / 12V-2x6 support
   - redundant PSU options
   - acoustic profile under sustained 1.5–2.5kW workstation load
@@ -451,8 +501,17 @@ promptTemplate: |
   - WRX90/SSI-EEB/EEB compatibility
   - front-to-back airflow
   - rack vs tower tradeoffs
+  - active-cooling clearance for Workstation/Max-Q versus engineered forced airflow for passive Server Edition
 
-  Do not recommend a bargain if the lane/PSU/case path makes it unreliable or noisy unless the caveat is explicit.
+  Workstation Edition is the direct expansion match for the current pair. Max-Q may be a superior whole-fleet quiet/power option, but mixing variants requires explicit analysis of TGP, clocks, thermals, power delivery, and workload behavior. Server Edition is not a quiet-tower drop-in. Do not recommend a bargain if the exact variant's lane/PSU/cooling path makes it unreliable or noisy unless the caveat and remediation cost are explicit.
+
+  **Four-node compact-system analysis:**
+  - remaining quantity needed to reach four systems
+  - homogeneous four-node DGX Spark versus homogeneous four-node ASUS Ascent GX10 versus mixed-model cluster
+  - exact unified memory/storage/networking configuration and software-stack compatibility
+  - high-speed interconnect topology, switch/cable cost, and whether advertised multi-node operation is actually supported for the intended workloads
+  - aggregate power, acoustics, physical placement, management overhead, warranty region, and landed four-unit total
+  - performance/capacity overlap with the current workstation and value versus the WRX90 four-GPU path
 
   ## Step 11 — Decision engine
 
@@ -465,6 +524,7 @@ promptTemplate: |
   | C | Upgrade to EPYC |
   | D | Buy complete workstation |
   | E | Wait |
+  | F | Acquire four DGX Spark / ASUS Ascent GX10 compact GB10 systems over time |
 
   Estimate for each option:
   - total upgrade cost
@@ -532,7 +592,13 @@ promptTemplate: |
   Cached listings that disappeared or are marked sold; infer demand and price floors.
 
   ### Historical Pricing Changes
-  Table with item, 7/30/90-day averages where available, prior price, current price, delta, source.
+  Table with item, 7/30/90-day averages where available, prior price, current price, delta, source. Keep all three RTX PRO 6000 Blackwell variants on separate rows; report ambiguous-family samples separately and exclude them from averages.
+
+  ### RTX PRO 6000 Blackwell Variant Comparison
+  Compare Workstation Edition, Max-Q Workstation Edition, and Server Edition availability, price, TGP, cooling/deployment requirements, direct compatibility with the current pair, and effective four-GPU total cost.
+
+  ### Compact GB10 Four-Node Acquisition
+  Keep NVIDIA DGX Spark and ASUS Ascent GX10 on separate price rows and configuration cohorts. Report available quantity, landed unit price, verified baseline, discount, four-unit total, progress toward four systems, homogeneous-versus-mixed cluster risk, networking/software compatibility, and whether to buy one, buy a lot, or wait.
 
   ### Supply / Roadmap Changes
   Vendor updates, BIOS/AGESA/firmware, AI workstation announcements, and roadmap depreciation signals.
@@ -553,7 +619,7 @@ promptTemplate: |
   Compare complete systems against DIY/donor-platform cost.
 
   ### Decision Engine
-  Compare Options A–E with cost/performance/resale/expandability/risk/value score. Recommend one best option.
+  Compare Options A–F with cost/performance/resale/expandability/risk/value score. Recommend one best option.
 
   ### Recommended Purchases
   Only include items with direct links and rationale. If no purchase is recommended, state exactly what price/event would change the decision.
@@ -601,20 +667,25 @@ promptTemplate: |
   🚨 Workstation price target hit
 
   [Item] — [price] ([threshold or % below average])
+  [For DGX Spark / ASUS Ascent GX10 only:]
+  Configuration: [memory / storage / networking / warranty region]
+  Available quantity: [N]; remaining goal before purchase: [N]/4
+  Landed unit price: [DKK]; verified baseline: [DKK, source/date]
+  Lot price / projected four-system total: [DKK]
   Source: [seller/source]
   Link: [URL]
   Confidence: [high/medium/low]
   Why it matters: [1-2 lines]
   Recommended action: [buy / verify / wait]
 
-  Coverage: targeted watch — [N] cached listings re-checked, [M]/10 price targets searched
+  Coverage: targeted watch — [N] cached listings re-checked, [M]/14 price targets searched
   ```
 
   **Monday report format:**
   ```
   🖥️ Workstation Procurement Watch — Week WW, YYYY
 
-  Best option: [A/B/C/D/E] — [short rationale]
+  Best option: [A/B/C/D/E/F] — [short rationale]
 
   Best bargains:
   • [item] — [price] — [why] — [link/status]
@@ -626,7 +697,11 @@ promptTemplate: |
   • Threadripper PRO: ↑/↓/→
   • EPYC: ↑/↓/→
   • Complete workstations: ↑/↓/→
-  • RTX 6000 PRO Blackwell: ↑/↓/→
+  • RTX PRO 6000 Blackwell Workstation: ↑/↓/→
+  • RTX PRO 6000 Blackwell Max-Q: ↑/↓/→
+  • RTX PRO 6000 Blackwell Server: ↑/↓/→
+  • NVIDIA DGX Spark: ↑/↓/→
+  • ASUS Ascent GX10: ↑/↓/→
 
   Recommended strategy:
   [concise buy/wait guidance]
@@ -639,7 +714,7 @@ promptTemplate: |
   ## Step 15 — Store in cortex
 
   On Monday runs or any alert, run `/remember`:
-  `Workstation procurement {{date}}: best option [A-E], target hits [items/none], top bargains [items/prices], market direction [summary], next trigger [threshold or roadmap event].`
+  `Workstation procurement {{date}}: best option [A-F], target hits [items/none], top bargains [items/prices], compact-system acquisition progress [N]/4, market direction [summary], next trigger [threshold or roadmap event].`
 
   ## Time budget and coverage honesty
 
@@ -661,7 +736,7 @@ promptTemplate: |
   - "Skipped for time" and "blocked/unreachable" are different findings and are
     never merged.
   - `ALL_CLEAR` on a TARGETED WATCH day asserts only that the cached watch list and
-    the ten price targets were checked. It never implies the wider market was.
+    the fourteen price targets were checked. It never implies the wider market was.
 
   ## Quality guardrails
 
@@ -671,6 +746,10 @@ promptTemplate: |
   - Every recommended listing has a direct URL.
   - Every alert is compared to an explicit target, historical average, or component-build alternative.
   - Historical average calculations state the observed sample used.
+  - Every RTX PRO 6000 Blackwell listing has an exact variant or is explicitly `unknown`; variant averages are never blended.
+  - Server Edition recommendations include forced-airflow/chassis cost; Max-Q and full-power Workstation Edition are not treated as interchangeable.
+  - DGX Spark and ASUS Ascent GX10 have independent model/configuration price histories, and compact-system alerts show available quantity, landed unit price, baseline evidence, and four-unit total.
+  - The four-system goal is explicit: recommendations state acquisition progress and evaluate homogeneous versus mixed-model cluster compatibility rather than assuming interchangeability.
   - Current-workstation baseline is used when evaluating Option A.
   - The decision engine does not ignore quiet/reliability/PCIe constraints.
   - Engineering samples are flagged separately as higher-risk.

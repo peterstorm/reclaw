@@ -1,7 +1,13 @@
+import type { SkillEnvironmentVariable } from './agent-environment.js';
+import { type VaultRelativePath, parseVaultRelativePath } from './vault-path.js';
+
 // ─── Branded Types ────────────────────────────────────────────────────────────
 
 /** Telegram user ID. Use `makeTelegramUserId` to construct. */
 export type TelegramUserId = number & { readonly __brand: 'TelegramUserId' };
+
+/** Telegram long-polling update ID. Use `makeTelegramUpdateId` to construct. */
+export type TelegramUpdateId = number & { readonly __brand: 'TelegramUpdateId' };
 
 /** Unique job identifier. Use `makeJobId` to construct. */
 export type JobId = string & { readonly __brand: 'JobId' };
@@ -9,8 +15,44 @@ export type JobId = string & { readonly __brand: 'JobId' };
 /** Skill identifier derived from YAML filename. Use `makeSkillId` to construct. */
 export type SkillId = string & { readonly __brand: 'SkillId' };
 
-/** Claude CLI session ID for multi-turn conversations. Use `makeClaudeSessionId` to construct. */
-export type ClaudeSessionId = string & { readonly __brand: 'ClaudeSessionId' };
+/** Backend session ID for multi-turn conversations. */
+export type AgentSessionId = string & { readonly __brand: 'AgentSessionId' };
+/** Compatibility alias retained while call sites migrate from Claude-only naming. */
+export type ClaudeSessionId = AgentSessionId;
+
+export type AgentBackendName = 'claude' | 'pi';
+
+/** Monotonic epoch for one Telegram chat's selected conversation lineage. */
+export type ConversationGeneration = number & { readonly __brand: 'ConversationGeneration' };
+/** Monotonic session-commit revision within one generation. */
+export type ConversationRevision = number & { readonly __brand: 'ConversationRevision' };
+
+/** Immutable conversation selection captured when a chat job is accepted. */
+export type ConversationTarget = {
+  readonly generation: ConversationGeneration;
+  readonly revision: ConversationRevision;
+  readonly backend: AgentBackendName;
+  readonly sessionId: AgentSessionId | null;
+};
+
+export const MAX_REPLY_CONTEXT_CHARS = 4096;
+
+export type ReplyAuthor = 'assistant' | 'user' | 'other';
+
+/** Immutable quoted Telegram message carried with a reply. */
+export type ReplyContext =
+  | {
+      readonly kind: 'text';
+      readonly messageId: number;
+      readonly author: ReplyAuthor;
+      readonly text: string;
+      readonly truncated: boolean;
+    }
+  | {
+      readonly kind: 'non-text';
+      readonly messageId: number;
+      readonly author: ReplyAuthor;
+    };
 
 // ─── Brand Constructors ────────────────────────────────────────────────────────
 
@@ -23,6 +65,17 @@ export function makeTelegramUserId(raw: number): Result<TelegramUserId, string> 
     return { ok: false, error: `Invalid TelegramUserId: ${raw}. Must be a positive integer.` };
   }
   return { ok: true, value: raw as TelegramUserId };
+}
+
+/** Construct a Telegram update ID from the Bot API's external value. */
+export function makeTelegramUpdateId(raw: number): Result<TelegramUpdateId, string> {
+  if (!Number.isSafeInteger(raw) || raw < 0) {
+    return {
+      ok: false,
+      error: `Invalid TelegramUpdateId: ${raw}. Must be a non-negative safe integer.`,
+    };
+  }
+  return { ok: true, value: raw as TelegramUpdateId };
 }
 
 /**
@@ -54,18 +107,35 @@ export function makeJobId(raw: string): Result<JobId, string> {
     return { ok: false, error: 'JobId must not be empty.' };
   }
   if (`${Number.parseInt(raw, 10)}` === raw) {
-    return { ok: false, error: `JobId must not be an integer string (BullMQ rejects it): "${raw}"` };
+    return {
+      ok: false,
+      error: `JobId must not be an integer string (BullMQ rejects it): "${raw}"`,
+    };
   }
   const segments = raw.split(':');
   if (segments.length !== 1 && segments.length !== 3) {
     return {
       ok: false,
-      error:
-        `JobId "${raw}" has ${segments.length} colon-separated segments; ` +
-        'BullMQ accepts a custom id with either no colons or exactly 3 segments.',
+      error: `JobId "${raw}" has ${segments.length} colon-separated segments; BullMQ accepts a custom id with either no colons or exactly 3 segments.`,
     };
   }
   return { ok: true, value: raw as JobId };
+}
+
+export type TelegramIngressKind =
+  | 'chat'
+  | 'reminder'
+  | 'recurring'
+  | 'research'
+  | 'podcast'
+  | 'run';
+
+/** Stable BullMQ identity for one queue-producing Telegram update. */
+export function makeTelegramIngressJobId(
+  updateId: TelegramUpdateId,
+  kind: TelegramIngressKind,
+): Result<JobId, string> {
+  return makeJobId(`telegram:${updateId}:${kind}`);
 }
 
 /**
@@ -82,15 +152,61 @@ export function makeSkillId(raw: string): Result<SkillId, string> {
   return { ok: true, value: raw as SkillId };
 }
 
-/**
- * Construct a ClaudeSessionId from a raw string.
- * Validates: non-empty string.
- */
-export function makeClaudeSessionId(raw: string): Result<ClaudeSessionId, string> {
+/** Construct a backend session ID from an external CLI value. */
+export function makeAgentSessionId(raw: string): Result<AgentSessionId, string> {
   if (raw.trim().length === 0) {
-    return { ok: false, error: 'ClaudeSessionId must not be empty.' };
+    return { ok: false, error: 'AgentSessionId must not be empty.' };
   }
-  return { ok: true, value: raw as ClaudeSessionId };
+  return { ok: true, value: raw as AgentSessionId };
+}
+
+/** Compatibility constructor retained for existing consumers. */
+export function makeClaudeSessionId(raw: string): Result<ClaudeSessionId, string> {
+  return makeAgentSessionId(raw);
+}
+
+export function makeConversationGeneration(raw: number): Result<ConversationGeneration, string> {
+  if (!Number.isSafeInteger(raw) || raw < 0) {
+    return {
+      ok: false,
+      error: `ConversationGeneration must be a non-negative safe integer, got: ${raw}`,
+    };
+  }
+  return { ok: true, value: raw as ConversationGeneration };
+}
+
+export function makeConversationRevision(raw: number): Result<ConversationRevision, string> {
+  if (!Number.isSafeInteger(raw) || raw < 0) {
+    return {
+      ok: false,
+      error: `ConversationRevision must be a non-negative safe integer, got: ${raw}`,
+    };
+  }
+  return { ok: true, value: raw as ConversationRevision };
+}
+
+export function makeReplyContext(params: {
+  readonly messageId: number;
+  readonly author: ReplyAuthor;
+  readonly text?: string;
+}): Result<ReplyContext, string> {
+  if (!Number.isSafeInteger(params.messageId) || params.messageId <= 0) {
+    return err(`Reply messageId must be a positive safe integer, got: ${params.messageId}`);
+  }
+
+  const text = params.text?.trim() ?? '';
+  if (text.length === 0) {
+    return ok({ kind: 'non-text', messageId: params.messageId, author: params.author });
+  }
+
+  const truncated = text.length > MAX_REPLY_CONTEXT_CHARS;
+  return ok({
+    kind: 'text',
+    messageId: params.messageId,
+    author: params.author,
+    text: truncated ? text.slice(0, MAX_REPLY_CONTEXT_CHARS) : text,
+    truncated,
+  });
 }
 
 // ─── Result Type ──────────────────────────────────────────────────────────────
@@ -108,10 +224,9 @@ export function err<E>(error: E): Result<never, E> {
   return { ok: false, error };
 }
 
-
 // ─── Job Discriminated Union ───────────────────────────────────────────────────
 
-/** A chat job: user sent a Telegram message (optionally with images). */
+/** A chat job: user sent a Telegram message, optionally with spooled attachments. */
 export type ChatJob = {
   readonly kind: 'chat';
   readonly id: JobId;
@@ -119,12 +234,15 @@ export type ChatJob = {
   readonly text: string;
   readonly chatId: number;
   readonly receivedAt: string; // ISO 8601
+  readonly conversation: ConversationTarget;
+  readonly replyContext?: ReplyContext;
   readonly imagePaths?: readonly string[];
+  /** Plain-text files extracted from PDFs at the authenticated ingress boundary. */
+  readonly documentPaths?: readonly string[];
 };
 
-/** A scheduled job: triggered by cron. */
 /**
- * What caused a scheduled job to be enqueued.
+ * What caused a scheduled skill execution job to be enqueued.
  *
  * Load-bearing, not descriptive: cron-fired jobs are deduplicated per skill so
  * that catch-up after an outage cannot stack duplicate runs, whereas a manual
@@ -133,6 +251,7 @@ export type ChatJob = {
  */
 export type ScheduledTrigger = 'cron' | 'manual';
 
+/** A scheduled skill execution accepted from cron or an explicit `/run`. */
 export type ScheduledJob = {
   readonly kind: 'scheduled';
   readonly id: JobId;
@@ -180,14 +299,20 @@ export type PodcastJob = {
   readonly kind: 'podcast';
   readonly id: JobId;
   readonly chatId: number;
-  readonly notePath: string;
+  readonly notePath: VaultRelativePath;
   readonly audioFormat: 0 | 1 | 2 | 3;
   readonly audioLength: 1 | 2 | 3;
   readonly enqueuedAt: string; // ISO 8601
 };
 
 /** All job variants. */
-export type Job = ChatJob | ScheduledJob | ReminderJob | RecurringReminderJob | ResearchJob | PodcastJob;
+export type Job =
+  | ChatJob
+  | ScheduledJob
+  | ReminderJob
+  | RecurringReminderJob
+  | ResearchJob
+  | PodcastJob;
 
 // ─── Job Type Guards ───────────────────────────────────────────────────────────
 
@@ -223,10 +348,14 @@ export function makeChatJob(params: {
   text: string;
   chatId: number;
   receivedAt: string;
+  conversation: ConversationTarget;
+  replyContext?: ReplyContext;
   imagePaths?: readonly string[];
+  documentPaths?: readonly string[];
 }): Result<ChatJob, string> {
   const hasImages = params.imagePaths !== undefined && params.imagePaths.length > 0;
-  if (params.text.trim().length === 0 && !hasImages) {
+  const hasDocuments = params.documentPaths !== undefined && params.documentPaths.length > 0;
+  if (params.text.trim().length === 0 && !hasImages && !hasDocuments) {
     return err('Chat job text must not be empty.');
   }
   if (!Number.isInteger(params.chatId)) {
@@ -235,6 +364,12 @@ export function makeChatJob(params: {
   if (!isIso8601(params.receivedAt)) {
     return err(`receivedAt must be ISO 8601, got: ${params.receivedAt}`);
   }
+  if (!Number.isSafeInteger(params.conversation.generation) || params.conversation.generation < 0) {
+    return err('conversation generation must be a non-negative safe integer');
+  }
+  if (!Number.isSafeInteger(params.conversation.revision) || params.conversation.revision < 0) {
+    return err('conversation revision must be a non-negative safe integer');
+  }
   return ok({
     kind: 'chat',
     id: params.id,
@@ -242,8 +377,16 @@ export function makeChatJob(params: {
     text: params.text,
     chatId: params.chatId,
     receivedAt: params.receivedAt,
+    conversation: params.conversation,
+    ...(params.replyContext !== undefined ? { replyContext: params.replyContext } : {}),
     ...(hasImages ? { imagePaths: params.imagePaths } : {}),
+    ...(hasDocuments ? { documentPaths: params.documentPaths } : {}),
   });
+}
+
+/** All durable source files owned by a chat job, in deterministic cleanup order. */
+export function chatJobSourcePaths(job: ChatJob): readonly string[] {
+  return [...(job.imagePaths ?? []), ...(job.documentPaths ?? [])];
 }
 
 export function makeScheduledJob(params: {
@@ -326,8 +469,10 @@ export function makeRecurringReminderJob(params: {
     return err('schedulerId must not be empty.');
   }
 
-  const hasCron = params.cronPattern !== undefined && params.cronPattern.length > 0;
-  const hasInterval = params.intervalMs !== undefined && params.intervalMs > 0;
+  const cronPattern = params.cronPattern ?? '';
+  const intervalMs = params.intervalMs ?? 0;
+  const hasCron = cronPattern.length > 0;
+  const hasInterval = intervalMs > 0;
 
   if (!hasCron && !hasInterval) {
     return err('Either intervalMs or cronPattern must be provided.');
@@ -337,7 +482,7 @@ export function makeRecurringReminderJob(params: {
   }
 
   if (hasInterval && !hasCron) {
-    if (!Number.isInteger(params.intervalMs!) || params.intervalMs! < 60_000) {
+    if (!Number.isInteger(intervalMs) || intervalMs < 60_000) {
       return err('Recurring reminder interval must be at least 1 minute.');
     }
   }
@@ -348,8 +493,13 @@ export function makeRecurringReminderJob(params: {
     chatId: params.chatId,
     text: params.text,
     createdAt: params.createdAt,
-    intervalMs: params.intervalMs ?? 0,
-    ...(hasCron ? { cronPattern: params.cronPattern!, cronDescription: params.cronDescription ?? params.cronPattern! } : {}),
+    intervalMs,
+    ...(hasCron
+      ? {
+          cronPattern,
+          cronDescription: params.cronDescription ?? cronPattern,
+        }
+      : {}),
     schedulerId: params.schedulerId,
   });
 }
@@ -388,8 +538,9 @@ export function makePodcastJob(params: {
   audioLength: 1 | 2 | 3;
   enqueuedAt: string;
 }): Result<PodcastJob, string> {
-  if (params.notePath.trim().length === 0) {
-    return err('Podcast note path must not be empty.');
+  const notePath = parseVaultRelativePath(params.notePath);
+  if (!notePath.ok) {
+    return err(`Invalid podcast note path: ${notePath.error}`);
   }
   if (!Number.isInteger(params.chatId)) {
     return err(`chatId must be an integer, got: ${params.chatId}`);
@@ -401,7 +552,7 @@ export function makePodcastJob(params: {
     kind: 'podcast',
     id: params.id,
     chatId: params.chatId,
-    notePath: params.notePath,
+    notePath: notePath.value,
     audioFormat: params.audioFormat,
     audioLength: params.audioLength,
     enqueuedAt: params.enqueuedAt,
@@ -433,7 +584,7 @@ export function jobResultErr(error: string): JobResult {
  */
 export type SkipReason =
   /** FR-023: the job fired outside its validity window (e.g. after a long outage). */
-  | 'validity-window-expired';
+  'validity-window-expired';
 
 /**
  * Terminal outcome of a scheduled job.
@@ -470,8 +621,8 @@ export function scheduledFailed(error: string): ScheduledOutcome {
 
 /**
  * FR-011: Distinct permission profiles for chat vs scheduled jobs.
- * chat: restricted read-only access.
- * scheduled: broader write access for automation tasks.
+ * chat: broad authenticated personal-agent access.
+ * scheduled: smaller unattended automation capability set.
  */
 export type PermissionProfile = {
   readonly name: 'chat' | 'scheduled';
@@ -482,8 +633,6 @@ export type PermissionProfile = {
 // ─── Skill Config ──────────────────────────────────────────────────────────────
 
 /** Parsed from a YAML file in workspace/skills/. */
-export type AgentBackendName = 'claude' | 'pi';
-
 export type SkillConfig = {
   readonly id: SkillId;
   readonly name: string;
@@ -493,6 +642,8 @@ export type SkillConfig = {
   readonly validityWindowMinutes: number;
   readonly timeout?: number; // seconds; omit to inherit SCHEDULED_TIMEOUT_MS (20 min default)
   readonly backend?: AgentBackendName; // optional per-skill backend override; omit to use AGENT_BACKEND
+  /** Service environment values explicitly granted to this trusted scheduled skill. */
+  readonly environment: readonly SkillEnvironmentVariable[];
   readonly dependsOn: SkillId | null; // skill that must complete before this one runs
 };
 

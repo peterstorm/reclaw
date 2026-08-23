@@ -12,11 +12,17 @@
 
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
-import { ok, err } from '../core/types.js';
+import type { SourceMeta } from '../core/research-types.js';
+import { err, ok } from '../core/types.js';
 import type { Result } from '../core/types.js';
 import { buildQANote } from '../core/vault-content.js';
-import type { SourceMeta } from '../core/research-types.js';
+import {
+  type VaultFilePath,
+  type VaultRelativePath,
+  parseVaultRelativePath,
+} from '../core/vault-path.js';
 import type { NotebookLookup } from './research-vault-lookup.js';
+import { createVaultWorkspace, formatVaultPathError } from './vault-workspace.js';
 
 export type AskAnswerInput = {
   readonly vaultBasePath: string;
@@ -27,8 +33,8 @@ export type AskAnswerInput = {
 };
 
 export type AskAnswerOutput = {
-  readonly qaAbsPath: string;
-  readonly qaVaultPath: string;
+  readonly qaAbsPath: VaultFilePath;
+  readonly qaVaultPath: VaultRelativePath;
   readonly hubUpdated: boolean;
 };
 
@@ -43,7 +49,21 @@ export async function appendAskAnswer(
     input.lookup.hubVaultPath,
   );
 
-  const qaAbsPath = path.join(input.vaultBasePath, note.relativePath);
+  const qaVaultPathResult = parseVaultRelativePath(note.relativePath);
+  if (!qaVaultPathResult.ok) return err(`Invalid generated QA path: ${qaVaultPathResult.error}`);
+  const qaVaultPath = qaVaultPathResult.value;
+
+  const workspace = await createVaultWorkspace(input.vaultBasePath);
+  if (!workspace.ok) return err(formatVaultPathError(workspace.error));
+
+  // Preflight both paths before creating the child note. A forged/stale lookup
+  // must not leave a partial QA file when its hub resolves outside the vault.
+  const hubPathResult = await workspace.value.resolveExistingAbsoluteFile(input.lookup.hubPath);
+  if (!hubPathResult.ok)
+    return err(`Unsafe hub path: ${formatVaultPathError(hubPathResult.error)}`);
+  const qaAbsPathResult = await workspace.value.resolveFileForWrite(qaVaultPath);
+  if (!qaAbsPathResult.ok) return err(formatVaultPathError(qaAbsPathResult.error));
+  const qaAbsPath = qaAbsPathResult.value;
 
   try {
     await fs.mkdir(path.dirname(qaAbsPath), { recursive: true });
@@ -60,13 +80,13 @@ export async function appendAskAnswer(
 
   let hubUpdated = false;
   try {
-    hubUpdated = await ensureWikilinkInHubQASection(input.lookup.hubPath, wikilinkLine);
+    hubUpdated = await ensureWikilinkInHubQASection(hubPathResult.value, wikilinkLine);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return err(`QA note written but hub update failed: ${msg}`);
   }
 
-  return ok({ qaAbsPath, qaVaultPath: note.relativePath, hubUpdated });
+  return ok({ qaAbsPath, qaVaultPath, hubUpdated });
 }
 
 /**
@@ -106,8 +126,8 @@ async function ensureWikilinkInHubQASection(
 
   const lines = body.split('\n');
   const filtered = lines.filter((l) => l.trim() !== '_No questions answered._');
-  while (filtered.length > 0 && filtered[filtered.length - 1]!.trim() === '') filtered.pop();
-  while (filtered.length > 0 && filtered[0]!.trim() === '') filtered.shift();
+  while (filtered.length > 0 && filtered[filtered.length - 1]?.trim() === '') filtered.pop();
+  while (filtered.length > 0 && filtered[0]?.trim() === '') filtered.shift();
   filtered.push(wikilinkLine);
 
   const newBody = `\n${filtered.join('\n')}\n\n`;

@@ -136,7 +136,7 @@ describe('runAgent', () => {
     expect(result.durationMs).toBeGreaterThanOrEqual(0);
   });
 
-  it('returns ok:false with timedOut:true when timeout expires', async () => {
+  it('returns a typed timeout failure when the deadline expires', async () => {
     const result = await runAgent(
       mockBackend,
       baseOptions({ _spawn: hangingSpawn(), timeoutMs: 50 }),
@@ -144,8 +144,7 @@ describe('runAgent', () => {
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.timedOut).toBe(true);
-    expect(result.error).toBe('timeout');
+    expect(result.failure).toEqual({ kind: 'timeout', backend: 'mock', timeoutMs: 50 });
   });
 
   it('returns ok:false with stderr text on non-zero exit code', async () => {
@@ -156,9 +155,12 @@ describe('runAgent', () => {
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.timedOut).toBe(false);
-    expect(result.error).toContain('exited with code 1');
-    expect(result.error).toContain('something went wrong');
+    expect(result.failure).toEqual({
+      kind: 'process-exit',
+      backend: 'mock',
+      exitCode: 1,
+      detail: 'something went wrong',
+    });
   });
 
   it('surfaces parsed errorMessage on non-zero exit when stderr is empty', async () => {
@@ -166,7 +168,11 @@ describe('runAgent', () => {
     // error frame. The runner must recover it via backend.parseResult.
     const errBackend: AgentBackend = {
       ...mockBackend,
-      parseResult: () => ({ text: null, sessionId: null, errorMessage: 'Credit balance is too low' }),
+      parseResult: () => ({
+        text: null,
+        sessionId: null,
+        errorMessage: 'Credit balance is too low',
+      }),
     };
     const result = await runAgent(
       errBackend,
@@ -175,8 +181,11 @@ describe('runAgent', () => {
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toContain('exited with code 1');
-    expect(result.error).toContain('Credit balance is too low');
+    expect(result.failure).toEqual({
+      kind: 'provider-billing',
+      backend: 'mock',
+      detail: 'Credit balance is too low',
+    });
   });
 
   it('falls back to stdout tail on non-zero exit when stderr and errorMessage are both empty', async () => {
@@ -187,8 +196,11 @@ describe('runAgent', () => {
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toContain('exited with code 1');
-    expect(result.error).toContain('some trailing diagnostic line');
+    expect(result.failure).toMatchObject({
+      kind: 'process-exit',
+      exitCode: 1,
+      detail: 'some trailing diagnostic line',
+    });
   });
 
   it('returns ok:false when spawn throws', async () => {
@@ -199,9 +211,22 @@ describe('runAgent', () => {
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.timedOut).toBe(false);
-    expect(result.error).toContain('Failed to spawn mock');
-    expect(result.error).toContain('spawn kaboom');
+    expect(result.failure).toEqual({
+      kind: 'spawn',
+      backend: 'mock',
+      detail: 'Error: spawn kaboom',
+    });
+  });
+
+  it('classifies a missing backend executable as permanent configuration failure', async () => {
+    const result = await runAgent(
+      mockBackend,
+      baseOptions({ _spawn: throwingSpawn('spawn ENOENT command not found') }),
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.failure).toMatchObject({ kind: 'configuration', backend: 'mock' });
   });
 
   it('returns ok:false when stdin write fails', async () => {
@@ -209,8 +234,28 @@ describe('runAgent', () => {
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.timedOut).toBe(false);
-    expect(result.error).toContain('Failed to write stdin');
+    expect(result.failure).toMatchObject({ kind: 'input-write', backend: 'mock' });
+  });
+
+  it('classifies an exit-zero backend provider failure', async () => {
+    const errorBackend: AgentBackend = {
+      ...mockBackend,
+      parseResult: () => ({
+        text: 'partial narration',
+        sessionId: null,
+        errorMessage: '429 quota exceeded',
+      }),
+    };
+
+    const result = await runAgent(errorBackend, baseOptions());
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.failure).toEqual({
+      kind: 'provider-rate-limited',
+      backend: 'mock',
+      detail: '429 quota exceeded',
+    });
   });
 
   it('calls backend.buildArgs with resumeSessionId and allowedTools', async () => {
@@ -252,19 +297,24 @@ describe('runAgent', () => {
     expect(cleanEnvSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('passes options.env merged with process.env to cleanEnv', async () => {
+  it('passes only baseline process values plus explicit grants to cleanEnv', async () => {
     let capturedEnv: Record<string, string | undefined> = {};
     const cleanEnvSpy = vi.fn((env: Record<string, string | undefined>) => {
       capturedEnv = env;
       return env;
     });
     const spyBackend: AgentBackend = { ...mockBackend, cleanEnv: cleanEnvSpy };
+    vi.stubEnv('TELEGRAM_TOKEN', 'must-not-leak');
 
-    await runAgent(spyBackend, baseOptions({ env: { CUSTOM_VAR: 'custom_value' } }));
+    try {
+      await runAgent(spyBackend, baseOptions({ env: { CUSTOM_VAR: 'custom_value' } }));
+    } finally {
+      vi.unstubAllEnvs();
+    }
 
-    expect(capturedEnv['CUSTOM_VAR']).toBe('custom_value');
-    // process.env should also be present
-    expect(capturedEnv['PATH']).toBeDefined();
+    expect(capturedEnv.CUSTOM_VAR).toBe('custom_value');
+    expect(capturedEnv.PATH).toBeDefined();
+    expect(capturedEnv).not.toHaveProperty('TELEGRAM_TOKEN');
   });
 });
 
@@ -284,10 +334,10 @@ describe('runAgentStreaming', () => {
 
     expect(result.ok).toBe(true);
     expect(chunks.length).toBeGreaterThanOrEqual(2);
-    expect(chunks[0]!.text).toBe('hello ');
-    expect(chunks[0]!.phase).toBe('text');
-    expect(chunks[1]!.text).toBe('hello world');
-    expect(chunks[1]!.phase).toBe('text');
+    expect(chunks[0]?.text).toBe('hello ');
+    expect(chunks[0]?.phase).toBe('text');
+    expect(chunks[1]?.text).toBe('hello world');
+    expect(chunks[1]?.phase).toBe('text');
   });
 
   it('calls onChunk with accumulated thinking for thinking deltas', async () => {
@@ -298,9 +348,9 @@ describe('runAgentStreaming', () => {
     await runAgentStreaming(mockBackend, baseOptions({ _spawn: mockSpawn(stdout) }), onChunk);
 
     expect(chunks.length).toBeGreaterThanOrEqual(2);
-    expect(chunks[0]!.thinking).toBe('analyzing ');
-    expect(chunks[0]!.phase).toBe('thinking');
-    expect(chunks[1]!.thinking).toBe('analyzing problem');
+    expect(chunks[0]?.thinking).toBe('analyzing ');
+    expect(chunks[0]?.phase).toBe('thinking');
+    expect(chunks[1]?.thinking).toBe('analyzing problem');
   });
 
   it('block_start resets current block text/thinking and increments counter', async () => {
@@ -312,27 +362,27 @@ describe('runAgentStreaming', () => {
     await runAgentStreaming(mockBackend, baseOptions({ _spawn: mockSpawn(stdout) }), onChunk);
 
     // After first BLOCK:thinking
-    expect(chunks[0]!.thinkingBlockCount).toBe(1);
-    expect(chunks[0]!.currentBlockThinking).toBe('');
+    expect(chunks[0]?.thinkingBlockCount).toBe(1);
+    expect(chunks[0]?.currentBlockThinking).toBe('');
 
     // After THINK:first
-    expect(chunks[1]!.currentBlockThinking).toBe('first');
-    expect(chunks[1]!.thinkingBlockCount).toBe(1);
+    expect(chunks[1]?.currentBlockThinking).toBe('first');
+    expect(chunks[1]?.thinkingBlockCount).toBe(1);
 
     // After BLOCK:text
-    expect(chunks[2]!.textBlockCount).toBe(1);
-    expect(chunks[2]!.currentBlockText).toBe('');
+    expect(chunks[2]?.textBlockCount).toBe(1);
+    expect(chunks[2]?.currentBlockText).toBe('');
 
     // After TEXT:answer
-    expect(chunks[3]!.currentBlockText).toBe('answer');
+    expect(chunks[3]?.currentBlockText).toBe('answer');
 
     // After second BLOCK:thinking — currentBlockThinking resets
-    expect(chunks[4]!.thinkingBlockCount).toBe(2);
-    expect(chunks[4]!.currentBlockThinking).toBe('');
+    expect(chunks[4]?.thinkingBlockCount).toBe(2);
+    expect(chunks[4]?.currentBlockThinking).toBe('');
 
     // After THINK:second — accumulated thinking includes both blocks
-    expect(chunks[5]!.thinking).toBe('firstsecond');
-    expect(chunks[5]!.currentBlockThinking).toBe('second');
+    expect(chunks[5]?.thinking).toBe('firstsecond');
+    expect(chunks[5]?.currentBlockThinking).toBe('second');
   });
 
   it('captures session ID from extractSessionId during stream', async () => {
@@ -384,7 +434,7 @@ describe('runAgentStreaming', () => {
     expect(result.output).toBe('fallback content');
   });
 
-  it('returns timedOut:true when timeout fires during streaming', async () => {
+  it('returns a typed timeout when the streaming deadline fires', async () => {
     const result = await runAgentStreaming(
       mockBackend,
       baseOptions({ _spawn: hangingSpawn(), timeoutMs: 50 }),
@@ -393,8 +443,7 @@ describe('runAgentStreaming', () => {
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.timedOut).toBe(true);
-    expect(result.error).toBe('timeout');
+    expect(result.failure).toEqual({ kind: 'timeout', backend: 'mock', timeoutMs: 50 });
   });
 
   it('returns error when spawn throws during streaming', async () => {
@@ -406,8 +455,11 @@ describe('runAgentStreaming', () => {
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.timedOut).toBe(false);
-    expect(result.error).toContain('spawn failed');
+    expect(result.failure).toMatchObject({
+      kind: 'spawn',
+      backend: 'mock',
+      detail: 'Error: spawn failed',
+    });
   });
 
   it('returns error when stdin write fails during streaming', async () => {
@@ -419,8 +471,7 @@ describe('runAgentStreaming', () => {
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.timedOut).toBe(false);
-    expect(result.error).toContain('stdin');
+    expect(result.failure).toMatchObject({ kind: 'input-write', backend: 'mock' });
   });
 
   it('returns error with stderr on non-zero exit during streaming', async () => {
@@ -432,9 +483,28 @@ describe('runAgentStreaming', () => {
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.timedOut).toBe(false);
-    expect(result.error).toContain('process error');
-    expect(result.error).toContain('code 1');
+    expect(result.failure).toEqual({
+      kind: 'process-exit',
+      backend: 'mock',
+      exitCode: 1,
+      detail: 'process error',
+    });
+  });
+
+  it('does not treat partial streamed narration as success after a backend error', async () => {
+    const errorBackend: AgentBackend = {
+      ...mockBackend,
+      parseResult: () => ({ text: null, sessionId: null, errorMessage: '429 quota exceeded' }),
+    };
+    const result = await runAgentStreaming(
+      errorBackend,
+      baseOptions({ _spawn: mockSpawn('TEXT:partial narration\n') }),
+      () => {},
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.failure.kind).toBe('provider-rate-limited');
   });
 
   it('recovers the stdout error frame on non-zero exit with empty stderr during streaming', async () => {
@@ -450,7 +520,10 @@ describe('runAgentStreaming', () => {
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toContain('code 1');
-    expect(result.error).toContain('overloaded_error');
+    expect(result.failure).toEqual({
+      kind: 'provider-unavailable',
+      backend: 'mock',
+      detail: 'overloaded_error',
+    });
   });
 });

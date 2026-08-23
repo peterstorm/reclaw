@@ -1,17 +1,20 @@
-import { describe, it, expect } from 'vitest';
 import {
-  mkdtempSync,
+  existsSync,
   mkdirSync,
-  writeFileSync,
+  mkdtempSync,
   readFileSync,
   rmSync,
-  existsSync,
+  symlinkSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import type { SourceMeta } from '../core/research-types.js';
+import { parseTopicSlugReference } from '../core/topic-slug.js';
+import { type VaultFilePath, parseVaultRelativePath } from '../core/vault-path.js';
 import { appendAskAnswer } from './research-qa-writer.js';
 import type { NotebookLookup } from './research-vault-lookup.js';
-import type { SourceMeta } from '../core/research-types.js';
 
 type Fixture = {
   readonly vault: string;
@@ -21,8 +24,12 @@ type Fixture = {
 
 function setupVault(hubBody?: string): Fixture {
   const vault = mkdtempSync(join(tmpdir(), 'reclaw-qa-'));
-  const slug = 'demo-topic';
-  const hubVaultPath = `reclaw/research/${slug}/_index.md`;
+  const slugResult = parseTopicSlugReference('demo-topic');
+  if (!slugResult.ok) throw new Error(slugResult.error);
+  const slug = slugResult.value;
+  const hubVaultPathResult = parseVaultRelativePath(`reclaw/research/${slug}/_index.md`);
+  if (!hubVaultPathResult.ok) throw new Error(hubVaultPathResult.error);
+  const hubVaultPath = hubVaultPathResult.value;
   const hubPath = join(vault, hubVaultPath);
   mkdirSync(join(vault, 'reclaw/research', slug), { recursive: true });
 
@@ -48,7 +55,7 @@ function setupVault(hubBody?: string): Fixture {
 
   const lookup: NotebookLookup = {
     notebookId: 'nb-1',
-    hubPath,
+    hubPath: hubPath as VaultFilePath,
     hubVaultPath,
     slug,
     topic: 'Demo',
@@ -81,9 +88,7 @@ describe('appendAskAnswer', () => {
 
       expect(result.ok).toBe(true);
       if (!result.ok) return;
-      expect(result.value.qaVaultPath).toBe(
-        'reclaw/research/demo-topic/QA/What is the gist.md',
-      );
+      expect(result.value.qaVaultPath).toBe('reclaw/research/demo-topic/QA/What is the gist.md');
       expect(existsSync(result.value.qaAbsPath)).toBe(true);
 
       const qa = readFileSync(result.value.qaAbsPath, 'utf8');
@@ -209,6 +214,29 @@ describe('appendAskAnswer', () => {
       expect(qa).toContain('- [[Paper B]]');
     } finally {
       cleanup();
+    }
+  });
+
+  it('rejects a QA directory symlink that escapes the vault', async () => {
+    const { vault, lookup, cleanup } = setupVault();
+    const outside = mkdtempSync(join(tmpdir(), 'reclaw-qa-outside-'));
+    const qaDir = join(vault, 'reclaw/research/demo-topic/QA');
+    symlinkSync(outside, qaDir);
+    try {
+      const result = await appendAskAnswer({
+        vaultBasePath: vault,
+        lookup,
+        question: 'Escape?',
+        resolvedAnswer: 'No.',
+        citedSources: [],
+      });
+
+      expect(result.ok).toBe(false);
+      expect(existsSync(join(outside, 'Escape.md'))).toBe(false);
+      if (!result.ok) expect(result.error).toMatch(/escapes the configured root/i);
+    } finally {
+      cleanup();
+      rmSync(outside, { recursive: true, force: true });
     }
   });
 });

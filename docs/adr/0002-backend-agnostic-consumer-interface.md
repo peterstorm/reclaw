@@ -1,7 +1,7 @@
 # ADR-0002: Backend-Agnostic Consumer Interface
 
 ## Status
-Accepted
+Accepted; backend-specific permission-argument details superseded by ADR 0005
 
 ## Context
 

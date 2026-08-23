@@ -1,6 +1,7 @@
 name: Garmin Late-Activity Catch-up
 schedule: "0 6 * * *"
 permissionProfile: scheduled
+environment: [GARMIN_EMAIL, GARMIN_PASSWORD]
 validityWindowMinutes: 90
 promptTemplate: |
   {{personality}}

@@ -1,4 +1,5 @@
-import { type Result, ok, err } from './types.js';
+import { type Result, err, ok } from './types.js';
+import { type VaultRelativePath, parseVaultRelativePath } from './vault-path.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -6,7 +7,7 @@ export type AudioFormat = 'deep-dive' | 'brief' | 'critique' | 'debate';
 export type AudioLength = 'short' | 'default' | 'long';
 
 export type PodcastRequest = {
-  readonly notePath: string;
+  readonly notePath: VaultRelativePath;
   readonly format: AudioFormat;
   readonly length: AudioLength;
 };
@@ -16,19 +17,26 @@ export type PodcastRequest = {
 /** Map format string to NotebookLM SDK numeric value. */
 export function audioFormatToCode(format: AudioFormat): 0 | 1 | 2 | 3 {
   switch (format) {
-    case 'deep-dive': return 0;
-    case 'brief': return 1;
-    case 'critique': return 2;
-    case 'debate': return 3;
+    case 'deep-dive':
+      return 0;
+    case 'brief':
+      return 1;
+    case 'critique':
+      return 2;
+    case 'debate':
+      return 3;
   }
 }
 
 /** Map length string to NotebookLM SDK numeric value. */
 export function audioLengthToCode(length: AudioLength): 1 | 2 | 3 {
   switch (length) {
-    case 'short': return 1;
-    case 'default': return 2;
-    case 'long': return 3;
+    case 'short':
+      return 1;
+    case 'default':
+      return 2;
+    case 'long':
+      return 3;
   }
 }
 
@@ -59,7 +67,7 @@ export function parsePodcastCommand(text: string): Result<PodcastRequest, string
   let format: AudioFormat = 'deep-dive';
   const formatMatch = rawRemainder.match(/(?:^|\s)--format\s+(\S+)/i);
   if (formatMatch) {
-    const raw = formatMatch[1]!.toLowerCase() as AudioFormat;
+    const raw = formatMatch[1]?.toLowerCase() as AudioFormat;
     if (!VALID_FORMATS.includes(raw)) {
       return err(`Invalid format "${formatMatch[1]}". Valid: ${VALID_FORMATS.join(', ')}`);
     }
@@ -70,7 +78,7 @@ export function parsePodcastCommand(text: string): Result<PodcastRequest, string
   let length: AudioLength = 'long';
   const lengthMatch = rawRemainder.match(/(?:^|\s)--length\s+(\S+)/i);
   if (lengthMatch) {
-    const raw = lengthMatch[1]!.toLowerCase() as AudioLength;
+    const raw = lengthMatch[1]?.toLowerCase() as AudioLength;
     if (!VALID_LENGTHS.includes(raw)) {
       return err(`Invalid length "${lengthMatch[1]}". Valid: ${VALID_LENGTHS.join(', ')}`);
     }
@@ -86,6 +94,8 @@ export function parsePodcastCommand(text: string): Result<PodcastRequest, string
   if (notePath.length === 0) {
     return err(`Note path is required. ${PODCAST_USAGE}`);
   }
+  const parsedNotePath = parseVaultRelativePath(notePath);
+  if (!parsedNotePath.ok) return err(`Invalid vault path: ${parsedNotePath.error}`);
 
-  return ok({ notePath, format, length });
+  return ok({ notePath: parsedNotePath.value, format, length });
 }

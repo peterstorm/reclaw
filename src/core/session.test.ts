@@ -1,79 +1,95 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
-  makeSessionKey,
-  makeMessageSessionKey,
-  parseSessionRecord,
-  serializeSessionRecord,
-  type SessionRecord,
+  initialConversation,
+  makeConversationKey,
+  makeConversationMutationKey,
+  makeMessageConversationKey,
+  parseConversationLineage,
+  parseMessageConversationReference,
+  serializeConversationLineage,
+  serializeMessageConversationReference,
 } from './session.js';
-import type { ClaudeSessionId } from './types.js';
+import {
+  type ConversationGeneration,
+  type ConversationRevision,
+  makeAgentSessionId,
+} from './types.js';
 
-const SESSION_ID = 'abc-123' as ClaudeSessionId;
-
-describe('makeSessionKey', () => {
-  it('builds key with chatId', () => {
-    expect(makeSessionKey(456)).toBe('reclaw-session-456');
+describe('conversation keys', () => {
+  it('scopes message references by chat and message', () => {
+    expect(makeConversationKey(42)).toBe('reclaw-session-42');
+    expect(makeMessageConversationKey(42, 7)).toBe('reclaw-msg-conversation-42-7');
+    expect(makeMessageConversationKey(99, 7)).not.toBe(makeMessageConversationKey(42, 7));
   });
 
-  it('uses no colons', () => {
-    expect(makeSessionKey(789)).not.toContain(':');
-  });
-});
-
-describe('makeMessageSessionKey', () => {
-  it('builds key with messageId', () => {
-    expect(makeMessageSessionKey(789)).toBe('reclaw-msg-session-789');
-  });
-
-  it('uses no colons', () => {
-    expect(makeMessageSessionKey(123)).not.toContain(':');
+  it('makes mutation keys stable and separator-safe', () => {
+    expect(makeConversationMutationKey(42, 'telegram:1:chat')).toBe(
+      makeConversationMutationKey(42, 'telegram:1:chat'),
+    );
   });
 });
 
-describe('parseSessionRecord', () => {
-  it('parses valid JSON', () => {
-    const raw = JSON.stringify({ sessionId: 'sess-1', lastActivityAt: '2026-02-26T10:00:00Z' });
-    const result = parseSessionRecord(raw);
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.value.sessionId).toBe('sess-1');
-      expect(result.value.lastActivityAt).toBe('2026-02-26T10:00:00Z');
-    }
-  });
-
-  it('returns error for invalid JSON', () => {
-    const result = parseSessionRecord('not json');
-    expect(result.ok).toBe(false);
-  });
-
-  it('returns error for missing sessionId', () => {
-    const result = parseSessionRecord(JSON.stringify({ lastActivityAt: '2026-02-26T10:00:00Z' }));
-    expect(result.ok).toBe(false);
-  });
-
-  it('returns error for empty sessionId', () => {
-    const result = parseSessionRecord(JSON.stringify({ sessionId: '  ', lastActivityAt: '2026-02-26T10:00:00Z' }));
-    expect(result.ok).toBe(false);
-  });
-
-  it('returns error for missing lastActivityAt', () => {
-    const result = parseSessionRecord(JSON.stringify({ sessionId: 'sess-1' }));
-    expect(result.ok).toBe(false);
-  });
-});
-
-describe('serializeSessionRecord', () => {
-  it('round-trips with parseSessionRecord', () => {
-    const record: SessionRecord = {
-      sessionId: SESSION_ID,
-      lastActivityAt: '2026-02-26T10:00:00.000Z',
+describe('conversation lineage codec', () => {
+  it('round-trips the versioned lineage', () => {
+    const session = makeAgentSessionId('session-1');
+    if (!session.ok) throw new Error(session.error);
+    const lineage = {
+      schemaVersion: 1 as const,
+      generation: 3 as ConversationGeneration,
+      revision: 2 as ConversationRevision,
+      backend: 'pi' as const,
+      sessionId: session.value,
+      lastActivityAt: '2026-08-14T10:00:00.000Z',
     };
-    const serialized = serializeSessionRecord(record);
-    const parsed = parseSessionRecord(serialized);
-    expect(parsed.ok).toBe(true);
-    if (parsed.ok) {
-      expect(parsed.value.sessionId).toBe(record.sessionId);
-      expect(parsed.value.lastActivityAt).toBe(record.lastActivityAt);
-    }
+    expect(parseConversationLineage(serializeConversationLineage(lineage), 'claude')).toEqual({
+      ok: true,
+      value: lineage,
+    });
+  });
+
+  it('migrates the legacy Claude-only session record into generation zero', () => {
+    const result = parseConversationLineage(
+      JSON.stringify({ sessionId: 'legacy-session', lastActivityAt: '2026-08-14T10:00:00.000Z' }),
+      'pi',
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      value: { generation: 0, revision: 0, backend: 'pi', sessionId: 'legacy-session' },
+    });
+  });
+
+  it('rejects malformed lineage', () => {
+    expect(parseConversationLineage('{', 'pi').ok).toBe(false);
+    expect(parseConversationLineage(JSON.stringify({ generation: -1 }), 'pi').ok).toBe(false);
+  });
+
+  it('constructs a fresh initial lineage', () => {
+    expect(initialConversation('pi', 'now')).toEqual({
+      schemaVersion: 1,
+      generation: 0,
+      revision: 0,
+      backend: 'pi',
+      sessionId: null,
+      lastActivityAt: 'now',
+    });
+  });
+});
+
+describe('message conversation reference codec', () => {
+  it('round-trips backend and session identity', () => {
+    const session = makeAgentSessionId('session-1');
+    if (!session.ok) throw new Error(session.error);
+    const reference = {
+      schemaVersion: 1 as const,
+      backend: 'claude' as const,
+      sessionId: session.value,
+    };
+    expect(
+      parseMessageConversationReference(serializeMessageConversationReference(reference)),
+    ).toEqual({ ok: true, value: reference });
+  });
+
+  it('rejects a raw legacy session ID as a current reference', () => {
+    expect(parseMessageConversationReference('session-1').ok).toBe(false);
   });
 });

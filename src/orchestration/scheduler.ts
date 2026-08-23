@@ -17,7 +17,7 @@ export type CronScheduler = {
   readonly reconcile: (registry: SkillRegistry) => void;
   readonly stop: () => void;
   readonly getActiveJobs: () => readonly SkillId[];
-  readonly resolveDependents: (skillId: SkillId, triggeredAt: string) => void;
+  readonly resolveDependents: (skillId: SkillId, triggeredAt: string) => Promise<void>;
 };
 
 type CronEntry = {
@@ -70,12 +70,18 @@ export function decideCatchUp(
   if (!triggerCompleted) {
     // Trigger fired but not yet completed — still running or awaiting retry.
     // The worker's completion callback will enqueue dependents.
-    return { action: 'skip', reason: `trigger "${triggerJob.skillId}" is in-flight, awaiting completion` };
+    return {
+      action: 'skip',
+      reason: `trigger "${triggerJob.skillId}" is in-flight, awaiting completion`,
+    };
   }
 
   // Trigger completed. Enqueue any dependents whose fired markers are absent.
   if (unfiredDepJobs.length === 0) {
-    return { action: 'skip', reason: `trigger "${triggerJob.skillId}" completed and all dependents already fired` };
+    return {
+      action: 'skip',
+      reason: `trigger "${triggerJob.skillId}" completed and all dependents already fired`,
+    };
   }
 
   return { action: 'enqueue-dependents', depJobs: unfiredDepJobs };
@@ -95,19 +101,14 @@ function makeScheduledJobId(skillId: SkillId, triggeredAt: string): Result<JobId
  * Build a ScheduledJob for a given skill firing.
  * Pure: takes skill config + now, returns Result<ScheduledJob, string>.
  */
-function buildScheduledJob(
-  skill: SkillConfig,
-  triggeredAt: Date,
-): ScheduledJob | null {
+function buildScheduledJob(skill: SkillConfig, triggeredAt: Date): ScheduledJob | null {
   // Zero out sub-second precision so job IDs are deterministic.
   // cron-parser carries milliseconds from `currentDate` into prev()/next(),
   // which caused each restart to generate unique IDs defeating dedup.
   const normalized = new Date(triggeredAt);
   normalized.setMilliseconds(0);
   const triggeredIso = normalized.toISOString();
-  const validUntil = new Date(
-    triggeredAt.getTime() + skill.validityWindowMinutes * 60 * 1000,
-  );
+  const validUntil = new Date(triggeredAt.getTime() + skill.validityWindowMinutes * 60 * 1000);
   const validUntilIso = validUntil.toISOString();
   const idResult = makeScheduledJobId(skill.id, triggeredIso);
   if (!idResult.ok) {
@@ -263,13 +264,17 @@ export function createScheduler(
         console.info(`[scheduler] Catch-up: ${decision.reason}, skipping.`);
         return;
       case 'enqueue-standalone':
-        console.info(`[scheduler] Catch-up: skill "${skillId}" missed, within validity window. Enqueuing.`);
+        console.info(
+          `[scheduler] Catch-up: skill "${skillId}" missed, within validity window. Enqueuing.`,
+        );
         enqueueScheduled(decision.job).catch((e: unknown) => {
           console.error(`[scheduler] Failed to enqueue catch-up job for ${skillId}:`, e);
         });
         return;
       case 'enqueue-dependents':
-        console.info(`[scheduler] Catch-up: enqueuing ${decision.depJobs.length} dependent(s) for completed trigger "${skillId}".`);
+        console.info(
+          `[scheduler] Catch-up: enqueuing ${decision.depJobs.length} dependent(s) for completed trigger "${skillId}".`,
+        );
         for (const depJob of decision.depJobs) {
           enqueueScheduled(depJob).catch((e: unknown) => {
             console.error(`[scheduler] Failed to enqueue catch-up dependent ${depJob.skillId}:`, e);
@@ -320,7 +325,10 @@ export function createScheduler(
         );
       })().catch((e: unknown) => {
         // Redis failure — enqueue trigger defensively
-        console.warn(`[scheduler] Catch-up check failed for ${skill.id}, enqueuing defensively:`, e);
+        console.warn(
+          `[scheduler] Catch-up check failed for ${skill.id}, enqueuing defensively:`,
+          e,
+        );
         enqueueScheduled(job).catch((e2: unknown) => {
           console.error(`[scheduler] Failed to enqueue catch-up job for ${skill.id}:`, e2);
         });
@@ -351,9 +359,13 @@ export function createScheduler(
     for (const skill of registry.values()) {
       if (skill.dependsOn !== null) {
         if (!registry.has(skill.dependsOn)) {
-          console.warn(`[scheduler] Skill "${skill.id}" depends on "${skill.dependsOn}" which is not in the registry`);
+          console.warn(
+            `[scheduler] Skill "${skill.id}" depends on "${skill.dependsOn}" which is not in the registry`,
+          );
         } else if (hasCycle(skill.id, registry)) {
-          console.error(`[scheduler] Circular dependency detected for "${skill.id}". Ignoring dependency.`);
+          console.error(
+            `[scheduler] Circular dependency detected for "${skill.id}". Ignoring dependency.`,
+          );
         } else {
           const existing = dependents.get(skill.dependsOn) ?? [];
           dependents.set(skill.dependsOn, [...existing, skill]);
@@ -389,27 +401,42 @@ export function createScheduler(
   };
 
   /**
-   * Enqueue all dependents for a completed trigger skill.
-   * Called by the worker's completion callback; also used by catch-up.
-   * Fire-and-forget per dependent — failures are logged but don't block others.
+   * Enqueue all dependents for a completed trigger skill. The caller awaits the
+   * durable enqueue boundary; a failure retries the source processor, which now
+   * reuses its persisted ActivityResult instead of rerunning the skill.
    */
-  const resolveDependents = (skillId: SkillId, triggeredAt: string): void => {
+  const resolveDependents = async (skillId: SkillId, triggeredAt: string): Promise<void> => {
     const deps = dependents.get(skillId) ?? [];
     if (deps.length === 0) return;
 
     const triggerTime = new Date(triggeredAt);
     triggerTime.setMilliseconds(0); // match buildScheduledJob normalization for deterministic job IDs
+    const jobs: ScheduledJob[] = [];
     for (const dep of deps) {
       const depJob = buildScheduledJob(dep, triggerTime);
       if (depJob === null) {
-        console.error(`[scheduler] Failed to build dependent job for ${dep.id}`);
-        continue;
+        throw new Error(`Failed to build dependent job for ${dep.id}`);
       }
-      enqueueScheduled(depJob).catch((e: unknown) => {
-        console.error(`[scheduler] Failed to enqueue dependent ${dep.id} after ${skillId} completed:`, e);
-      });
+      jobs.push(depJob);
     }
-    console.info(`[scheduler] Resolved ${deps.length} dependent(s) for ${skillId}: ${deps.map((d) => d.id).join(', ')}`);
+
+    const outcomes = await Promise.allSettled(jobs.map((job) => enqueueScheduled(job)));
+    const failures = outcomes.flatMap((outcome, index) => {
+      if (outcome.status !== 'rejected') return [];
+      const job = jobs[index];
+      if (job === undefined) {
+        return ['unknown dependent: enqueue outcome had no matching job'];
+      }
+      return [
+        `${job.skillId}: ${outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason)}`,
+      ];
+    });
+    if (failures.length > 0) {
+      throw new Error(`Failed to enqueue dependent jobs after ${skillId}: ${failures.join('; ')}`);
+    }
+    console.info(
+      `[scheduler] Resolved ${deps.length} dependent(s) for ${skillId}: ${deps.map((d) => d.id).join(', ')}`,
+    );
   };
 
   return { reconcile, stop, getActiveJobs, resolveDependents } as const;

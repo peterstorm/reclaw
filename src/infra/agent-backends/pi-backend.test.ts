@@ -54,9 +54,16 @@ describe('piBackend', () => {
       ]);
     });
 
-    it('omits --tools when allowedTools is empty', () => {
+    it('enables Pi delegation while harmlessly carrying alternate-backend names', () => {
+      const result = piBackend.buildArgs({
+        allowedTools: ['Edit', 'Task', 'Skill', 'subagent'],
+      });
+      expect(result).toEqual(['pi', '-p', '--mode', 'json', '--tools', 'edit,task,skill,subagent']);
+    });
+
+    it('uses --no-tools when allowedTools is empty', () => {
       const result = piBackend.buildArgs({ allowedTools: [] });
-      expect(result).toEqual(['pi', '-p', '--mode', 'json']);
+      expect(result).toEqual(['pi', '-p', '--mode', 'json', '--no-tools']);
       expect(result).not.toContain('--tools');
     });
 
@@ -74,6 +81,7 @@ describe('piBackend', () => {
         '-p',
         '--mode',
         'json',
+        '--no-tools',
       ]);
     });
 
@@ -154,17 +162,26 @@ describe('piBackend', () => {
         // First assistant message — intermediate narration before tool call
         JSON.stringify({
           type: 'message_end',
-          message: { role: 'assistant', content: [{ type: 'text', text: 'Let me check the calendar...' }] },
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'Let me check the calendar...' }],
+          },
         }),
         // Second assistant message — more narration before another tool call
         JSON.stringify({
           type: 'message_end',
-          message: { role: 'assistant', content: [{ type: 'text', text: 'Now let me gather git activity...' }] },
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'Now let me gather git activity...' }],
+          },
         }),
         // Final assistant message — the actual user-facing response
         JSON.stringify({
           type: 'message_end',
-          message: { role: 'assistant', content: [{ type: 'text', text: 'Here is your weekly summary!' }] },
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'Here is your weekly summary!' }],
+          },
         }),
       ];
       const rawOutput = lines.join('\n');

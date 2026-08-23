@@ -1,22 +1,27 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Must be hoisted before other imports so it intercepts the handler's fs import
 vi.mock('node:fs/promises', () => ({
   default: {
     readFile: vi.fn(),
+    unlink: vi.fn().mockResolvedValue(undefined),
   },
 }));
 
-import { handleChatJob, type ChatDeps } from './chat-handler.js';
-import type { ChatJob } from '../core/types.js';
-import type { AppConfig } from '../infra/config.js';
-import type { TelegramAdapter } from '../infra/telegram.js';
-import type { AgentResult, OnStreamChunk, StreamChunk } from '../infra/agent-backends/index.js';
-import type { SessionStore } from '../infra/session-store.js';
-import type { SessionRecord } from '../core/session.js';
-import type { ClaudeSessionId } from '../core/types.js';
-import { getAllowedTools } from '../core/permissions.js';
 import fs from 'node:fs/promises';
+import { getAllowedTools } from '../core/permissions.js';
+import type { ConversationLineage } from '../core/session.js';
+import type { ChatJob } from '../core/types.js';
+import type {
+  ClaudeSessionId,
+  ConversationGeneration,
+  ConversationRevision,
+} from '../core/types.js';
+import type { AgentResult, OnStreamChunk, StreamChunk } from '../infra/agent-backends/index.js';
+import type { AppConfig } from '../infra/config.js';
+import type { SessionStore } from '../infra/session-store.js';
+import type { TelegramAdapter } from '../infra/telegram.js';
+import { type ChatDeps, handleChatJob } from './chat-handler.js';
 
 const mockReadFile = fs.readFile as ReturnType<typeof vi.fn>;
 
@@ -29,6 +34,12 @@ const makeChatJob = (overrides: Partial<ChatJob> = {}): ChatJob => ({
   chatId: 456,
   text: 'Hello, world!',
   receivedAt: '2026-02-26T08:00:00Z',
+  conversation: {
+    generation: 0 as ConversationGeneration,
+    revision: 0 as ConversationRevision,
+    backend: 'claude',
+    sessionId: null,
+  },
   ...overrides,
 });
 
@@ -60,16 +71,28 @@ const makeTelegram = (): TelegramAdapter => ({
 });
 
 const makeSessionStore = (): SessionStore & {
-  getSession: ReturnType<typeof vi.fn>;
-  saveSession: ReturnType<typeof vi.fn>;
-  deleteSession: ReturnType<typeof vi.fn>;
-} => ({
-  getSession: vi.fn().mockResolvedValue(null),
-  saveSession: vi.fn().mockResolvedValue(undefined),
-  deleteSession: vi.fn().mockResolvedValue(undefined),
-  saveMessageSession: vi.fn().mockResolvedValue(undefined),
-  getMessageSession: vi.fn().mockResolvedValue(null),
-});
+  getCurrent: ReturnType<typeof vi.fn>;
+  advance: ReturnType<typeof vi.fn>;
+  commitSession: ReturnType<typeof vi.fn>;
+  saveMessageReference: ReturnType<typeof vi.fn>;
+  getMessageReference: ReturnType<typeof vi.fn>;
+} => {
+  const current: ConversationLineage = {
+    schemaVersion: 1,
+    generation: 0 as ConversationGeneration,
+    revision: 0 as ConversationRevision,
+    backend: 'claude',
+    sessionId: null,
+    lastActivityAt: '2026-02-26T08:00:00Z',
+  };
+  return {
+    getCurrent: vi.fn().mockResolvedValue(current),
+    advance: vi.fn().mockResolvedValue(current),
+    commitSession: vi.fn().mockResolvedValue({ kind: 'committed', lineage: current }),
+    saveMessageReference: vi.fn().mockResolvedValue(undefined),
+    getMessageReference: vi.fn().mockResolvedValue(null),
+  };
+};
 
 /** Helper to build a StreamChunk with all required fields. */
 const chunk = (
@@ -91,7 +114,9 @@ const chunk = (
 const makeRunClaudeStreaming = (result: AgentResult) =>
   vi.fn().mockImplementation((_options: unknown, onChunk?: OnStreamChunk) => {
     if (result.ok && onChunk) {
-      onChunk(chunk('text', '', result.output, { textBlockCount: 1, currentBlockText: result.output }));
+      onChunk(
+        chunk('text', '', result.output, { textBlockCount: 1, currentBlockText: result.output }),
+      );
     }
     return Promise.resolve(result);
   });
@@ -108,7 +133,12 @@ describe('handleChatJob', () => {
     const job = makeChatJob();
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const runClaudeStreaming = makeRunClaudeStreaming({ ok: true, output: 'Hello from claude!', sessionId: 'sess-1', durationMs: 500 });
+    const runClaudeStreaming = makeRunClaudeStreaming({
+      ok: true,
+      output: 'Hello from claude!',
+      sessionId: 'sess-1',
+      durationMs: 500,
+    });
 
     const result = await handleChatJob(job, {
       runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
@@ -127,7 +157,12 @@ describe('handleChatJob', () => {
     const job = makeChatJob();
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const runClaudeStreaming = makeRunClaudeStreaming({ ok: true, output: 'response', sessionId: null, durationMs: 100 });
+    const runClaudeStreaming = makeRunClaudeStreaming({
+      ok: true,
+      output: 'response',
+      sessionId: null,
+      durationMs: 100,
+    });
 
     await handleChatJob(job, {
       runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
@@ -137,7 +172,7 @@ describe('handleChatJob', () => {
     });
 
     expect(runClaudeStreaming).toHaveBeenCalledOnce();
-    const callArgs = runClaudeStreaming.mock.calls[0]![0];
+    const callArgs = runClaudeStreaming.mock.calls[0]?.[0];
     expect(callArgs.allowedTools).toEqual(getAllowedTools('chat'));
   });
 
@@ -145,7 +180,12 @@ describe('handleChatJob', () => {
     const job = makeChatJob();
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const runClaudeStreaming = makeRunClaudeStreaming({ ok: true, output: 'response', sessionId: null, durationMs: 100 });
+    const runClaudeStreaming = makeRunClaudeStreaming({
+      ok: true,
+      output: 'response',
+      sessionId: null,
+      durationMs: 100,
+    });
 
     await handleChatJob(job, {
       runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
@@ -154,7 +194,7 @@ describe('handleChatJob', () => {
       sessionStore,
     });
 
-    const callArgs = runClaudeStreaming.mock.calls[0]![0];
+    const callArgs = runClaudeStreaming.mock.calls[0]?.[0];
     expect(callArgs.cwd).toBe('/my/workspace');
     expect(callArgs.timeoutMs).toBe(3_600_000);
   });
@@ -165,7 +205,12 @@ describe('handleChatJob', () => {
     const job = makeChatJob({ text: 'What is the capital of France?' });
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const runClaudeStreaming = makeRunClaudeStreaming({ ok: true, output: 'Paris', sessionId: null, durationMs: 100 });
+    const runClaudeStreaming = makeRunClaudeStreaming({
+      ok: true,
+      output: 'Paris',
+      sessionId: null,
+      durationMs: 100,
+    });
 
     await handleChatJob(job, {
       runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
@@ -174,9 +219,43 @@ describe('handleChatJob', () => {
       sessionStore,
     });
 
-    const callArgs = runClaudeStreaming.mock.calls[0]![0];
+    const callArgs = runClaudeStreaming.mock.calls[0]?.[0];
     expect(callArgs.prompt).toContain('You are a helpful assistant.');
     expect(callArgs.prompt).toContain('What is the capital of France?');
+  });
+
+  it('includes extracted PDF text in both fresh and resumed prompts', async () => {
+    const job = makeChatJob({
+      text: 'Summarize this',
+      documentPaths: ['/state/report.pdf.txt'],
+    });
+    const sessionStore = makeSessionStore();
+    sessionStore.getCurrent.mockResolvedValue({
+      schemaVersion: 1,
+      generation: 0 as ConversationGeneration,
+      revision: 0 as ConversationRevision,
+      backend: 'claude',
+      sessionId: 'existing-session' as ClaudeSessionId,
+      lastActivityAt: new Date().toISOString(),
+    });
+    const runClaudeStreaming = makeRunClaudeStreaming({
+      ok: true,
+      output: 'Summary',
+      sessionId: 'existing-session',
+      durationMs: 100,
+    });
+
+    await handleChatJob(job, {
+      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      telegram: makeTelegram(),
+      config: makeConfig(),
+      sessionStore,
+      completionMode: 'durable',
+    });
+
+    expect(runClaudeStreaming.mock.calls[0]?.[0].prompt).toContain(
+      '[Read extracted PDF text: /state/report.pdf.txt]',
+    );
   });
 
   it('uses empty personality fallback when personality file read fails (FR-009)', async () => {
@@ -185,7 +264,12 @@ describe('handleChatJob', () => {
     const job = makeChatJob({ text: 'Hello!' });
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const runClaudeStreaming = makeRunClaudeStreaming({ ok: true, output: 'Hi!', sessionId: null, durationMs: 100 });
+    const runClaudeStreaming = makeRunClaudeStreaming({
+      ok: true,
+      output: 'Hi!',
+      sessionId: null,
+      durationMs: 100,
+    });
 
     const result = await handleChatJob(job, {
       runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
@@ -195,7 +279,7 @@ describe('handleChatJob', () => {
     });
 
     expect(result.ok).toBe(true);
-    const callArgs = runClaudeStreaming.mock.calls[0]![0];
+    const callArgs = runClaudeStreaming.mock.calls[0]?.[0];
     expect(callArgs.prompt).toBe('Hello!');
   });
 
@@ -203,7 +287,12 @@ describe('handleChatJob', () => {
     const job = makeChatJob({ chatId: 789 });
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const runClaudeStreaming = makeRunClaudeStreaming({ ok: true, output: 'Final response', sessionId: null, durationMs: 200 });
+    const runClaudeStreaming = makeRunClaudeStreaming({
+      ok: true,
+      output: 'Final response',
+      sessionId: null,
+      durationMs: 200,
+    });
 
     await handleChatJob(job, {
       runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
@@ -217,17 +306,90 @@ describe('handleChatJob', () => {
 
     // Final response should edit the placeholder (messageId=42 from mock)
     const editCalls = (telegram.editMessage as ReturnType<typeof vi.fn>).mock.calls;
-    const lastEdit = editCalls[editCalls.length - 1]!;
+    const lastEdit = editCalls.at(-1);
+    if (lastEdit === undefined) throw new Error('Expected a final Telegram edit');
     expect(lastEdit[0]).toBe(789);
     expect(lastEdit[1]).toBe(42);
     expect(lastEdit[2]).toBe('Final response');
+  });
+
+  it('returns durable completion effects before session, final delivery, and Cortex I/O', async () => {
+    const job = makeChatJob({
+      chatId: 789,
+      imagePaths: ['/state/image.jpg'],
+      documentPaths: ['/state/report.pdf.txt'],
+    });
+    const telegram = makeTelegram();
+    const sessionStore = makeSessionStore();
+    const triggerCortexExtraction = vi.fn();
+    const runClaudeStreaming = makeRunClaudeStreaming({
+      ok: true,
+      output: 'Durable response',
+      sessionId: 'durable-session',
+      durationMs: 200,
+    });
+
+    const result = await handleChatJob(job, {
+      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      telegram,
+      config: makeConfig(),
+      sessionStore,
+      triggerCortexExtraction,
+      completionMode: 'durable',
+    });
+
+    expect(result).toMatchObject({
+      kind: 'completed',
+      response: 'Durable response',
+      sessionId: 'durable-session',
+      sourcePaths: ['/state/image.jpg', '/state/report.pdf.txt'],
+      telegramOperations: [
+        {
+          kind: 'edit',
+          messageId: 42,
+          text: 'Durable response',
+          format: 'html',
+        },
+      ],
+    });
+    expect(sessionStore.commitSession).not.toHaveBeenCalled();
+    // Live preview edits remain best-effort; the final HTML edit is deferred.
+    expect(telegram.editMessage).not.toHaveBeenCalledWith(789, 42, 'Durable response', {
+      html: true,
+    });
+    expect(triggerCortexExtraction).not.toHaveBeenCalled();
+  });
+
+  it('preserves typed agent failure data in durable mode', async () => {
+    const failure = {
+      kind: 'provider-rate-limited',
+      backend: 'pi',
+      detail: '429 quota exceeded',
+    } as const;
+    const result = await handleChatJob(makeChatJob(), {
+      runClaudeStreaming: makeRunClaudeStreaming({
+        ok: false,
+        failure,
+      }) as unknown as ChatDeps['runClaudeStreaming'],
+      telegram: makeTelegram(),
+      config: makeConfig(),
+      sessionStore: makeSessionStore(),
+      completionMode: 'durable',
+    });
+
+    expect(result).toEqual({ kind: 'failed', failure });
   });
 
   it('does not use sendChunkedMessage when placeholder succeeds', async () => {
     const job = makeChatJob({ chatId: 789 });
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const runClaudeStreaming = makeRunClaudeStreaming({ ok: true, output: 'Response', sessionId: null, durationMs: 200 });
+    const runClaudeStreaming = makeRunClaudeStreaming({
+      ok: true,
+      output: 'Response',
+      sessionId: null,
+      durationMs: 200,
+    });
 
     await handleChatJob(job, {
       runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
@@ -243,9 +405,16 @@ describe('handleChatJob', () => {
     const job = makeChatJob({ chatId: 789 });
     const telegram = makeTelegram();
     // First sendMessage (placeholder) fails, second (error/result) should work
-    (telegram.sendMessage as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('Telegram API error'));
+    (telegram.sendMessage as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('Telegram API error'),
+    );
     const sessionStore = makeSessionStore();
-    const runClaudeStreaming = makeRunClaudeStreaming({ ok: true, output: 'Fallback response', sessionId: null, durationMs: 200 });
+    const runClaudeStreaming = makeRunClaudeStreaming({
+      ok: true,
+      output: 'Fallback response',
+      sessionId: null,
+      durationMs: 200,
+    });
 
     await handleChatJob(job, {
       runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
@@ -256,16 +425,23 @@ describe('handleChatJob', () => {
 
     // Should fall back to chunked message
     expect(telegram.sendChunkedMessage).toHaveBeenCalledOnce();
-    const [chatId, chunks] = (telegram.sendChunkedMessage as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    const firstChunkedCall = (
+      telegram.sendChunkedMessage as ReturnType<typeof vi.fn>
+    ).mock.calls.at(0);
+    if (firstChunkedCall === undefined) throw new Error('Expected a chunked Telegram send');
+    const [chatId, chunks] = firstChunkedCall;
     expect(chatId).toBe(789);
     expect(chunks).toEqual(['Fallback response']);
   });
 
-  it('stays silent on claude failure — user error is the dead-letter handler\'s job (FR-012)', async () => {
+  it("stays silent on claude failure — user error is the dead-letter handler's job (FR-012)", async () => {
     const job = makeChatJob({ chatId: 999 });
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const runClaudeStreaming = makeRunClaudeStreaming({ ok: false, error: 'claude exited with code 1', timedOut: false });
+    const runClaudeStreaming = makeRunClaudeStreaming({
+      ok: false,
+      failure: { kind: 'process-exit', backend: 'claude', exitCode: 1, detail: 'failure' },
+    });
 
     const result = await handleChatJob(job, {
       runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
@@ -276,7 +452,7 @@ describe('handleChatJob', () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error).toBe('claude exited with code 1');
+      expect(result.error).toBe('claude exited with code 1: failure');
     }
 
     // Handler must NOT send a per-attempt "Sorry" — that produced one duplicate
@@ -295,7 +471,10 @@ describe('handleChatJob', () => {
     const job = makeChatJob();
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const runClaudeStreaming = makeRunClaudeStreaming({ ok: false, error: 'timeout', timedOut: true });
+    const runClaudeStreaming = makeRunClaudeStreaming({
+      ok: false,
+      failure: { kind: 'timeout', backend: 'claude', timeoutMs: 120_000 },
+    });
 
     await handleChatJob(job, {
       runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
@@ -312,7 +491,12 @@ describe('handleChatJob', () => {
     const job = makeChatJob({ text: 'What is the answer?' });
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const runClaudeStreaming = makeRunClaudeStreaming({ ok: true, output: claudeOutput, sessionId: null, durationMs: 300 });
+    const runClaudeStreaming = makeRunClaudeStreaming({
+      ok: true,
+      output: claudeOutput,
+      sessionId: null,
+      durationMs: 300,
+    });
 
     const result = await handleChatJob(job, {
       runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
@@ -333,7 +517,12 @@ describe('handleChatJob', () => {
     const job = makeChatJob({ chatId: 456 });
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const runClaudeStreaming = makeRunClaudeStreaming({ ok: true, output: 'hi', sessionId: 'sess-new', durationMs: 100 });
+    const runClaudeStreaming = makeRunClaudeStreaming({
+      ok: true,
+      output: 'hi',
+      sessionId: 'sess-new',
+      durationMs: 100,
+    });
 
     await handleChatJob(job, {
       runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
@@ -342,17 +531,28 @@ describe('handleChatJob', () => {
       sessionStore,
     });
 
-    expect(sessionStore.saveSession).toHaveBeenCalledOnce();
-    const [chatId, record] = sessionStore.saveSession.mock.calls[0]!;
-    expect(chatId).toBe(456);
-    expect(record.sessionId).toBe('sess-new');
+    expect(sessionStore.commitSession).toHaveBeenCalledOnce();
+    expect(sessionStore.commitSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 456,
+        expectedGeneration: 0,
+        expectedRevision: 0,
+        backend: 'claude',
+        sessionId: 'sess-new',
+      }),
+    );
   });
 
   it('does not save session when sessionId is null', async () => {
     const job = makeChatJob();
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const runClaudeStreaming = makeRunClaudeStreaming({ ok: true, output: 'hi', sessionId: null, durationMs: 100 });
+    const runClaudeStreaming = makeRunClaudeStreaming({
+      ok: true,
+      output: 'hi',
+      sessionId: null,
+      durationMs: 100,
+    });
 
     await handleChatJob(job, {
       runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
@@ -361,18 +561,27 @@ describe('handleChatJob', () => {
       sessionStore,
     });
 
-    expect(sessionStore.saveSession).not.toHaveBeenCalled();
+    expect(sessionStore.commitSession).not.toHaveBeenCalled();
   });
 
   it('resumes existing valid session — sends message-only prompt', async () => {
     const job = makeChatJob({ text: 'follow up question' });
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    sessionStore.getSession.mockResolvedValue({
+    sessionStore.getCurrent.mockResolvedValue({
+      schemaVersion: 1,
+      generation: 0 as ConversationGeneration,
+      revision: 0 as ConversationRevision,
+      backend: 'claude',
       sessionId: 'sess-existing' as ClaudeSessionId,
-      lastActivityAt: new Date().toISOString(), // fresh
-    } satisfies SessionRecord);
-    const runClaudeStreaming = makeRunClaudeStreaming({ ok: true, output: 'answer', sessionId: 'sess-existing', durationMs: 100 });
+      lastActivityAt: new Date().toISOString(),
+    } satisfies ConversationLineage);
+    const runClaudeStreaming = makeRunClaudeStreaming({
+      ok: true,
+      output: 'answer',
+      sessionId: 'sess-existing',
+      durationMs: 100,
+    });
 
     await handleChatJob(job, {
       runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
@@ -381,25 +590,127 @@ describe('handleChatJob', () => {
       sessionStore,
     });
 
-    const callArgs = runClaudeStreaming.mock.calls[0]![0];
+    const callArgs = runClaudeStreaming.mock.calls[0]?.[0];
     // Should send just the user message, not personality+message
     expect(callArgs.prompt).toBe('follow up question');
     expect(callArgs.resumeSessionId).toBe('sess-existing');
+  });
+
+  it('rebases queued work onto the latest revision within its generation', async () => {
+    const job = makeChatJob({
+      conversation: {
+        generation: 3 as ConversationGeneration,
+        revision: 0 as ConversationRevision,
+        backend: 'pi',
+        sessionId: 'session-at-ingress' as ClaudeSessionId,
+      },
+    });
+    const sessionStore = makeSessionStore();
+    sessionStore.getCurrent.mockResolvedValue({
+      schemaVersion: 1,
+      generation: 3 as ConversationGeneration,
+      revision: 2 as ConversationRevision,
+      backend: 'pi',
+      sessionId: 'session-latest' as ClaudeSessionId,
+      lastActivityAt: new Date().toISOString(),
+    } satisfies ConversationLineage);
+    const runClaudeStreaming = makeRunClaudeStreaming({
+      ok: true,
+      output: 'continued',
+      sessionId: 'session-next',
+      durationMs: 100,
+    });
+
+    const result = await handleChatJob(job, {
+      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      telegram: makeTelegram(),
+      config: makeConfig(),
+      sessionStore,
+      completionMode: 'durable',
+    });
+
+    expect(runClaudeStreaming.mock.calls[0]?.[0]).toMatchObject({
+      resumeSessionId: 'session-latest',
+      backend: 'pi',
+    });
+    expect(result).toMatchObject({
+      kind: 'completed',
+      conversationGeneration: 3,
+      conversationRevision: 2,
+      conversationBackend: 'pi',
+    });
+  });
+
+  it('keeps the ingress snapshot when a newer generation supersedes queued work', async () => {
+    const job = makeChatJob({
+      conversation: {
+        generation: 3 as ConversationGeneration,
+        revision: 1 as ConversationRevision,
+        backend: 'claude',
+        sessionId: 'session-old-generation' as ClaudeSessionId,
+      },
+    });
+    const sessionStore = makeSessionStore();
+    sessionStore.getCurrent.mockResolvedValue({
+      schemaVersion: 1,
+      generation: 4 as ConversationGeneration,
+      revision: 0 as ConversationRevision,
+      backend: 'pi',
+      sessionId: null,
+      lastActivityAt: new Date().toISOString(),
+    } satisfies ConversationLineage);
+    const runClaudeStreaming = makeRunClaudeStreaming({
+      ok: true,
+      output: 'old request result',
+      sessionId: 'session-old-result',
+      durationMs: 100,
+    });
+
+    const result = await handleChatJob(job, {
+      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      telegram: makeTelegram(),
+      config: makeConfig(),
+      sessionStore,
+      completionMode: 'durable',
+    });
+
+    expect(runClaudeStreaming.mock.calls[0]?.[0]).toMatchObject({
+      resumeSessionId: 'session-old-generation',
+      backend: 'claude',
+    });
+    expect(result).toMatchObject({
+      conversationGeneration: 3,
+      conversationRevision: 1,
+      conversationBackend: 'claude',
+    });
   });
 
   it('falls back to fresh session on resume failure', async () => {
     const job = makeChatJob({ text: 'try again' });
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    sessionStore.getSession.mockResolvedValue({
+    sessionStore.getCurrent.mockResolvedValue({
+      schemaVersion: 1,
+      generation: 0 as ConversationGeneration,
+      revision: 0 as ConversationRevision,
+      backend: 'claude',
       sessionId: 'sess-stale' as ClaudeSessionId,
       lastActivityAt: new Date().toISOString(),
-    } satisfies SessionRecord);
+    } satisfies ConversationLineage);
 
     // First call (resume) fails, second call (fresh) succeeds
-    const runClaudeStreaming = vi.fn()
-      .mockResolvedValueOnce({ ok: false, error: 'session not found', timedOut: false })
-      .mockResolvedValueOnce({ ok: true, output: 'recovered', sessionId: 'sess-fresh', durationMs: 100 });
+    const runClaudeStreaming = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        failure: { kind: 'session-invalid', backend: 'claude', detail: 'session not found' },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        output: 'recovered',
+        sessionId: 'sess-fresh',
+        durationMs: 100,
+      });
 
     const result = await handleChatJob(job, {
       runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
@@ -415,12 +726,50 @@ describe('handleChatJob', () => {
     // Should have called runClaudeStreaming twice
     expect(runClaudeStreaming).toHaveBeenCalledTimes(2);
     // First with resume, second without
-    expect(runClaudeStreaming.mock.calls[0]![0].resumeSessionId).toBe('sess-stale');
-    expect(runClaudeStreaming.mock.calls[1]![0].resumeSessionId).toBeUndefined();
-    // Should have deleted stale session
-    expect(sessionStore.deleteSession).toHaveBeenCalledWith(job.chatId);
-    // Should have saved new session
-    expect(sessionStore.saveSession).toHaveBeenCalledOnce();
+    expect(runClaudeStreaming.mock.calls[0]?.[0].resumeSessionId).toBe('sess-stale');
+    expect(runClaudeStreaming.mock.calls[1]?.[0].resumeSessionId).toBeUndefined();
+    // Fallback does not mutate lineage before the fresh result commits.
+    expect(sessionStore.advance).not.toHaveBeenCalled();
+    expect(sessionStore.commitSession).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    {
+      label: 'timeout',
+      failure: { kind: 'timeout', backend: 'claude', timeoutMs: 120_000 } as const,
+    },
+    {
+      label: 'rate limit',
+      failure: {
+        kind: 'provider-rate-limited',
+        backend: 'pi',
+        detail: '429 quota exceeded',
+      } as const,
+    },
+  ])('does not discard a resumed session after $label', async ({ failure }) => {
+    const job = makeChatJob({ text: 'retain lineage' });
+    const telegram = makeTelegram();
+    const sessionStore = makeSessionStore();
+    sessionStore.getCurrent.mockResolvedValue({
+      schemaVersion: 1,
+      generation: 0 as ConversationGeneration,
+      revision: 0 as ConversationRevision,
+      backend: 'claude',
+      sessionId: 'sess-valid' as ClaudeSessionId,
+      lastActivityAt: new Date().toISOString(),
+    } satisfies ConversationLineage);
+    const runClaudeStreaming = makeRunClaudeStreaming({ ok: false, failure });
+
+    const result = await handleChatJob(job, {
+      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      telegram,
+      config: makeConfig(),
+      sessionStore,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(runClaudeStreaming).toHaveBeenCalledOnce();
+    expect(sessionStore.advance).not.toHaveBeenCalled();
   });
 
   // ─── Block-based streaming tests ───────────────────────────────────────────
@@ -437,25 +786,34 @@ describe('handleChatJob', () => {
     const sessionStore = makeSessionStore();
     const thinking = 'Let me analyze this carefully and consider the options...';
 
-    const runClaudeStreaming = vi.fn().mockImplementation(
-      (_opts: unknown, onChunk?: OnStreamChunk) => {
+    const runClaudeStreaming = vi
+      .fn()
+      .mockImplementation((_opts: unknown, onChunk?: OnStreamChunk) => {
         if (onChunk) {
           // Block start events + deltas
-          onChunk(chunk('thinking', thinking, '', {
-            currentBlockThinking: thinking,
-            thinkingBlockCount: 1,
-            textBlockCount: 0,
-          }));
-          onChunk(chunk('text', thinking, 'Final answer', {
-            currentBlockThinking: thinking,
-            currentBlockText: 'Final answer',
-            thinkingBlockCount: 1,
-            textBlockCount: 1,
-          }));
+          onChunk(
+            chunk('thinking', thinking, '', {
+              currentBlockThinking: thinking,
+              thinkingBlockCount: 1,
+              textBlockCount: 0,
+            }),
+          );
+          onChunk(
+            chunk('text', thinking, 'Final answer', {
+              currentBlockThinking: thinking,
+              currentBlockText: 'Final answer',
+              thinkingBlockCount: 1,
+              textBlockCount: 1,
+            }),
+          );
         }
-        return Promise.resolve({ ok: true, output: 'Final answer', sessionId: null, durationMs: 500 });
-      },
-    );
+        return Promise.resolve({
+          ok: true,
+          output: 'Final answer',
+          sessionId: null,
+          durationMs: 500,
+        });
+      });
 
     const result = await handleChatJob(job, {
       runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
@@ -472,7 +830,7 @@ describe('handleChatJob', () => {
       (c: unknown[]) => c[1] === 42 && (c[2] as string).includes('<i>'),
     );
     expect(thinkingEdit).toBeDefined();
-    expect(thinkingEdit![3]).toEqual({ html: true });
+    expect(thinkingEdit?.[3]).toEqual({ html: true });
 
     // Final thinking edit contains the full thinking content
     const finalThinkingEdit = editCalls.find(
@@ -488,7 +846,10 @@ describe('handleChatJob', () => {
 
     // Only text chunks, no thinking
     const runClaudeStreaming = makeRunClaudeStreaming({
-      ok: true, output: 'Direct answer', sessionId: null, durationMs: 200,
+      ok: true,
+      output: 'Direct answer',
+      sessionId: null,
+      durationMs: 200,
     });
 
     await handleChatJob(job, {
@@ -504,7 +865,8 @@ describe('handleChatJob', () => {
 
     // Final response edits placeholder (msgId=42)
     const editCalls = (telegram.editMessage as ReturnType<typeof vi.fn>).mock.calls;
-    const lastEdit = editCalls[editCalls.length - 1]!;
+    const lastEdit = editCalls.at(-1);
+    if (lastEdit === undefined) throw new Error('Expected a final Telegram edit');
     expect(lastEdit[1]).toBe(42);
     expect(lastEdit[2]).toBe('Direct answer');
 
@@ -518,17 +880,22 @@ describe('handleChatJob', () => {
     const sessionStore = makeSessionStore();
     const thinking = 'Analyzing the problem...';
 
-    const runClaudeStreaming = vi.fn().mockImplementation(
-      (_opts: unknown, onChunk?: OnStreamChunk) => {
+    const runClaudeStreaming = vi
+      .fn()
+      .mockImplementation((_opts: unknown, onChunk?: OnStreamChunk) => {
         if (onChunk) {
-          onChunk(chunk('thinking', thinking, '', {
-            currentBlockThinking: thinking,
-            thinkingBlockCount: 1,
-          }));
+          onChunk(
+            chunk('thinking', thinking, '', {
+              currentBlockThinking: thinking,
+              thinkingBlockCount: 1,
+            }),
+          );
         }
-        return Promise.resolve({ ok: false, error: 'claude crashed', timedOut: false });
-      },
-    );
+        return Promise.resolve({
+          ok: false,
+          failure: { kind: 'process-exit', backend: 'claude', exitCode: 1, detail: 'crashed' },
+        });
+      });
 
     const result = await handleChatJob(job, {
       runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
@@ -557,31 +924,49 @@ describe('handleChatJob', () => {
 
     // Simulate rapid thinking deltas — only first passes the 1500ms throttle,
     // rest are throttled. Block content must still capture the full content.
-    const runClaudeStreaming = vi.fn().mockImplementation(
-      (_opts: unknown, onChunk?: OnStreamChunk) => {
+    const runClaudeStreaming = vi
+      .fn()
+      .mockImplementation((_opts: unknown, onChunk?: OnStreamChunk) => {
         if (onChunk) {
-          onChunk(chunk('thinking', 'The', '', {
-            currentBlockThinking: 'The',
-            thinkingBlockCount: 1,
-          }));
-          onChunk(chunk('thinking', 'The user wants', '', {
-            currentBlockThinking: 'The user wants',
-            thinkingBlockCount: 1,
-          }));
-          onChunk(chunk('thinking', 'The user wants to understand how this works in detail', '', {
-            currentBlockThinking: 'The user wants to understand how this works in detail',
-            thinkingBlockCount: 1,
-          }));
-          onChunk(chunk('text', 'The user wants to understand how this works in detail', 'Here is the answer', {
-            currentBlockThinking: 'The user wants to understand how this works in detail',
-            currentBlockText: 'Here is the answer',
-            thinkingBlockCount: 1,
-            textBlockCount: 1,
-          }));
+          onChunk(
+            chunk('thinking', 'The', '', {
+              currentBlockThinking: 'The',
+              thinkingBlockCount: 1,
+            }),
+          );
+          onChunk(
+            chunk('thinking', 'The user wants', '', {
+              currentBlockThinking: 'The user wants',
+              thinkingBlockCount: 1,
+            }),
+          );
+          onChunk(
+            chunk('thinking', 'The user wants to understand how this works in detail', '', {
+              currentBlockThinking: 'The user wants to understand how this works in detail',
+              thinkingBlockCount: 1,
+            }),
+          );
+          onChunk(
+            chunk(
+              'text',
+              'The user wants to understand how this works in detail',
+              'Here is the answer',
+              {
+                currentBlockThinking: 'The user wants to understand how this works in detail',
+                currentBlockText: 'Here is the answer',
+                thinkingBlockCount: 1,
+                textBlockCount: 1,
+              },
+            ),
+          );
         }
-        return Promise.resolve({ ok: true, output: 'Here is the answer', sessionId: null, durationMs: 500 });
-      },
-    );
+        return Promise.resolve({
+          ok: true,
+          output: 'Here is the answer',
+          sessionId: null,
+          durationMs: 500,
+        });
+      });
 
     await handleChatJob(job, {
       runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
@@ -597,7 +982,7 @@ describe('handleChatJob', () => {
       (c: unknown[]) => c[1] === 42 && (c[2] as string) === `<i>${fullThinking}</i>`,
     );
     expect(finalThinkingEdit).toBeDefined();
-    expect(finalThinkingEdit![3]).toEqual({ html: true });
+    expect(finalThinkingEdit?.[3]).toEqual({ html: true });
   });
 
   it('creates separate messages for multiple thinking/text blocks', async () => {
@@ -611,45 +996,58 @@ describe('handleChatJob', () => {
     });
     const sessionStore = makeSessionStore();
 
-    const runClaudeStreaming = vi.fn().mockImplementation(
-      async (_opts: unknown, onChunk?: OnStreamChunk) => {
+    const runClaudeStreaming = vi
+      .fn()
+      .mockImplementation(async (_opts: unknown, onChunk?: OnStreamChunk) => {
         if (onChunk) {
           // Block 1: thinking
-          onChunk(chunk('thinking', 'First thought', '', {
-            currentBlockThinking: 'First thought',
-            thinkingBlockCount: 1,
-            textBlockCount: 0,
-          }));
+          onChunk(
+            chunk('thinking', 'First thought', '', {
+              currentBlockThinking: 'First thought',
+              thinkingBlockCount: 1,
+              textBlockCount: 0,
+            }),
+          );
           // Wait for throttle + async sendMessage
           await new Promise((r) => setTimeout(r, 1600));
           // Block 2: text
-          onChunk(chunk('text', 'First thought', 'Part 1 answer', {
-            currentBlockThinking: 'First thought',
-            currentBlockText: 'Part 1 answer',
-            thinkingBlockCount: 1,
-            textBlockCount: 1,
-          }));
+          onChunk(
+            chunk('text', 'First thought', 'Part 1 answer', {
+              currentBlockThinking: 'First thought',
+              currentBlockText: 'Part 1 answer',
+              thinkingBlockCount: 1,
+              textBlockCount: 1,
+            }),
+          );
           await new Promise((r) => setTimeout(r, 1600));
           // Block 3: thinking again
-          onChunk(chunk('thinking', 'First thought\nSecond thought', '', {
-            currentBlockThinking: 'Second thought',
-            currentBlockText: 'Part 1 answer',
-            thinkingBlockCount: 2,
-            textBlockCount: 1,
-          }));
+          onChunk(
+            chunk('thinking', 'First thought\nSecond thought', '', {
+              currentBlockThinking: 'Second thought',
+              currentBlockText: 'Part 1 answer',
+              thinkingBlockCount: 2,
+              textBlockCount: 1,
+            }),
+          );
           await new Promise((r) => setTimeout(r, 1600));
           // Block 4: text again
-          onChunk(chunk('text', 'First thought\nSecond thought', 'Part 1 answerPart 2 answer', {
-            currentBlockThinking: 'Second thought',
-            currentBlockText: 'Part 2 answer',
-            thinkingBlockCount: 2,
-            textBlockCount: 2,
-          }));
+          onChunk(
+            chunk('text', 'First thought\nSecond thought', 'Part 1 answerPart 2 answer', {
+              currentBlockThinking: 'Second thought',
+              currentBlockText: 'Part 2 answer',
+              thinkingBlockCount: 2,
+              textBlockCount: 2,
+            }),
+          );
           await new Promise((r) => setTimeout(r, 50));
         }
-        return { ok: true, output: 'Part 1 answerPart 2 answer', sessionId: null, durationMs: 5000 };
-      },
-    );
+        return {
+          ok: true,
+          output: 'Part 1 answerPart 2 answer',
+          sessionId: null,
+          durationMs: 5000,
+        };
+      });
 
     await handleChatJob(job, {
       runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
@@ -690,40 +1088,48 @@ describe('handleChatJob', () => {
     const sessionStore = makeSessionStore();
 
     // Rapid transitions — NO 1600ms gaps, simulates the real bug scenario
-    const runClaudeStreaming = vi.fn().mockImplementation(
-      async (_opts: unknown, onChunk?: OnStreamChunk) => {
+    const runClaudeStreaming = vi
+      .fn()
+      .mockImplementation(async (_opts: unknown, onChunk?: OnStreamChunk) => {
         if (onChunk) {
           // Thinking 1 — reuses placeholder (42), immediate
-          onChunk(chunk('thinking', 'First thought', '', {
-            currentBlockThinking: 'First thought',
-            thinkingBlockCount: 1,
-          }));
+          onChunk(
+            chunk('thinking', 'First thought', '', {
+              currentBlockThinking: 'First thought',
+              thinkingBlockCount: 1,
+            }),
+          );
           // Text 1 — creates new msg (43), content arrives before sendMessage resolves
-          onChunk(chunk('text', 'First thought', 'Answer one', {
-            currentBlockText: 'Answer one',
-            thinkingBlockCount: 1,
-            textBlockCount: 1,
-          }));
+          onChunk(
+            chunk('text', 'First thought', 'Answer one', {
+              currentBlockText: 'Answer one',
+              thinkingBlockCount: 1,
+              textBlockCount: 1,
+            }),
+          );
           // Let sendMessage promises resolve so catch-up edits fire
           await new Promise((r) => setTimeout(r, 10));
           // Thinking 2 — creates new msg (44), should trigger transition edit on text1
-          onChunk(chunk('thinking', 'First thought\nSecond thought', 'Answer one', {
-            currentBlockThinking: 'Second thought',
-            thinkingBlockCount: 2,
-            textBlockCount: 1,
-          }));
+          onChunk(
+            chunk('thinking', 'First thought\nSecond thought', 'Answer one', {
+              currentBlockThinking: 'Second thought',
+              thinkingBlockCount: 2,
+              textBlockCount: 1,
+            }),
+          );
           await new Promise((r) => setTimeout(r, 10));
           // Text 2 — creates new msg (45)
-          onChunk(chunk('text', 'First thought\nSecond thought', 'Answer oneAnswer two', {
-            currentBlockText: 'Answer two',
-            thinkingBlockCount: 2,
-            textBlockCount: 2,
-          }));
+          onChunk(
+            chunk('text', 'First thought\nSecond thought', 'Answer oneAnswer two', {
+              currentBlockText: 'Answer two',
+              thinkingBlockCount: 2,
+              textBlockCount: 2,
+            }),
+          );
           await new Promise((r) => setTimeout(r, 10));
         }
         return { ok: true, output: 'Answer oneAnswer two', sessionId: null, durationMs: 200 };
-      },
-    );
+      });
 
     await handleChatJob(job, {
       runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
@@ -737,7 +1143,8 @@ describe('handleChatJob', () => {
     // Text→thinking transition edit: text1 (msg 43) should have been edited
     // with its content BEFORE finalization (transition edit or catch-up edit)
     const text1Edits = editCalls.filter(
-      (c: unknown[]) => c[1] === 43 && typeof c[2] === 'string' && (c[2] as string).includes('Answer one'),
+      (c: unknown[]) =>
+        c[1] === 43 && typeof c[2] === 'string' && (c[2] as string).includes('Answer one'),
     );
     // Should have at least 2 edits on text1: one from catch-up/transition + one from finalization
     expect(text1Edits.length).toBeGreaterThanOrEqual(2);
@@ -760,29 +1167,33 @@ describe('handleChatJob', () => {
     });
     const sessionStore = makeSessionStore();
 
-    const runClaudeStreaming = vi.fn().mockImplementation(
-      async (_opts: unknown, onChunk?: OnStreamChunk) => {
+    const runClaudeStreaming = vi
+      .fn()
+      .mockImplementation(async (_opts: unknown, onChunk?: OnStreamChunk) => {
         if (onChunk) {
           // Thinking chunk — passes throttle (first call)
-          onChunk(chunk('thinking', 'Let me think...', '', {
-            currentBlockThinking: 'Let me think...',
-            thinkingBlockCount: 1,
-          }));
+          onChunk(
+            chunk('thinking', 'Let me think...', '', {
+              currentBlockThinking: 'Let me think...',
+              thinkingBlockCount: 1,
+            }),
+          );
           // Wait for throttle window to pass so text chunk also passes
           await new Promise((r) => setTimeout(r, 1600));
           // Text chunk — should create a new message
-          onChunk(chunk('text', 'Let me think...', 'Here is my response', {
-            currentBlockThinking: 'Let me think...',
-            currentBlockText: 'Here is my response',
-            thinkingBlockCount: 1,
-            textBlockCount: 1,
-          }));
+          onChunk(
+            chunk('text', 'Let me think...', 'Here is my response', {
+              currentBlockThinking: 'Let me think...',
+              currentBlockText: 'Here is my response',
+              thinkingBlockCount: 1,
+              textBlockCount: 1,
+            }),
+          );
           // Wait for sendMessage promise to resolve
           await new Promise((r) => setTimeout(r, 50));
         }
         return { ok: true, output: 'Here is my response', sessionId: null, durationMs: 2000 };
-      },
-    );
+      });
 
     await handleChatJob(job, {
       runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
@@ -811,7 +1222,12 @@ describe('handleChatJob', () => {
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
     const triggerCortexExtraction = vi.fn();
-    const runClaudeStreaming = makeRunClaudeStreaming({ ok: true, output: 'hi', sessionId: 'sess-abc', durationMs: 100 });
+    const runClaudeStreaming = makeRunClaudeStreaming({
+      ok: true,
+      output: 'hi',
+      sessionId: 'sess-abc',
+      durationMs: 100,
+    });
 
     await handleChatJob(job, {
       runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
@@ -830,7 +1246,12 @@ describe('handleChatJob', () => {
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
     const triggerCortexExtraction = vi.fn();
-    const runClaudeStreaming = makeRunClaudeStreaming({ ok: true, output: 'hi', sessionId: null, durationMs: 100 });
+    const runClaudeStreaming = makeRunClaudeStreaming({
+      ok: true,
+      output: 'hi',
+      sessionId: null,
+      durationMs: 100,
+    });
 
     await handleChatJob(job, {
       runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
@@ -848,7 +1269,10 @@ describe('handleChatJob', () => {
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
     const triggerCortexExtraction = vi.fn();
-    const runClaudeStreaming = makeRunClaudeStreaming({ ok: false, error: 'timeout', timedOut: true });
+    const runClaudeStreaming = makeRunClaudeStreaming({
+      ok: false,
+      failure: { kind: 'timeout', backend: 'claude', timeoutMs: 120_000 },
+    });
 
     await handleChatJob(job, {
       runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
@@ -865,7 +1289,12 @@ describe('handleChatJob', () => {
     const job = makeChatJob();
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const runClaudeStreaming = makeRunClaudeStreaming({ ok: true, output: 'hi', sessionId: 'sess-1', durationMs: 100 });
+    const runClaudeStreaming = makeRunClaudeStreaming({
+      ok: true,
+      output: 'hi',
+      sessionId: 'sess-1',
+      durationMs: 100,
+    });
 
     // No triggerCortexExtraction in deps — should not throw
     const result = await handleChatJob(job, {

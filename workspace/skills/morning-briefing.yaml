@@ -1,6 +1,7 @@
 name: Morning Briefing
 schedule: "20 7 * * 1-5"
 permissionProfile: scheduled
+environment: [GARMIN_EMAIL, GARMIN_PASSWORD]
 validityWindowMinutes: 60
 timeout: 600
 promptTemplate: |

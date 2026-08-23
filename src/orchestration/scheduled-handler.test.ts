@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Must be hoisted before other imports so it intercepts the handler's fs import
 vi.mock('node:fs/promises', () => ({
@@ -7,15 +7,19 @@ vi.mock('node:fs/promises', () => ({
   },
 }));
 
-import { handleScheduledJob, type ScheduledDeps } from './scheduled-handler.js';
-import type { ScheduledJob, SkillConfig, SkillRegistry } from '../core/types.js';
-import type { AppConfig } from '../infra/config.js';
-import type { TelegramAdapter } from '../infra/telegram.js';
-import type { SessionStore } from '../infra/session-store.js';
-import type { AgentResult } from '../infra/agent-backends/index.js';
-import type { ClaudeSessionId } from '../core/types.js';
-import { getAllowedTools } from '../core/permissions.js';
 import fs from 'node:fs/promises';
+import { getAllowedTools } from '../core/permissions.js';
+import type { ScheduledJob, SkillConfig, SkillRegistry } from '../core/types.js';
+import type {
+  ClaudeSessionId,
+  ConversationGeneration,
+  ConversationRevision,
+} from '../core/types.js';
+import type { AgentResult } from '../infra/agent-backends/index.js';
+import type { AppConfig } from '../infra/config.js';
+import type { SessionStore } from '../infra/session-store.js';
+import type { TelegramAdapter } from '../infra/telegram.js';
+import { type ScheduledDeps, handleScheduledJob } from './scheduled-handler.js';
 
 const mockReadFile = fs.readFile as ReturnType<typeof vi.fn>;
 
@@ -38,10 +42,12 @@ const makeSkillConfig = (overrides: Partial<SkillConfig> = {}): SkillConfig => (
   id: makeSkillId('morning-briefing'),
   name: 'Morning Briefing',
   schedule: '0 7 * * *',
-  promptTemplate: 'Date: {{date}}, Day: {{dayOfWeek}}, Personality: {{personality}}. Provide a morning briefing.',
+  promptTemplate:
+    'Date: {{date}}, Day: {{dayOfWeek}}, Personality: {{personality}}. Provide a morning briefing.',
   permissionProfile: 'scheduled',
   validityWindowMinutes: 60,
   timeout: 300,
+  environment: [],
   dependsOn: null,
   ...overrides,
 });
@@ -84,12 +90,21 @@ const makeTelegram = (): TelegramAdapter => {
   };
 };
 
-const makeSessionStore = (): SessionStore => ({
-  getSession: vi.fn().mockResolvedValue(null),
-  saveSession: vi.fn().mockResolvedValue(undefined),
-  deleteSession: vi.fn().mockResolvedValue(undefined),
-  saveMessageSession: vi.fn().mockResolvedValue(undefined),
-  getMessageSession: vi.fn().mockResolvedValue(null),
+const makeSessionStore = (): SessionStore & {
+  saveMessageReference: ReturnType<typeof vi.fn>;
+} => ({
+  getCurrent: vi.fn().mockResolvedValue({
+    schemaVersion: 1,
+    generation: 0 as ConversationGeneration,
+    revision: 0 as ConversationRevision,
+    backend: 'claude',
+    sessionId: null,
+    lastActivityAt: new Date().toISOString(),
+  }),
+  advance: vi.fn(),
+  commitSession: vi.fn(),
+  saveMessageReference: vi.fn().mockResolvedValue(undefined),
+  getMessageReference: vi.fn().mockResolvedValue(null),
 });
 
 const makeRunClaude = (result: AgentResult) => vi.fn().mockResolvedValue(result);
@@ -106,7 +121,12 @@ describe('handleScheduledJob', () => {
   it('returns ok result on successful execution', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runClaude = makeRunClaude({ ok: true, output: 'Morning briefing content', sessionId: null, durationMs: 1000 });
+    const runClaude = makeRunClaude({
+      ok: true,
+      output: 'Morning briefing content',
+      sessionId: null,
+      durationMs: 1000,
+    });
 
     const result = await handleScheduledJob(job, {
       runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
@@ -121,14 +141,18 @@ describe('handleScheduledJob', () => {
     }
   });
 
-  it('skips (does not fail) when validity window expired, so BullMQ never retries (FR-023)', async () => {
+  it('skips (does not fail) after the persisted deadline, so BullMQ never retries (FR-023)', async () => {
     const job = makeScheduledJob({
-      // triggered 2 hours ago — outside 60-minute validity window
       triggeredAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-      validUntil: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      validUntil: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
     });
     const telegram = makeTelegram();
-    const runClaude = makeRunClaude({ ok: true, output: 'Should not run', sessionId: null, durationMs: 0 });
+    const runClaude = makeRunClaude({
+      ok: true,
+      output: 'Should not run',
+      sessionId: null,
+      durationMs: 0,
+    });
 
     const result = await handleScheduledJob(job, {
       runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
@@ -147,10 +171,38 @@ describe('handleScheduledJob', () => {
     expect(telegram.sendMessage).not.toHaveBeenCalled();
   });
 
+  it('does not let hot-reloaded skill config shorten an accepted job deadline', async () => {
+    const job = makeScheduledJob({
+      triggeredAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+      validUntil: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    });
+    const runClaude = makeRunClaude({
+      ok: true,
+      output: 'Runs under the accepted deadline',
+      sessionId: null,
+      durationMs: 0,
+    });
+
+    const result = await handleScheduledJob(job, {
+      runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
+      telegram: makeTelegram(),
+      skillRegistry: makeRegistry([makeSkillConfig({ validityWindowMinutes: 1 })]),
+      config: makeConfig(),
+    });
+
+    expect(result.kind).toBe('completed');
+    expect(runClaude).toHaveBeenCalledOnce();
+  });
+
   it('returns error when skill not found in registry', async () => {
     const job = makeScheduledJob({ skillId: makeSkillId('nonexistent-skill') });
     const telegram = makeTelegram();
-    const runClaude = makeRunClaude({ ok: true, output: 'Should not run', sessionId: null, durationMs: 0 });
+    const runClaude = makeRunClaude({
+      ok: true,
+      output: 'Should not run',
+      sessionId: null,
+      durationMs: 0,
+    });
 
     const result = await handleScheduledJob(job, {
       runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
@@ -171,7 +223,12 @@ describe('handleScheduledJob', () => {
 
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runClaude = makeRunClaude({ ok: true, output: 'Briefing without personality', sessionId: null, durationMs: 500 });
+    const runClaude = makeRunClaude({
+      ok: true,
+      output: 'Briefing without personality',
+      sessionId: null,
+      durationMs: 500,
+    });
 
     const result = await handleScheduledJob(job, {
       runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
@@ -182,7 +239,7 @@ describe('handleScheduledJob', () => {
 
     expect(result.kind).toBe('completed');
     // Prompt has empty personality interpolated
-    const callArgs = runClaude.mock.calls[0]![0];
+    const callArgs = runClaude.mock.calls[0]?.[0];
     expect(callArgs.prompt).toContain('Personality: ');
   });
 
@@ -200,11 +257,13 @@ describe('handleScheduledJob', () => {
       config: makeConfig(),
     });
 
-    const callArgs = runClaude.mock.calls[0]![0];
+    const callArgs = runClaude.mock.calls[0]?.[0];
     // Date should be a YYYY-MM-DD string
     expect(callArgs.prompt).toMatch(/Date: \d{4}-\d{2}-\d{2}/);
     // Day of week
-    expect(callArgs.prompt).toMatch(/Day: (Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)/);
+    expect(callArgs.prompt).toMatch(
+      /Day: (Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)/,
+    );
     // Personality interpolated
     expect(callArgs.prompt).toContain('Personality: Test personality content');
   });
@@ -221,8 +280,71 @@ describe('handleScheduledJob', () => {
       config: makeConfig(),
     });
 
-    const callArgs = runClaude.mock.calls[0]![0];
+    const callArgs = runClaude.mock.calls[0]?.[0];
     expect(callArgs.allowedTools).toEqual(getAllowedTools('scheduled'));
+  });
+
+  it('passes only the service environment explicitly granted by the skill', async () => {
+    const job = makeScheduledJob();
+    const telegram = makeTelegram();
+    const runClaude = makeRunClaude({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
+    const garminSkill = makeSkillConfig({
+      environment: ['GARMIN_EMAIL', 'GARMIN_PASSWORD'],
+    });
+
+    await handleScheduledJob(job, {
+      runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
+      telegram,
+      skillRegistry: makeRegistry([garminSkill]),
+      config: makeConfig(),
+      processEnvironment: {
+        GARMIN_EMAIL: 'runner@example.com',
+        GARMIN_PASSWORD: 'garmin-secret',
+        TELEGRAM_TOKEN: 'must-not-leak',
+        GOOGLE_PASSWORD: 'not-granted',
+      },
+    });
+
+    expect(runClaude.mock.calls[0]?.[0].env).toEqual({
+      GARMIN_EMAIL: 'runner@example.com',
+      GARMIN_PASSWORD: 'garmin-secret',
+    });
+  });
+
+  it('omits service environment when the skill has no grants', async () => {
+    const job = makeScheduledJob();
+    const telegram = makeTelegram();
+    const runClaude = makeRunClaude({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
+
+    await handleScheduledJob(job, {
+      runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
+      telegram,
+      skillRegistry: makeRegistry(),
+      config: makeConfig(),
+      processEnvironment: {
+        GARMIN_PASSWORD: 'must-not-leak',
+        TELEGRAM_TOKEN: 'must-not-leak',
+      },
+    });
+
+    expect(runClaude.mock.calls[0]?.[0]).not.toHaveProperty('env');
+  });
+
+  it('omits an allowed service variable that is not configured', async () => {
+    const job = makeScheduledJob();
+    const telegram = makeTelegram();
+    const runClaude = makeRunClaude({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
+    const garminSkill = makeSkillConfig({ environment: ['GARMIN_EMAIL', 'GARMIN_PASSWORD'] });
+
+    await handleScheduledJob(job, {
+      runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
+      telegram,
+      skillRegistry: makeRegistry([garminSkill]),
+      config: makeConfig(),
+      processEnvironment: { GARMIN_EMAIL: 'runner@example.com' },
+    });
+
+    expect(runClaude.mock.calls[0]?.[0].env).toEqual({ GARMIN_EMAIL: 'runner@example.com' });
   });
 
   it('uses scheduled timeout and workspace cwd (FR-016)', async () => {
@@ -237,7 +359,7 @@ describe('handleScheduledJob', () => {
       config: makeConfig({ workspacePath: '/my/workspace', scheduledTimeoutMs: 200_000 }),
     });
 
-    const callArgs = runClaude.mock.calls[0]![0];
+    const callArgs = runClaude.mock.calls[0]?.[0];
     expect(callArgs.cwd).toBe('/my/workspace');
     expect(callArgs.timeoutMs).toBe(300_000); // skill.timeout (300s) * 1000
   });
@@ -260,7 +382,7 @@ describe('handleScheduledJob', () => {
     expect(callArgs?.backend).toBe('pi');
   });
 
-  it('omits backend when skill has no override, preserving global AGENT_BACKEND fallback', async () => {
+  it('snapshots the configured backend when the skill has no override', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
     const runClaude = makeRunClaude({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
@@ -274,7 +396,7 @@ describe('handleScheduledJob', () => {
 
     const callArgs = runClaude.mock.calls.at(0)?.[0];
     expect(callArgs).toBeDefined();
-    expect(callArgs?.backend).toBeUndefined();
+    expect(callArgs?.backend).toBe('pi');
   });
 
   it('falls back to global scheduledTimeoutMs when skill has no timeout', async () => {
@@ -290,14 +412,70 @@ describe('handleScheduledJob', () => {
       config: makeConfig({ workspacePath: '/my/workspace', scheduledTimeoutMs: 200_000 }),
     });
 
-    const callArgs = runClaude.mock.calls[0]![0];
+    const callArgs = runClaude.mock.calls[0]?.[0];
     expect(callArgs.timeoutMs).toBe(200_000);
+  });
+
+  it('returns durable completion data without performing delivery side effects', async () => {
+    const job = makeScheduledJob();
+    const telegram = makeTelegram();
+    const sessionStore = makeSessionStore();
+    const triggerCortexExtraction = vi.fn();
+    const runClaude = makeRunClaude({
+      ok: true,
+      output: 'Briefing result',
+      sessionId: 'scheduled-session',
+      durationMs: 500,
+    });
+
+    const result = await handleScheduledJob(job, {
+      runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
+      telegram,
+      skillRegistry: makeRegistry(),
+      config: makeConfig({ authorizedUserIds: [42, 99] }),
+      sessionStore,
+      triggerCortexExtraction,
+      completionMode: 'durable',
+    });
+
+    expect(result).toEqual({
+      kind: 'completed',
+      response: 'Briefing result',
+      suppressed: false,
+      sessionId: 'scheduled-session',
+      sessionBackend: 'claude',
+    });
+    expect(telegram.sendChunkedMessage).not.toHaveBeenCalled();
+    expect(sessionStore.saveMessageReference).not.toHaveBeenCalled();
+    expect(triggerCortexExtraction).not.toHaveBeenCalled();
+  });
+
+  it('preserves typed agent failure data in durable mode', async () => {
+    const failure = {
+      kind: 'provider-authentication',
+      backend: 'pi',
+      detail: 'invalid API key',
+    } as const;
+    const result = await handleScheduledJob(makeScheduledJob(), {
+      runClaude: makeRunClaude({ ok: false, failure }) as unknown as ScheduledDeps['runClaude'],
+      telegram: makeTelegram(),
+      skillRegistry: makeRegistry(),
+      config: makeConfig(),
+      completionMode: 'durable',
+    });
+
+    expect(result).toEqual({ kind: 'failed', cause: { kind: 'agent', failure } });
   });
 
   it('sends result chunks to all authorized users', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runClaude = makeRunClaude({ ok: true, output: 'Briefing result', sessionId: null, durationMs: 500 });
+    const runClaude = makeRunClaude({
+      ok: true,
+      output: 'Briefing result',
+      sessionId: null,
+      durationMs: 500,
+    });
 
     await handleScheduledJob(job, {
       runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
@@ -307,10 +485,15 @@ describe('handleScheduledJob', () => {
     });
 
     expect(telegram.sendChunkedMessage).toHaveBeenCalledTimes(2);
-    const [chatId1, chunks1] = (telegram.sendChunkedMessage as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    const [firstCall, secondCall] = (telegram.sendChunkedMessage as ReturnType<typeof vi.fn>).mock
+      .calls;
+    if (firstCall === undefined || secondCall === undefined) {
+      throw new Error('Expected two chunked Telegram sends');
+    }
+    const [chatId1, chunks1] = firstCall;
     expect(chatId1).toBe(42);
     expect(chunks1).toEqual(['Briefing result']);
-    const [chatId2, chunks2] = (telegram.sendChunkedMessage as ReturnType<typeof vi.fn>).mock.calls[1]!;
+    const [chatId2, chunks2] = secondCall;
     expect(chatId2).toBe(99);
     expect(chunks2).toEqual(['Briefing result']);
   });
@@ -318,7 +501,10 @@ describe('handleScheduledJob', () => {
   it('returns error result on claude failure without notifying user', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runClaude = makeRunClaude({ ok: false, error: 'timeout', timedOut: true });
+    const runClaude = makeRunClaude({
+      ok: false,
+      failure: { kind: 'timeout', backend: 'claude', timeoutMs: 300_000 },
+    });
 
     const result = await handleScheduledJob(job, {
       runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
@@ -329,7 +515,7 @@ describe('handleScheduledJob', () => {
 
     expect(result.kind).toBe('failed');
     if (result.kind === 'failed') {
-      expect(result.error).toBe('timeout');
+      expect(result.error).toBe('claude timed out after 300000ms');
     }
     // No telegram notification for scheduled failures (goes to dead letter)
     expect(telegram.sendMessage).not.toHaveBeenCalled();
@@ -339,7 +525,10 @@ describe('handleScheduledJob', () => {
   it('returns ok:false when claude returns a non-timeout error result', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runClaude = makeRunClaude({ ok: false, error: 'claude exited with code 1', timedOut: false });
+    const runClaude = makeRunClaude({
+      ok: false,
+      failure: { kind: 'process-exit', backend: 'claude', exitCode: 1, detail: 'failure' },
+    });
 
     const result = await handleScheduledJob(job, {
       runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
@@ -350,7 +539,7 @@ describe('handleScheduledJob', () => {
 
     expect(result.kind).toBe('failed');
     if (result.kind === 'failed') {
-      expect(result.error).toBe('claude exited with code 1');
+      expect(result.error).toBe('claude exited with code 1: failure');
     }
     expect(telegram.sendMessage).not.toHaveBeenCalled();
     expect(telegram.sendChunkedMessage).not.toHaveBeenCalled();
@@ -361,7 +550,12 @@ describe('handleScheduledJob', () => {
   it('suppresses telegram notification when output is ALL_CLEAR', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runClaude = makeRunClaude({ ok: true, output: 'ALL_CLEAR', sessionId: null, durationMs: 100 });
+    const runClaude = makeRunClaude({
+      ok: true,
+      output: 'ALL_CLEAR',
+      sessionId: null,
+      durationMs: 100,
+    });
 
     const result = await handleScheduledJob(job, {
       runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
@@ -378,7 +572,12 @@ describe('handleScheduledJob', () => {
   it('suppresses telegram notification when output is ALL_CLEAR with whitespace', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runClaude = makeRunClaude({ ok: true, output: '  ALL_CLEAR\n', sessionId: null, durationMs: 100 });
+    const runClaude = makeRunClaude({
+      ok: true,
+      output: '  ALL_CLEAR\n',
+      sessionId: null,
+      durationMs: 100,
+    });
 
     const result = await handleScheduledJob(job, {
       runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
@@ -394,7 +593,12 @@ describe('handleScheduledJob', () => {
   it('does not suppress when output contains ALL_CLEAR among other text', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runClaude = makeRunClaude({ ok: true, output: 'Status: ALL_CLEAR but also some issues', sessionId: null, durationMs: 100 });
+    const runClaude = makeRunClaude({
+      ok: true,
+      output: 'Status: ALL_CLEAR but also some issues',
+      sessionId: null,
+      durationMs: 100,
+    });
 
     const result = await handleScheduledJob(job, {
       runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
@@ -413,7 +617,12 @@ describe('handleScheduledJob', () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
     const triggerCortexExtraction = vi.fn();
-    const runClaude = makeRunClaude({ ok: true, output: 'Briefing', sessionId: 'sess-sched-1', durationMs: 500 });
+    const runClaude = makeRunClaude({
+      ok: true,
+      output: 'Briefing',
+      sessionId: 'sess-sched-1',
+      durationMs: 500,
+    });
 
     await handleScheduledJob(job, {
       runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
@@ -431,7 +640,12 @@ describe('handleScheduledJob', () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
     const triggerCortexExtraction = vi.fn();
-    const runClaude = makeRunClaude({ ok: true, output: 'Briefing', sessionId: null, durationMs: 500 });
+    const runClaude = makeRunClaude({
+      ok: true,
+      output: 'Briefing',
+      sessionId: null,
+      durationMs: 500,
+    });
 
     await handleScheduledJob(job, {
       runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
@@ -448,7 +662,10 @@ describe('handleScheduledJob', () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
     const triggerCortexExtraction = vi.fn();
-    const runClaude = makeRunClaude({ ok: false, error: 'timeout', timedOut: true });
+    const runClaude = makeRunClaude({
+      ok: false,
+      failure: { kind: 'timeout', backend: 'claude', timeoutMs: 300_000 },
+    });
 
     await handleScheduledJob(job, {
       runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
@@ -464,7 +681,12 @@ describe('handleScheduledJob', () => {
   it('works without triggerCortexExtraction (optional dep)', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runClaude = makeRunClaude({ ok: true, output: 'Briefing', sessionId: 'sess-1', durationMs: 500 });
+    const runClaude = makeRunClaude({
+      ok: true,
+      output: 'Briefing',
+      sessionId: 'sess-1',
+      durationMs: 500,
+    });
 
     // No triggerCortexExtraction in deps — should not throw
     const result = await handleScheduledJob(job, {
@@ -483,7 +705,12 @@ describe('handleScheduledJob', () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const runClaude = makeRunClaude({ ok: true, output: 'Alert: Redis down', sessionId: 'sess-watchdog-1', durationMs: 500 });
+    const runClaude = makeRunClaude({
+      ok: true,
+      output: 'Alert: Redis down',
+      sessionId: 'sess-watchdog-1',
+      durationMs: 500,
+    });
 
     await handleScheduledJob(job, {
       runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
@@ -494,11 +721,12 @@ describe('handleScheduledJob', () => {
     });
 
     // sendChunkedMessage returns [500] for single-chunk output
-    expect(sessionStore.saveMessageSession).toHaveBeenCalledOnce();
-    expect(sessionStore.saveMessageSession).toHaveBeenCalledWith(
-      500,
-      'sess-watchdog-1' as ClaudeSessionId,
-    );
+    expect(sessionStore.saveMessageReference).toHaveBeenCalledOnce();
+    expect(sessionStore.saveMessageReference).toHaveBeenCalledWith(42, 500, {
+      schemaVersion: 1,
+      backend: 'claude',
+      sessionId: 'sess-watchdog-1' as ClaudeSessionId,
+    });
   });
 
   it('saves mapping for each chunk message ID', async () => {
@@ -507,7 +735,12 @@ describe('handleScheduledJob', () => {
     const sessionStore = makeSessionStore();
     // Mock sendChunkedMessage to return multiple message IDs
     (telegram.sendChunkedMessage as ReturnType<typeof vi.fn>).mockResolvedValue([500, 501, 502]);
-    const runClaude = makeRunClaude({ ok: true, output: 'Long alert content', sessionId: 'sess-multi', durationMs: 500 });
+    const runClaude = makeRunClaude({
+      ok: true,
+      output: 'Long alert content',
+      sessionId: 'sess-multi',
+      durationMs: 500,
+    });
 
     await handleScheduledJob(job, {
       runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
@@ -517,17 +750,26 @@ describe('handleScheduledJob', () => {
       sessionStore,
     });
 
-    expect(sessionStore.saveMessageSession).toHaveBeenCalledTimes(3);
-    expect(sessionStore.saveMessageSession).toHaveBeenCalledWith(500, 'sess-multi' as ClaudeSessionId);
-    expect(sessionStore.saveMessageSession).toHaveBeenCalledWith(501, 'sess-multi' as ClaudeSessionId);
-    expect(sessionStore.saveMessageSession).toHaveBeenCalledWith(502, 'sess-multi' as ClaudeSessionId);
+    expect(sessionStore.saveMessageReference).toHaveBeenCalledTimes(3);
+    for (const messageId of [500, 501, 502]) {
+      expect(sessionStore.saveMessageReference).toHaveBeenCalledWith(42, messageId, {
+        schemaVersion: 1,
+        backend: 'claude',
+        sessionId: 'sess-multi' as ClaudeSessionId,
+      });
+    }
   });
 
   it('does not save mapping when sessionId is null', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const runClaude = makeRunClaude({ ok: true, output: 'Alert', sessionId: null, durationMs: 500 });
+    const runClaude = makeRunClaude({
+      ok: true,
+      output: 'Alert',
+      sessionId: null,
+      durationMs: 500,
+    });
 
     await handleScheduledJob(job, {
       runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
@@ -537,13 +779,18 @@ describe('handleScheduledJob', () => {
       sessionStore,
     });
 
-    expect(sessionStore.saveMessageSession).not.toHaveBeenCalled();
+    expect(sessionStore.saveMessageReference).not.toHaveBeenCalled();
   });
 
   it('does not save mapping when sessionStore is not provided', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runClaude = makeRunClaude({ ok: true, output: 'Alert', sessionId: 'sess-1', durationMs: 500 });
+    const runClaude = makeRunClaude({
+      ok: true,
+      output: 'Alert',
+      sessionId: 'sess-1',
+      durationMs: 500,
+    });
 
     // No sessionStore — should not throw
     const result = await handleScheduledJob(job, {
@@ -560,7 +807,12 @@ describe('handleScheduledJob', () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const runClaude = makeRunClaude({ ok: true, output: 'ALL_CLEAR', sessionId: 'sess-1', durationMs: 100 });
+    const runClaude = makeRunClaude({
+      ok: true,
+      output: 'ALL_CLEAR',
+      sessionId: 'sess-1',
+      durationMs: 100,
+    });
 
     await handleScheduledJob(job, {
       runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
@@ -570,7 +822,7 @@ describe('handleScheduledJob', () => {
       sessionStore,
     });
 
-    expect(sessionStore.saveMessageSession).not.toHaveBeenCalled();
+    expect(sessionStore.saveMessageReference).not.toHaveBeenCalled();
   });
 
   // ─── Skill quality recording tests ──────────────────────────────────────────
@@ -579,7 +831,12 @@ describe('handleScheduledJob', () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
     const recordSkillQuality = vi.fn();
-    const runClaude = makeRunClaude({ ok: true, output: 'ALL_CLEAR', sessionId: null, durationMs: 100 });
+    const runClaude = makeRunClaude({
+      ok: true,
+      output: 'ALL_CLEAR',
+      sessionId: null,
+      durationMs: 100,
+    });
 
     await handleScheduledJob(job, {
       runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
@@ -590,7 +847,7 @@ describe('handleScheduledJob', () => {
     });
 
     expect(recordSkillQuality).toHaveBeenCalledOnce();
-    const signal = recordSkillQuality.mock.calls[0]![0];
+    const signal = recordSkillQuality.mock.calls[0]?.[0];
     expect(signal.skillId).toBe('morning-briefing');
     expect(signal.status).toBe('suppressed');
     expect(signal.outputLength).toBe('ALL_CLEAR'.length);
@@ -603,7 +860,10 @@ describe('handleScheduledJob', () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
     const recordSkillQuality = vi.fn();
-    const runClaude = makeRunClaude({ ok: false, error: 'timeout', timedOut: true });
+    const runClaude = makeRunClaude({
+      ok: false,
+      failure: { kind: 'timeout', backend: 'claude', timeoutMs: 300_000 },
+    });
 
     await handleScheduledJob(job, {
       runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
@@ -614,9 +874,9 @@ describe('handleScheduledJob', () => {
     });
 
     expect(recordSkillQuality).toHaveBeenCalledOnce();
-    const signal = recordSkillQuality.mock.calls[0]![0];
+    const signal = recordSkillQuality.mock.calls[0]?.[0];
     expect(signal.status).toBe('claude_error');
-    expect(signal.errorMessage).toBe('timeout');
+    expect(signal.errorMessage).toBe('claude timed out after 300000ms');
   });
 
   it('records skill_not_found signal when skill missing from registry', async () => {
@@ -634,7 +894,7 @@ describe('handleScheduledJob', () => {
     });
 
     expect(recordSkillQuality).toHaveBeenCalledOnce();
-    const signal = recordSkillQuality.mock.calls[0]![0];
+    const signal = recordSkillQuality.mock.calls[0]?.[0];
     expect(signal.skillId).toBe('nonexistent-skill');
     expect(signal.status).toBe('skill_not_found');
   });
@@ -642,7 +902,7 @@ describe('handleScheduledJob', () => {
   it('records validity_expired signal when job is past validity window', async () => {
     const job = makeScheduledJob({
       triggeredAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-      validUntil: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      validUntil: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
     });
     const telegram = makeTelegram();
     const recordSkillQuality = vi.fn();
@@ -657,7 +917,7 @@ describe('handleScheduledJob', () => {
     });
 
     expect(recordSkillQuality).toHaveBeenCalledOnce();
-    expect(recordSkillQuality.mock.calls[0]![0].status).toBe('validity_expired');
+    expect(recordSkillQuality.mock.calls[0]?.[0].status).toBe('validity_expired');
   });
 
   it('records success signal with full output length on normal completion', async () => {
@@ -676,7 +936,7 @@ describe('handleScheduledJob', () => {
     });
 
     expect(recordSkillQuality).toHaveBeenCalledOnce();
-    const signal = recordSkillQuality.mock.calls[0]![0];
+    const signal = recordSkillQuality.mock.calls[0]?.[0];
     expect(signal.status).toBe('success');
     expect(signal.outputLength).toBe(output.length);
   });
@@ -684,7 +944,12 @@ describe('handleScheduledJob', () => {
   it('works without recordSkillQuality (optional dep)', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runClaude = makeRunClaude({ ok: true, output: 'Briefing', sessionId: null, durationMs: 100 });
+    const runClaude = makeRunClaude({
+      ok: true,
+      output: 'Briefing',
+      sessionId: null,
+      durationMs: 100,
+    });
 
     const result = await handleScheduledJob(job, {
       runClaude: runClaude as unknown as ScheduledDeps['runClaude'],

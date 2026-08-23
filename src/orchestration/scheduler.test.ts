@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createScheduler, decideCatchUp, hasCycle } from './scheduler.js';
 import {
   type JobId,
   type ScheduledJob,
@@ -8,6 +7,7 @@ import {
   emptySkillRegistry,
   skillRegistryFromList,
 } from '../core/types.js';
+import { createScheduler, decideCatchUp, hasCycle } from './scheduler.js';
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────
 
@@ -25,6 +25,7 @@ function makeSkillConfig(
     permissionProfile: 'scheduled',
     validityWindowMinutes,
     timeout: 120,
+    environment: [],
     dependsOn: dependsOn as SkillId | null,
   };
 }
@@ -389,9 +390,7 @@ describe('createScheduler', () => {
       const b = makeSkillConfig('skill-b', '* * * * *', 60, 'skill-a');
       scheduler.reconcile(skillRegistryFromList([a, b]));
 
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Circular dependency'),
-      );
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Circular dependency'));
 
       scheduler.stop();
       consoleSpy.mockRestore();
@@ -405,9 +404,7 @@ describe('createScheduler', () => {
       const c = makeSkillConfig('skill-c', null, 60, 'skill-b');
       scheduler.reconcile(skillRegistryFromList([a, b, c]));
 
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Circular dependency'),
-      );
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Circular dependency'));
 
       scheduler.stop();
       consoleSpy.mockRestore();
@@ -428,9 +425,7 @@ describe('createScheduler', () => {
       await new Promise((r) => globalThis.setTimeout(r, 50));
 
       expect(enqueueScheduled).not.toHaveBeenCalled();
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('in-flight'),
-      );
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('in-flight'));
 
       scheduler.stop();
       consoleSpy.mockRestore();
@@ -440,8 +435,9 @@ describe('createScheduler', () => {
       vi.useRealTimers();
 
       // isJobKnown: trigger=true, dependent=false
-      const knownFn = vi.fn()
-        .mockResolvedValueOnce(true)   // trigger fired
+      const knownFn = vi
+        .fn()
+        .mockResolvedValueOnce(true) // trigger fired
         .mockResolvedValueOnce(false); // dependent not fired
       const completedFn = vi.fn().mockResolvedValue(true); // trigger completed
       const consoleSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
@@ -521,7 +517,7 @@ describe('createScheduler', () => {
       await vi.advanceTimersByTimeAsync(0);
       enqueueScheduled.mockClear();
 
-      scheduler.resolveDependents('prune' as SkillId, '2026-04-06T00:00:00.000Z');
+      await scheduler.resolveDependents('prune' as SkillId, '2026-04-06T00:00:00.000Z');
 
       expect(enqueueScheduled).toHaveBeenCalledTimes(2);
       const skills = (enqueueScheduled.mock.calls as [ScheduledJob][]).map((c) => c[0].skillId);
@@ -531,22 +527,25 @@ describe('createScheduler', () => {
       scheduler.stop();
     });
 
-    it('does nothing when skill has no dependents', () => {
+    it('does nothing when skill has no dependents', async () => {
+      isJobKnown.mockResolvedValue(true);
       const scheduler = createScheduler(enqueueScheduled, isJobKnown, isJobCompleted);
       const trigger = makeSkillConfig('standalone', '* * * * *', 60);
       scheduler.reconcile(skillRegistryFromList([trigger]));
+      await vi.advanceTimersByTimeAsync(0);
+      enqueueScheduled.mockClear();
 
-      scheduler.resolveDependents('standalone' as SkillId, '2026-04-06T00:00:00.000Z');
+      await scheduler.resolveDependents('standalone' as SkillId, '2026-04-06T00:00:00.000Z');
 
       expect(enqueueScheduled).not.toHaveBeenCalled();
       scheduler.stop();
     });
 
-    it('does nothing for unknown skillId', () => {
+    it('does nothing for unknown skillId', async () => {
       const scheduler = createScheduler(enqueueScheduled, isJobKnown, isJobCompleted);
       scheduler.reconcile(emptySkillRegistry());
 
-      scheduler.resolveDependents('nonexistent' as SkillId, '2026-04-06T00:00:00.000Z');
+      await scheduler.resolveDependents('nonexistent' as SkillId, '2026-04-06T00:00:00.000Z');
 
       expect(enqueueScheduled).not.toHaveBeenCalled();
       scheduler.stop();
@@ -564,25 +563,24 @@ describe('createScheduler', () => {
       enqueueScheduled.mockClear();
 
       // A completes → enqueue B
-      scheduler.resolveDependents('step-a' as SkillId, '2026-04-06T00:00:00.000Z');
+      await scheduler.resolveDependents('step-a' as SkillId, '2026-04-06T00:00:00.000Z');
       expect(enqueueScheduled).toHaveBeenCalledTimes(1);
       expect(enqueueScheduled.mock.calls[0]?.[0].skillId).toBe('step-b');
 
       // B completes → enqueue C
       enqueueScheduled.mockClear();
-      scheduler.resolveDependents('step-b' as SkillId, '2026-04-06T00:00:00.000Z');
+      await scheduler.resolveDependents('step-b' as SkillId, '2026-04-06T00:00:00.000Z');
       expect(enqueueScheduled).toHaveBeenCalledTimes(1);
       expect(enqueueScheduled.mock.calls[0]?.[0].skillId).toBe('step-c');
 
       scheduler.stop();
     });
 
-    it('enqueue failure for one dependent does not block others', async () => {
+    it('attempts every dependent and reports aggregate enqueue failure', async () => {
       // Suppress catch-up enqueue
       isJobKnown.mockResolvedValue(true);
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-
-      const failingEnqueue = vi.fn()
+      const failingEnqueue = vi
+        .fn()
         .mockRejectedValueOnce(new Error('Redis down'))
         .mockResolvedValueOnce(undefined);
 
@@ -598,15 +596,14 @@ describe('createScheduler', () => {
         .mockRejectedValueOnce(new Error('Redis down'))
         .mockResolvedValueOnce(undefined);
 
-      scheduler.resolveDependents('prune' as SkillId, '2026-04-06T00:00:00.000Z');
-      // Flush the .catch() microtask from the rejected promise
-      await vi.advanceTimersByTimeAsync(0);
+      await expect(
+        scheduler.resolveDependents('prune' as SkillId, '2026-04-06T00:00:00.000Z'),
+      ).rejects.toThrow('dep-1: Redis down');
 
-      // Both should be attempted even though first fails
+      // Both are attempted before the aggregate failure is surfaced.
       expect(failingEnqueue).toHaveBeenCalledTimes(2);
 
       scheduler.stop();
-      consoleSpy.mockRestore();
     });
   });
 });
@@ -706,8 +703,8 @@ describe('decideCatchUp', () => {
     expect(result.action).toBe('enqueue-dependents');
     if (result.action === 'enqueue-dependents') {
       expect(result.depJobs).toHaveLength(2);
-      expect(result.depJobs[0]!.skillId).toBe('librarian');
-      expect(result.depJobs[1]!.skillId).toBe('indexer');
+      expect(result.depJobs[0]?.skillId).toBe('librarian');
+      expect(result.depJobs[1]?.skillId).toBe('indexer');
     }
   });
 

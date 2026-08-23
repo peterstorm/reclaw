@@ -1,7 +1,8 @@
-import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
-import { bootstrap, type BootstrapDeps } from './main.js';
+import { type MockInstance, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { type SkillRegistry, makeTelegramUpdateId } from './core/types.js';
 import type { AppConfig } from './infra/config.js';
-import type { SkillRegistry } from './core/types.js';
+import type { TelegramIncomingDisposition, TelegramIncomingMessage } from './infra/telegram.js';
+import { type BootstrapDeps, bootstrap } from './main.js';
 
 // NOTE: We do NOT use vi.mock() here because vitest + bun does not properly
 // intercept module evaluation for mocked modules in this runtime. Instead,
@@ -26,28 +27,53 @@ const mockConfig: AppConfig = {
   locationName: 'Copenhagen',
   agentBackend: 'claude' as const,
 };
+const AUTHORIZED_USER_ID = mockConfig.authorizedUserIds[0];
+if (AUTHORIZED_USER_ID === undefined) throw new Error('Test config requires an authorized user');
 
 // ─── Fake component builders ──────────────────────────────────────────────────
 
+const defaultUpdateIdResult = makeTelegramUpdateId(7001);
+if (!defaultUpdateIdResult.ok) throw new Error(defaultUpdateIdResult.error);
+const DEFAULT_UPDATE_ID = defaultUpdateIdResult.value;
+
+type MockIncomingMessage = Omit<TelegramIncomingMessage, 'updateId'> & {
+  readonly updateId?: TelegramIncomingMessage['updateId'];
+};
+
 function makeMockTelegram() {
-  let onMessageHandler: ((msg: { userId: number; chatId: number; text: string; replyToMessageId?: number }) => void) | null = null;
+  let onMessageHandler:
+    | ((msg: TelegramIncomingMessage) => Promise<TelegramIncomingDisposition | undefined>)
+    | null = null;
   return {
     start: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
     sendMessage: vi.fn().mockResolvedValue(1000),
     sendChunkedMessage: vi.fn().mockResolvedValue([1000]),
-    onMessage: vi.fn((handler: (msg: { userId: number; chatId: number; text: string; replyToMessageId?: number }) => void) => {
-      onMessageHandler = handler;
-    }),
-    _triggerMessage: (msg: { userId: number; chatId: number; text: string; replyToMessageId?: number }) => {
-      onMessageHandler?.(msg);
+    onMessage: vi.fn(
+      (
+        handler: (msg: TelegramIncomingMessage) => Promise<TelegramIncomingDisposition | undefined>,
+      ) => {
+        onMessageHandler = handler;
+      },
+    ),
+    _triggerMessage: (
+      msg: MockIncomingMessage,
+    ): Promise<TelegramIncomingDisposition | undefined> => {
+      if (onMessageHandler === null)
+        return Promise.reject(new Error('onMessage handler not registered'));
+      return onMessageHandler({ ...msg, updateId: msg.updateId ?? DEFAULT_UPDATE_ID });
     },
   };
 }
 
 function makeMockQueues() {
   return {
-    chat: { close: vi.fn().mockResolvedValue(undefined), on: vi.fn(), drain: vi.fn().mockResolvedValue(undefined), clean: vi.fn().mockResolvedValue(undefined) },
+    chat: {
+      close: vi.fn().mockResolvedValue(undefined),
+      on: vi.fn(),
+      drain: vi.fn().mockResolvedValue(undefined),
+      clean: vi.fn().mockResolvedValue(undefined),
+    },
     scheduled: { close: vi.fn().mockResolvedValue(undefined), on: vi.fn() },
     reminder: { close: vi.fn().mockResolvedValue(undefined), on: vi.fn() },
     research: {
@@ -56,6 +82,12 @@ function makeMockQueues() {
       add: vi.fn().mockResolvedValue(undefined),
     },
     podcast: { close: vi.fn().mockResolvedValue(undefined), on: vi.fn() },
+    delivery: { close: vi.fn().mockResolvedValue(undefined), on: vi.fn() },
+    activityResults: {
+      find: vi.fn().mockResolvedValue(null),
+      saveIfAbsent: vi.fn(),
+    },
+    deliveryOutbox: { enqueue: vi.fn().mockResolvedValue(undefined) },
     enqueueChat: vi.fn().mockResolvedValue(undefined),
     enqueueScheduled: vi.fn().mockResolvedValue(undefined),
     isScheduledJobKnown: vi.fn().mockResolvedValue(false),
@@ -80,7 +112,9 @@ function makeMockSkillWatcher() {
       changeHandler = handler;
     }),
     ready: vi.fn().mockResolvedValue(undefined),
-    _triggerChange: (registry: SkillRegistry) => { changeHandler?.(registry); },
+    _triggerChange: (registry: SkillRegistry) => {
+      changeHandler?.(registry);
+    },
   };
 }
 
@@ -95,18 +129,26 @@ function makeMockScheduler() {
 
 function makeMockWorkers() {
   return {
-    start: vi.fn(),
+    start: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
   };
 }
 
 function makeMockSessionStore() {
+  const current = {
+    schemaVersion: 1 as const,
+    generation: 0,
+    revision: 0,
+    backend: 'claude' as const,
+    sessionId: null,
+    lastActivityAt: '2026-08-14T10:00:00.000Z',
+  };
   return {
-    getSession: vi.fn().mockResolvedValue(null),
-    saveSession: vi.fn().mockResolvedValue(undefined),
-    deleteSession: vi.fn().mockResolvedValue(undefined),
-    saveMessageSession: vi.fn().mockResolvedValue(undefined),
-    getMessageSession: vi.fn().mockResolvedValue(null),
+    getCurrent: vi.fn().mockResolvedValue(current),
+    advance: vi.fn().mockResolvedValue({ ...current, generation: 1 }),
+    commitSession: vi.fn().mockResolvedValue({ kind: 'committed' }),
+    saveMessageReference: vi.fn().mockResolvedValue(undefined),
+    getMessageReference: vi.fn().mockResolvedValue(null),
   };
 }
 
@@ -154,18 +196,16 @@ describe('bootstrap', () => {
       disconnect: mockDisconnectRedis,
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    processExitSpy = vi.spyOn(process, 'exit').mockImplementation(((_code?: number | string) => {
-      throw new Error(`process.exit(${_code})`);
-    }) as any);
+    processExitSpy = vi.spyOn(process, 'exit').mockImplementation((code): never => {
+      throw new Error(`process.exit(${code})`);
+    });
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    processOnceSpy = vi.spyOn(process, 'once').mockImplementation(((event: string | symbol, handler: (...args: unknown[]) => void) => {
+    processOnceSpy = vi.spyOn(process, 'once').mockImplementation((event, handler) => {
       if (typeof event === 'string') {
         signalHandlers.set(event, handler as () => void);
       }
       return process;
-    }) as any);
+    });
   });
 
   afterEach(() => {
@@ -196,7 +236,9 @@ describe('bootstrap', () => {
       handleRecurringReminderJobFn: vi.fn().mockResolvedValue({ ok: true, response: '' }),
       handleResearchJobFn: vi.fn().mockResolvedValue({ hubPath: null, topic: 'test' }),
       createSessionStoreFn: createSessionStoreMock,
-      createQuotaTrackerFn: vi.fn().mockReturnValue({ tracker: mockQuotaTracker, disconnect: mockQuotaDisconnect }),
+      createQuotaTrackerFn: vi
+        .fn()
+        .mockReturnValue({ tracker: mockQuotaTracker, disconnect: mockQuotaDisconnect }),
     };
   }
 
@@ -247,9 +289,35 @@ describe('bootstrap', () => {
     expect(createWorkersMock).toHaveBeenCalledOnce();
   });
 
-  it('starts workers', async () => {
+  it('starts workers without draining accepted chat work', async () => {
     await bootstrap(makeDeps());
     expect(mockWorkers.start).toHaveBeenCalledOnce();
+    expect(mockQueues.chat.drain).not.toHaveBeenCalled();
+    expect(mockQueues.chat.clean).not.toHaveBeenCalled();
+  });
+
+  it('does not open Telegram ingress until worker readiness resolves', async () => {
+    let releaseWorkers: (() => void) | undefined;
+    mockWorkers.start.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        releaseWorkers = resolve;
+      }),
+    );
+
+    const bootstrapping = bootstrap(makeDeps());
+    await vi.waitFor(() => expect(mockWorkers.start).toHaveBeenCalledOnce());
+    expect(mockTelegram.start).not.toHaveBeenCalled();
+
+    releaseWorkers?.();
+    await bootstrapping;
+    expect(mockTelegram.start).toHaveBeenCalledOnce();
+  });
+
+  it('fails bootstrap without opening Telegram ingress when workers cannot start', async () => {
+    mockWorkers.start.mockRejectedValueOnce(new Error('workers unavailable'));
+
+    await expect(bootstrap(makeDeps())).rejects.toThrow('workers unavailable');
+    expect(mockTelegram.start).not.toHaveBeenCalled();
   });
 
   it('starts skill watcher', async () => {
@@ -291,7 +359,7 @@ describe('bootstrap', () => {
     it('enqueues chat job when message received', async () => {
       await bootstrap(makeDeps());
       mockTelegram._triggerMessage({
-        userId: mockConfig.authorizedUserIds[0]!,
+        userId: AUTHORIZED_USER_ID,
         chatId: 99988877,
         text: 'Hello agent',
       });
@@ -302,7 +370,7 @@ describe('bootstrap', () => {
     it('enqueued chat job has correct kind, userId, text, chatId', async () => {
       await bootstrap(makeDeps());
       mockTelegram._triggerMessage({
-        userId: mockConfig.authorizedUserIds[0]!,
+        userId: AUTHORIZED_USER_ID,
         chatId: 99988877,
         text: 'Test message',
       });
@@ -311,20 +379,33 @@ describe('bootstrap', () => {
       const enqueuedJob = mockQueues.enqueueChat.mock.calls[0]?.[0];
       expect(enqueuedJob).toBeDefined();
       expect(enqueuedJob?.kind).toBe('chat');
-      expect(enqueuedJob?.userId).toBe(mockConfig.authorizedUserIds[0]!);
+      expect(enqueuedJob?.id).toBe('telegram:7001:chat');
+      expect(enqueuedJob?.userId).toBe(AUTHORIZED_USER_ID);
       expect(enqueuedJob?.text).toBe('Test message');
       expect(enqueuedJob?.chatId).toBe(99988877);
     });
 
     it('does not enqueue for invalid userId (0)', async () => {
       await bootstrap(makeDeps());
-      mockTelegram._triggerMessage({
+      await mockTelegram._triggerMessage({
         userId: 0, // invalid — fails makeTelegramUserId validation
         chatId: 123,
         text: 'Hello',
       });
-      await new Promise((r) => setTimeout(r, 0));
       expect(mockQueues.enqueueChat).not.toHaveBeenCalled();
+    });
+
+    it('propagates enqueue failure to the Telegram acknowledgement boundary', async () => {
+      mockQueues.enqueueChat.mockRejectedValueOnce(new Error('redis unavailable'));
+      await bootstrap(makeDeps());
+
+      await expect(
+        mockTelegram._triggerMessage({
+          userId: AUTHORIZED_USER_ID,
+          chatId: 99988877,
+          text: 'Do not lose this',
+        }),
+      ).rejects.toThrow('redis unavailable');
     });
   });
 
@@ -332,16 +413,21 @@ describe('bootstrap', () => {
     it('clears session and sends confirmation', async () => {
       await bootstrap(makeDeps());
       mockTelegram._triggerMessage({
-        userId: mockConfig.authorizedUserIds[0]!,
+        userId: AUTHORIZED_USER_ID,
         chatId: 99988877,
         text: '/new',
       });
       await new Promise((r) => setTimeout(r, 10));
 
-      expect(mockSessionStore.deleteSession).toHaveBeenCalledWith(99988877);
+      expect(mockSessionStore.advance).toHaveBeenCalledWith(
+        99988877,
+        expect.stringMatching(/^telegram:/),
+        { kind: 'fresh', backend: 'claude' },
+        expect.any(String),
+      );
       expect(mockTelegram.sendMessage).toHaveBeenCalledWith(
         99988877,
-        'Session cleared. Next message starts a fresh conversation.',
+        'Conversation reset. Next message starts a fresh generation.',
       );
       expect(mockQueues.enqueueChat).not.toHaveBeenCalled();
     });
@@ -353,13 +439,40 @@ describe('bootstrap', () => {
       expect(typeof shutdown).toBe('function');
     });
 
-    it('shutdown stops workers, scheduler, watcher, telegram', async () => {
+    it('shutdown stops ingress and producers before draining workers', async () => {
       const shutdown = await bootstrap(makeDeps());
       await shutdown();
       expect(mockWorkers.stop).toHaveBeenCalledOnce();
       expect(mockScheduler.stop).toHaveBeenCalledOnce();
       expect(mockSkillWatcher.stop).toHaveBeenCalledOnce();
       expect(mockTelegram.stop).toHaveBeenCalledOnce();
+
+      const workerStopOrder = mockWorkers.stop.mock.invocationCallOrder[0];
+      const producerStopOrders = [
+        mockScheduler.stop.mock.invocationCallOrder[0],
+        mockSkillWatcher.stop.mock.invocationCallOrder[0],
+        mockTelegram.stop.mock.invocationCallOrder[0],
+      ];
+      if (
+        workerStopOrder === undefined ||
+        producerStopOrders.some((order) => order === undefined)
+      ) {
+        throw new Error('Expected every shutdown participant to be called');
+      }
+      for (const producerStopOrder of producerStopOrders) {
+        expect(producerStopOrder).toBeLessThan(workerStopOrder);
+      }
+    });
+
+    it('concurrent shutdown calls share one completion promise', async () => {
+      const shutdown = await bootstrap(makeDeps());
+      const first = shutdown();
+      const second = shutdown();
+
+      expect(second).toBe(first);
+      await Promise.all([first, second]);
+      expect(mockTelegram.stop).toHaveBeenCalledOnce();
+      expect(mockWorkers.stop).toHaveBeenCalledOnce();
     });
 
     it('shutdown closes queues', async () => {
@@ -368,6 +481,9 @@ describe('bootstrap', () => {
       expect(mockQueues.chat.close).toHaveBeenCalledOnce();
       expect(mockQueues.scheduled.close).toHaveBeenCalledOnce();
       expect(mockQueues.reminder.close).toHaveBeenCalledOnce();
+      expect(mockQueues.research.close).toHaveBeenCalledOnce();
+      expect(mockQueues.podcast.close).toHaveBeenCalledOnce();
+      expect(mockQueues.delivery.close).toHaveBeenCalledOnce();
     });
 
     it('shutdown disconnects Redis session client', async () => {
@@ -379,8 +495,7 @@ describe('bootstrap', () => {
     it('SIGTERM triggers shutdown', async () => {
       await bootstrap(makeDeps());
       // Use non-throwing mock so .catch doesn't re-trigger process.exit
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      processExitSpy.mockImplementation((() => {}) as any);
+      processExitSpy.mockImplementation(() => undefined as never);
       const sigtermHandler = signalHandlers.get('SIGTERM');
       expect(sigtermHandler).toBeDefined();
       sigtermHandler?.();
@@ -392,8 +507,7 @@ describe('bootstrap', () => {
     it('SIGINT triggers shutdown', async () => {
       await bootstrap(makeDeps());
       // Use non-throwing mock so .catch doesn't re-trigger process.exit
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      processExitSpy.mockImplementation((() => {}) as any);
+      processExitSpy.mockImplementation(() => undefined as never);
       const sigintHandler = signalHandlers.get('SIGINT');
       expect(sigintHandler).toBeDefined();
       sigintHandler?.();
@@ -414,41 +528,56 @@ describe('bootstrap', () => {
 
   describe('reply-to-message routing', () => {
     it('pre-loads session when replying to a message with saved session', async () => {
-      mockSessionStore.getMessageSession.mockResolvedValue('sess-watchdog-1');
+      mockSessionStore.getMessageReference.mockResolvedValue({
+        schemaVersion: 1,
+        backend: 'claude',
+        sessionId: 'sess-watchdog-1',
+      });
       await bootstrap(makeDeps());
       mockTelegram._triggerMessage({
-        userId: mockConfig.authorizedUserIds[0]!,
+        userId: AUTHORIZED_USER_ID,
         chatId: 99988877,
         text: 'flush the dead-letter queue',
-        replyToMessageId: 500,
+        replyContext: {
+          kind: 'text',
+          messageId: 500,
+          author: 'assistant',
+          text: 'Scheduled job failed',
+          truncated: false,
+        },
       });
       await new Promise((r) => setTimeout(r, 50));
 
-      // Should look up message session
-      expect(mockSessionStore.getMessageSession).toHaveBeenCalledWith(500);
-      // Should save it as the chat session for this chatId
-      expect(mockSessionStore.saveSession).toHaveBeenCalledWith(
+      expect(mockSessionStore.getMessageReference).toHaveBeenCalledWith(99988877, 500);
+      expect(mockSessionStore.advance).toHaveBeenCalledWith(
         99988877,
-        expect.objectContaining({ sessionId: 'sess-watchdog-1' }),
+        expect.any(String),
+        { kind: 'resume', backend: 'claude', sessionId: 'sess-watchdog-1' },
+        expect.any(String),
       );
       // Should still enqueue the chat job
       expect(mockQueues.enqueueChat).toHaveBeenCalledOnce();
     });
 
     it('does not pre-load session when reply-to message has no saved session', async () => {
-      mockSessionStore.getMessageSession.mockResolvedValue(null);
+      mockSessionStore.getMessageReference.mockResolvedValue(null);
       await bootstrap(makeDeps());
       mockTelegram._triggerMessage({
-        userId: mockConfig.authorizedUserIds[0]!,
+        userId: AUTHORIZED_USER_ID,
         chatId: 99988877,
         text: 'some reply',
-        replyToMessageId: 999,
+        replyContext: {
+          kind: 'text',
+          messageId: 999,
+          author: 'assistant',
+          text: 'Earlier notification',
+          truncated: false,
+        },
       });
       await new Promise((r) => setTimeout(r, 50));
 
-      expect(mockSessionStore.getMessageSession).toHaveBeenCalledWith(999);
-      // Should NOT save session (no mapping found)
-      expect(mockSessionStore.saveSession).not.toHaveBeenCalled();
+      expect(mockSessionStore.getMessageReference).toHaveBeenCalledWith(99988877, 999);
+      expect(mockSessionStore.advance).not.toHaveBeenCalled();
       // Should still enqueue the chat job
       expect(mockQueues.enqueueChat).toHaveBeenCalledOnce();
     });
@@ -456,13 +585,13 @@ describe('bootstrap', () => {
     it('enqueues chat job normally when message is not a reply', async () => {
       await bootstrap(makeDeps());
       mockTelegram._triggerMessage({
-        userId: mockConfig.authorizedUserIds[0]!,
+        userId: AUTHORIZED_USER_ID,
         chatId: 99988877,
         text: 'normal message',
       });
       await new Promise((r) => setTimeout(r, 50));
 
-      expect(mockSessionStore.getMessageSession).not.toHaveBeenCalled();
+      expect(mockSessionStore.getMessageReference).not.toHaveBeenCalled();
       expect(mockQueues.enqueueChat).toHaveBeenCalledOnce();
     });
   });
@@ -471,7 +600,7 @@ describe('bootstrap', () => {
     it('enqueues research job and sends confirmation on valid /research command', async () => {
       await bootstrap(makeDeps());
       mockTelegram._triggerMessage({
-        userId: mockConfig.authorizedUserIds[0]!,
+        userId: AUTHORIZED_USER_ID,
         chatId: 99988877,
         text: '/research AI agents and their applications',
       });
@@ -488,7 +617,7 @@ describe('bootstrap', () => {
     it('sends error message when /research has no topic (FR-092)', async () => {
       await bootstrap(makeDeps());
       mockTelegram._triggerMessage({
-        userId: mockConfig.authorizedUserIds[0]!,
+        userId: AUTHORIZED_USER_ID,
         chatId: 99988877,
         text: '/research',
       });
@@ -518,7 +647,7 @@ describe('bootstrap', () => {
       };
       await bootstrap(deps);
       mockTelegram._triggerMessage({
-        userId: mockConfig.authorizedUserIds[0]!,
+        userId: AUTHORIZED_USER_ID,
         chatId: 99988877,
         text: '/research quantum computing',
       });
@@ -534,7 +663,7 @@ describe('bootstrap', () => {
     it('includes topic in confirmation message', async () => {
       await bootstrap(makeDeps());
       mockTelegram._triggerMessage({
-        userId: mockConfig.authorizedUserIds[0]!,
+        userId: AUTHORIZED_USER_ID,
         chatId: 99988877,
         text: '/research blockchain technology',
       });
@@ -549,7 +678,7 @@ describe('bootstrap', () => {
     it('does not route /research to chat queue', async () => {
       await bootstrap(makeDeps());
       mockTelegram._triggerMessage({
-        userId: mockConfig.authorizedUserIds[0]!,
+        userId: AUTHORIZED_USER_ID,
         chatId: 99988877,
         text: '/research machine learning',
       });
@@ -561,16 +690,17 @@ describe('bootstrap', () => {
     it('handles /research with URL source hints', async () => {
       await bootstrap(makeDeps());
       mockTelegram._triggerMessage({
-        userId: mockConfig.authorizedUserIds[0]!,
+        userId: AUTHORIZED_USER_ID,
         chatId: 99988877,
         text: '/research neural networks https://arxiv.org/paper1',
       });
       await new Promise((r) => setTimeout(r, 50));
 
       expect(mockQueues.enqueueResearch).toHaveBeenCalledOnce();
-      const callArgs = (mockQueues.enqueueResearch as ReturnType<typeof vi.fn>).mock.calls[0]!;
-      // The first arg is the ResearchJobData
-      const jobData = callArgs[0] as { prompt: string; sourceHints: string[] };
+      const callArgs = (mockQueues.enqueueResearch as ReturnType<typeof vi.fn>).mock.calls.at(0);
+      if (callArgs === undefined) throw new Error('Research job was not enqueued');
+      expect(callArgs[0]).toBe('telegram:7001:research');
+      const jobData = callArgs[1] as { prompt: string; sourceHints: string[] };
       expect(jobData.prompt).toBe('neural networks');
       expect(jobData.sourceHints).toContain('https://arxiv.org/paper1');
     });

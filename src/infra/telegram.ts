@@ -1,35 +1,65 @@
-import { mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { chmod, mkdir, realpath, rename, unlink, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { Bot } from 'grammy';
-import type { TelegramUserId } from '../core/types.js';
-import { splitMessage } from '../core/message-splitter.js';
 import { markdownToTelegramHtml } from '../core/markdown-to-telegram.js';
+import { splitMessage } from '../core/message-splitter.js';
+import {
+  type ReplyContext,
+  type TelegramUpdateId,
+  type TelegramUserId,
+  makeReplyContext,
+  makeTelegramUpdateId,
+} from '../core/types.js';
+import {
+  MAX_PDF_BYTES,
+  type PdfTextExtractor,
+  extractPdfText,
+  formatPdfExtractionError,
+} from './pdf-text.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type SendOptions = { readonly html?: boolean; readonly plain?: boolean };
 
+export type TelegramIncomingMessage = {
+  readonly updateId: TelegramUpdateId;
+  readonly userId: number;
+  readonly chatId: number;
+  readonly text: string;
+  readonly replyContext?: ReplyContext;
+  readonly imagePaths?: readonly string[];
+  readonly documentPaths?: readonly string[];
+};
+
+export type TelegramIncomingDisposition =
+  | { readonly kind: 'retain-source-files' }
+  | { readonly kind: 'remove-source-files' };
+
 export type TelegramAdapter = {
   readonly start: () => Promise<void>;
   readonly stop: () => Promise<void>;
   readonly sendMessage: (chatId: number, text: string, options?: SendOptions) => Promise<number>;
-  readonly editMessage: (chatId: number, messageId: number, text: string, options?: SendOptions) => Promise<void>;
-  readonly sendChunkedMessage: (chatId: number, chunks: readonly string[], options?: SendOptions) => Promise<readonly number[]>;
+  readonly editMessage: (
+    chatId: number,
+    messageId: number,
+    text: string,
+    options?: SendOptions,
+  ) => Promise<void>;
+  readonly sendChunkedMessage: (
+    chatId: number,
+    chunks: readonly string[],
+    options?: SendOptions,
+  ) => Promise<readonly number[]>;
   readonly onMessage: (
-    handler: (msg: {
-      userId: number;
-      chatId: number;
-      text: string;
-      replyToMessageId?: number;
-      imagePaths?: readonly string[];
-    }) => void,
+    handler: (msg: TelegramIncomingMessage) => Promise<TelegramIncomingDisposition | undefined>,
   ) => void;
 };
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-/** Directory for temporary photo downloads. */
-const IMAGE_DIR = '/tmp/reclaw-images';
+/** Durable default spool for photos accepted before BullMQ processing. */
+export const DEFAULT_IMAGE_DIR = join(homedir(), '.local', 'state', 'reclaw', 'images');
 
 /** Telegram's maximum message length. */
 const TELEGRAM_MAX_LENGTH = 4096;
@@ -42,6 +72,10 @@ const RATE_LIMIT_MAX_RETRIES = 3;
 
 /** Default backoff schedule (seconds) when retry_after is not available. */
 const RATE_LIMIT_BACKOFF_S = [1, 2, 4] as const;
+const PDF_MIME_TYPE = 'application/pdf';
+const PDF_MAGIC = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]); // %PDF-
+const PDF_DOWNLOAD_TIMEOUT_MS = 20_000;
+const PDF_TOO_LARGE_MESSAGE = `That PDF is too large. The limit is ${MAX_PDF_BYTES / 1024 / 1024} MB.`;
 
 // ─── Helpers (pure) ───────────────────────────────────────────────────────────
 
@@ -54,7 +88,99 @@ function isAuthorized(userId: number, authorizedUserIds: ReadonlySet<number>): b
 }
 
 function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+}
+
+function isClaimedPdf(fileName: string | undefined, mimeType: string | undefined): boolean {
+  return (
+    mimeType?.toLowerCase() === PDF_MIME_TYPE || fileName?.toLowerCase().endsWith('.pdf') === true
+  );
+}
+
+function hasPdfMagic(data: Uint8Array): boolean {
+  return PDF_MAGIC.every((byte, index) => data[index] === byte);
+}
+
+type TelegramReplyMessage = {
+  readonly message_id: number;
+  readonly text?: string;
+  readonly caption?: string;
+  readonly from?: { readonly id: number; readonly is_bot?: boolean };
+};
+
+function replyContextFromTelegram(
+  reply: TelegramReplyMessage | undefined,
+  currentUserId: number,
+): ReplyContext | undefined {
+  if (reply === undefined) return undefined;
+  let author: ReplyContext['author'] = 'other';
+  if (reply.from?.is_bot === true) author = 'assistant';
+  else if (reply.from?.id === currentUserId) author = 'user';
+  const text = reply.text ?? reply.caption;
+  const parsed = makeReplyContext({
+    messageId: reply.message_id,
+    author,
+    ...(text !== undefined ? { text } : {}),
+  });
+  return parsed.ok ? parsed.value : undefined;
+}
+
+async function readBoundedBody(
+  response: Response,
+  maxBytes: number,
+): Promise<{ readonly ok: true; readonly data: Uint8Array } | { readonly ok: false }> {
+  if (response.body === null) {
+    const data = new Uint8Array(await response.arrayBuffer());
+    return data.byteLength <= maxBytes ? { ok: true, data } : { ok: false };
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  while (true) {
+    const next = await reader.read();
+    if (next.done) break;
+    totalBytes += next.value.byteLength;
+    if (totalBytes > maxBytes) {
+      await reader.cancel('PDF exceeds configured byte limit');
+      return { ok: false };
+    }
+    chunks.push(next.value);
+  }
+
+  const data = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    data.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { ok: true, data };
+}
+
+/** Idempotently remove one file only when its canonical target is in the spool. */
+export async function removeSpooledImage(
+  path: string,
+  imageDir = DEFAULT_IMAGE_DIR,
+): Promise<void> {
+  try {
+    const [canonicalRoot, canonicalFile] = await Promise.all([
+      realpath(imageDir),
+      realpath(resolve(path)),
+    ]);
+    const fromRoot = relative(canonicalRoot, canonicalFile);
+    if (
+      fromRoot.length === 0 ||
+      fromRoot === '..' ||
+      fromRoot.startsWith(`..${sep}`) ||
+      isAbsolute(fromRoot)
+    ) {
+      throw new Error(`Refusing to remove file outside Telegram image spool: ${path}`);
+    }
+    await unlink(canonicalFile);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
 }
 
 /**
@@ -64,9 +190,9 @@ function sleep(ms: number): Promise<void> {
 function getRateLimitRetryAfter(err: unknown): number | null {
   if (typeof err !== 'object' || err === null) return null;
   const e = err as Record<string, unknown>;
-  if (e['error_code'] !== 429) return null;
-  const parameters = e['parameters'] as Record<string, unknown> | undefined;
-  const retryAfter = parameters?.['retry_after'];
+  if (e.error_code !== 429) return null;
+  const parameters = e.parameters as Record<string, unknown> | undefined;
+  const retryAfter = parameters?.retry_after;
   return typeof retryAfter === 'number' ? retryAfter : null;
 }
 
@@ -82,7 +208,9 @@ async function withRateLimitRetry<T>(label: string, fn: () => Promise<T>): Promi
       const retryAfter = getRateLimitRetryAfter(err);
       if (retryAfter === null || attempt === RATE_LIMIT_MAX_RETRIES) throw err;
       const delaySec = retryAfter > 0 ? retryAfter : (RATE_LIMIT_BACKOFF_S[attempt] ?? 4);
-      console.warn(`[telegram] 429 rate-limited on ${label}, retrying in ${delaySec}s (attempt ${attempt + 1}/${RATE_LIMIT_MAX_RETRIES})`);
+      console.warn(
+        `[telegram] 429 rate-limited on ${label}, retrying in ${delaySec}s (attempt ${attempt + 1}/${RATE_LIMIT_MAX_RETRIES})`,
+      );
       await sleep(delaySec * 1000);
     }
   }
@@ -107,50 +235,112 @@ export function createTelegramAdapter(config: {
    * root, which owns the graceful-shutdown sequence (queue drain, Redis close).
    */
   onFatalError?: (err: unknown) => void;
+  /** Persistent spool override, primarily for isolated tests. */
+  imageDir?: string;
+  /** PDF parser override used by isolated Telegram adapter tests. */
+  pdfTextExtractor?: PdfTextExtractor;
 }): TelegramAdapter {
   const bot = new Bot(config.token);
   const userIdSet: ReadonlySet<number> = new Set(config.authorizedUserIds as readonly number[]);
+  const imageDir = config.imageDir ?? DEFAULT_IMAGE_DIR;
+  const pdfTextExtractor = config.pdfTextExtractor ?? extractPdfText;
 
-  // Registered message handler — set by onMessage()
   let messageHandler:
-    | ((msg: {
-        userId: number;
-        chatId: number;
-        text: string;
-        replyToMessageId?: number;
-        imagePaths?: readonly string[];
-      }) => void)
+    | ((msg: TelegramIncomingMessage) => Promise<TelegramIncomingDisposition | undefined>)
     | null = null;
+  let pollingPromise: Promise<void> | null = null;
+  let middlewareFailed = false;
+  let stopping = false;
+  let activeUpdateCount = 0;
+  const activeUpdateWaiters = new Set<() => void>();
 
+  // grammY otherwise considers a middleware error handled and advances its
+  // getUpdates offset. Rethrowing stops polling before the failed update is
+  // confirmed; systemd can restart us and Telegram will redeliver it.
   bot.catch((err) => {
-    console.error('[telegram] Bot error:', err);
+    middlewareFailed = true;
+    console.error('[telegram] Middleware failed; polling stopped before acknowledging the update');
+    throw err;
   });
+
+  const trackUpdate = async (chatId: number, operation: () => Promise<void>): Promise<void> => {
+    activeUpdateCount += 1;
+    try {
+      await operation();
+    } catch (err) {
+      middlewareFailed = true;
+      console.error(
+        `[telegram] Update handling failed for chatId=${chatId}:`,
+        err instanceof Error ? err.message : err,
+      );
+      throw err;
+    } finally {
+      activeUpdateCount -= 1;
+      if (activeUpdateCount === 0) {
+        for (const resolve of activeUpdateWaiters) resolve();
+        activeUpdateWaiters.clear();
+      }
+    }
+  };
+
+  const waitForActiveUpdates = (): Promise<void> => {
+    if (activeUpdateCount === 0) return Promise.resolve();
+    return new Promise((resolve) => activeUpdateWaiters.add(resolve));
+  };
+
+  const writeSpooledFile = async (filePath: string, data: Uint8Array | string): Promise<void> => {
+    await mkdir(imageDir, { recursive: true, mode: 0o700 });
+    await chmod(imageDir, 0o700);
+    const temporaryPath = `${filePath}.tmp-${crypto.randomUUID()}`;
+    try {
+      await writeFile(temporaryPath, data, { mode: 0o600 });
+      await rename(temporaryPath, filePath);
+    } catch (error) {
+      await unlink(temporaryPath).catch(() => {});
+      throw error;
+    }
+  };
 
   // FR-001 / FR-003: Filter and route text messages from authorized user only.
   // NFR-013: We log job metadata but NOT message content.
-  bot.on('message:text', (ctx) => {
+  bot.on('message:text', async (ctx) => {
     console.info(`[telegram] Received message from userId=${ctx.from?.id} chatId=${ctx.chat.id}`);
     const userId = ctx.from?.id;
     const chatId = ctx.chat.id;
 
     if (userId === undefined) return;
 
-    // NFR-010: silently discard unauthorized messages — no reply, no error
+    // NFR-010: silently discard unauthorized messages — no reply, no error.
     if (!isAuthorized(userId, userIdSet)) return;
 
-    if (messageHandler !== null) {
-      try {
-        const replyToMessageId = ctx.message.reply_to_message?.message_id;
-        messageHandler({ userId, chatId, text: ctx.message.text, ...(replyToMessageId !== undefined ? { replyToMessageId } : {}) });
-      } catch (err) {
-        // NFR-013: log chatId only, never message text
-        console.error(`[telegram] messageHandler error for chatId=${chatId}`, err);
-      }
+    const updateId = makeTelegramUpdateId(ctx.update.update_id);
+    if (!updateId.ok) {
+      console.error(
+        `[telegram] Discarding malformed update ID for chatId=${chatId}: ${updateId.error}`,
+      );
+      return;
     }
+    if (stopping) {
+      middlewareFailed = true;
+      throw new Error('Telegram ingress is stopping');
+    }
+    const handler = messageHandler;
+    if (handler === null) throw new Error('Telegram message handler is not registered');
+
+    const replyContext = replyContextFromTelegram(ctx.message.reply_to_message, userId);
+    await trackUpdate(chatId, async () => {
+      await handler({
+        updateId: updateId.value,
+        userId,
+        chatId,
+        text: ctx.message.text,
+        ...(replyContext !== undefined ? { replyContext } : {}),
+      });
+    });
   });
 
   // ── Photo download helper ──────────────────────────────────────────────────
-  async function downloadPhoto(fileId: string): Promise<string> {
+  async function downloadPhoto(fileId: string, updateId: TelegramUpdateId): Promise<string> {
     const file = await bot.api.getFile(fileId);
     if (!file.file_path) {
       throw new Error('Telegram getFile returned no file_path');
@@ -161,17 +351,113 @@ export function createTelegramAdapter(config: {
       throw new Error(`Photo download failed: ${response.status}`);
     }
     const buffer = Buffer.from(await response.arrayBuffer());
-    await mkdir(IMAGE_DIR, { recursive: true });
-    const ext = file.file_path.split('.').pop() ?? 'jpg';
-    const filename = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}.${ext}`;
-    const filePath = join(IMAGE_DIR, filename);
-    await writeFile(filePath, buffer);
+    const candidateExtension = file.file_path.split('.').pop()?.toLowerCase() ?? '';
+    const extension = /^[a-z0-9]{1,5}$/.test(candidateExtension) ? candidateExtension : 'jpg';
+    const filePath = join(imageDir, `${updateId}.${extension}`);
+    await writeSpooledFile(filePath, buffer);
     return filePath;
   }
 
+  // Handle PDF documents from authorized users. Raw PDFs are validated and
+  // converted to bounded plain text before entering the durable chat queue.
+  bot.on('message:document', async (ctx) => {
+    console.info(`[telegram] Received document from userId=${ctx.from?.id} chatId=${ctx.chat.id}`);
+    const userId = ctx.from?.id;
+    const chatId = ctx.chat.id;
+
+    if (userId === undefined || !isAuthorized(userId, userIdSet)) return;
+
+    const updateId = makeTelegramUpdateId(ctx.update.update_id);
+    if (!updateId.ok) {
+      console.error(
+        `[telegram] Discarding malformed document update ID for chatId=${chatId}: ${updateId.error}`,
+      );
+      return;
+    }
+    if (stopping) {
+      middlewareFailed = true;
+      throw new Error('Telegram ingress is stopping');
+    }
+
+    const document = ctx.message.document;
+    if (!isClaimedPdf(document.file_name, document.mime_type)) {
+      await trackUpdate(chatId, async () => {
+        await sendMessage(chatId, 'I can currently read PDF documents only.');
+      });
+      return;
+    }
+    if (document.file_size !== undefined && document.file_size > MAX_PDF_BYTES) {
+      await trackUpdate(chatId, async () => {
+        await sendMessage(chatId, PDF_TOO_LARGE_MESSAGE);
+      });
+      return;
+    }
+
+    const handler = messageHandler;
+    if (handler === null) throw new Error('Telegram message handler is not registered');
+
+    await trackUpdate(chatId, async () => {
+      const file = await bot.api.getFile(document.file_id);
+      if (!file.file_path) throw new Error('Telegram getFile returned no file_path');
+      const url = `https://api.telegram.org/file/bot${config.token}/${file.file_path}`;
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(PDF_DOWNLOAD_TIMEOUT_MS),
+      });
+      if (!response.ok) throw new Error(`PDF download failed: ${response.status}`);
+
+      const contentLength = Number(response.headers.get('content-length'));
+      if (Number.isFinite(contentLength) && contentLength > MAX_PDF_BYTES) {
+        await sendMessage(chatId, PDF_TOO_LARGE_MESSAGE);
+        return;
+      }
+      const body = await readBoundedBody(response, MAX_PDF_BYTES);
+      if (!body.ok) {
+        await sendMessage(chatId, PDF_TOO_LARGE_MESSAGE);
+        return;
+      }
+      if (!hasPdfMagic(body.data)) {
+        await sendMessage(
+          chatId,
+          'That file is labelled as a PDF, but its contents are not a PDF.',
+        );
+        return;
+      }
+
+      const extracted = await pdfTextExtractor(body.data);
+      if (!extracted.ok) {
+        await sendMessage(chatId, formatPdfExtractionError(extracted.error));
+        return;
+      }
+
+      const filePath = join(imageDir, `${updateId.value}.pdf.txt`);
+      const text = [
+        `Extracted from a ${extracted.value.totalPages}-page PDF.`,
+        '',
+        '--- BEGIN UNTRUSTED PDF CONTENT ---',
+        extracted.value.text,
+        '--- END UNTRUSTED PDF CONTENT ---',
+      ].join('\n');
+      await writeSpooledFile(filePath, text);
+
+      const caption = ctx.message.caption ?? '';
+      const replyContext = replyContextFromTelegram(ctx.message.reply_to_message, userId);
+      const disposition = await handler({
+        updateId: updateId.value,
+        userId,
+        chatId,
+        text: caption,
+        ...(replyContext !== undefined ? { replyContext } : {}),
+        documentPaths: [filePath],
+      });
+      if (disposition?.kind === 'remove-source-files') {
+        await removeSpooledImage(filePath, imageDir);
+      }
+    });
+  });
+
   // FR-001 extension: Handle photo messages from authorized users.
   // NFR-013: log chatId only, never file paths or captions.
-  bot.on('message:photo', (ctx) => {
+  bot.on('message:photo', async (ctx) => {
     console.info(`[telegram] Received photo from userId=${ctx.from?.id} chatId=${ctx.chat.id}`);
     const userId = ctx.from?.id;
     const chatId = ctx.chat.id;
@@ -179,35 +465,48 @@ export function createTelegramAdapter(config: {
     if (userId === undefined) return;
     if (!isAuthorized(userId, userIdSet)) return;
 
-    if (messageHandler !== null) {
-      const photos = ctx.message.photo;
-      const largest = photos[photos.length - 1];
-      if (!largest) return;
-
-      const caption = ctx.message.caption ?? '';
-      const replyToMessageId = ctx.message.reply_to_message?.message_id;
-
-      downloadPhoto(largest.file_id)
-        .then((filePath) => {
-          try {
-            messageHandler!({
-              userId,
-              chatId,
-              text: caption,
-              ...(replyToMessageId !== undefined ? { replyToMessageId } : {}),
-              imagePaths: [filePath],
-            });
-          } catch (err) {
-            console.error(`[telegram] messageHandler error for chatId=${chatId}`, err);
-          }
-        })
-        .catch((err) => {
-          console.error(`[telegram] Photo download failed for chatId=${chatId}:`, err instanceof Error ? err.message : err);
-        });
+    const updateId = makeTelegramUpdateId(ctx.update.update_id);
+    if (!updateId.ok) {
+      console.error(
+        `[telegram] Discarding malformed photo update ID for chatId=${chatId}: ${updateId.error}`,
+      );
+      return;
     }
+    if (stopping) {
+      middlewareFailed = true;
+      throw new Error('Telegram ingress is stopping');
+    }
+    const handler = messageHandler;
+    if (handler === null) throw new Error('Telegram message handler is not registered');
+
+    const photos = ctx.message.photo;
+    const largest = photos[photos.length - 1];
+    if (!largest) return;
+
+    const caption = ctx.message.caption ?? '';
+    const replyContext = replyContextFromTelegram(ctx.message.reply_to_message, userId);
+
+    await trackUpdate(chatId, async () => {
+      const filePath = await downloadPhoto(largest.file_id, updateId.value);
+      const disposition = await handler({
+        updateId: updateId.value,
+        userId,
+        chatId,
+        text: caption,
+        ...(replyContext !== undefined ? { replyContext } : {}),
+        imagePaths: [filePath],
+      });
+      if (disposition?.kind === 'remove-source-files') {
+        await removeSpooledImage(filePath, imageDir);
+      }
+    });
   });
 
-  const sendMessage = async (chatId: number, text: string, options?: SendOptions): Promise<number> => {
+  const sendMessage = async (
+    chatId: number,
+    text: string,
+    options?: SendOptions,
+  ): Promise<number> => {
     if (options?.plain) {
       const sent = await withRateLimitRetry('sendMessage', () => bot.api.sendMessage(chatId, text));
       return sent.message_id;
@@ -216,26 +515,40 @@ export function createTelegramAdapter(config: {
       const html = options?.html ? text : markdownToTelegramHtml(text);
       if (html.length > TELEGRAM_MAX_LENGTH) {
         console.warn(`[telegram] HTML too long (${html.length} chars), sending plain text`);
-        const sent = await withRateLimitRetry('sendMessage', () => bot.api.sendMessage(chatId, text));
+        const sent = await withRateLimitRetry('sendMessage', () =>
+          bot.api.sendMessage(chatId, text),
+        );
         return sent.message_id;
       }
-      const sent = await withRateLimitRetry('sendMessage', () => bot.api.sendMessage(chatId, html, { parse_mode: 'HTML' }));
+      const sent = await withRateLimitRetry('sendMessage', () =>
+        bot.api.sendMessage(chatId, html, { parse_mode: 'HTML' }),
+      );
       return sent.message_id;
     } catch (err) {
-      console.warn('[telegram] HTML send failed, falling back to plain text:', err instanceof Error ? err.message : err);
+      console.warn(
+        '[telegram] HTML send failed, falling back to plain text:',
+        err instanceof Error ? err.message : err,
+      );
       const sent = await withRateLimitRetry('sendMessage', () => bot.api.sendMessage(chatId, text));
       return sent.message_id;
     }
   };
 
-  const editMessage = async (chatId: number, messageId: number, text: string, options?: SendOptions): Promise<void> => {
+  const editMessage = async (
+    chatId: number,
+    messageId: number,
+    text: string,
+    options?: SendOptions,
+  ): Promise<void> => {
     if (options?.plain) {
       try {
-        await withRateLimitRetry('editMessage', () => bot.api.editMessageText(chatId, messageId, text));
+        await withRateLimitRetry('editMessage', () =>
+          bot.api.editMessageText(chatId, messageId, text),
+        );
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         if (errMsg.includes('message is not modified')) return;
-        console.warn('[telegram] Plain text edit failed:', errMsg);
+        throw err;
       }
       return;
     }
@@ -243,10 +556,14 @@ export function createTelegramAdapter(config: {
       const html = options?.html ? text : markdownToTelegramHtml(text);
       if (html.length > TELEGRAM_MAX_LENGTH) {
         console.warn(`[telegram] Edit HTML too long (${html.length} chars), sending plain text`);
-        await withRateLimitRetry('editMessage', () => bot.api.editMessageText(chatId, messageId, text));
+        await withRateLimitRetry('editMessage', () =>
+          bot.api.editMessageText(chatId, messageId, text),
+        );
         return;
       }
-      await withRateLimitRetry('editMessage', () => bot.api.editMessageText(chatId, messageId, html, { parse_mode: 'HTML' }));
+      await withRateLimitRetry('editMessage', () =>
+        bot.api.editMessageText(chatId, messageId, html, { parse_mode: 'HTML' }),
+      );
     } catch (err) {
       // "message is not modified" is harmless — content already matches, skip fallback
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -254,11 +571,13 @@ export function createTelegramAdapter(config: {
 
       console.warn('[telegram] HTML edit failed, falling back to plain text:', errMsg);
       try {
-        await withRateLimitRetry('editMessage', () => bot.api.editMessageText(chatId, messageId, text));
+        await withRateLimitRetry('editMessage', () =>
+          bot.api.editMessageText(chatId, messageId, text),
+        );
       } catch (plainErr) {
         const plainErrMsg = plainErr instanceof Error ? plainErr.message : String(plainErr);
         if (plainErrMsg.includes('message is not modified')) return;
-        console.warn('[telegram] Plain text edit also failed:', plainErrMsg);
+        throw plainErr;
       }
     }
   };
@@ -274,7 +593,9 @@ export function createTelegramAdapter(config: {
   ): Promise<readonly number[]> => {
     const messageIds: number[] = [];
     for (let i = 0; i < chunks.length; i++) {
-      const msgId = await sendMessage(chatId, chunks[i]!, options);
+      const chunk = chunks[i];
+      if (chunk === undefined) throw new Error(`Missing Telegram chunk at index ${i}`);
+      const msgId = await sendMessage(chatId, chunk, options);
       messageIds.push(msgId);
       if (i < chunks.length - 1) {
         await sleep(CHUNK_DELAY_MS);
@@ -284,29 +605,39 @@ export function createTelegramAdapter(config: {
   };
 
   const onMessage = (
-    handler: (msg: {
-      userId: number;
-      chatId: number;
-      text: string;
-      replyToMessageId?: number;
-      imagePaths?: readonly string[];
-    }) => void,
+    handler: (msg: TelegramIncomingMessage) => Promise<TelegramIncomingDisposition | undefined>,
   ): void => {
     messageHandler = handler;
   };
 
   const start = async (): Promise<void> => {
-    // Intentionally not awaited: grammy's bot.start() resolves only when polling
-    // stops. Surface a fatal polling failure to the composition root instead of
-    // killing the process from inside the adapter.
-    bot.start().catch((err: unknown) => {
-      console.error('[telegram] bot.start() failed:', err);
+    if (pollingPromise !== null) return;
+
+    // limit=1 prevents a fetched batch from placing several updates beyond the
+    // durable acknowledgement boundary at once.
+    pollingPromise = bot.start({ limit: 1 });
+    void pollingPromise.catch((err: unknown) => {
+      if (stopping) return;
+      console.error('[telegram] bot.start() failed:', err instanceof Error ? err.message : err);
       config.onFatalError?.(err);
     });
   };
 
   const stop = async (): Promise<void> => {
+    stopping = true;
+    await waitForActiveUpdates();
+
+    if (middlewareFailed) {
+      // The failed update must remain unconfirmed. Rethrowing from bot.catch
+      // stops polling naturally; bot.stop() would explicitly acknowledge it.
+      await pollingPromise?.catch(() => {});
+      return;
+    }
+
     await bot.stop();
+    await pollingPromise?.catch((err: unknown) => {
+      if (!stopping) throw err;
+    });
   };
 
   return { start, stop, sendMessage, editMessage, sendChunkedMessage, onMessage };

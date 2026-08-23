@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   parseChatJob,
-  parseScheduledJob,
-  parseReminderJob,
-  parseRecurringReminderJob,
-  parseResearchJobData,
   parsePodcastJob,
+  parseRecurringReminderJob,
+  parseReminderJob,
+  parseResearchJobData,
+  parseScheduledJob,
 } from './job-schemas.js';
+import { MAX_REPLY_CONTEXT_CHARS } from './types.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -18,6 +19,12 @@ function validChatData() {
     text: 'hello',
     chatId: 123,
     receivedAt: '2026-03-29T10:00:00Z',
+    conversation: {
+      generation: 0,
+      revision: 0,
+      backend: 'pi' as const,
+      sessionId: null,
+    },
   };
 }
 
@@ -69,7 +76,7 @@ function validPodcastData() {
     kind: 'podcast' as const,
     id: 'job-005',
     chatId: 123,
-    notePath: '/notes/topic.md',
+    notePath: 'notes/topic.md',
     audioFormat: 1 as const,
     audioLength: 2 as const,
     enqueuedAt: '2026-03-29T10:00:00Z',
@@ -98,6 +105,11 @@ describe('parseChatJob', () => {
     expect(parseChatJob({ ...validChatData(), kind: 'scheduled' }).ok).toBe(false);
   });
 
+  it('rejects a job without its immutable conversation target', () => {
+    const { conversation: _conversation, ...legacy } = validChatData();
+    expect(parseChatJob(legacy).ok).toBe(false);
+  });
+
   it('rejects empty id', () => {
     expect(parseChatJob({ ...validChatData(), id: '' }).ok).toBe(false);
   });
@@ -111,9 +123,57 @@ describe('parseChatJob', () => {
     expect(parseChatJob({ ...validChatData(), userId: 1.5 }).ok).toBe(false);
   });
 
-  it('allows empty text when schema relaxed (domain validates in makeChatJob)', () => {
-    // Schema now allows empty text — business validation happens in makeChatJob
-    expect(parseChatJob({ ...validChatData(), text: '' }).ok).toBe(true);
+  it('rejects empty text without an attachment', () => {
+    expect(parseChatJob({ ...validChatData(), text: '' }).ok).toBe(false);
+  });
+
+  it.each(['123', 'too:many:colon:segments'])('rejects invalid BullMQ job ID %j', (id) => {
+    expect(parseChatJob({ ...validChatData(), id }).ok).toBe(false);
+  });
+
+  it('rejects a non-ISO receivedAt timestamp', () => {
+    expect(parseChatJob({ ...validChatData(), receivedAt: 'yesterday' }).ok).toBe(false);
+  });
+
+  it('parses bounded textual and non-text reply contexts', () => {
+    const textual = parseChatJob({
+      ...validChatData(),
+      replyContext: {
+        kind: 'text',
+        messageId: 42,
+        author: 'assistant',
+        text: 'Garmin sync failed',
+        truncated: false,
+      },
+    });
+    const nonText = parseChatJob({
+      ...validChatData(),
+      replyContext: { kind: 'non-text', messageId: 43, author: 'other' },
+    });
+    expect(textual.ok).toBe(true);
+    expect(nonText.ok).toBe(true);
+  });
+
+  it.each([
+    { kind: 'text', messageId: 0, author: 'assistant', text: 'x', truncated: false },
+    {
+      kind: 'text',
+      messageId: Number.MAX_SAFE_INTEGER + 1,
+      author: 'assistant',
+      text: 'x',
+      truncated: false,
+    },
+    { kind: 'text', messageId: 42, author: 'unknown', text: 'x', truncated: false },
+    {
+      kind: 'text',
+      messageId: 42,
+      author: 'assistant',
+      text: 'x'.repeat(MAX_REPLY_CONTEXT_CHARS + 1),
+      truncated: true,
+    },
+    { kind: 'non-text', messageId: 0, author: 'other' },
+  ])('rejects malformed durable reply context %#', (replyContext) => {
+    expect(parseChatJob({ ...validChatData(), replyContext }).ok).toBe(false);
   });
 
   it('parses chat job with imagePaths', () => {
@@ -133,10 +193,19 @@ describe('parseChatJob', () => {
     }
   });
 
-  it('rejects imagePaths with empty strings', () => {
-    const data = { ...validChatData(), imagePaths: [''] };
-    expect(parseChatJob(data).ok).toBe(false);
+  it('parses chat jobs with extracted PDF text paths', () => {
+    const data = { ...validChatData(), text: '', documentPaths: ['/state/1001.pdf.txt'] };
+    const result = parseChatJob(data);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.documentPaths).toEqual(['/state/1001.pdf.txt']);
   });
+
+  it.each([{ imagePaths: [''] }, { documentPaths: [''] }])(
+    'rejects attachment paths with empty strings: $imagePaths$documentPaths',
+    (paths) => {
+      expect(parseChatJob({ ...validChatData(), ...paths }).ok).toBe(false);
+    },
+  );
 
   it('rejects null input', () => {
     expect(parseChatJob(null).ok).toBe(false);
@@ -158,8 +227,8 @@ describe('parseScheduledJob', () => {
     expect(result.value.skillId).toBe('morning-briefing');
   });
 
-  it('rejects empty skillId', () => {
-    expect(parseScheduledJob({ ...validScheduledData(), skillId: '' }).ok).toBe(false);
+  it.each(['', '../morning-briefing', 'folder\\skill'])('rejects invalid skillId %j', (skillId) => {
+    expect(parseScheduledJob({ ...validScheduledData(), skillId }).ok).toBe(false);
   });
 
   it('rejects missing triggeredAt', () => {
@@ -169,6 +238,15 @@ describe('parseScheduledJob', () => {
 
   it('rejects wrong kind', () => {
     expect(parseScheduledJob({ ...validScheduledData(), kind: 'chat' }).ok).toBe(false);
+  });
+
+  it.each([
+    { triggeredAt: 'not-a-date' },
+    { validUntil: 'not-a-date' },
+    { validUntil: '2026-03-29T07:59:59Z' },
+    { validUntil: '2026-03-29T08:00:00Z' },
+  ])('rejects invalid or non-increasing persisted deadlines %#', (overrides) => {
+    expect(parseScheduledJob({ ...validScheduledData(), ...overrides }).ok).toBe(false);
   });
 
   it('preserves an explicit manual trigger', () => {
@@ -233,6 +311,7 @@ describe('parseRecurringReminderJob', () => {
   it('parses with optional cron fields', () => {
     const data = {
       ...validRecurringReminderData(),
+      intervalMs: 0,
       cronPattern: '0 12 * * 0',
       cronDescription: 'every Sunday at noon',
     };
@@ -243,11 +322,23 @@ describe('parseRecurringReminderJob', () => {
   });
 
   it('rejects empty schedulerId', () => {
-    expect(parseRecurringReminderJob({ ...validRecurringReminderData(), schedulerId: '' }).ok).toBe(false);
+    expect(parseRecurringReminderJob({ ...validRecurringReminderData(), schedulerId: '' }).ok).toBe(
+      false,
+    );
   });
 
   it('rejects empty id', () => {
     expect(parseRecurringReminderJob({ ...validRecurringReminderData(), id: '' }).ok).toBe(false);
+  });
+
+  it.each([
+    { intervalMs: 0 },
+    { intervalMs: 59_999 },
+    { intervalMs: 60_000, cronPattern: '0 12 * * 0' },
+  ])('rejects invalid interval/cron combinations %#', (overrides) => {
+    expect(parseRecurringReminderJob({ ...validRecurringReminderData(), ...overrides }).ok).toBe(
+      false,
+    );
   });
 });
 
@@ -271,7 +362,7 @@ describe('parseResearchJobData', () => {
     const result = parseResearchJobData(data);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect((result.value as Record<string, unknown>)['extraField']).toBe('preserved');
+    expect((result.value as Record<string, unknown>).extraField).toBe('preserved');
   });
 });
 
@@ -283,7 +374,7 @@ describe('parsePodcastJob', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.kind).toBe('podcast');
-    expect(result.value.notePath).toBe('/notes/topic.md');
+    expect(result.value.notePath).toBe('notes/topic.md');
     expect(result.value.audioFormat).toBe(1);
     expect(result.value.audioLength).toBe(2);
   });
@@ -299,6 +390,13 @@ describe('parsePodcastJob', () => {
   it('rejects empty notePath', () => {
     expect(parsePodcastJob({ ...validPodcastData(), notePath: '' }).ok).toBe(false);
   });
+
+  it.each(['../outside.md', '/etc/passwd', 'folder\\..\\outside.md'])(
+    'rejects unsafe persisted notePath %j',
+    (notePath) => {
+      expect(parsePodcastJob({ ...validPodcastData(), notePath }).ok).toBe(false);
+    },
+  );
 
   it('rejects empty enqueuedAt', () => {
     expect(parsePodcastJob({ ...validPodcastData(), enqueuedAt: '' }).ok).toBe(false);

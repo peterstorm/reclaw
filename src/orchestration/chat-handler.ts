@@ -1,42 +1,83 @@
 import fs from 'node:fs/promises';
-import { buildChatPrompt } from '../core/prompt-builder.js';
-import { getAllowedTools } from '../core/permissions.js';
-import { splitMessage, splitHtml } from '../core/message-splitter.js';
-import { markdownToTelegramHtml } from '../core/markdown-to-telegram.js';
-import { jobResultOk, jobResultErr, makeClaudeSessionId, type ChatJob, type JobResult } from '../core/types.js';
+import type { TelegramDeliveryOperation } from '../core/activity.js';
 import {
+  type AgentFailure,
+  agentFailurePolicy,
+  formatAgentFailure,
+} from '../core/agent-failure.js';
+import { markdownToTelegramHtml } from '../core/markdown-to-telegram.js';
+import { splitHtml, splitMessage } from '../core/message-splitter.js';
+import { getAllowedTools } from '../core/permissions.js';
+import { buildChatPrompt } from '../core/prompt-builder.js';
+import {
+  PREVIEW_MAX_CHARS,
+  type StreamEffect,
+  type StreamState,
+  THINKING_CHUNK_MAX,
   createStreamState,
   escapeHtml,
   processChunk,
-  THINKING_CHUNK_MAX,
-  PREVIEW_MAX_CHARS,
-  type StreamState,
-  type StreamEffect,
 } from '../core/stream-state.js';
-import type { AgentOptions, AgentResult, StreamChunk, OnStreamChunk } from '../infra/agent-backends/index.js';
-import type { TelegramAdapter } from '../infra/telegram.js';
-import type { SessionStore } from '../infra/session-store.js';
+import {
+  type ChatJob,
+  type ClaudeSessionId,
+  type JobResult,
+  chatJobSourcePaths,
+  jobResultErr,
+  jobResultOk,
+  makeClaudeSessionId,
+} from '../core/types.js';
+import type {
+  AgentOptions,
+  AgentResult,
+  OnStreamChunk,
+  StreamChunk,
+} from '../infra/agent-backends/index.js';
 import type { AppConfig } from '../infra/config.js';
+import type { SessionStore } from '../infra/session-store.js';
+import { type TelegramAdapter, removeSpooledImage } from '../infra/telegram.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type ChatDeps = {
-  readonly runClaudeStreaming: (options: AgentOptions, onChunk: OnStreamChunk) => Promise<AgentResult>;
+  readonly runClaudeStreaming: (
+    options: AgentOptions,
+    onChunk: OnStreamChunk,
+  ) => Promise<AgentResult>;
   readonly telegram: TelegramAdapter;
   readonly config: AppConfig;
   readonly sessionStore: SessionStore;
-  /** Fire-and-forget cortex memory extraction. Called after successful Claude runs. */
-  readonly triggerCortexExtraction?: (sessionId: string, cwd: string) => void;
+  /** Awaitable Cortex extraction used by the legacy inline completion path. */
+  readonly triggerCortexExtraction?: (sessionId: string, cwd: string) => void | Promise<void>;
+  /** Production workers persist completion effects in the delivery outbox. */
+  readonly completionMode?: 'inline' | 'durable';
 };
+
+export type ChatActivityOutcome =
+  | {
+      readonly kind: 'completed';
+      readonly response: string;
+      readonly sessionId: ClaudeSessionId | null;
+      readonly conversationGeneration: ChatJob['conversation']['generation'];
+      readonly conversationRevision: ChatJob['conversation']['revision'];
+      readonly conversationBackend: ChatJob['conversation']['backend'];
+      readonly telegramOperations: readonly TelegramDeliveryOperation[];
+      readonly sourcePaths: readonly string[];
+      /** Settles best-effort previews after ActivityResult persistence. */
+      readonly drainPreviews: () => Promise<void>;
+    }
+  | { readonly kind: 'failed'; readonly failure: AgentFailure };
+
+export type ChatHandlerOutcome = JobResult | ChatActivityOutcome;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-async function cleanupImages(paths: readonly string[] | undefined): Promise<void> {
-  if (!paths || paths.length === 0) return;
+async function cleanupSourceFiles(paths: readonly string[]): Promise<void> {
+  if (paths.length === 0) return;
   await Promise.all(
-    paths.map((p) =>
-      fs.unlink(p).catch((err: NodeJS.ErrnoException) => {
-        console.warn(`[chat] cleanup failed: ${p} (${err.code ?? 'UNKNOWN'})`);
+    paths.map((path) =>
+      removeSpooledImage(path).catch((error: NodeJS.ErrnoException) => {
+        console.warn(`[chat] confined attachment cleanup failed (${error.code ?? 'UNKNOWN'})`);
       }),
     ),
   );
@@ -56,27 +97,34 @@ function applyEffect(
   placeholderMsgId: number,
   getBlockContent: (blockIndex: number) => string,
   getBlockType: (blockIndex: number) => 'thinking' | 'text',
+  pendingEffects: Promise<unknown>[],
 ): void {
   const warn = (label: string, err: unknown): void => {
     console.warn(`[chat] ${label} for chatId=${chatId}:`, err instanceof Error ? err.message : err);
   };
+  const lastMessageId = (blockIndex: number): number | undefined =>
+    blockMsgIds.get(blockIndex)?.at(-1);
 
   switch (effect.kind) {
     case 'finalize_thinking': {
-      const msgIds = blockMsgIds.get(effect.blockIndex);
-      if (msgIds && msgIds.length > 0) {
-        const msgId = msgIds[msgIds.length - 1]!;
-        telegram.editMessage(chatId, msgId, `<i>${effect.displayContent}</i>`, { html: true })
-          .catch((err) => warn('Thinking transition edit failed', err));
+      const msgId = lastMessageId(effect.blockIndex);
+      if (msgId !== undefined) {
+        pendingEffects.push(
+          telegram
+            .editMessage(chatId, msgId, `<i>${effect.displayContent}</i>`, { html: true })
+            .catch((err) => warn('Thinking transition edit failed', err)),
+        );
       }
       break;
     }
     case 'finalize_text': {
-      const msgIds = blockMsgIds.get(effect.blockIndex);
-      if (msgIds && msgIds.length > 0) {
-        const msgId = msgIds[msgIds.length - 1]!;
-        telegram.editMessage(chatId, msgId, effect.preview, { plain: true })
-          .catch((err) => warn('Text transition edit failed', err));
+      const msgId = lastMessageId(effect.blockIndex);
+      if (msgId !== undefined) {
+        pendingEffects.push(
+          telegram
+            .editMessage(chatId, msgId, effect.preview, { plain: true })
+            .catch((err) => warn('Text transition edit failed', err)),
+        );
       }
       break;
     }
@@ -86,65 +134,134 @@ function applyEffect(
       } else {
         const initial = effect.blockType === 'thinking' ? '<i>...</i>' : '...';
         const opts = effect.blockType === 'thinking' ? { html: true } : { plain: true };
-        telegram.sendMessage(chatId, initial, opts).then((msgId) => {
-          const ids = blockMsgIds.get(effect.blockIndex) ?? [];
-          ids.push(msgId);
-          blockMsgIds.set(effect.blockIndex, ids);
-          // Catch-up edit: if content accumulated while waiting for sendMessage
-          const content = getBlockContent(effect.blockIndex);
-          if (content.length > 0) {
-            const blockType = getBlockType(effect.blockIndex);
-            if (blockType === 'thinking') {
-              const escaped = escapeHtml(content);
-              if (escaped.length > 0 && escaped.length <= THINKING_CHUNK_MAX) {
-                telegram.editMessage(chatId, msgId, `<i>${escaped}</i>`, { html: true })
-                  .catch((err) => warn('Thinking catch-up edit failed', err));
+        pendingEffects.push(
+          telegram
+            .sendMessage(chatId, initial, opts)
+            .then(async (msgId) => {
+              const ids = blockMsgIds.get(effect.blockIndex) ?? [];
+              ids.push(msgId);
+              blockMsgIds.set(effect.blockIndex, ids);
+              // Catch-up edit: if content accumulated while waiting for sendMessage
+              const content = getBlockContent(effect.blockIndex);
+              if (content.length > 0) {
+                const blockType = getBlockType(effect.blockIndex);
+                if (blockType === 'thinking') {
+                  const escaped = escapeHtml(content);
+                  if (escaped.length > 0 && escaped.length <= THINKING_CHUNK_MAX) {
+                    await telegram
+                      .editMessage(chatId, msgId, `<i>${escaped}</i>`, { html: true })
+                      .catch((err) => warn('Thinking catch-up edit failed', err));
+                  }
+                } else {
+                  const preview =
+                    content.length > PREVIEW_MAX_CHARS
+                      ? `${content.slice(0, PREVIEW_MAX_CHARS)}...`
+                      : content;
+                  await telegram
+                    .editMessage(chatId, msgId, preview, { plain: true })
+                    .catch((err) => warn('Text catch-up edit failed', err));
+                }
               }
-            } else {
-              const preview = content.length > PREVIEW_MAX_CHARS
-                ? content.slice(0, PREVIEW_MAX_CHARS) + '...'
-                : content;
-              telegram.editMessage(chatId, msgId, preview, { plain: true })
-                .catch((err) => warn('Text catch-up edit failed', err));
-            }
-          }
-        }).catch((err) => warn('New block message failed', err));
+            })
+            .catch((err) => warn('New block message failed', err)),
+        );
       }
       break;
     }
     case 'edit_thinking': {
-      const msgIds = blockMsgIds.get(effect.blockIndex);
-      if (msgIds && msgIds.length > 0) {
-        const msgId = msgIds[msgIds.length - 1]!;
-        telegram.editMessage(chatId, msgId, `<i>${effect.displayContent}</i>`, { html: true })
-          .catch((err) => warn('Thinking edit failed', err));
+      const msgId = lastMessageId(effect.blockIndex);
+      if (msgId !== undefined) {
+        pendingEffects.push(
+          telegram
+            .editMessage(chatId, msgId, `<i>${effect.displayContent}</i>`, { html: true })
+            .catch((err) => warn('Thinking edit failed', err)),
+        );
       }
       break;
     }
     case 'edit_thinking_overflow': {
-      const msgIds = blockMsgIds.get(effect.blockIndex);
-      if (msgIds && msgIds.length > 0) {
-        const msgId = msgIds[msgIds.length - 1]!;
-        telegram.editMessage(chatId, msgId, `<i>${effect.firstPart}</i>`, { html: true })
-          .catch((err) => warn('Thinking overflow edit failed', err));
-        telegram.sendMessage(chatId, `<i>${effect.remainder}</i>`, { html: true }).then((newMsgId) => {
-          const ids = blockMsgIds.get(effect.blockIndex) ?? [];
-          ids.push(newMsgId);
-          blockMsgIds.set(effect.blockIndex, ids);
-        }).catch((err) => warn('Thinking overflow msg failed', err));
+      const msgId = lastMessageId(effect.blockIndex);
+      if (msgId !== undefined) {
+        pendingEffects.push(
+          telegram
+            .editMessage(chatId, msgId, `<i>${effect.firstPart}</i>`, { html: true })
+            .catch((err) => warn('Thinking overflow edit failed', err)),
+        );
+        pendingEffects.push(
+          telegram
+            .sendMessage(chatId, `<i>${effect.remainder}</i>`, { html: true })
+            .then((newMsgId) => {
+              const ids = blockMsgIds.get(effect.blockIndex) ?? [];
+              ids.push(newMsgId);
+              blockMsgIds.set(effect.blockIndex, ids);
+            })
+            .catch((err) => warn('Thinking overflow msg failed', err)),
+        );
       }
       break;
     }
     case 'edit_text': {
-      const msgIds = blockMsgIds.get(effect.blockIndex);
-      if (msgIds && msgIds.length > 0) {
-        const msgId = msgIds[msgIds.length - 1]!;
-        telegram.editMessage(chatId, msgId, effect.preview, { plain: true })
-          .catch((err) => warn('Text edit failed', err));
+      const msgId = lastMessageId(effect.blockIndex);
+      if (msgId !== undefined) {
+        pendingEffects.push(
+          telegram
+            .editMessage(chatId, msgId, effect.preview, { plain: true })
+            .catch((err) => warn('Text edit failed', err)),
+        );
       }
       break;
     }
   }
+}
+
+/** Build immutable final Telegram effects after the agent has completed. */
+export function planChatTelegramCompletion(
+  stream: StreamState,
+  blockMsgIds: ReadonlyMap<number, readonly number[]>,
+  placeholderMsgId: number | null,
+  output: string,
+): readonly TelegramDeliveryOperation[] {
+  const operations: TelegramDeliveryOperation[] = [];
+
+  for (const [blockIndex, block] of stream.blocks.entries()) {
+    if (block.content.length === 0) continue;
+    const messageIds = blockMsgIds.get(blockIndex) ?? [];
+
+    if (block.type === 'thinking') {
+      const chunks = splitMessage(escapeHtml(block.content), THINKING_CHUNK_MAX).map(
+        (text) => `<i>${text}</i>`,
+      );
+      for (const [index, text] of chunks.entries()) {
+        const messageId = messageIds[index];
+        operations.push(
+          messageId === undefined
+            ? { kind: 'send', text, format: 'html' }
+            : { kind: 'edit', messageId, text, format: 'html' },
+        );
+      }
+      continue;
+    }
+
+    const chunks = splitHtml(markdownToTelegramHtml(block.content));
+    for (const [index, text] of chunks.entries()) {
+      const messageId = index === 0 ? messageIds[0] : undefined;
+      operations.push(
+        messageId === undefined
+          ? { kind: 'send', text, format: 'html' }
+          : { kind: 'edit', messageId, text, format: 'html' },
+      );
+    }
+  }
+
+  if (operations.length > 0) return operations;
+
+  const chunks = splitHtml(markdownToTelegramHtml(output));
+  return chunks.map(
+    (text, index): TelegramDeliveryOperation =>
+      index === 0 && placeholderMsgId !== null
+        ? { kind: 'edit', messageId: placeholderMsgId, text, format: 'html' }
+        : { kind: 'send', text, format: 'html' },
+  );
 }
 
 // ─── Handler (imperative shell) ───────────────────────────────────────────────
@@ -162,27 +279,43 @@ function applyEffect(
  * FR-012: On claude failure, send user-friendly message via Telegram.
  * FR-016: Timeout enforced by runClaudeStreaming.
  */
-export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobResult> {
+export function handleChatJob(
+  job: ChatJob,
+  deps: ChatDeps & { readonly completionMode: 'durable' },
+): Promise<ChatActivityOutcome>;
+export function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobResult>;
+export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<ChatHandlerOutcome> {
   // 1. Load personality — fallback to empty string on any read error (FR-009)
   let personality = '';
   try {
     personality = await fs.readFile(deps.config.personalityPath, 'utf-8');
-  } catch {
-    // File not found or unreadable — proceed without personality
+  } catch (error) {
+    console.warn(
+      `[chat] Personality unavailable at ${deps.config.personalityPath}; continuing without it:`,
+      error instanceof Error ? error.message : error,
+    );
   }
 
-  // 2. Look up existing session
-  const existingSession = await deps.sessionStore.getSession(job.chatId);
+  // 2. Rebase queued work onto the latest session only while its captured
+  // generation/backend is still current. If /new or an explicit reply advanced
+  // the generation, execute against the immutable ingress snapshot instead.
+  const currentConversation = await deps.sessionStore.getCurrent(job.chatId);
+  const executionConversation =
+    currentConversation.generation === job.conversation.generation &&
+    currentConversation.backend === job.conversation.backend
+      ? currentConversation
+      : job.conversation;
+  const isResuming = executionConversation.sessionId !== null;
 
-  const isResuming = existingSession !== null;
-
-  // 3. Build prompt — skip personality on resume (already in Claude's context)
-  const prompt = isResuming
-    ? (job.imagePaths && job.imagePaths.length > 0
-        ? buildChatPrompt('', job.text, job.imagePaths)
-        : job.text)
-    : buildChatPrompt(personality, job.text, job.imagePaths);
-  const resumeSessionId = isResuming ? (existingSession.sessionId as string) : undefined;
+  // 3. Build prompt — skip personality on resume (already in the agent's context)
+  const prompt = buildChatPrompt(
+    isResuming ? '' : personality,
+    job.text,
+    job.imagePaths,
+    job.documentPaths,
+    job.replyContext,
+  );
+  const resumeSessionId = executionConversation.sessionId ?? undefined;
 
   // 4. Get allowed tools for chat profile (pure, FR-011)
   const allowedTools = getAllowedTools('chat');
@@ -192,13 +325,17 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
   try {
     placeholderMsgId = await deps.telegram.sendMessage(job.chatId, '...');
   } catch (err) {
-    console.warn(`[chat] Failed to send placeholder for chatId=${job.chatId}:`, err instanceof Error ? err.message : err);
+    console.warn(
+      `[chat] Failed to send placeholder for chatId=${job.chatId}:`,
+      err instanceof Error ? err.message : err,
+    );
     // Continue without streaming — will fall back to chunked send
   }
 
   // 6. Stream state (pure) + message ID mapping (shell)
   let stream: StreamState = createStreamState();
   const blockMsgIds = new Map<number, number[]>();
+  const pendingEffects: Promise<unknown>[] = [];
 
   const onChunk = (chunk: StreamChunk): void => {
     if (placeholderMsgId === null) return;
@@ -209,6 +346,39 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
     });
     stream = nextState;
 
+    if (deps.completionMode === 'durable') {
+      // Durable mode never creates untracked preview messages. It may edit the
+      // one known placeholder, and the worker persists ActivityResult before
+      // waiting for these best-effort edits to settle.
+      for (const effect of effects) {
+        if (effect.kind === 'start_block' && effect.reusePlaceholder) {
+          blockMsgIds.set(effect.blockIndex, [placeholderMsgId]);
+        }
+      }
+      const activeBlock = stream.blocks.at(-1);
+      if (effects.length > 0 && activeBlock !== undefined && activeBlock.content.length > 0) {
+        const preview =
+          activeBlock.type === 'thinking'
+            ? `<i>${escapeHtml(activeBlock.content).slice(0, THINKING_CHUNK_MAX)}</i>`
+            : activeBlock.content.length > PREVIEW_MAX_CHARS
+              ? `${activeBlock.content.slice(0, PREVIEW_MAX_CHARS)}...`
+              : activeBlock.content;
+        const options =
+          activeBlock.type === 'thinking' ? { html: true as const } : { plain: true as const };
+        pendingEffects.push(
+          deps.telegram
+            .editMessage(job.chatId, placeholderMsgId, preview, options)
+            .catch((error) => {
+              console.warn(
+                `[chat] Durable preview edit failed for chatId=${job.chatId}:`,
+                error instanceof Error ? error.message : error,
+              );
+            }),
+        );
+      }
+      return;
+    }
+
     for (const effect of effects) {
       applyEffect(
         effect,
@@ -218,6 +388,7 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
         placeholderMsgId,
         (idx) => stream.blocks[idx]?.content ?? '',
         (idx) => stream.blocks[idx]?.type ?? 'text',
+        pendingEffects,
       );
     }
   };
@@ -229,30 +400,41 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
   };
 
   // 7. Run claude streaming subprocess
-  console.log(`[chat] Running Claude for chatId=${job.chatId} resume=${isResuming}`);
+  console.info(`[chat] Running Claude for chatId=${job.chatId} resume=${isResuming}`);
   const claudeOptions = {
     prompt,
     cwd: deps.config.workspacePath,
     allowedTools,
     timeoutMs: deps.config.chatTimeoutMs,
     ...(resumeSessionId ? { resumeSessionId } : {}),
+    backend: executionConversation.backend,
   };
   let result = await deps.runClaudeStreaming(claudeOptions, onChunk);
 
-  console.log(`[chat] Claude finished for chatId=${job.chatId} ok=${result.ok}${result.ok ? ` duration=${result.durationMs}ms` : ` error=${result.error}`}`);
+  console.info(
+    `[chat] Claude finished for chatId=${job.chatId} ok=${result.ok}${result.ok ? ` duration=${result.durationMs}ms` : ` error=${formatAgentFailure(result.failure)}`}`,
+  );
 
-  // 8. Stale session fallback — retry without resume on failure
-  if (!result.ok && isResuming) {
-    console.log(`[chat] Stale session fallback for chatId=${job.chatId}, retrying fresh`);
-    await deps.sessionStore.deleteSession(job.chatId);
+  // 8. Retry without resume only when the typed failure proves the persisted
+  // session itself is unusable. Provider and transport failures retain lineage
+  // and are left to BullMQ rather than causing duplicate fresh execution.
+  if (!result.ok && isResuming && agentFailurePolicy(result.failure).mayRetryWithoutSession) {
+    console.info(`[chat] Invalid session for chatId=${job.chatId}, retrying fresh`);
     resetStreamingState();
-    const freshPrompt = buildChatPrompt(personality, job.text, job.imagePaths);
+    const freshPrompt = buildChatPrompt(
+      personality,
+      job.text,
+      job.imagePaths,
+      job.documentPaths,
+      job.replyContext,
+    );
     result = await deps.runClaudeStreaming(
       {
         prompt: freshPrompt,
         cwd: deps.config.workspacePath,
         allowedTools,
         timeoutMs: deps.config.chatTimeoutMs,
+        backend: executionConversation.backend,
       },
       onChunk,
     );
@@ -263,60 +445,81 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
   // final retry attempt — see formatDeadLetterMessage. Sending here would
   // produce one duplicate "Sorry" message per BullMQ retry attempt.
   if (!result.ok) {
-    await cleanupImages(job.imagePaths);
-    return jobResultErr(result.error);
+    if (deps.completionMode !== 'durable') {
+      await cleanupSourceFiles(chatJobSourcePaths(job));
+      return jobResultErr(formatAgentFailure(result.failure));
+    }
+    return { kind: 'failed', failure: result.failure };
   }
 
-  // 10. Save session on success
-  if (result.sessionId) {
-    const sessionIdResult = makeClaudeSessionId(result.sessionId);
-    if (sessionIdResult.ok) {
-      await deps.sessionStore.saveSession(
-        job.chatId,
-        { sessionId: sessionIdResult.value, lastActivityAt: new Date().toISOString() },
-      );
-    }
+  const parsedSessionId = result.sessionId === null ? null : makeClaudeSessionId(result.sessionId);
+  const sessionId = parsedSessionId === null || !parsedSessionId.ok ? null : parsedSessionId.value;
+
+  if (deps.completionMode === 'durable') {
+    return {
+      kind: 'completed',
+      response: result.output,
+      sessionId,
+      conversationGeneration: executionConversation.generation,
+      conversationRevision: executionConversation.revision,
+      conversationBackend: executionConversation.backend,
+      telegramOperations: planChatTelegramCompletion(
+        stream,
+        blockMsgIds,
+        placeholderMsgId,
+        result.output,
+      ),
+      sourcePaths: chatJobSourcePaths(job),
+      drainPreviews: async () => {
+        await Promise.all(pendingEffects);
+      },
+    };
+  }
+
+  // 10. Save session on success (legacy inline completion path)
+  if (sessionId !== null) {
+    await deps.sessionStore.commitSession({
+      chatId: job.chatId,
+      expectedGeneration: executionConversation.generation,
+      expectedRevision: executionConversation.revision,
+      backend: executionConversation.backend,
+      sessionId,
+      lastActivityAt: new Date().toISOString(),
+    });
   }
 
   // 11. Finalize all blocks — convert to proper HTML and edit messages
   if (stream.blocks.length > 0) {
     const finalizationPromises: Promise<unknown>[] = [];
 
-    for (let blockIdx = 0; blockIdx < stream.blocks.length; blockIdx++) {
-      const block = stream.blocks[blockIdx]!;
+    for (const [blockIdx, block] of stream.blocks.entries()) {
       const msgIds = blockMsgIds.get(blockIdx) ?? [];
       if (block.content.length === 0) continue;
 
       if (block.type === 'thinking') {
         const escaped = escapeHtml(block.content);
-        const chunks = splitMessage(escaped, THINKING_CHUNK_MAX);
-        const htmlChunks = chunks.map((c) => `<i>${c}</i>`);
+        const htmlChunks = splitMessage(escaped, THINKING_CHUNK_MAX).map(
+          (chunk) => `<i>${chunk}</i>`,
+        );
 
-        for (let i = 0; i < htmlChunks.length; i++) {
-          if (i < msgIds.length) {
-            finalizationPromises.push(
-              deps.telegram.editMessage(job.chatId, msgIds[i]!, htmlChunks[i]!, { html: true }),
-            );
-          } else {
-            finalizationPromises.push(
-              deps.telegram.sendMessage(job.chatId, htmlChunks[i]!, { html: true }),
-            );
-          }
+        for (const [index, htmlChunk] of htmlChunks.entries()) {
+          const messageId = msgIds[index];
+          finalizationPromises.push(
+            messageId === undefined
+              ? deps.telegram.sendMessage(job.chatId, htmlChunk, { html: true })
+              : deps.telegram.editMessage(job.chatId, messageId, htmlChunk, { html: true }),
+          );
         }
       } else {
-        const blockHtml = markdownToTelegramHtml(block.content);
-        const htmlChunks = splitHtml(blockHtml);
+        const htmlChunks = splitHtml(markdownToTelegramHtml(block.content));
 
-        for (let i = 0; i < htmlChunks.length; i++) {
-          if (i === 0 && msgIds.length > 0) {
-            finalizationPromises.push(
-              deps.telegram.editMessage(job.chatId, msgIds[0]!, htmlChunks[i]!, { html: true }),
-            );
-          } else {
-            finalizationPromises.push(
-              deps.telegram.sendMessage(job.chatId, htmlChunks[i]!, { html: true }),
-            );
-          }
+        for (const [index, htmlChunk] of htmlChunks.entries()) {
+          const messageId = index === 0 ? msgIds[0] : undefined;
+          finalizationPromises.push(
+            messageId === undefined
+              ? deps.telegram.sendMessage(job.chatId, htmlChunk, { html: true })
+              : deps.telegram.editMessage(job.chatId, messageId, htmlChunk, { html: true }),
+          );
         }
       }
     }
@@ -330,22 +533,22 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
     // All blocks were empty (content.length === 0) — fall through to result.output
     if (finalizationPromises.length === 0 && placeholderMsgId !== null) {
       const responseHtml = markdownToTelegramHtml(result.output);
-      const chunks = splitHtml(responseHtml);
-      if (chunks.length > 0) {
-        await deps.telegram.editMessage(job.chatId, placeholderMsgId, chunks[0]!, { html: true });
-        for (let i = 1; i < chunks.length; i++) {
-          await deps.telegram.sendMessage(job.chatId, chunks[i]!, { html: true });
+      const [firstChunk, ...remainingChunks] = splitHtml(responseHtml);
+      if (firstChunk !== undefined) {
+        await deps.telegram.editMessage(job.chatId, placeholderMsgId, firstChunk, { html: true });
+        for (const chunk of remainingChunks) {
+          await deps.telegram.sendMessage(job.chatId, chunk, { html: true });
         }
       }
     }
   } else if (placeholderMsgId !== null) {
     // No streaming blocks — fall back to result.output
     const responseHtml = markdownToTelegramHtml(result.output);
-    const chunks = splitHtml(responseHtml);
-    if (chunks.length > 0) {
-      await deps.telegram.editMessage(job.chatId, placeholderMsgId, chunks[0]!, { html: true });
-      for (let i = 1; i < chunks.length; i++) {
-        await deps.telegram.sendMessage(job.chatId, chunks[i]!, { html: true });
+    const [firstChunk, ...remainingChunks] = splitHtml(responseHtml);
+    if (firstChunk !== undefined) {
+      await deps.telegram.editMessage(job.chatId, placeholderMsgId, firstChunk, { html: true });
+      for (const chunk of remainingChunks) {
+        await deps.telegram.sendMessage(job.chatId, chunk, { html: true });
       }
     }
   } else {
@@ -354,13 +557,14 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<JobRe
     await deps.telegram.sendChunkedMessage(job.chatId, chunks, { html: true });
   }
 
-  // 12. Trigger cortex memory extraction (fire-and-forget, non-blocking)
+  // 12. Await Cortex extraction in the legacy inline path; durable production
+  // execution persists this as an independently retryable delivery instead.
   if (result.sessionId) {
-    deps.triggerCortexExtraction?.(result.sessionId, deps.config.workspacePath);
+    await deps.triggerCortexExtraction?.(result.sessionId, deps.config.workspacePath);
   }
 
-  // 13. Clean up temporary image files
-  await cleanupImages(job.imagePaths);
+  // 13. Clean up temporary attachment files
+  await cleanupSourceFiles(chatJobSourcePaths(job));
 
   // 14. Return success
   return jobResultOk(result.output);

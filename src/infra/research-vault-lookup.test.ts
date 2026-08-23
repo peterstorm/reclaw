@@ -1,33 +1,23 @@
-import { describe, expect, it, beforeAll, afterAll } from 'vitest';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
-import { findNotebookByTopic, normalizeTopicSlug } from './research-vault-lookup.js';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { type TopicSlug, parseTopicSlugReference } from '../core/topic-slug.js';
+import { findNotebookByTopic } from './research-vault-lookup.js';
 
-describe('normalizeTopicSlug', () => {
-  it('returns leaf slugs unchanged', () => {
-    expect(normalizeTopicSlug('my-topic')).toBe('my-topic');
-  });
-
-  it('strips reclaw/research/ prefix', () => {
-    expect(normalizeTopicSlug('reclaw/research/my-topic')).toBe('my-topic');
-  });
-
-  it('strips trailing /_index and /_index.md', () => {
-    expect(normalizeTopicSlug('reclaw/research/my-topic/_index')).toBe('my-topic');
-    expect(normalizeTopicSlug('my-topic/_index.md')).toBe('my-topic');
-  });
-
-  it('handles backslashes (Telegram autocorrect)', () => {
-    expect(normalizeTopicSlug('reclaw\\research\\my-topic')).toBe('my-topic');
-  });
-});
+function topicSlug(raw: string): TopicSlug {
+  const parsed = parseTopicSlugReference(raw);
+  if (!parsed.ok) throw new Error(parsed.error);
+  return parsed.value;
+}
 
 describe('findNotebookByTopic', () => {
   let vaultRoot: string;
+  let outsideRoot: string;
 
   beforeAll(async () => {
     vaultRoot = await fs.mkdtemp(path.join(tmpdir(), 'reclaw-test-vault-'));
+    outsideRoot = await fs.mkdtemp(path.join(tmpdir(), 'reclaw-test-outside-'));
     const topicDir = path.join(vaultRoot, 'reclaw', 'research', 'sample-topic');
     await fs.mkdir(topicDir, { recursive: true });
     await fs.writeFile(
@@ -66,10 +56,11 @@ topic_slug: legacy-topic
 
   afterAll(async () => {
     await fs.rm(vaultRoot, { recursive: true, force: true });
+    await fs.rm(outsideRoot, { recursive: true, force: true });
   });
 
   it('resolves a leaf slug to its notebook id and topic', async () => {
-    const r = await findNotebookByTopic(vaultRoot, 'sample-topic');
+    const r = await findNotebookByTopic(vaultRoot, topicSlug('sample-topic'));
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.value.notebookId).toBe('abc-123');
@@ -80,7 +71,7 @@ topic_slug: legacy-topic
   });
 
   it('accepts a full vault path slug', async () => {
-    const r = await findNotebookByTopic(vaultRoot, 'reclaw/research/sample-topic');
+    const r = await findNotebookByTopic(vaultRoot, topicSlug('reclaw/research/sample-topic'));
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.value.notebookId).toBe('abc-123');
@@ -88,7 +79,7 @@ topic_slug: legacy-topic
   });
 
   it('errors with a friendly message when the hub note is missing', async () => {
-    const r = await findNotebookByTopic(vaultRoot, 'no-such-topic');
+    const r = await findNotebookByTopic(vaultRoot, topicSlug('no-such-topic'));
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.error).toMatch(/no research topic/i);
@@ -96,11 +87,27 @@ topic_slug: legacy-topic
   });
 
   it('errors when hub note has no notebook_id (needs backfill)', async () => {
-    const r = await findNotebookByTopic(vaultRoot, 'legacy-topic');
+    const r = await findNotebookByTopic(vaultRoot, topicSlug('legacy-topic'));
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.error).toMatch(/notebook_id/);
       expect(r.error).toMatch(/backfill/);
     }
+  });
+
+  it('rejects a topic directory symlink that escapes the vault root', async () => {
+    const outsideTopic = path.join(outsideRoot, 'escaped-topic');
+    await fs.mkdir(outsideTopic);
+    await fs.writeFile(
+      path.join(outsideTopic, '_index.md'),
+      '---\ntitle: Escaped\nnotebook_id: outside\n---\n',
+      'utf8',
+    );
+    await fs.symlink(outsideTopic, path.join(vaultRoot, 'reclaw', 'research', 'escaped-topic'));
+
+    const result = await findNotebookByTopic(vaultRoot, topicSlug('escaped-topic'));
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/escapes the configured root/i);
   });
 });

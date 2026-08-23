@@ -1,8 +1,18 @@
 import { Queue } from 'bullmq';
-import type { ChatJob, Job, PodcastJob, ReminderJob, RecurringReminderJob, ScheduledJob } from '../core/types.js';
+import type { ActivityResultRepository, DeliveryJob, DeliveryOutbox } from '../core/activity.js';
 import { parseRecurringReminderJob, parseResearchJobData } from '../core/job-schemas.js';
 import type { ResearchJobData } from '../core/research-types.js';
 import { stateProgress } from '../core/research-types.js';
+import type {
+  ChatJob,
+  Job,
+  JobId,
+  PodcastJob,
+  RecurringReminderJob,
+  ReminderJob,
+  ScheduledJob,
+} from '../core/types.js';
+import { createActivityResultRepository } from './activity-store.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -15,8 +25,15 @@ export type RecurringReminderInfo = {
   readonly chatId: number;
 };
 
+export type ChatEnqueueDisposition = 'retained' | 'terminal-duplicate';
+
 export type ResearchStatus = {
-  readonly active: { readonly topic: string; readonly state: string; readonly progress: number; readonly startedAt: string } | null;
+  readonly active: {
+    readonly topic: string;
+    readonly state: string;
+    readonly progress: number;
+    readonly startedAt: string;
+  } | null;
   readonly waiting: number;
 };
 
@@ -26,7 +43,10 @@ export type Queues = {
   readonly reminder: Queue;
   readonly research: Queue;
   readonly podcast: Queue;
-  readonly enqueueChat: (job: Extract<Job, { kind: 'chat' }>) => Promise<void>;
+  readonly delivery: Queue;
+  readonly activityResults: ActivityResultRepository;
+  readonly deliveryOutbox: DeliveryOutbox;
+  readonly enqueueChat: (job: Extract<Job, { kind: 'chat' }>) => Promise<ChatEnqueueDisposition>;
   readonly enqueueScheduled: (job: Extract<Job, { kind: 'scheduled' }>) => Promise<void>;
   readonly isScheduledJobKnown: (jobId: string) => Promise<boolean>;
   readonly markScheduledJobCompleted: (jobId: string) => Promise<void>;
@@ -35,7 +55,7 @@ export type Queues = {
   readonly enqueueRecurringReminder: (job: RecurringReminderJob) => Promise<string>;
   readonly listRecurringReminders: () => Promise<readonly RecurringReminderInfo[]>;
   readonly cancelRecurringReminder: (schedulerId: string) => Promise<boolean>;
-  readonly enqueueResearch: (jobData: ResearchJobData) => Promise<void>;
+  readonly enqueueResearch: (jobId: JobId, jobData: ResearchJobData) => Promise<void>;
   readonly getResearchQueuePosition: () => Promise<number>;
   readonly getResearchStatus: () => Promise<ResearchStatus>;
   readonly enqueuePodcast: (job: PodcastJob) => Promise<void>;
@@ -67,6 +87,15 @@ const researchRetryOptions = {
   backoff: {
     type: 'exponential' as const,
     delay: 120_000,
+  },
+} as const;
+
+/** Delivery failures retry independently without rerunning their source activity. */
+const deliveryRetryOptions = {
+  attempts: 8,
+  backoff: {
+    type: 'exponential' as const,
+    delay: 15_000,
   },
 } as const;
 
@@ -110,10 +139,38 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
   };
 
   const chat = createQueue('reclaw-chat', connection, { ...retryOptions, ...defaultRetention });
-  const scheduled = createQueue('reclaw-scheduled', connection, { ...retryOptions, ...defaultRetention });
+  const scheduled = createQueue('reclaw-scheduled', connection, {
+    ...retryOptions,
+    ...defaultRetention,
+  });
+  const delivery = createQueue('reclaw-delivery', connection, {
+    ...deliveryRetryOptions,
+    removeOnComplete: { age: 30 * 24 * 3600, count: 2_000 },
+    removeOnFail: { age: 30 * 24 * 3600, count: 2_000 },
+  });
 
-  const enqueueChat = async (job: ChatJob): Promise<void> => {
-    await chat.add(job.id, job, { jobId: job.id });
+  const activityResults = createActivityResultRepository({
+    get: async (key) => (await delivery.client).get(key),
+    set: async (key, value, options) => (await delivery.client).set(key, value, options),
+  });
+
+  const deliveryOutbox: DeliveryOutbox = {
+    enqueue: async (deliveries: readonly DeliveryJob[]): Promise<void> => {
+      if (deliveries.length === 0) return;
+      await delivery.addBulk(
+        deliveries.map((item) => ({
+          name: item.kind,
+          data: item,
+          opts: { jobId: item.id },
+        })),
+      );
+    },
+  };
+
+  const enqueueChat = async (job: ChatJob): Promise<ChatEnqueueDisposition> => {
+    const accepted = await chat.add(job.id, job, { jobId: job.id });
+    const state = await accepted.getState();
+    return state === 'completed' || state === 'failed' ? 'terminal-duplicate' : 'retained';
   };
 
   const enqueueScheduled = async (job: ScheduledJob): Promise<void> => {
@@ -157,21 +214,21 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
     return (await client.get(`reclaw:sched-completed:${jobId}`)) !== null;
   };
 
-  const reminder = createQueue('reclaw-reminder', connection, { ...retryOptions, ...defaultRetention });
+  const reminder = createQueue('reclaw-reminder', connection, {
+    ...retryOptions,
+    ...defaultRetention,
+  });
 
   const enqueueReminder = async (job: ReminderJob): Promise<void> => {
     await reminder.add(job.id, job, { jobId: job.id, delay: job.delayMs });
   };
 
   const enqueueRecurringReminder = async (job: RecurringReminderJob): Promise<string> => {
-    const repeatOpts = job.cronPattern
-      ? { pattern: job.cronPattern }
-      : { every: job.intervalMs };
-    await reminder.upsertJobScheduler(
-      job.schedulerId,
-      repeatOpts,
-      { name: job.schedulerId, data: job },
-    );
+    const repeatOpts = job.cronPattern ? { pattern: job.cronPattern } : { every: job.intervalMs };
+    await reminder.upsertJobScheduler(job.schedulerId, repeatOpts, {
+      name: job.schedulerId,
+      data: job,
+    });
     return job.schedulerId;
   };
 
@@ -190,7 +247,9 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
       const rawData = (s as { template?: { data?: unknown } }).template?.data;
       const parsed = parseRecurringReminderJob(rawData);
       if (!parsed.ok) {
-        console.warn(`[queue] recurring reminder scheduler ${s.id} has unparseable template data, excluding from list: ${parsed.error}`);
+        console.warn(
+          `[queue] recurring reminder scheduler ${s.id} has unparseable template data, excluding from list: ${parsed.error}`,
+        );
         continue;
       }
 
@@ -231,8 +290,7 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
     await podcast.add(job.id, job, { jobId: job.id });
   };
 
-  const enqueueResearch = async (jobData: ResearchJobData): Promise<void> => {
-    const jobId = `research:${jobData.chatId}:${Date.now()}`;
+  const enqueueResearch = async (jobId: JobId, jobData: ResearchJobData): Promise<void> => {
     await research.add(jobId, jobData, { jobId });
   };
 
@@ -258,7 +316,10 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
     const parsed = parseResearchJobData(activeJob.data);
     if (!parsed.ok) {
       console.warn(`[queue] getResearchStatus: failed to parse active job data: ${parsed.error}`);
-      return { active: { topic: '(unknown)', state: '(unknown)', progress: 0, startedAt: '(unknown)' }, waiting: waitingCount };
+      return {
+        active: { topic: '(unknown)', state: '(unknown)', progress: 0, startedAt: '(unknown)' },
+        waiting: waitingCount,
+      };
     }
     const data = parsed.value;
     return {
@@ -273,13 +334,28 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
   };
 
   return {
-    chat, scheduled, reminder, research, podcast,
-    enqueueChat, enqueueScheduled, isScheduledJobKnown,
-    markScheduledJobCompleted, isScheduledJobCompleted,
-    enqueueReminder, enqueueRecurringReminder, listRecurringReminders,
-    cancelRecurringReminder, enqueueResearch, getResearchQueuePosition,
-    getResearchStatus, enqueuePodcast,
+    chat,
+    scheduled,
+    reminder,
+    research,
+    podcast,
+    delivery,
+    activityResults,
+    deliveryOutbox,
+    enqueueChat,
+    enqueueScheduled,
+    isScheduledJobKnown,
+    markScheduledJobCompleted,
+    isScheduledJobCompleted,
+    enqueueReminder,
+    enqueueRecurringReminder,
+    listRecurringReminders,
+    cancelRecurringReminder,
+    enqueueResearch,
+    getResearchQueuePosition,
+    getResearchStatus,
+    enqueuePodcast,
   } as const;
 }
 
-export { retryOptions };
+export { retryOptions, deliveryRetryOptions };

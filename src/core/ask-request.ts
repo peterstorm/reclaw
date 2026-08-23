@@ -7,10 +7,11 @@
 // The handler resolves the slug to a NotebookLM notebook id and runs a
 // one-shot chat against that notebook.
 
-import { type Result, ok, err } from './types.js';
+import { type TopicSlug, parseTopicSlugReference } from './topic-slug.js';
+import { type Result, err, ok } from './types.js';
 
 export type AskRequest = {
-  readonly slug: string;
+  readonly slug: TopicSlug;
   readonly question: string;
 };
 
@@ -35,15 +36,18 @@ export function parseAskCommand(text: string): Result<AskRequest, string> {
     return err(USAGE);
   }
 
-  const slug = match[1]!.trim();
-  const question = match[2]!.trim();
+  const slugToken = match[1];
+  const questionToken = match[2];
+  if (slugToken === undefined || questionToken === undefined) return err(USAGE);
+  const slug = parseTopicSlugReference(slugToken.trim());
+  const question = questionToken.trim();
 
-  if (slug.length === 0) {
-    return err(USAGE);
+  if (!slug.ok) {
+    return err(`Invalid topic slug: ${slug.error}`);
   }
   if (question.length === 0) {
     return err('Question must not be empty.');
   }
 
-  return ok({ slug, question });
+  return ok({ slug: slug.value, question });
 }

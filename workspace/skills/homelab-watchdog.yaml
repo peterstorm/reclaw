@@ -91,11 +91,12 @@ promptTemplate: |
 
   ### 9. User services health
   ```
-  for svc in obsidian-headless-sync ssh-agent sops-nix; do
+  for svc in obsidian-headless-sync ssh-agent; do
     printf "%-30s %s\n" "$svc" "$(systemctl --user is-active $svc 2>&1)"
   done
+  printf "%-30s %s\n" "sops-nix result" "$(systemctl --user show sops-nix -p Result --value 2>&1)"
   ```
-  Alert if any service is not active. `obsidian-headless-sync` is especially important — if it's down, vault notes written by reclaw won't reach Obsidian cloud sync. Check its recent logs for "Disconnected" / "Connecting..." stalls:
+  Alert if `obsidian-headless-sync` or `ssh-agent` is not active, or if the `sops-nix` result is not `success`. `sops-nix` is a successful `Type=oneshot` service and is expected to show `inactive (dead)` after it decrypts secrets; never alert on that state alone. `obsidian-headless-sync` is especially important — if it's down, vault notes written by reclaw won't reach Obsidian cloud sync. Check its recent logs for "Disconnected" / "Connecting..." stalls:
   ```
   journalctl --user -u obsidian-headless-sync --since "1 hour ago" --no-pager 2>&1 | tail -5
   ```

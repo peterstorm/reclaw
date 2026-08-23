@@ -1,6 +1,7 @@
 name: Running Coach
 schedule: "35 7 * * 2,4,0"
 permissionProfile: scheduled
+environment: [GARMIN_EMAIL, GARMIN_PASSWORD]
 validityWindowMinutes: 60
 timeout: 600
 promptTemplate: |
@@ -20,16 +21,18 @@ promptTemplate: |
 
   ### Dynamic 5K Estimation
 
-  **Do NOT use a hardcoded 5K time.** Use Garmin's auto-detected threshold as the anchor every time you run:
+  **Do NOT use a hardcoded 5K time.** Establish current 5K pace in this order:
 
-  1. Read `lactateThreshold` from the cached Garmin JSON:
-     - `lactateThreshold.pacePerKm` = threshold pace (the anchor)
+  1. If there is a race, parkrun, or hard solo 5K from the last 6-8 weeks, use its pace as the current 5K pace. Actual recent performance outranks an estimate.
+  2. Otherwise, use Garmin's auto-detected threshold:
+     - `lactateThreshold.pacePerKm` = threshold pace
      - `lactateThreshold.heartRate` = LTHR
-  2. Estimate 5K race pace = threshold pace minus 10-15s/km
-  3. Calculate estimated 5K time = 5 × race pace
-  4. Sanity-check with Garmin VO2 Max via Jack Daniels VDOT tables:
+     - Estimate 5K race pace = threshold pace minus 10-15s/km, then multiply by 5 for estimated 5K time.
+  3. Sanity-check with Garmin VO2 Max via Jack Daniels VDOT tables:
      - VO2Max 44 → ~25:30 | 45 → ~24:50 | 46 → ~24:10 | 47 → ~23:35 | 48 → ~23:00 | 49 → ~22:30 | 50 → ~21:55 | 52 → ~21:00 | 54 → ~20:10 | 55 → ~19:45
-     - If the VDOT-derived 5K is wildly different (>1min off), note it but trust the threshold-derived estimate
+     - If the VDOT-derived 5K is wildly different (>1min off), note it, but trust the recent 5K result or threshold-derived estimate.
+
+  Record which source was used (`recent_5k` or `garmin_threshold`) so later comparisons use the same basis.
 
   ### Pace Zones (derived from estimated 5K pace)
 
@@ -44,20 +47,29 @@ promptTemplate: |
   | Interval | VO2max development | P - 5s to P + 5s/km | > 175 bpm (Z5) |
   | Repetition | Speed/neuromuscular | P - 30 to P - 10s/km | near max effort |
 
-  **Validate zones against HR data:** If recent easy runs show HR staying in Z1 at easy pace → tighten. If intervals don't reach Z5 (>175) → increase interval pace by 5s/km. If tempo shows improving efficiency → tighten. Garmin LTHR is auto-detected at 175 bpm — tempo zone should be in Z4 (168-175). The data is the authority, not the formula.
+  **Validate zones against HR data:** If recent easy runs show HR staying in Z1 at easy pace → tighten. For 3-5 minute intervals, if HR never approaches Z5 despite controlled RPE and complete reps, consider increasing pace by 5s/km next time; do not use HR to accelerate short reps because HR lags the effort. If tempo shows improving efficiency → tighten. Garmin LTHR is auto-detected at 175 bpm — tempo zone should be in Z4 (168-175). The data is the authority, not the formula.
+
+  ### Current Pace vs Operational Goal Pace
+
+  The long-term sub-20 goal is direction, not a pace prescription. Define an **operational goal 5K** for the current block no more than 60-90 seconds faster than current 5K fitness. If sub-20 is farther away, use an intermediate target and move it after the next successful test.
+
+  - Race-specific reps **under 1000m** may use operational goal pace to build economy at the next attainable speed.
+  - Race-specific reps **1000m or longer** use current 5K pace; threshold reps use current threshold pace. Never run long reps at the distant sub-20 pace.
+  - Repetition work may be faster than operational goal pace because it uses short reps and full recovery.
+  - If the athlete cannot complete the prescribed set without material fade (>5s/km on later reps), treat the target as too aggressive: preserve the workout, adjust pace, and keep the data honest.
 
   ### Zone Progression Rules
-  - Zones auto-update every run via the estimation formula — no manual bumps needed
-  - If the data-derived 5K estimate improves by >15s vs last stored estimate → log zone tightening in cortex
-  - Never increase both volume AND intensity in the same week
-  - Log the current 5K estimate and derived zones in cortex every time the skill runs
+  - Recompute zones every run from the selected current-5K source and current Garmin threshold — no manual bumps needed.
+  - If current 5K fitness improves by >15s on the same evidence basis, or a fresh 5K confirms the improvement, log zone tightening in cortex. Do not tighten merely because the source changed.
+  - Never increase both volume AND intensity in the same week.
+  - Log current 5K time, evidence source, operational goal, and derived zones in cortex every time the skill runs.
 
   ### Progressive Overload (within 12km cap)
   Distance is capped — progression comes from these levers instead, applied one at a time:
 
   1. **Pace** (primary) — zones auto-tighten as 5K estimate improves. This is the main driver.
   2. **Work volume** — more reps or longer reps at the same pace (6×600m → 8×600m → 4×1000m). Shrink warmup/cooldown slightly to stay ≤12km.
-  3. **Density** — shorter rest between reps (120s → 90s → 60s). Same workout, harder recovery demand.
+  3. **Density** — shorter or more active recovery, only after the athlete can hold every rep at target pace. Preserve the workout's minimum recovery and never trade rep quality for density.
   4. **Tempo duration** — longer sustained blocks (3km → 4km → 5km) within the same total distance.
   5. **Workout complexity** — easy long run → progressive → hotspot with tempo surges.
 
@@ -69,6 +81,17 @@ promptTemplate: |
   - Pace progression happens automatically via zone estimation — the other levers are manual choices
 
   ## Limiter Detection & Training Periodization
+
+  Use current 5K duration as the physiological prior, then override it only with clear individual evidence:
+
+  | Current 5K | Default emphasis when limiter evidence is unclear |
+  |------------|--------------------------------------------------|
+  | Over 25 min | Threshold/durability — most quality Thursdays |
+  | 20-25 min | Threshold leads; include VO2max every second or third quality session |
+  | 17-20 min | Balance threshold and VO2max |
+  | Under 17 min | VO2max leads; retain threshold maintenance |
+
+  This is a selection prior, not a rigid classification. Readiness, recent race data, CrossFit load, and a high-confidence limiter assessment still win.
 
   A "limiter" is the athlete's weakest physiological link — the factor most constraining 5K performance. With only one quality run per week, targeting the limiter with ~60-70% of Thursday sessions produces far faster improvement than even rotation.
 
@@ -109,7 +132,7 @@ promptTemplate: |
   - If conditions aren't met, postpone one week
 
   **Test options (choose based on limiter and context):**
-  1. **5K Time Trial** — 2km warmup + 5km all-out + cooldown. Gold standard. Use when general assessment needed or test history is thin.
+  1. **5K Time Trial** — 2km warmup + 5km all-out + cooldown. Gold standard. Use when general assessment is needed or test history is thin. Coach it as 2-2-1: first 2km controlled and rhythmic, middle 2km committed without pace leakage, final 1km empty the tank. Do not encourage banking time early.
   2. **2×2K @ threshold** — 2km warmup + 2×2km @ current threshold pace with 3min rest + cooldown. Good for checking threshold fitness. Use when limiter is threshold.
   3. **3×1K @ interval pace** — 2km warmup + 3×1km @ interval pace with 2min rest + cooldown. Tests VO2max capacity. Use when limiter is vo2max.
   4. **Parkrun** — If the athlete mentions an upcoming parkrun, defer to that as the test (skip Thursday test, use parkrun result). Note in cortex.
@@ -180,7 +203,7 @@ promptTemplate: |
   ### 1f. Cortex memory
   Each `/recall` is a round-trip, so use 3 broad queries rather than 8 narrow ones:
   - `/recall "running coach state"` — last Thursday workout type (rotation), current training week/phase, recent zone adjustments, running volume.
-  - `/recall "limiter test block review octopus"` — current limiter assessment, last test date/results, last block review recommendation, last octopus session.
+  - `/recall "limiter recent 5K race parkrun test block review octopus"` — current limiter assessment, any qualifying 5K result from the last 6-8 weeks, last test date/results, last block review recommendation, and last octopus session.
   - `/recall "Strength"` — recent per-movement strength ledger stored by garmin-sync (so CrossFit load context in 1h can lean on memory instead of re-reading 7 days of notes).
 
   ### 1g. Existing scheduled workout on Garmin
@@ -265,8 +288,8 @@ promptTemplate: |
   1. **Test week?** Check cortex for last test date. If 4+ weeks ago and readiness is green → prescribe the appropriate test (see Periodic Testing). Skip the rest.
   2. **Post-test week?** If last Thursday was a test → generate test report + block review first, then prescribe a lighter recovery-focused session.
   3. **Octopus week?** If last octopus session was 2-3 weeks ago → schedule type 8.
-  4. **Determine current limiter** (Limiter Detection). Re-evaluate if cortex assessment is >2 weeks old.
-  5. **Apply limiter bias:** ~60-70% of Thursdays target the limiter (primary types), ~30-40% secondary. Check cortex for last 2-3 Thursday types to track the ratio.
+  4. **Determine current limiter** (Limiter Detection). Re-evaluate if cortex assessment is >2 weeks old; when evidence is unclear, use the current-5K-duration prior.
+  5. **Apply limiter bias:** ~60-70% of Thursdays target the limiter (primary types), ~30-40% secondary. Check cortex for last 2-3 Thursday types to track the ratio and preserve the duration-appropriate threshold/VO2 balance.
   6. **Don't repeat** — never use the same type as last Thursday.
   7. **Factor in CrossFit load:** Heavy Tue CrossFit → prefer lower-impact (tempo, fartlek, cruise intervals). Rest/no CrossFit Tue → fresher, good for higher intensity.
   8. **Readiness tiebreaker:** Yellow → fartlek or short repeats. Strong green → classic intervals or pyramid.
@@ -324,7 +347,7 @@ promptTemplate: |
   Run `/remember` based on the day:
 
   **Always store (every day):**
-  - "Running coach {{date}} ({{dayOfWeek}}): [What happened]. Est. 5K: [X:XX]. Weekly running: Xkm. Weekly CrossFit: N sessions."
+  - "Running coach {{date}} ({{dayOfWeek}}): [What happened]. Current 5K: [X:XX] via [recent_5k|garmin_threshold]. Operational goal: [X:XX]. Weekly running: Xkm. Weekly CrossFit: N sessions."
 
   **Thursday-specific (in addition):**
   - "Running coach last Thursday type: [type name]"

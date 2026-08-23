@@ -6,6 +6,7 @@
  * allowing consumers to remain agnostic to the underlying CLI tool.
  */
 
+import type { AgentFailure } from '../../core/agent-failure.js';
 import type { AgentBackendName } from '../../core/types.js';
 
 // ─── Subprocess Spawn ─────────────────────────────────────────────────────────
@@ -39,7 +40,8 @@ export type AgentOptions = {
   readonly cwd: string;
   readonly allowedTools: readonly string[];
   readonly timeoutMs: number;
-  readonly env?: Record<string, string>;
+  /** Explicit per-run grants merged onto the closed agent environment baseline. */
+  readonly env?: Readonly<Record<string, string>>;
   readonly resumeSessionId?: string;
   readonly modelSelection?: AgentModelSelection;
   readonly backend?: AgentBackendName;
@@ -53,7 +55,7 @@ export type AgentResult =
       readonly sessionId: string | null;
       readonly durationMs: number;
     }
-  | { readonly ok: false; readonly error: string; readonly timedOut: boolean };
+  | { readonly ok: false; readonly failure: AgentFailure };
 
 // ─── Streaming Types ──────────────────────────────────────────────────────────
 

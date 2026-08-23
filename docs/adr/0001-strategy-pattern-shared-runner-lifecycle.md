@@ -1,7 +1,7 @@
 # ADR-0001: Strategy Pattern with Shared Runner Lifecycle
 
 ## Status
-Accepted
+Accepted; subprocess environment and Claude/Pi permission-argument details superseded by ADR 0005
 
 ## Context
 Reclaw needs to support multiple agent backends (`claude -p` and `pi -p`) for subprocess invocations, switchable via environment variable. The two backends differ only in CLI argument format, environment variable cleanup, and output parsing — but share identical subprocess lifecycle concerns: spawning, stdin delivery, stdout/stderr draining, timeout enforcement, exit-code handling, and streaming accumulation.

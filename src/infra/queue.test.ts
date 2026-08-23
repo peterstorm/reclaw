@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ─── Mock BullMQ before importing queue.ts ────────────────────────────────────
 
-const mockQueueAdd = vi.fn().mockResolvedValue(undefined);
+const mockGetState = vi.fn().mockResolvedValue('waiting');
+const mockQueueAdd = vi.fn().mockResolvedValue({ getState: mockGetState });
+const mockQueueAddBulk = vi.fn().mockResolvedValue([]);
 const mockQueueOn = vi.fn();
 const mockRedisSet = vi.fn().mockResolvedValue('OK');
 const mockRedisGet = vi.fn().mockResolvedValue(null);
@@ -14,6 +16,7 @@ const MockQueue = vi.fn().mockImplementation((name: string, opts: unknown) => ({
   name,
   opts,
   add: mockQueueAdd,
+  addBulk: mockQueueAddBulk,
   on: mockQueueOn,
   getJob: mockGetJob,
   getWaitingCount: mockGetWaitingCount,
@@ -26,11 +29,19 @@ vi.mock('bullmq', () => ({
 }));
 
 // Import after mock is set up
-const { createQueues, retryOptions } = await import('./queue.js');
+const { createQueues, retryOptions, deliveryRetryOptions } = await import('./queue.js');
 
 // ─── Test data ────────────────────────────────────────────────────────────────
 
-import { type ChatJob, type JobId, type ScheduledJob, type TelegramUserId } from '../core/types.js';
+import { makeActivityId, makeTelegramBatchDelivery } from '../core/activity.js';
+import type {
+  ChatJob,
+  ConversationGeneration,
+  ConversationRevision,
+  JobId,
+  ScheduledJob,
+  TelegramUserId,
+} from '../core/types.js';
 
 const chatJob: ChatJob = {
   kind: 'chat',
@@ -39,6 +50,12 @@ const chatJob: ChatJob = {
   text: 'Hello agent',
   chatId: 987654,
   receivedAt: '2026-02-26T10:00:00Z',
+  conversation: {
+    generation: 0 as ConversationGeneration,
+    revision: 0 as ConversationRevision,
+    backend: 'claude',
+    sessionId: null,
+  },
 };
 
 const scheduledJob: ScheduledJob = {
@@ -58,6 +75,9 @@ describe('createQueues', () => {
   beforeEach(() => {
     MockQueue.mockClear();
     mockQueueAdd.mockClear();
+    mockGetState.mockReset();
+    mockGetState.mockResolvedValue('waiting');
+    mockQueueAddBulk.mockClear();
     mockQueueOn.mockClear();
     mockRedisSet.mockClear();
     mockRedisGet.mockClear();
@@ -77,6 +97,9 @@ describe('createQueues', () => {
     expect(queues.scheduled).toBeDefined();
     expect(queues.reminder).toBeDefined();
     expect(queues.research).toBeDefined();
+    expect(queues.delivery).toBeDefined();
+    expect(queues.activityResults).toBeDefined();
+    expect(queues.deliveryOutbox.enqueue).toBeTypeOf('function');
     expect(queues.enqueueChat).toBeTypeOf('function');
     expect(queues.enqueueScheduled).toBeTypeOf('function');
     expect(queues.markScheduledJobCompleted).toBeTypeOf('function');
@@ -89,10 +112,10 @@ describe('createQueues', () => {
     expect((queues as Record<string, unknown>).enqueueScheduledFlow).toBeUndefined();
   });
 
-  it('creates five queues with correct names', () => {
+  it('creates six queues with correct names', () => {
     createQueues(redisConnection);
 
-    expect(MockQueue).toHaveBeenCalledTimes(5);
+    expect(MockQueue).toHaveBeenCalledTimes(6);
     const calls = MockQueue.mock.calls;
     const names = calls.map((c) => c[0]);
     expect(names).toContain('reclaw-chat');
@@ -100,6 +123,7 @@ describe('createQueues', () => {
     expect(names).toContain('reclaw-reminder');
     expect(names).toContain('reclaw-research');
     expect(names).toContain('reclaw-podcast');
+    expect(names).toContain('reclaw-delivery');
   });
 
   it('passes redis connection to both queues', () => {
@@ -111,46 +135,64 @@ describe('createQueues', () => {
     }
   });
 
-  it('configures retry: 3 attempts with exponential backoff', () => {
+  it('configures source and delivery retries independently', () => {
     expect(retryOptions.attempts).toBe(3);
     expect(retryOptions.backoff.type).toBe('exponential');
-    // 30s base delay (30000ms)
     expect(retryOptions.backoff.delay).toBe(30_000);
+    expect(deliveryRetryOptions.attempts).toBe(8);
+    expect(deliveryRetryOptions.backoff.delay).toBe(15_000);
   });
 
-  it('sets defaultJobOptions with retry config on chat, scheduled, reminder, and research queues (not podcast)', () => {
+  it('sets source retry config independently from podcast and delivery queues', () => {
     createQueues(redisConnection);
 
     const retryQueues = MockQueue.mock.calls.filter(
-      (c) => c[0] !== 'reclaw-podcast',
+      (c) => c[0] !== 'reclaw-podcast' && c[0] !== 'reclaw-delivery',
     );
     expect(retryQueues.length).toBe(4);
     for (const call of retryQueues) {
-      const opts = call[1] as { defaultJobOptions: { attempts: number; backoff: { delay: number } } };
+      const opts = call[1] as {
+        defaultJobOptions: { attempts: number; backoff: { delay: number } };
+      };
       expect(opts.defaultJobOptions.attempts).toBe(3);
     }
+  });
+
+  it('enqueues outbox deliveries with stable BullMQ job IDs', async () => {
+    const queues = createQueues(redisConnection);
+    const activityId = makeActivityId('chat', chatJob.id);
+    const delivery = makeTelegramBatchDelivery({
+      activityId,
+      chatId: chatJob.chatId,
+      operations: [{ kind: 'send', text: 'hello', format: 'plain' }],
+    });
+
+    await queues.deliveryOutbox.enqueue([delivery]);
+
+    expect(mockQueueAddBulk).toHaveBeenCalledWith([
+      {
+        name: 'telegram-batch',
+        data: delivery,
+        opts: { jobId: delivery.id },
+      },
+    ]);
   });
 
   it('enqueueChat adds job to chat queue with job id', async () => {
     const queues = createQueues(redisConnection);
     await queues.enqueueChat(chatJob);
 
-    expect(mockQueueAdd).toHaveBeenCalledWith(
-      chatJob.id,
-      chatJob,
-      { jobId: chatJob.id },
-    );
+    expect(mockQueueAdd).toHaveBeenCalledWith(chatJob.id, chatJob, { jobId: chatJob.id });
   });
 
   it('enqueueScheduled deduplicates cron-fired jobs per skill', async () => {
     const queues = createQueues(redisConnection);
     await queues.enqueueScheduled(scheduledJob);
 
-    expect(mockQueueAdd).toHaveBeenCalledWith(
-      scheduledJob.id,
-      scheduledJob,
-      { jobId: scheduledJob.id, deduplication: { id: scheduledJob.skillId } },
-    );
+    expect(mockQueueAdd).toHaveBeenCalledWith(scheduledJob.id, scheduledJob, {
+      jobId: scheduledJob.id,
+      deduplication: { id: scheduledJob.skillId },
+    });
   });
 
   // Regression: skill-level deduplication used to be applied unconditionally, so
@@ -163,19 +205,27 @@ describe('createQueues', () => {
 
     await queues.enqueueScheduled(manualJob);
 
-    expect(mockQueueAdd).toHaveBeenCalledWith(
-      manualJob.id,
-      manualJob,
-      { jobId: manualJob.id },
-    );
-    const opts = mockQueueAdd.mock.calls[0]![2] as Record<string, unknown>;
+    expect(mockQueueAdd).toHaveBeenCalledWith(manualJob.id, manualJob, { jobId: manualJob.id });
+    const firstCall = mockQueueAdd.mock.calls[0];
+    if (firstCall === undefined) throw new Error('Queue add was not called');
+    const opts = firstCall[2] as Record<string, unknown>;
     expect(opts).not.toHaveProperty('deduplication');
   });
 
-  it('enqueueChat resolves without throwing', async () => {
+  it('enqueueChat retains source files while the accepted job is non-terminal', async () => {
     const queues = createQueues(redisConnection);
-    await expect(queues.enqueueChat(chatJob)).resolves.toBeUndefined();
+    await expect(queues.enqueueChat(chatJob)).resolves.toBe('retained');
   });
+
+  it.each(['completed', 'failed'])(
+    'marks a %s duplicate for immediate source cleanup',
+    async (state) => {
+      mockGetState.mockResolvedValueOnce(state);
+      const queues = createQueues(redisConnection);
+
+      await expect(queues.enqueueChat(chatJob)).resolves.toBe('terminal-duplicate');
+    },
+  );
 
   it('enqueueScheduled resolves without throwing', async () => {
     const queues = createQueues(redisConnection);
@@ -186,11 +236,9 @@ describe('createQueues', () => {
     const queues = createQueues(redisConnection);
     await queues.enqueueScheduled(scheduledJob);
 
-    expect(mockRedisSet).toHaveBeenCalledWith(
-      `reclaw:sched-fired:${scheduledJob.id}`,
-      '1',
-      { EX: 604800 },
-    );
+    expect(mockRedisSet).toHaveBeenCalledWith(`reclaw:sched-fired:${scheduledJob.id}`, '1', {
+      EX: 604800,
+    });
   });
 
   it('isScheduledJobKnown returns true when Redis marker exists', async () => {
@@ -221,12 +269,12 @@ describe('createQueues', () => {
   it('exponential backoff yields 30s/60s/120s for attempts 1/2/3', () => {
     // BullMQ exponential: delay * 2^(attempt-1)
     const { delay } = retryOptions.backoff;
-    expect(delay * Math.pow(2, 0)).toBe(30_000);  // attempt 1: 30s
-    expect(delay * Math.pow(2, 1)).toBe(60_000);  // attempt 2: 60s
-    expect(delay * Math.pow(2, 2)).toBe(120_000); // attempt 3: 120s
+    expect(delay * 2 ** 0).toBe(30_000); // attempt 1: 30s
+    expect(delay * 2 ** 1).toBe(60_000); // attempt 2: 60s
+    expect(delay * 2 ** 2).toBe(120_000); // attempt 3: 120s
   });
 
-  it('enqueueResearch adds ResearchJobData to research queue with generated job id', async () => {
+  it('enqueueResearch preserves the caller-supplied ingress idempotency key', async () => {
     const queues = createQueues(redisConnection);
     const researchJobData = {
       prompt: 'AI agents research',
@@ -261,12 +309,9 @@ describe('createQueues', () => {
         artifactFailures: [],
       },
     };
-    await queues.enqueueResearch(researchJobData);
-    expect(mockQueueAdd).toHaveBeenCalledWith(
-      expect.stringMatching(/^research:987654:/),
-      researchJobData,
-      expect.objectContaining({ jobId: expect.stringMatching(/^research:987654:/) }),
-    );
+    const jobId = 'telegram:12345:research' as JobId;
+    await queues.enqueueResearch(jobId, researchJobData);
+    expect(mockQueueAdd).toHaveBeenCalledWith(jobId, researchJobData, { jobId });
   });
 
   it('getResearchQueuePosition returns waiting + active count', async () => {
@@ -289,8 +334,12 @@ describe('createQueues', () => {
     createQueues(redisConnection);
     const researchQueueCall = MockQueue.mock.calls.find((c) => c[0] === 'reclaw-research');
     expect(researchQueueCall).toBeDefined();
-    const opts = researchQueueCall![1] as Record<string, unknown>;
-    const jobOpts = opts.defaultJobOptions as { attempts: number; backoff: { type: string; delay: number } };
+    if (researchQueueCall === undefined) throw new Error('Research queue was not created');
+    const opts = researchQueueCall[1] as Record<string, unknown>;
+    const jobOpts = opts.defaultJobOptions as {
+      attempts: number;
+      backoff: { type: string; delay: number };
+    };
     expect(jobOpts).toBeDefined();
     expect(jobOpts.attempts).toBe(3);
     expect(jobOpts.backoff.type).toBe('exponential');
@@ -302,11 +351,9 @@ describe('createQueues', () => {
   it('markScheduledJobCompleted sets Redis completion marker with 7-day TTL', async () => {
     const queues = createQueues(redisConnection);
     await queues.markScheduledJobCompleted('job-123');
-    expect(mockRedisSet).toHaveBeenCalledWith(
-      'reclaw:sched-completed:job-123',
-      '1',
-      { EX: 604800 },
-    );
+    expect(mockRedisSet).toHaveBeenCalledWith('reclaw:sched-completed:job-123', '1', {
+      EX: 604800,
+    });
   });
 
   it('isScheduledJobCompleted returns true when completion marker exists', async () => {

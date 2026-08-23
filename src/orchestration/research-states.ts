@@ -16,21 +16,19 @@
 // FR-062:  Summary includes topic, grade, key findings, citation stats, hub link.
 
 import { match } from 'ts-pattern';
-import type { NotebookLMAdapter } from '../infra/notebooklm-client.js';
-import type { ResearchLLMAdapter } from '../infra/research-llm-client.js';
-import type { VaultWriterAdapter } from '../infra/vault-writer.js';
-import type { QuotaTracker } from '../infra/quota-tracker.js';
-import type { TelegramAdapter } from '../infra/telegram.js';
-import type {
-  ResearchContext,
-  ResearchEvent,
-  ResearchState,
-} from '../core/research-types.js';
-import { buildAllVaultNotes, buildEmergencyNote } from '../core/vault-content.js';
-import { resolveAnswerCitations, extractPassageToSourceMap } from '../core/citation-resolver.js';
-import type { ArtifactMeta, ResolvedNote } from '../core/research-types.js';
+import { extractPassageToSourceMap, resolveAnswerCitations } from '../core/citation-resolver.js';
 import { computeMetrics, evaluateQuality } from '../core/research-quality.js';
+import type { ResearchContext, ResearchEvent, ResearchState } from '../core/research-types.js';
+import type { ArtifactMeta, ResolvedNote } from '../core/research-types.js';
 import { generateTopicSlug } from '../core/topic-slug.js';
+import { buildAllVaultNotes, buildEmergencyNote } from '../core/vault-content.js';
+import { parseVaultRelativePath } from '../core/vault-path.js';
+import type { NotebookLMAdapter } from '../infra/notebooklm-client.js';
+import type { QuotaTracker } from '../infra/quota-tracker.js';
+import type { ResearchLLMAdapter } from '../infra/research-llm-client.js';
+import type { TelegramAdapter } from '../infra/telegram.js';
+import { createVaultWorkspace, formatVaultPathError } from '../infra/vault-workspace.js';
+import type { VaultWriterAdapter } from '../infra/vault-writer.js';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -217,7 +215,10 @@ async function executeSearchingSources(
     if (reformulateResult.ok) {
       query = reformulateResult.value;
     } else {
-      console.warn('[research:searching] reformulateQuery failed, using original topic:', reformulateResult.error);
+      console.warn(
+        '[research:searching] reformulateQuery failed, using original topic:',
+        reformulateResult.error,
+      );
     }
   }
 
@@ -247,9 +248,14 @@ async function executeSearchingSources(
       notebookLMResult.value.webSources,
       ctx.sourceHints,
     );
-    console.log(`[research:searching] Claude web search found ${claudeSearchResult.value.length} URLs, ${claudeUrls.length} after dedup`);
+    console.log(
+      `[research:searching] Claude web search found ${claudeSearchResult.value.length} URLs, ${claudeUrls.length} after dedup`,
+    );
   } else {
-    console.warn('[research:searching] Claude web search failed (non-blocking):', claudeSearchResult.error);
+    console.warn(
+      '[research:searching] Claude web search failed (non-blocking):',
+      claudeSearchResult.error,
+    );
   }
 
   return {
@@ -345,9 +351,10 @@ async function executeAddingSources(
 
   // If we couldn't add ANY sources, return error regardless of whether errors exist
   if (addedIds.length === 0) {
-    const detail = errors.length > 0
-      ? `Failed to add any sources: ${errors.join('; ')}`
-      : 'No sources were added: discovery returned empty results and no source hints';
+    const detail =
+      errors.length > 0
+        ? `Failed to add any sources: ${errors.join('; ')}`
+        : 'No sources were added: discovery returned empty results and no source hints';
     return {
       type: 'ERROR',
       error: detail,
@@ -376,10 +383,7 @@ async function executeAwaitingProcessing(
     };
   }
 
-  const waitResult = await deps.notebookLM.waitForProcessing(
-    ctx.notebookId,
-    PROCESSING_TIMEOUT_MS,
-  );
+  const waitResult = await deps.notebookLM.waitForProcessing(ctx.notebookId, PROCESSING_TIMEOUT_MS);
 
   if (!waitResult.ok) {
     return {
@@ -473,14 +477,14 @@ async function executeQuerying(
   // FR-051: Rephrase question on retry if previous attempt failed for this question
   let question = pendingQuestion;
   if (ctx.lastError !== null) {
-    const rephraseResult = await deps.researchLLM.rephraseQuestion(
-      pendingQuestion,
-      ctx.sources,
-    );
+    const rephraseResult = await deps.researchLLM.rephraseQuestion(pendingQuestion, ctx.sources);
     if (rephraseResult.ok) {
       question = rephraseResult.value;
     } else {
-      console.warn('[research:querying] rephraseQuestion failed, using original:', rephraseResult.error);
+      console.warn(
+        '[research:querying] rephraseQuestion failed, using original:',
+        rephraseResult.error,
+      );
     }
   }
 
@@ -506,8 +510,7 @@ async function executeQuerying(
 
   // FR-025: Semantic circuit breaker — 0 citations + short answer text = low quality
   const isLowQuality =
-    response.citations.length === 0 &&
-    response.text.trim().length < SEMANTIC_MIN_ANSWER_LENGTH;
+    response.citations.length === 0 && response.text.trim().length < SEMANTIC_MIN_ANSWER_LENGTH;
 
   if (isLowQuality) {
     return {
@@ -540,16 +543,22 @@ async function executeQuerying(
  * NotebookLM [N] markers are passage references (not source indices).
  * Each answer's rawData encodes which source each passage belongs to.
  */
-async function executeResolvingCitations(
-  ctx: ResearchContext,
-): Promise<ResearchEvent> {
+async function executeResolvingCitations(ctx: ResearchContext): Promise<ResearchEvent> {
   const resolvedNotes: ResolvedNote[] = [];
 
   for (const [question, response] of Object.entries(ctx.answers)) {
     const passageMap = extractPassageToSourceMap(response.rawData, ctx.sources);
-    console.log(`[research:citations] Resolving: "${question.slice(0, 60)}..." — ${passageMap.size} passage→source mappings`);
-    const { resolvedText, citedPassagesBySource } = resolveAnswerCitations(response.text, ctx.sources, passageMap);
-    console.log(`[research:citations] -> cited source indices: [${[...citedPassagesBySource.keys()].join(', ')}]`);
+    console.log(
+      `[research:citations] Resolving: "${question.slice(0, 60)}..." — ${passageMap.size} passage→source mappings`,
+    );
+    const { resolvedText, citedPassagesBySource } = resolveAnswerCitations(
+      response.text,
+      ctx.sources,
+      passageMap,
+    );
+    console.log(
+      `[research:citations] -> cited source indices: [${[...citedPassagesBySource.keys()].join(', ')}]`,
+    );
     resolvedNotes.push({
       type: 'qa',
       filename: question,
@@ -592,17 +601,23 @@ async function executeWritingVault(
       const topicSlug = ctx.topicSlug ?? 'untitled';
       const researchDate = ctx.startedAt.split('T')[0] ?? ctx.startedAt;
       const mocEntry = `\n- [[reclaw/research/${topicSlug}/_index|${ctx.topic}]] — (${researchDate})\n`;
-      const mocPath = `${deps.vaultBasePath}/reclaw/research/MOC.md`;
+      const mocRelativePath = parseVaultRelativePath('reclaw/research/MOC.md');
+      if (!mocRelativePath.ok) throw new Error(mocRelativePath.error);
+      const workspace = await createVaultWorkspace(deps.vaultBasePath);
+      if (!workspace.ok) throw new Error(formatVaultPathError(workspace.error));
+      const mocPath = await workspace.value.resolveExistingFile(mocRelativePath.value);
+      if (!mocPath.ok) throw new Error(formatVaultPathError(mocPath.error));
       // Insert before "## Related Learning Notes" if it exists, otherwise append to end
-      const fs = await import('fs/promises');
-      const mocContent = await fs.readFile(mocPath, 'utf8');
+      const fs = await import('node:fs/promises');
+      const mocContent = await fs.readFile(mocPath.value, 'utf8');
       const relatedIdx = mocContent.indexOf('\n## Related Learning Notes');
-      const updatedMoc = relatedIdx !== -1
-        ? mocContent.slice(0, relatedIdx) + `\n## Uncategorized\n${mocEntry}` + mocContent.slice(relatedIdx)
-        : mocContent + `\n## Uncategorized\n${mocEntry}`;
+      const updatedMoc =
+        relatedIdx !== -1
+          ? `${mocContent.slice(0, relatedIdx)}\n## Uncategorized\n${mocEntry}${mocContent.slice(relatedIdx)}`
+          : `${mocContent}\n## Uncategorized\n${mocEntry}`;
       // Only append if this topic isn't already in the MOC
       if (!mocContent.includes(topicSlug)) {
-        await fs.writeFile(mocPath, updatedMoc, 'utf8');
+        await fs.writeFile(mocPath.value, updatedMoc, 'utf8');
         console.log(`[research:vault] Added ${topicSlug} to Research MOC`);
       }
     } catch (mocErr) {
@@ -658,16 +673,18 @@ async function executeGeneratingArtifacts(
   if (shareResult.ok) {
     shareUrl = shareResult.value;
   } else {
-    console.warn('[research:artifacts] shareNotebook failed, falling back to direct URL:', shareResult.error.message);
+    console.warn(
+      '[research:artifacts] shareNotebook failed, falling back to direct URL:',
+      shareResult.error.message,
+    );
   }
   const notebookUrl = shareUrl ?? `https://notebooklm.google.com/notebook/${ctx.notebookId}`;
 
   // Generate audio overview if requested
   if (ctx.generateAudio) {
-    const createResult = await deps.notebookLM.createAudioOverview(
-      ctx.notebookId,
-      { instructions: `Create a deep-dive audio overview about: ${ctx.topic}` },
-    );
+    const createResult = await deps.notebookLM.createAudioOverview(ctx.notebookId, {
+      instructions: `Create a deep-dive audio overview about: ${ctx.topic}`,
+    });
 
     if (createResult.ok) {
       const waitResult = await deps.notebookLM.waitForArtifact(
@@ -678,7 +695,9 @@ async function executeGeneratingArtifacts(
       if (waitResult.ok && waitResult.value === 'ready') {
         artifacts.push({ type: 'audio', artifactId: createResult.value, url: notebookUrl });
       } else {
-        const reason = waitResult.ok ? `artifact state: ${waitResult.value}` : waitResult.error.message;
+        const reason = waitResult.ok
+          ? `artifact state: ${waitResult.value}`
+          : waitResult.error.message;
         console.warn('[research:artifacts] Audio generation failed or timed out:', reason);
         artifactFailures.push(`Audio: ${reason}`);
       }
@@ -690,10 +709,9 @@ async function executeGeneratingArtifacts(
 
   // Generate video overview if requested
   if (ctx.generateVideo) {
-    const createResult = await deps.notebookLM.createVideoOverview(
-      ctx.notebookId,
-      { instructions: `Create a video overview about: ${ctx.topic}` },
-    );
+    const createResult = await deps.notebookLM.createVideoOverview(ctx.notebookId, {
+      instructions: `Create a video overview about: ${ctx.topic}`,
+    });
 
     if (createResult.ok) {
       const waitResult = await deps.notebookLM.waitForArtifact(
@@ -704,7 +722,9 @@ async function executeGeneratingArtifacts(
       if (waitResult.ok && waitResult.value === 'ready') {
         artifacts.push({ type: 'video', artifactId: createResult.value, url: notebookUrl });
       } else {
-        const reason = waitResult.ok ? `artifact state: ${waitResult.value}` : waitResult.error.message;
+        const reason = waitResult.ok
+          ? `artifact state: ${waitResult.value}`
+          : waitResult.error.message;
         console.warn('[research:artifacts] Video generation failed or timed out:', reason);
         artifactFailures.push(`Video: ${reason}`);
       }
@@ -722,7 +742,11 @@ async function executeGeneratingArtifacts(
     });
     const mediaSection = `\n\n## Media\n\n${mediaLines.join('\n')}\n`;
 
-    const appendResult = await deps.vaultWriter.appendToNote(ctx.hubPath, mediaSection);
+    const appendResult = await deps.vaultWriter.appendToNote(
+      ctx.hubPath,
+      mediaSection,
+      deps.vaultBasePath,
+    );
     if (!appendResult.ok) {
       console.warn('[research:artifacts] Failed to append media section:', appendResult.error);
     }
@@ -738,10 +762,7 @@ async function executeGeneratingArtifacts(
  * FR-061: Store summary via Cortex for future recall.
  * FR-062: Summary includes topic, grade, key findings, citation stats, hub link.
  */
-async function executeNotifying(
-  ctx: ResearchContext,
-  deps: ResearchDeps,
-): Promise<ResearchEvent> {
+async function executeNotifying(ctx: ResearchContext, deps: ResearchDeps): Promise<ResearchEvent> {
   const metrics = computeMetrics(ctx);
   const quality = evaluateQuality(ctx, metrics);
 
@@ -773,44 +794,27 @@ async function executeNotifying(
     })
     .join('\n\n');
 
-  const keyFindingsSection = keyFindings.length > 0
-    ? `\n\nKey Findings:\n${keyFindings}`
-    : '';
+  const keyFindingsSection = keyFindings.length > 0 ? `\n\nKey Findings:\n${keyFindings}` : '';
 
   const skippedSection =
     ctx.skippedQuestions.length > 0
       ? `\n\nSkipped questions (${ctx.skippedQuestions.length}): ${ctx.skippedQuestions.join(', ')}`
       : '';
 
-  const artifactLinks = ctx.artifacts.length > 0
-    ? `\n\nMedia:\n${ctx.artifacts.map((a) => `• ${a.type === 'audio' ? 'Audio' : 'Video'}: ${a.url}`).join('\n')}`
-    : '';
+  const artifactLinks =
+    ctx.artifacts.length > 0
+      ? `\n\nMedia:\n${ctx.artifacts.map((a) => `• ${a.type === 'audio' ? 'Audio' : 'Video'}: ${a.url}`).join('\n')}`
+      : '';
 
-  const artifactFailuresText = ctx.artifactFailures.length > 0
-    ? `\n\nFailed artifacts:\n${ctx.artifactFailures.map((f) => `• ${f}`).join('\n')}`
-    : '';
+  const artifactFailuresText =
+    ctx.artifactFailures.length > 0
+      ? `\n\nFailed artifacts:\n${ctx.artifactFailures.map((f) => `• ${f}`).join('\n')}`
+      : '';
 
-  const telegramSummary =
-    `Research Complete: ${ctx.topic}\n\n` +
-    `Quality: ${quality.grade.toUpperCase()}\n` +
-    `Questions: ${metrics.questionsAnswered}/${metrics.questionsAsked} answered\n` +
-    `Citations: ${metrics.totalCitations} total, ${metrics.avgCitationsPerAnswer.toFixed(1)} avg/answer\n` +
-    `Sources: ${metrics.sourcesIngested} ingested, ${metrics.sourcesCited} cited\n` +
-    `Quota used: ${metrics.chatsUsed} chats, ${quotaRemaining} remaining today\n` +
-    `Duration: ${durationMin}m` +
-    skippedSection +
-    warningsText +
-    keyFindingsSection +
-    artifactLinks +
-    artifactFailuresText +
-    hubLink;
+  const telegramSummary = `Research Complete: ${ctx.topic}\n\nQuality: ${quality.grade.toUpperCase()}\nQuestions: ${metrics.questionsAnswered}/${metrics.questionsAsked} answered\nCitations: ${metrics.totalCitations} total, ${metrics.avgCitationsPerAnswer.toFixed(1)} avg/answer\nSources: ${metrics.sourcesIngested} ingested, ${metrics.sourcesCited} cited\nQuota used: ${metrics.chatsUsed} chats, ${quotaRemaining} remaining today\nDuration: ${durationMin}m${skippedSection}${warningsText}${keyFindingsSection}${artifactLinks}${artifactFailuresText}${hubLink}`;
 
   // Send Telegram notification
-  const sendResult = await sendTelegramSafe(
-    deps.telegram,
-    ctx.chatId,
-    telegramSummary,
-  );
+  const sendResult = await sendTelegramSafe(deps.telegram, ctx.chatId, telegramSummary);
 
   if (!sendResult) {
     return {
@@ -862,14 +866,7 @@ export function buildCortexSummary(
     })
     .join('\n');
 
-  return (
-    `Research summary: ${ctx.topic} (${researchDate})\n` +
-    `Quality: ${quality.grade}\n` +
-    `Questions answered: ${metrics.questionsAnswered}/${metrics.questionsAsked}\n` +
-    `Citations: ${metrics.totalCitations}, Sources ingested: ${metrics.sourcesIngested}\n` +
-    (findingsText.length > 0 ? `\nKey findings:\n${findingsText}` : '') +
-    hubLink
-  );
+  return `Research summary: ${ctx.topic} (${researchDate})\nQuality: ${quality.grade}\nQuestions answered: ${metrics.questionsAnswered}/${metrics.questionsAsked}\nCitations: ${metrics.totalCitations}, Sources ingested: ${metrics.sourcesIngested}\n${findingsText.length > 0 ? `\nKey findings:\n${findingsText}` : ''}${hubLink}`;
 }
 
 /**

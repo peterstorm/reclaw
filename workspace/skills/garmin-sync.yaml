@@ -1,6 +1,7 @@
 name: Garmin Daily Sync
 schedule: "0 20 * * *"
 permissionProfile: scheduled
+environment: [GARMIN_EMAIL, GARMIN_PASSWORD]
 validityWindowMinutes: 60
 promptTemplate: |
   {{personality}}

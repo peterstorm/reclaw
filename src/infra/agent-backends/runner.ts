@@ -6,6 +6,14 @@
  * arg building, env cleaning, and output parsing to the AgentBackend interface.
  */
 
+import { buildAgentProcessEnvironment } from '../../core/agent-environment.js';
+import {
+  type AgentFailure,
+  classifyAgentDiagnostic,
+  classifyAgentExit,
+  formatAgentFailure,
+  normalizeAgentFailureDetail,
+} from '../../core/agent-failure.js';
 import type { AgentBackend, AgentOptions, AgentResult, OnStreamChunk, SpawnFn } from './types.js';
 
 // ─── Default Spawn ────────────────────────────────────────────────────────────
@@ -28,11 +36,21 @@ const getDefaultSpawn = (): SpawnFn => Bun.spawn as unknown as SpawnFn;
  * stderr → the backend's parsed errorMessage → the tail of raw stdout. Capped
  * so a runaway stream can't bloat the error string / logs.
  */
-function buildExitDetail(
-  backend: AgentBackend,
-  stderrText: string,
-  rawStdout: string,
-): string {
+function failed(failure: AgentFailure): AgentResult {
+  return { ok: false, failure };
+}
+
+function boundedDetail(error: unknown): string {
+  return normalizeAgentFailureDetail(String(error));
+}
+
+function spawnFailure(backend: string, error: unknown): AgentFailure {
+  const detail = boundedDetail(error);
+  const classified = classifyAgentDiagnostic(backend, detail);
+  return classified.kind === 'configuration' ? classified : { kind: 'spawn', backend, detail };
+}
+
+function buildExitDetail(backend: AgentBackend, stderrText: string, rawStdout: string): string {
   const stderr = stderrText.trim();
   if (stderr !== '') return stderr.slice(0, 800);
 
@@ -55,7 +73,7 @@ function buildExitDetail(
 /**
  * Execute an agent subprocess, collect stdout, and return an AgentResult.
  *
- * FR-101: Returns ok:true with output/sessionId/durationMs or ok:false with error/timedOut.
+ * FR-101: Returns success data or one typed AgentFailure.
  * FR-105: Timeout enforcement — kills subprocess after timeoutMs.
  * FR-108: Identical return shape regardless of backend.
  * FR-113: Prompt delivered via stdin.
@@ -70,7 +88,16 @@ export async function runAgent(backend: AgentBackend, options: AgentOptions): Pr
     allowedTools,
     ...(modelSelection ? { modelSelection } : {}),
   });
-  const processEnv = backend.cleanEnv({ ...process.env, ...(env ?? {}) });
+  const processEnv = backend.cleanEnv(
+    buildAgentProcessEnvironment(
+      process.env,
+      {
+        backend: backend.name,
+        ...(modelSelection?.provider ? { provider: modelSelection.provider } : {}),
+      },
+      env,
+    ),
+  );
 
   const startMs = Date.now();
 
@@ -78,11 +105,7 @@ export async function runAgent(backend: AgentBackend, options: AgentOptions): Pr
   try {
     proc = spawnFn(args, { cwd, stdin: 'pipe', stdout: 'pipe', stderr: 'pipe', env: processEnv });
   } catch (spawnErr) {
-    return {
-      ok: false,
-      error: `Failed to spawn ${backend.name}: ${String(spawnErr)}`,
-      timedOut: false,
-    };
+    return failed(spawnFailure(backend.name, spawnErr));
   }
 
   // Drain stderr concurrently to prevent pipe deadlocks
@@ -97,7 +120,7 @@ export async function runAgent(backend: AgentBackend, options: AgentOptions): Pr
     proc.stdin.end();
   } catch (stdinErr) {
     proc.kill();
-    return { ok: false, error: `Failed to write stdin: ${String(stdinErr)}`, timedOut: false };
+    return failed({ kind: 'input-write', backend: backend.name, detail: boundedDetail(stdinErr) });
   }
 
   // Timeout enforcement
@@ -114,7 +137,7 @@ export async function runAgent(backend: AgentBackend, options: AgentOptions): Pr
   } catch (stdoutErr) {
     clearTimeout(timeoutId);
     proc.kill();
-    return { ok: false, error: `Failed to read stdout: ${String(stdoutErr)}`, timedOut: false };
+    return failed({ kind: 'output-read', backend: backend.name, detail: boundedDetail(stdoutErr) });
   }
 
   const exitCode = await proc.exited;
@@ -122,29 +145,32 @@ export async function runAgent(backend: AgentBackend, options: AgentOptions): Pr
   const durationMs = Date.now() - startMs;
 
   if (timedOut) {
-    return { ok: false, error: 'timeout', timedOut: true };
+    return failed({ kind: 'timeout', backend: backend.name, timeoutMs });
   }
 
   if (exitCode !== 0) {
     const stderrText = await stderrPromise;
-    return {
-      ok: false,
-      error: `${backend.name} exited with code ${exitCode}: ${buildExitDetail(backend, stderrText, rawOutput)}`,
-      timedOut: false,
-    };
+    return failed(
+      classifyAgentExit(backend.name, exitCode, buildExitDetail(backend, stderrText, rawOutput)),
+    );
   }
 
   const parsed = backend.parseResult(rawOutput);
+  // A backend-reported failure wins even when an earlier assistant message
+  // produced text before a tool/provider failure terminated the turn.
+  if (parsed.errorMessage) {
+    const failure = classifyAgentDiagnostic(backend.name, parsed.errorMessage);
+    console.warn(`[runner] ${formatAgentFailure(failure)}`);
+    return failed(failure);
+  }
   // parseResult returning null means the backend recognised no structured
   // assistant text in a *successful* (exit 0) run — a parser/output-format
   // mismatch, not a real reply. Surface it instead of silently shipping raw
   // protocol bytes downstream as if they were the answer.
   if (parsed.text === null) {
-    const agentError = parsed.errorMessage
-      ? `${backend.name} agent error: ${parsed.errorMessage}`
-      : `${backend.name} produced no parseable assistant text (exit 0, ${rawOutput.length} bytes)`;
-    console.warn(`[runner] ${agentError}`);
-    return { ok: false, error: agentError, timedOut: false };
+    const detail = `produced no parseable assistant text (exit 0, ${rawOutput.length} bytes)`;
+    console.warn(`[runner] ${backend.name} protocol error: ${detail}`);
+    return failed({ kind: 'protocol', backend: backend.name, detail });
   }
 
   return { ok: true, output: parsed.text, sessionId: parsed.sessionId, durationMs };
@@ -175,7 +201,16 @@ export async function runAgentStreaming(
     allowedTools,
     ...(modelSelection ? { modelSelection } : {}),
   });
-  const processEnv = backend.cleanEnv({ ...process.env, ...(env ?? {}) });
+  const processEnv = backend.cleanEnv(
+    buildAgentProcessEnvironment(
+      process.env,
+      {
+        backend: backend.name,
+        ...(modelSelection?.provider ? { provider: modelSelection.provider } : {}),
+      },
+      env,
+    ),
+  );
 
   const startMs = Date.now();
 
@@ -183,11 +218,7 @@ export async function runAgentStreaming(
   try {
     proc = spawnFn(args, { cwd, stdin: 'pipe', stdout: 'pipe', stderr: 'pipe', env: processEnv });
   } catch (spawnErr) {
-    return {
-      ok: false,
-      error: `Failed to spawn ${backend.name}: ${String(spawnErr)}`,
-      timedOut: false,
-    };
+    return failed(spawnFailure(backend.name, spawnErr));
   }
 
   // Drain stderr concurrently
@@ -202,7 +233,7 @@ export async function runAgentStreaming(
     proc.stdin.end();
   } catch (stdinErr) {
     proc.kill();
-    return { ok: false, error: `Failed to write stdin: ${String(stdinErr)}`, timedOut: false };
+    return failed({ kind: 'input-write', backend: backend.name, detail: boundedDetail(stdinErr) });
   }
 
   // Timeout enforcement
@@ -308,9 +339,9 @@ export async function runAgentStreaming(
     clearTimeout(timeoutId);
     proc.kill();
     if (timedOut) {
-      return { ok: false, error: 'timeout', timedOut: true };
+      return failed({ kind: 'timeout', backend: backend.name, timeoutMs });
     }
-    return { ok: false, error: `Failed to read stdout: ${String(readErr)}`, timedOut: false };
+    return failed({ kind: 'output-read', backend: backend.name, detail: boundedDetail(readErr) });
   }
 
   const exitCode = await proc.exited;
@@ -318,16 +349,18 @@ export async function runAgentStreaming(
   const durationMs = Date.now() - startMs;
 
   if (timedOut) {
-    return { ok: false, error: 'timeout', timedOut: true };
+    return failed({ kind: 'timeout', backend: backend.name, timeoutMs });
   }
 
   if (exitCode !== 0) {
     const stderrText = await stderrPromise;
-    return {
-      ok: false,
-      error: `${backend.name} exited with code ${exitCode}: ${buildExitDetail(backend, stderrText, collectedLines.join('\n'))}`,
-      timedOut: false,
-    };
+    return failed(
+      classifyAgentExit(
+        backend.name,
+        exitCode,
+        buildExitDetail(backend, stderrText, collectedLines.join('\n')),
+      ),
+    );
   }
 
   // Use backend.parseResult for final text; fall back to accumulated text.
@@ -337,16 +370,19 @@ export async function runAgentStreaming(
   // reason (silent format drift otherwise looks like a healthy short reply).
   const rawCollected = collectedLines.join('\n');
   const parsed = backend.parseResult(rawCollected);
+  // A backend-reported failure wins even if partial text streamed before the
+  // provider rejected the turn. Treating narration as success would suppress
+  // retries and could persist an incomplete response.
+  if (parsed.errorMessage) {
+    const failure = classifyAgentDiagnostic(backend.name, parsed.errorMessage);
+    console.warn(`[runner] ${formatAgentFailure(failure)}`);
+    return failed(failure);
+  }
   if (parsed.text === null) {
-    // No final text AND no streamed deltas: the agent produced nothing. If the
-    // backend reported an agent-level error (e.g. 429 quota), fail loudly —
-    // returning ok:true with empty output looks like "the bot ignored me".
     if (accumulatedText.length === 0) {
-      const agentError = parsed.errorMessage
-        ? `${backend.name} agent error: ${parsed.errorMessage}`
-        : `${backend.name} produced no assistant text on exit-0 stream`;
-      console.warn(`[runner] ${agentError}`);
-      return { ok: false, error: agentError, timedOut: false };
+      const detail = 'produced no assistant text on exit-0 stream';
+      console.warn(`[runner] ${backend.name} protocol error: ${detail}`);
+      return failed({ kind: 'protocol', backend: backend.name, detail });
     }
     console.warn(
       `[runner] ${backend.name}.parseResult found no final assistant text on exit-0 stream; falling back to ${accumulatedText.length} accumulated bytes`,

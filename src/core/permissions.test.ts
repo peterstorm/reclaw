@@ -1,43 +1,85 @@
 import { describe, expect, it } from 'vitest';
 import { getAllowedTools } from './permissions.js';
 
+const EXPECTED_CHAT_TOOLS = [
+  'Read',
+  'Write',
+  'Edit',
+  'Bash',
+  'Glob',
+  'Grep',
+  'Find',
+  'Ls',
+  'WebSearch',
+  'WebFetch',
+  'Task',
+  'Skill',
+  'TodoWrite',
+  'NotebookEdit',
+  'subagent',
+  'recall',
+  'remember',
+  'forget',
+] as const;
+
+const EXPECTED_SCHEDULED_TOOLS = [
+  'Read',
+  'Write',
+  'Bash',
+  'WebSearch',
+  'WebFetch',
+  'recall',
+  'remember',
+  'forget',
+] as const;
+
 describe('getAllowedTools', () => {
-  it('chat profile returns expected tool names', () => {
-    const tools = getAllowedTools('chat');
-    expect(tools).toEqual(['Read', 'Write', 'Bash', 'WebSearch', 'WebFetch', 'recall', 'remember', 'forget']);
+  it('gives interactive chat the complete personal-agent capability profile', () => {
+    expect(getAllowedTools('chat')).toEqual(EXPECTED_CHAT_TOOLS);
   });
 
-  it('scheduled profile returns expected tool names', () => {
-    const tools = getAllowedTools('scheduled');
-    expect(tools).toEqual(['Read', 'Write', 'Bash', 'WebSearch', 'WebFetch', 'recall', 'remember', 'forget']);
+  it('keeps unattended scheduled execution on the constrained profile', () => {
+    expect(getAllowedTools('scheduled')).toEqual(EXPECTED_SCHEDULED_TOOLS);
   });
 
-  it('includes web tools so scheduled skills that search/fetch work under the Pi backend', () => {
+  it('includes web tools needed by scheduled search and fetch skills', () => {
     const tools = getAllowedTools('scheduled');
     expect(tools).toContain('WebSearch');
     expect(tools).toContain('WebFetch');
   });
 
-  it('returns individual tool names, not formatted CLI flags', () => {
+  it('grants interactive chat native editing, skills, and backend-specific delegation', () => {
     const tools = getAllowedTools('chat');
-    for (const tool of tools) {
-      expect(tool).not.toMatch(/^--/);
-    }
+    expect(tools).toEqual(
+      expect.arrayContaining(['Edit', 'Glob', 'Grep', 'Task', 'Skill', 'subagent']),
+    );
   });
 
-  it('does not contain comma-separated strings (each tool is a separate element)', () => {
-    const tools = getAllowedTools('chat');
-    for (const tool of tools) {
-      expect(tool).not.toContain(',');
-    }
+  it('does not grant unattended jobs interactive delegation or skill-loading tools', () => {
+    const tools = getAllowedTools('scheduled');
+    expect(tools).not.toContain('Task');
+    expect(tools).not.toContain('Skill');
+    expect(tools).not.toContain('subagent');
   });
 
-  it('returns a readonly array of 8 tool names', () => {
-    expect(getAllowedTools('chat').length).toBe(8);
-    expect(getAllowedTools('scheduled').length).toBe(8);
+  it('makes scheduled capabilities a strict subset of chat capabilities', () => {
+    const chat = new Set(getAllowedTools('chat'));
+    const scheduled = getAllowedTools('scheduled');
+
+    expect(scheduled.every((tool) => chat.has(tool))).toBe(true);
+    expect(chat.size).toBeGreaterThan(scheduled.length);
   });
 
-  it('chat and scheduled profiles have the same tool sets', () => {
-    expect(getAllowedTools('chat')).toEqual(getAllowedTools('scheduled'));
-  });
+  it.each(['chat', 'scheduled'] as const)(
+    '%s contains unique, unformatted semantic names',
+    (profile) => {
+      const tools = getAllowedTools(profile);
+
+      expect(new Set(tools).size).toBe(tools.length);
+      for (const tool of tools) {
+        expect(tool).not.toMatch(/^--/);
+        expect(tool).not.toContain(',');
+      }
+    },
+  );
 });

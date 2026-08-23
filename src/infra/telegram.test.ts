@@ -1,31 +1,44 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { TelegramAdapter } from './telegram.js';
-import { makeTelegramUserId } from '../core/types.js';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { splitMessage } from '../core/message-splitter.js';
+import { makeTelegramUserId } from '../core/types.js';
+import type { TelegramAdapter } from './telegram.js';
 
 // ─── Grammy mock ──────────────────────────────────────────────────────────────
 //
 // We mock Grammy entirely so tests never touch the network.
 
-type MessageHandler = (ctx: Record<string, unknown>) => void;
+type MessageHandler = (ctx: Record<string, unknown>) => void | Promise<void>;
+type BotErrorHandler = (err: unknown) => void | Promise<void>;
 
 const mockBotStart = vi.fn().mockResolvedValue(undefined);
 const mockBotStop = vi.fn().mockResolvedValue(undefined);
 let nextMessageId = 1000;
-const mockSendMessage = vi.fn().mockImplementation(() => Promise.resolve({ message_id: nextMessageId++ }));
+const mockSendMessage = vi
+  .fn()
+  .mockImplementation(() => Promise.resolve({ message_id: nextMessageId++ }));
+const mockEditMessageText = vi.fn().mockResolvedValue({});
 const mockGetFile = vi.fn();
+const mockPdfTextExtractor = vi.fn();
 
 const capturedHandlers: Record<string, MessageHandler> = {};
+let capturedBotErrorHandler: BotErrorHandler | null = null;
 
 const mockBot = {
   on: vi.fn((event: string, handler: MessageHandler) => {
     capturedHandlers[event] = handler;
   }),
-  catch: vi.fn(),
+  catch: vi.fn((handler: BotErrorHandler) => {
+    capturedBotErrorHandler = handler;
+  }),
   start: mockBotStart,
   stop: mockBotStop,
   api: {
     sendMessage: mockSendMessage,
+    editMessageText: mockEditMessageText,
     getFile: mockGetFile,
   },
 };
@@ -36,47 +49,109 @@ vi.mock('grammy', () => ({
 
 // ─── Import adapter AFTER mock registration ───────────────────────────────────
 
-const { createTelegramAdapter } = await import('./telegram.js');
+const { createTelegramAdapter, removeSpooledImage } = await import('./telegram.js');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function makeAdapter(): TelegramAdapter {
   const userIdResult = makeTelegramUserId(123456);
   if (!userIdResult.ok) throw new Error(userIdResult.error);
-  return createTelegramAdapter({ token: 'test-token', authorizedUserIds: [userIdResult.value] });
-}
-
-function simulateIncoming(
-  userId: number,
-  chatId: number,
-  text: string,
-  replyToMessageId?: number,
-): void {
-  const handler = capturedHandlers['message:text'];
-  if (!handler) throw new Error('No message:text handler registered');
-  handler({
-    from: { id: userId },
-    chat: { id: chatId },
-    message: { text, ...(replyToMessageId !== undefined ? { reply_to_message: { message_id: replyToMessageId } } : {}) },
+  mockSendMessage.mockImplementation(() => Promise.resolve({ message_id: nextMessageId++ }));
+  mockEditMessageText.mockResolvedValue({});
+  mockPdfTextExtractor.mockResolvedValue({
+    ok: true,
+    value: { text: 'Extracted PDF text', totalPages: 2, truncated: false },
+  });
+  return createTelegramAdapter({
+    token: 'test-token',
+    authorizedUserIds: [userIdResult.value],
+    imageDir: '/tmp/reclaw-images',
+    pdfTextExtractor: mockPdfTextExtractor,
   });
 }
 
-function simulatePhoto(
+type SimulatedReply = {
+  readonly messageId: number;
+  readonly text?: string;
+  readonly caption?: string;
+  readonly from?: { readonly id: number; readonly is_bot?: boolean };
+};
+
+function replyPayload(reply: SimulatedReply | undefined): object {
+  return reply === undefined
+    ? {}
+    : {
+        reply_to_message: {
+          message_id: reply.messageId,
+          ...(reply.text !== undefined ? { text: reply.text } : {}),
+          ...(reply.caption !== undefined ? { caption: reply.caption } : {}),
+          ...(reply.from !== undefined ? { from: reply.from } : {}),
+        },
+      };
+}
+
+async function simulateIncoming(
+  userId: number,
+  chatId: number,
+  text: string,
+  reply?: SimulatedReply,
+  updateId = 1001,
+): Promise<void> {
+  const handler = capturedHandlers['message:text'];
+  if (!handler) throw new Error('No message:text handler registered');
+  await handler({
+    update: { update_id: updateId },
+    from: { id: userId },
+    chat: { id: chatId },
+    message: { text, ...replyPayload(reply) },
+  });
+}
+
+async function simulateDocument(
+  userId: number | undefined,
+  chatId: number,
+  document: {
+    file_id: string;
+    file_name?: string;
+    mime_type?: string;
+    file_size?: number;
+  },
+  caption?: string,
+  reply?: SimulatedReply,
+  updateId = 1003,
+): Promise<void> {
+  const handler = capturedHandlers['message:document'];
+  if (!handler) throw new Error('No message:document handler registered');
+  await handler({
+    update: { update_id: updateId },
+    from: userId !== undefined ? { id: userId } : undefined,
+    chat: { id: chatId },
+    message: {
+      document,
+      ...(caption !== undefined ? { caption } : {}),
+      ...replyPayload(reply),
+    },
+  });
+}
+
+async function simulatePhoto(
   userId: number | undefined,
   chatId: number,
   photo: Array<{ file_id: string; width: number; height: number }>,
   caption?: string,
-  replyToMessageId?: number,
-): void {
+  reply?: SimulatedReply,
+  updateId = 1002,
+): Promise<void> {
   const handler = capturedHandlers['message:photo'];
   if (!handler) throw new Error('No message:photo handler registered');
-  handler({
+  await handler({
+    update: { update_id: updateId },
     from: userId !== undefined ? { id: userId } : undefined,
     chat: { id: chatId },
     message: {
       photo,
       ...(caption !== undefined ? { caption } : {}),
-      ...(replyToMessageId !== undefined ? { reply_to_message: { message_id: replyToMessageId } } : {}),
+      ...replyPayload(reply),
     },
   });
 }
@@ -99,16 +174,18 @@ describe('createTelegramAdapter', () => {
     expect(typeof adapter.onMessage).toBe('function');
   });
 
-  it('registers message:text and message:photo handlers with Grammy bot', () => {
+  it('registers text, photo, and document handlers with Grammy bot', () => {
     makeAdapter();
     expect(mockBot.on).toHaveBeenCalledWith('message:text', expect.any(Function));
     expect(mockBot.on).toHaveBeenCalledWith('message:photo', expect.any(Function));
+    expect(mockBot.on).toHaveBeenCalledWith('message:document', expect.any(Function));
   });
 
-  it('start delegates to bot.start', async () => {
+  it('starts single-update polling so acknowledgements cannot skip a fetched batch', async () => {
     const adapter = makeAdapter();
     await adapter.start();
     expect(mockBotStart).toHaveBeenCalledOnce();
+    expect(mockBotStart).toHaveBeenCalledWith({ limit: 1 });
   });
 
   it('stop delegates to bot.stop', async () => {
@@ -126,12 +203,38 @@ describe('createTelegramAdapter', () => {
 
   it('sendMessage falls back to plain text when HTML send fails and returns message_id', async () => {
     const adapter = makeAdapter();
-    mockSendMessage.mockRejectedValueOnce(new Error('Bad Request: can\'t parse entities'));
+    mockSendMessage.mockRejectedValueOnce(new Error("Bad Request: can't parse entities"));
     const msgId = await adapter.sendMessage(999, 'hello **world**');
     // First call: HTML attempt (failed), second call: plain text fallback
     expect(mockSendMessage).toHaveBeenCalledTimes(2);
     expect(mockSendMessage).toHaveBeenNthCalledWith(2, 999, 'hello **world**');
     expect(typeof msgId).toBe('number');
+  });
+
+  it('rejects a failed plain edit so durable delivery can retry it', async () => {
+    const adapter = makeAdapter();
+    mockEditMessageText.mockRejectedValueOnce(new Error('telegram unavailable'));
+
+    await expect(adapter.editMessage(999, 42, 'final', { plain: true })).rejects.toThrow(
+      'telegram unavailable',
+    );
+  });
+
+  it('rejects when both HTML and plain edit attempts fail', async () => {
+    const adapter = makeAdapter();
+    mockEditMessageText
+      .mockRejectedValueOnce(new Error("Bad Request: can't parse entities"))
+      .mockRejectedValueOnce(new Error('message was deleted'));
+
+    await expect(adapter.editMessage(999, 42, '**final**')).rejects.toThrow('message was deleted');
+    expect(mockEditMessageText).toHaveBeenCalledTimes(2);
+  });
+
+  it('treats an already-identical edit as successful', async () => {
+    const adapter = makeAdapter();
+    mockEditMessageText.mockRejectedValueOnce(new Error('Bad Request: message is not modified'));
+
+    await expect(adapter.editMessage(999, 42, 'final', { plain: true })).resolves.toBeUndefined();
   });
 });
 
@@ -141,58 +244,136 @@ describe('onMessage handler — authorization (FR-003 / NFR-010)', () => {
     for (const key of Object.keys(capturedHandlers)) delete capturedHandlers[key];
   });
 
-  it('invokes handler for authorized user', () => {
+  it('awaits the handler for an authorized update and passes its stable update ID', async () => {
     const adapter = makeAdapter();
-    const handler = vi.fn();
+    let release: (() => void) | undefined;
+    const handler = vi.fn(
+      () =>
+        new Promise<undefined>((resolve) => {
+          release = () => resolve(undefined);
+        }),
+    );
     adapter.onMessage(handler);
 
-    simulateIncoming(123456, 789, 'hello authorized');
+    let settled = false;
+    const handling = simulateIncoming(123456, 789, 'hello authorized').then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
 
     expect(handler).toHaveBeenCalledOnce();
-    expect(handler).toHaveBeenCalledWith({ userId: 123456, chatId: 789, text: 'hello authorized', replyToMessageId: undefined });
+    expect(settled).toBe(false);
+    expect(handler).toHaveBeenCalledWith({
+      updateId: 1001,
+      userId: 123456,
+      chatId: 789,
+      text: 'hello authorized',
+    });
+
+    release?.();
+    await handling;
+    expect(settled).toBe(true);
   });
 
-  it('passes replyToMessageId when message is a reply', () => {
+  it('passes bounded quoted text and author when message is a reply', async () => {
     const adapter = makeAdapter();
-    const handler = vi.fn();
+    const handler = vi.fn().mockResolvedValue(undefined);
     adapter.onMessage(handler);
 
-    simulateIncoming(123456, 789, 'replying', 42);
+    await simulateIncoming(123456, 789, 'replying', {
+      messageId: 42,
+      text: 'Garmin sync failed',
+      from: { id: 999, is_bot: true },
+    });
 
     expect(handler).toHaveBeenCalledOnce();
-    expect(handler).toHaveBeenCalledWith({ userId: 123456, chatId: 789, text: 'replying', replyToMessageId: 42 });
+    expect(handler).toHaveBeenCalledWith({
+      updateId: 1001,
+      userId: 123456,
+      chatId: 789,
+      text: 'replying',
+      replyContext: {
+        kind: 'text',
+        messageId: 42,
+        author: 'assistant',
+        text: 'Garmin sync failed',
+        truncated: false,
+      },
+    });
   });
 
-  it('silently discards message from unauthorized user', () => {
+  it('propagates handler rejection to the grammY middleware boundary', async () => {
+    const adapter = makeAdapter();
+    adapter.onMessage(vi.fn().mockRejectedValue(new Error('redis unavailable')));
+
+    await expect(simulateIncoming(123456, 789, 'retry me')).rejects.toThrow('redis unavailable');
+  });
+
+  it('rethrows middleware failures from bot.catch instead of acknowledging them', () => {
+    makeAdapter();
+    expect(capturedBotErrorHandler).not.toBeNull();
+    expect(() => capturedBotErrorHandler?.(new Error('enqueue failed'))).toThrow('enqueue failed');
+  });
+
+  it('does not call bot.stop after a failed update because that would acknowledge it', async () => {
+    const adapter = makeAdapter();
+    adapter.onMessage(vi.fn().mockRejectedValue(new Error('enqueue failed')));
+
+    await expect(simulateIncoming(123456, 789, 'retry me')).rejects.toThrow('enqueue failed');
+    await adapter.stop();
+
+    expect(mockBotStop).not.toHaveBeenCalled();
+  });
+
+  it('waits for an in-flight update before gracefully stopping polling', async () => {
+    const adapter = makeAdapter();
+    let release: (() => void) | undefined;
+    adapter.onMessage(
+      vi.fn(
+        () =>
+          new Promise<undefined>((resolve) => {
+            release = () => resolve(undefined);
+          }),
+      ),
+    );
+
+    const handling = simulateIncoming(123456, 789, 'finish accepting me');
+    await Promise.resolve();
+    const stopping = adapter.stop();
+    await Promise.resolve();
+    expect(mockBotStop).not.toHaveBeenCalled();
+
+    release?.();
+    await Promise.all([handling, stopping]);
+    expect(mockBotStop).toHaveBeenCalledOnce();
+  });
+
+  it('silently discards message from unauthorized user', async () => {
     const adapter = makeAdapter();
     const handler = vi.fn();
     adapter.onMessage(handler);
 
-    simulateIncoming(999999, 789, 'unauthorized message');
+    await simulateIncoming(999999, 789, 'unauthorized message');
 
     expect(handler).not.toHaveBeenCalled();
-    // Also confirm no reply was sent
     expect(mockSendMessage).not.toHaveBeenCalled();
   });
 
-  it('silently discards message when from is undefined', () => {
-    makeAdapter();
-    const handler = vi.fn();
+  it('silently discards message when from is undefined', async () => {
     const adapter = makeAdapter();
+    const handler = vi.fn();
     adapter.onMessage(handler);
 
     const textHandler = capturedHandlers['message:text'];
     if (!textHandler) throw new Error('No handler');
-    // Simulate ctx with no `from`
-    textHandler({ from: undefined, chat: { id: 1 }, message: { text: 'test' } });
+    await textHandler({ from: undefined, chat: { id: 1 }, message: { text: 'test' } });
 
     expect(handler).not.toHaveBeenCalled();
   });
 
-  it('does not invoke handler if onMessage not called yet', () => {
+  it('fails closed when an authorized update arrives before handler registration', async () => {
     makeAdapter();
-    // No onMessage registered — should not throw
-    expect(() => simulateIncoming(123456, 789, 'hi')).not.toThrow();
+    await expect(simulateIncoming(123456, 789, 'hi')).rejects.toThrow('not registered');
   });
 });
 
@@ -250,6 +431,183 @@ describe('sendChunkedMessage integrates with splitMessage', () => {
   }, 5000);
 });
 
+// ─── PDF document handler ───────────────────────────────────────────────────
+
+describe('message:document handler', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    for (const key of Object.keys(capturedHandlers)) delete capturedHandlers[key];
+    nextMessageId = 1000;
+  });
+
+  const samplePdf = {
+    file_id: 'pdf-file',
+    file_name: 'report.pdf',
+    mime_type: 'application/pdf',
+    file_size: 128,
+  };
+
+  it('extracts PDF text, spools it atomically, and calls the durable handler', async () => {
+    const adapter = makeAdapter();
+    const handler = vi.fn().mockResolvedValue(undefined);
+    adapter.onMessage(handler);
+    mockGetFile.mockResolvedValueOnce({ file_path: 'documents/report.pdf' });
+    const mockFetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(new Uint8Array(Buffer.from('%PDF-1.4 body'))));
+
+    try {
+      await simulateDocument(123456, 789, samplePdf, 'Summarize this', {
+        messageId: 42,
+        caption: 'Earlier chart',
+        from: { id: 123456 },
+      });
+
+      expect(mockPdfTextExtractor).toHaveBeenCalledWith(expect.any(Uint8Array));
+      expect(handler).toHaveBeenCalledWith({
+        updateId: 1003,
+        userId: 123456,
+        chatId: 789,
+        text: 'Summarize this',
+        replyContext: {
+          kind: 'text',
+          messageId: 42,
+          author: 'user',
+          text: 'Earlier chart',
+          truncated: false,
+        },
+        documentPaths: ['/tmp/reclaw-images/1003.pdf.txt'],
+      });
+      const spooled = await readFile('/tmp/reclaw-images/1003.pdf.txt', 'utf8');
+      expect(spooled).toContain('--- BEGIN UNTRUSTED PDF CONTENT ---');
+      expect(spooled).toContain('Extracted PDF text');
+      expect(spooled).toContain('--- END UNTRUSTED PDF CONTENT ---');
+    } finally {
+      mockFetch.mockRestore();
+      await rm('/tmp/reclaw-images/1003.pdf.txt', { force: true });
+    }
+  });
+
+  it('removes a recreated PDF text spool when routing finds a terminal duplicate', async () => {
+    const adapter = makeAdapter();
+    const handler = vi.fn().mockResolvedValue({ kind: 'remove-source-files' });
+    adapter.onMessage(handler);
+    mockGetFile.mockResolvedValueOnce({ file_path: 'documents/report.pdf' });
+    const mockFetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(new Uint8Array(Buffer.from('%PDF-1.4 body'))));
+
+    try {
+      await simulateDocument(123456, 789, samplePdf);
+      expect(existsSync('/tmp/reclaw-images/1003.pdf.txt')).toBe(false);
+    } finally {
+      mockFetch.mockRestore();
+      await rm('/tmp/reclaw-images/1003.pdf.txt', { force: true });
+    }
+  });
+
+  it('acknowledges unsupported documents with a PDF-only response', async () => {
+    const adapter = makeAdapter();
+    const handler = vi.fn();
+    adapter.onMessage(handler);
+
+    await simulateDocument(123456, 789, {
+      file_id: 'word-file',
+      file_name: 'report.docx',
+      mime_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    });
+
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      789,
+      expect.stringContaining('PDF documents only'),
+      { parse_mode: 'HTML' },
+    );
+    expect(mockGetFile).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('rejects oversized PDFs before downloading them', async () => {
+    const adapter = makeAdapter();
+    const handler = vi.fn();
+    adapter.onMessage(handler);
+
+    await simulateDocument(123456, 789, { ...samplePdf, file_size: 21 * 1024 * 1024 });
+
+    expect(mockSendMessage).toHaveBeenCalledWith(789, expect.stringContaining('too large'), {
+      parse_mode: 'HTML',
+    });
+    expect(mockGetFile).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('checks PDF magic bytes instead of trusting Telegram metadata', async () => {
+    const adapter = makeAdapter();
+    const handler = vi.fn();
+    adapter.onMessage(handler);
+    mockGetFile.mockResolvedValueOnce({ file_path: 'documents/fake.pdf' });
+    const mockFetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(new Uint8Array(Buffer.from('not actually a PDF'))));
+
+    await simulateDocument(123456, 789, samplePdf);
+
+    expect(mockPdfTextExtractor).not.toHaveBeenCalled();
+    expect(mockSendMessage).toHaveBeenCalledWith(789, expect.stringContaining('not a PDF'), {
+      parse_mode: 'HTML',
+    });
+    expect(handler).not.toHaveBeenCalled();
+    mockFetch.mockRestore();
+  });
+
+  it('returns a useful response for scanned PDFs with no extractable text', async () => {
+    const adapter = makeAdapter();
+    const handler = vi.fn();
+    adapter.onMessage(handler);
+    mockGetFile.mockResolvedValueOnce({ file_path: 'documents/scan.pdf' });
+    const mockFetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(new Uint8Array(Buffer.from('%PDF-1.4 scan'))));
+    mockPdfTextExtractor.mockResolvedValueOnce({
+      ok: false,
+      error: {
+        kind: 'no-text',
+        message: 'The PDF contains no extractable text. Scanned-only PDFs are not supported yet.',
+      },
+    });
+
+    await simulateDocument(123456, 789, samplePdf);
+
+    expect(mockSendMessage).toHaveBeenCalledWith(789, expect.stringContaining('Scanned-only'), {
+      parse_mode: 'HTML',
+    });
+    expect(handler).not.toHaveBeenCalled();
+    mockFetch.mockRestore();
+  });
+
+  it('silently discards PDF documents from unauthorized users', async () => {
+    const adapter = makeAdapter();
+    const handler = vi.fn();
+    adapter.onMessage(handler);
+
+    await simulateDocument(999999, 789, samplePdf);
+
+    expect(mockGetFile).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('propagates PDF download failures so Telegram can redeliver the update', async () => {
+    const adapter = makeAdapter();
+    const handler = vi.fn();
+    adapter.onMessage(handler);
+    mockGetFile.mockRejectedValueOnce(new Error('telegram file unavailable'));
+
+    await expect(simulateDocument(123456, 789, samplePdf)).rejects.toThrow(
+      'telegram file unavailable',
+    );
+    expect(handler).not.toHaveBeenCalled();
+  });
+});
+
 // ─── Photo handler ──────────────────────────────────────────────────────────
 
 describe('message:photo handler', () => {
@@ -267,34 +625,32 @@ describe('message:photo handler', () => {
 
   it('downloads largest photo and calls handler with imagePaths', async () => {
     const adapter = makeAdapter();
-    const handler = vi.fn();
+    const handler = vi.fn().mockResolvedValue(undefined);
     adapter.onMessage(handler);
 
     mockGetFile.mockResolvedValueOnce({ file_path: 'photos/file_42.jpg' });
     // Mock global fetch for the download
-    const mockFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
-      new Response(new Uint8Array([0xff, 0xd8]), { status: 200 }),
-    );
+    const mockFetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(new Uint8Array([0xff, 0xd8]), { status: 200 }));
 
-    simulatePhoto(123456, 789, samplePhotos, 'Look at this');
-
-    // Let async download + handler complete
-    await new Promise((r) => setTimeout(r, 50));
+    await simulatePhoto(123456, 789, samplePhotos, 'Look at this');
 
     expect(mockGetFile).toHaveBeenCalledWith('large'); // largest photo selected
-    const call = handler.mock.calls[0]![0];
+    const call = handler.mock.calls[0]?.[0];
+    if (call === undefined) throw new Error('Photo handler was not called');
     expect(call.userId).toBe(123456);
     expect(call.chatId).toBe(789);
+    expect(call.updateId).toBe(1002);
     expect(call.text).toBe('Look at this');
-    expect(call.imagePaths).toHaveLength(1);
-    expect(call.imagePaths[0]).toMatch(/^\/tmp\/reclaw-images\/.+\.jpg$/);
+    expect(call.imagePaths).toEqual(['/tmp/reclaw-images/1002.jpg']);
 
     mockFetch.mockRestore();
   });
 
   it('uses empty string for text when no caption', async () => {
     const adapter = makeAdapter();
-    const handler = vi.fn();
+    const handler = vi.fn().mockResolvedValue(undefined);
     adapter.onMessage(handler);
 
     mockGetFile.mockResolvedValueOnce({ file_path: 'photos/file_43.jpg' });
@@ -302,12 +658,9 @@ describe('message:photo handler', () => {
       new Response(new Uint8Array([0xff, 0xd8]), { status: 200 }),
     );
 
-    simulatePhoto(123456, 789, samplePhotos); // no caption
+    await simulatePhoto(123456, 789, samplePhotos); // no caption
 
-    // Let async download + handler complete
-    await new Promise((r) => setTimeout(r, 50));
-
-    expect(handler.mock.calls[0]![0].text).toBe('');
+    expect(handler.mock.calls[0]?.[0]?.text).toBe('');
 
     vi.restoreAllMocks();
   });
@@ -317,10 +670,7 @@ describe('message:photo handler', () => {
     const handler = vi.fn();
     adapter.onMessage(handler);
 
-    simulatePhoto(999999, 789, samplePhotos);
-
-    // Give async a tick to settle
-    await new Promise((r) => setTimeout(r, 10));
+    await simulatePhoto(999999, 789, samplePhotos);
     expect(handler).not.toHaveBeenCalled();
     expect(mockGetFile).not.toHaveBeenCalled();
   });
@@ -330,9 +680,63 @@ describe('message:photo handler', () => {
     const handler = vi.fn();
     adapter.onMessage(handler);
 
-    simulatePhoto(undefined, 789, samplePhotos);
-
-    await new Promise((r) => setTimeout(r, 10));
+    await simulatePhoto(undefined, 789, samplePhotos);
     expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('propagates photo download failure instead of acknowledging the update', async () => {
+    const adapter = makeAdapter();
+    const handler = vi.fn().mockResolvedValue(undefined);
+    adapter.onMessage(handler);
+    mockGetFile.mockRejectedValueOnce(new Error('telegram file unavailable'));
+
+    await expect(simulatePhoto(123456, 789, samplePhotos)).rejects.toThrow(
+      'telegram file unavailable',
+    );
+    expect(handler).not.toHaveBeenCalled();
+  });
+});
+
+describe('removeSpooledImage', () => {
+  it('removes a canonical file inside the configured spool', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'reclaw-spool-'));
+    const file = join(root, 'telegram-1.jpg');
+    await writeFile(file, 'image');
+    try {
+      await removeSpooledImage(file, root);
+      expect(existsSync(file)).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('is idempotent when the file is already absent', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'reclaw-spool-'));
+    try {
+      await expect(removeSpooledImage(join(root, 'missing.jpg'), root)).resolves.toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects direct and symlinked escapes from the spool', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'reclaw-spool-'));
+    const root = join(parent, 'images');
+    const outside = join(parent, 'outside');
+    await Promise.all([mkdir(root), mkdir(outside)]);
+    const secret = join(outside, 'secret.txt');
+    await writeFile(secret, 'keep');
+    await symlink(outside, join(root, 'escape'), 'dir');
+    try {
+      await expect(removeSpooledImage(secret, root)).rejects.toThrow(
+        'outside Telegram image spool',
+      );
+      await expect(removeSpooledImage(join(root, 'escape', 'secret.txt'), root)).rejects.toThrow(
+        'outside Telegram image spool',
+      );
+      expect(existsSync(secret)).toBe(true);
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
   });
 });

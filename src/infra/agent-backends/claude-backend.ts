@@ -15,20 +15,55 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 // ─── Implementation ───────────────────────────────────────────────────────────
 
+const CLAUDE_BUILTIN_TOOLS = new Set([
+  'Read',
+  'Write',
+  'Edit',
+  'Bash',
+  'Glob',
+  'Grep',
+  'WebSearch',
+  'WebFetch',
+  'Task',
+  'Skill',
+  'TodoWrite',
+  'NotebookEdit',
+]);
+
+/**
+ * Claude's --tools flag enables built-in tool families, while --allowedTools
+ * accepts both names and selectors such as Bash(git:*) or WebSearch(*).
+ */
+function enabledClaudeBuiltins(allowedTools: readonly string[]): readonly string[] {
+  return [
+    ...new Set(
+      allowedTools.flatMap((tool) => {
+        const selectorStart = tool.indexOf('(');
+        const baseName = selectorStart === -1 ? tool : tool.slice(0, selectorStart);
+        return CLAUDE_BUILTIN_TOOLS.has(baseName) ? [baseName] : [];
+      }),
+    ),
+  ];
+}
+
 export const claudeBackend: AgentBackend = {
   name: 'claude',
 
   buildArgs(opts: { resumeSessionId?: string; allowedTools: readonly string[] }): string[] {
+    const enabledBuiltins = enabledClaudeBuiltins(opts.allowedTools);
+
     return [
       'claude',
       '-p',
       '--output-format',
       'stream-json',
       '--include-partial-messages',
+      '--permission-mode',
+      'dontAsk',
       ...(opts.resumeSessionId ? ['--resume', opts.resumeSessionId] : []),
-      ...(opts.allowedTools.length > 0
-        ? ['--dangerously-skip-permissions', '--allowedTools', opts.allowedTools.join(',')]
-        : ['--dangerously-skip-permissions']),
+      '--tools',
+      enabledBuiltins.join(','),
+      ...(opts.allowedTools.length > 0 ? ['--allowedTools', opts.allowedTools.join(',')] : []),
     ];
   },
 
@@ -71,9 +106,9 @@ export const claudeBackend: AgentBackend = {
       if (!isRecord(parsed)) continue;
 
       // Extract session_id from result event
-      if (parsed['type'] === 'result') {
-        if (typeof parsed['session_id'] === 'string') {
-          sessionId = parsed['session_id'];
+      if (parsed.type === 'result') {
+        if (typeof parsed.session_id === 'string') {
+          sessionId = parsed.session_id;
         }
 
         // Agent-level failure inside an otherwise-parseable stream. The CLI
@@ -82,12 +117,12 @@ export const claudeBackend: AgentBackend = {
         // human-readable reason so the runner can surface *why* it failed
         // instead of an opaque "exited with code N:". Do NOT treat the
         // `result` string as assistant text in this case — it's the error.
-        const isError = parsed['is_error'] === true;
-        const subtype = typeof parsed['subtype'] === 'string' ? parsed['subtype'] : null;
+        const isError = parsed.is_error === true;
+        const subtype = typeof parsed.subtype === 'string' ? parsed.subtype : null;
         if (isError || (subtype !== null && subtype !== 'success')) {
           const resultText =
-            typeof parsed['result'] === 'string' && parsed['result'].trim() !== ''
-              ? parsed['result'].trim()
+            typeof parsed.result === 'string' && parsed.result.trim() !== ''
+              ? parsed.result.trim()
               : null;
           errorMessage = resultText ?? subtype ?? 'unknown agent error';
           continue;
@@ -97,41 +132,42 @@ export const claudeBackend: AgentBackend = {
         // field (it's the concatenation of ALL messages). Fall through to
         // return the last message's text below.
         // If no streaming events were captured, use the result field as fallback.
-        if (!sawMessageStart && typeof parsed['result'] === 'string') {
-          return { text: parsed['result'], sessionId, errorMessage: null };
+        if (!sawMessageStart && typeof parsed.result === 'string') {
+          return { text: parsed.result, sessionId, errorMessage: null };
         }
         continue;
       }
 
       // Track streaming events for message boundaries
-      if (parsed['type'] !== 'stream_event') continue;
-      const event = parsed['event'];
+      if (parsed.type !== 'stream_event') continue;
+      const event = parsed.event;
       if (!isRecord(event)) continue;
 
       // message_start — new assistant message begins
-      if (event['type'] === 'message_start') {
+      if (event.type === 'message_start') {
         sawMessageStart = true;
         messageTexts.push([]);
         continue;
       }
 
       // content_block_delta with text_delta — accumulate text for current message
-      if (event['type'] === 'content_block_delta') {
-        const delta = event['delta'];
+      if (event.type === 'content_block_delta') {
+        const delta = event.delta;
         if (!isRecord(delta)) continue;
-        if (delta['type'] === 'text_delta' && typeof delta['text'] === 'string') {
+        if (delta.type === 'text_delta' && typeof delta.text === 'string') {
           if (messageTexts.length === 0) {
             // Edge case: text delta before any message_start
             messageTexts.push([]);
           }
-          messageTexts[messageTexts.length - 1]!.push(delta['text']);
+          messageTexts[messageTexts.length - 1]?.push(delta.text);
         }
       }
     }
 
     // Return only the LAST message's text — that's the actual response to the user
-    if (messageTexts.length > 0) {
-      const lastMessageText = messageTexts[messageTexts.length - 1]!.join('');
+    const lastMessage = messageTexts.at(-1);
+    if (lastMessage !== undefined) {
+      const lastMessageText = lastMessage.join('');
       return {
         text: lastMessageText.length > 0 ? lastMessageText : null,
         sessionId,
@@ -154,36 +190,36 @@ export const claudeBackend: AgentBackend = {
     }
 
     if (!isRecord(parsed)) return null;
-    if (parsed['type'] !== 'stream_event') return null;
+    if (parsed.type !== 'stream_event') return null;
 
-    const event = parsed['event'];
+    const event = parsed.event;
     if (!isRecord(event)) return null;
 
     // Handle content_block_start — signals a new thinking or text block
-    if (event['type'] === 'content_block_start') {
-      const contentBlock = event['content_block'];
+    if (event.type === 'content_block_start') {
+      const contentBlock = event.content_block;
       if (!isRecord(contentBlock)) return null;
-      if (contentBlock['type'] === 'thinking') {
+      if (contentBlock.type === 'thinking') {
         return { type: 'block_start', blockType: 'thinking' };
       }
-      if (contentBlock['type'] === 'text') {
+      if (contentBlock.type === 'text') {
         return { type: 'block_start', blockType: 'text' };
       }
       return null;
     }
 
     // Handle content_block_delta — text or thinking content
-    if (event['type'] !== 'content_block_delta') return null;
+    if (event.type !== 'content_block_delta') return null;
 
-    const delta = event['delta'];
+    const delta = event.delta;
     if (!isRecord(delta)) return null;
 
-    if (delta['type'] === 'thinking_delta' && typeof delta['thinking'] === 'string') {
-      return { type: 'thinking', thinking: delta['thinking'] };
+    if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string') {
+      return { type: 'thinking', thinking: delta.thinking };
     }
 
-    if (delta['type'] === 'text_delta' && typeof delta['text'] === 'string') {
-      return { type: 'text', text: delta['text'] };
+    if (delta.type === 'text_delta' && typeof delta.text === 'string') {
+      return { type: 'text', text: delta.text };
     }
 
     return null;
@@ -201,10 +237,10 @@ export const claudeBackend: AgentBackend = {
     }
 
     if (!isRecord(parsed)) return null;
-    if (parsed['type'] !== 'result') return null;
+    if (parsed.type !== 'result') return null;
 
-    if (typeof parsed['session_id'] === 'string') {
-      return parsed['session_id'];
+    if (typeof parsed.session_id === 'string') {
+      return parsed.session_id;
     }
 
     return null;

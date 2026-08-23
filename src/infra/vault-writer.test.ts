@@ -3,12 +3,12 @@
 // Uses a real temp directory (not mocked fs) for integration testing.
 // Tests: directory creation, file writing, hub path return, emergency fallback.
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { createVaultWriter } from './vault-writer.js';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { VaultNote } from '../core/vault-content.js';
+import { createVaultWriter } from './vault-writer.js';
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────
 
@@ -243,6 +243,38 @@ describe('createVaultWriter', () => {
       const expectedPath = path.join(tmpDir, 'reclaw/research/my-topic/_index.md');
       expect(result.value).toBe(expectedPath);
     });
+
+    it('preflights every path and writes nothing when one note traverses outside', async () => {
+      const writer = createVaultWriter();
+      const hubNote = makeHubNote('safe-topic');
+      const escapedName = `${path.basename(tmpDir)}-escaped.md`;
+      const escapingNote = makeNote(`../${escapedName}`, '# Escaped\n');
+
+      const result = await writer.writeNotes([hubNote, escapingNote], tmpDir);
+
+      expect(result.ok).toBe(false);
+      expect(await pathExists(path.join(tmpDir, hubNote.relativePath))).toBe(false);
+      expect(await pathExists(path.join(tmpDir, '..', escapedName))).toBe(false);
+    });
+
+    it('rejects writes through a directory symlink that escapes the vault', async () => {
+      const outside = await makeTempDir();
+      const topicDir = path.join(tmpDir, 'reclaw/research/symlink-topic');
+      await fs.mkdir(topicDir, { recursive: true });
+      await fs.symlink(outside, path.join(topicDir, 'Sources'));
+      const writer = createVaultWriter();
+      try {
+        const result = await writer.writeNotes(
+          [makeHubNote('symlink-topic'), makeSourceNote('symlink-topic', 'Escaped Source')],
+          tmpDir,
+        );
+
+        expect(result.ok).toBe(false);
+        expect(await pathExists(path.join(outside, 'Escaped Source.md'))).toBe(false);
+      } finally {
+        await fs.rm(outside, { recursive: true, force: true });
+      }
+    });
   });
 
   // ─── writeEmergencyNote ──────────────────────────────────────────────────────
@@ -298,6 +330,18 @@ describe('createVaultWriter', () => {
       expect(result.value).toBe(expectedPath);
     });
 
+    it('rejects an emergency note path that traverses outside the vault', async () => {
+      const writer = createVaultWriter();
+      const escapedName = `${path.basename(tmpDir)}-emergency-escape.md`;
+      const result = await writer.writeEmergencyNote(
+        makeNote(`../${escapedName}`, '# Escape\n'),
+        tmpDir,
+      );
+
+      expect(result.ok).toBe(false);
+      expect(await pathExists(path.join(tmpDir, '..', escapedName))).toBe(false);
+    });
+
     it('returns err when basePath is an unwritable path (file not directory)', async () => {
       // Create a regular file so that mkdir(fileAsBasePath/...) fails
       const fileAsBasePath = path.join(tmpDir, 'notadir-emergency');
@@ -338,6 +382,54 @@ An emergency answer here.
 
       const readContent = await readFile(tmpDir, note.relativePath);
       expect(readContent).toBe(content);
+    });
+  });
+
+  // ─── appendToNote ──────────────────────────────────────────────────────────
+
+  describe('appendToNote', () => {
+    it('appends to an existing file after rechecking canonical containment', async () => {
+      const writer = createVaultWriter();
+      const note = makeHubNote('append-topic');
+      const written = await writer.writeNotes([note], tmpDir);
+      if (!written.ok) throw new Error(written.error);
+
+      const result = await writer.appendToNote(written.value, '\n## Media\n', tmpDir);
+
+      expect(result.ok).toBe(true);
+      expect(await readFile(tmpDir, note.relativePath)).toContain('## Media');
+    });
+
+    it('rejects a persisted absolute path outside the configured vault', async () => {
+      const outside = await makeTempDir();
+      const outsideFile = path.join(outside, 'hub.md');
+      await fs.writeFile(outsideFile, '# Outside\n', 'utf8');
+      const writer = createVaultWriter();
+      try {
+        const result = await writer.appendToNote(outsideFile, '\nEscaped\n', tmpDir);
+
+        expect(result.ok).toBe(false);
+        expect(await fs.readFile(outsideFile, 'utf8')).toBe('# Outside\n');
+      } finally {
+        await fs.rm(outside, { recursive: true, force: true });
+      }
+    });
+
+    it('rejects a persisted path whose file symlink now escapes the vault', async () => {
+      const outside = await makeTempDir();
+      const outsideFile = path.join(outside, 'hub.md');
+      await fs.writeFile(outsideFile, '# Outside\n', 'utf8');
+      const linked = path.join(tmpDir, 'linked.md');
+      await fs.symlink(outsideFile, linked);
+      const writer = createVaultWriter();
+      try {
+        const result = await writer.appendToNote(linked, '\nEscaped\n', tmpDir);
+
+        expect(result.ok).toBe(false);
+        expect(await fs.readFile(outsideFile, 'utf8')).toBe('# Outside\n');
+      } finally {
+        await fs.rm(outside, { recursive: true, force: true });
+      }
     });
   });
 
@@ -390,8 +482,12 @@ An emergency answer here.
       expect(emergencyResult.ok).toBe(true);
 
       // Both files must exist
-      expect(await pathExists(path.join(tmpDir, 'reclaw/research/coexist-topic/_index.md'))).toBe(true);
-      expect(await pathExists(path.join(tmpDir, 'reclaw/research/coexist-topic/_emergency.md'))).toBe(true);
+      expect(await pathExists(path.join(tmpDir, 'reclaw/research/coexist-topic/_index.md'))).toBe(
+        true,
+      );
+      expect(
+        await pathExists(path.join(tmpDir, 'reclaw/research/coexist-topic/_emergency.md')),
+      ).toBe(true);
     });
   });
 });

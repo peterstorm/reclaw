@@ -20,13 +20,24 @@ describe('parseAskCommand', () => {
     }
   });
 
-  it('preserves a vault-path slug verbatim — caller normalizes', () => {
+  it('parses a canonical vault path down to its topic slug', () => {
     const r = parseAskCommand('/ask reclaw/research/my-topic Why?');
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.value.slug).toBe('reclaw/research/my-topic');
+      expect(r.value.slug).toBe('my-topic');
       expect(r.value.question).toBe('Why?');
     }
+  });
+
+  it.each([
+    '/ask ../outside Why?',
+    '/ask reclaw/research/../../outside Why?',
+    '/ask nested/arbitrary/topic Why?',
+    '/ask /absolute Why?',
+  ])('rejects unsafe topic reference: %s', (command) => {
+    const result = parseAskCommand(command);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/invalid topic slug/i);
   });
 
   it('keeps newlines inside the question body', () => {

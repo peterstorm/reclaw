@@ -38,6 +38,7 @@ describe('parseSkillConfig', () => {
       expect(result.value.permissionProfile).toBe('scheduled');
       expect(result.value.validityWindowMinutes).toBe(30);
       expect(result.value.timeout).toBe(120);
+      expect(result.value.environment).toEqual([]);
     }
   });
 
@@ -125,6 +126,33 @@ describe('parseSkillConfig', () => {
     );
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain('backend');
+  });
+
+  it('parses explicit service-environment grants', () => {
+    const r = parseSkillConfig(
+      'name: "Garmin"\npromptTemplate: "Run sync"\npermissionProfile: "scheduled"\nenvironment: [GARMIN_EMAIL, GARMIN_PASSWORD]',
+      '/skills/garmin.yaml',
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.environment).toEqual(['GARMIN_EMAIL', 'GARMIN_PASSWORD']);
+  });
+
+  it('defaults service-environment grants to empty', () => {
+    const r = parseSkillConfig(
+      'name: "Test"\npromptTemplate: "Do it"\npermissionProfile: "scheduled"',
+      '/skills/test-skill.yaml',
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.environment).toEqual([]);
+  });
+
+  it('rejects an unknown service-environment grant', () => {
+    const r = parseSkillConfig(
+      'name: "Unsafe"\npromptTemplate: "Do it"\npermissionProfile: "scheduled"\nenvironment: [TELEGRAM_TOKEN]',
+      '/skills/unsafe.yaml',
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('environment');
   });
 
   it('accepts null schedule (on-demand only)', () => {

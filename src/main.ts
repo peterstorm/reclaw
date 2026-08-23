@@ -1,22 +1,26 @@
-import { makeTelegramUserId } from './core/types.js';
+import { formatAgentFailure } from './core/agent-failure.js';
 import { createAsyncMutex } from './core/async-mutex.js';
-import { routeMessage } from './orchestration/message-router.js';
-import type { AppConfig } from './infra/config.js';
-import type { TelegramAdapter } from './infra/telegram.js';
-import type { createTelegramAdapter } from './infra/telegram.js';
-import type { Queues } from './infra/queue.js';
-import type { SkillWatcher } from './infra/skill-watcher.js';
-import type { SessionStore } from './infra/session-store.js';
-import type { CronScheduler } from './orchestration/scheduler.js';
-import type { Workers, createWorkers } from './orchestration/worker.js';
+import { makeTelegramUserId } from './core/types.js';
 import type { AgentBackendName, Result, ScheduledJob } from './core/types.js';
 import type { AgentOptions, AgentResult, OnStreamChunk } from './infra/agent-backends/index.js';
+import type { AppConfig } from './infra/config.js';
+import type { Queues } from './infra/queue.js';
+import type { SessionStore } from './infra/session-store.js';
+import type { SkillWatcher } from './infra/skill-watcher.js';
+import type { TelegramAdapter } from './infra/telegram.js';
+import type { createTelegramAdapter } from './infra/telegram.js';
 import type { handleChatJob } from './orchestration/chat-handler.js';
-import type { handleScheduledJob } from './orchestration/scheduled-handler.js';
-import type { handleReminderJob, handleRecurringReminderJob } from './orchestration/reminder-handler.js';
-import type { handleResearchJob } from './orchestration/research-handler.js';
+import { routeMessage } from './orchestration/message-router.js';
 import type { handlePodcastJob } from './orchestration/podcast-handler.js';
+import type {
+  handleRecurringReminderJob,
+  handleReminderJob,
+} from './orchestration/reminder-handler.js';
+import type { handleResearchJob } from './orchestration/research-handler.js';
 import type { ResearchDeps } from './orchestration/research-states.js';
+import type { handleScheduledJob } from './orchestration/scheduled-handler.js';
+import type { CronScheduler } from './orchestration/scheduler.js';
+import type { Workers, createWorkers } from './orchestration/worker.js';
 
 // ─── Injectable deps (for testability) ───────────────────────────────────────
 
@@ -32,7 +36,10 @@ export type BootstrapDeps = {
   ) => CronScheduler;
   readonly createWorkersFn?: typeof createWorkers;
   readonly runClaudeFn?: (options: AgentOptions) => Promise<AgentResult>;
-  readonly runClaudeStreamingFn?: (options: AgentOptions, onChunk: OnStreamChunk) => Promise<AgentResult>;
+  readonly runClaudeStreamingFn?: (
+    options: AgentOptions,
+    onChunk: OnStreamChunk,
+  ) => Promise<AgentResult>;
   readonly handleChatJobFn?: typeof handleChatJob;
   readonly handleScheduledJobFn?: typeof handleScheduledJob;
   readonly handleReminderJobFn?: typeof handleReminderJob;
@@ -50,6 +57,10 @@ export type BootstrapDeps = {
 };
 
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
+
+// The composition root is process-scoped. Re-bootstrap (notably in tests) must
+// replace, not accumulate, top-level listeners.
+let activeProcessListenerCleanup: (() => void) | null = null;
 
 /**
  * Bootstrap the agent: load config, wire all components, start services.
@@ -69,16 +80,14 @@ export type BootstrapDeps = {
 export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Promise<void>> {
   // Conditionally load real implementations only when not injected.
   const loadConfigFn: () => Result<AppConfig, string> =
-    injected.loadConfigFn ??
-    (await import('./infra/config.js').then((m) => m.loadConfig));
+    injected.loadConfigFn ?? (await import('./infra/config.js').then((m) => m.loadConfig));
 
   const createTelegramAdapterFn: typeof createTelegramAdapter =
     injected.createTelegramAdapterFn ??
     (await import('./infra/telegram.js').then((m) => m.createTelegramAdapter));
 
   const createQueuesFn: (conn: { host: string; port: number }) => Queues =
-    injected.createQueuesFn ??
-    (await import('./infra/queue.js').then((m) => m.createQueues));
+    injected.createQueuesFn ?? (await import('./infra/queue.js').then((m) => m.createQueues));
 
   const createSkillWatcherFn: (dir: string) => SkillWatcher =
     injected.createSkillWatcherFn ??
@@ -138,14 +147,17 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
   console.info(`[main] Config loaded (scriptsDir: ${config.scriptsDir})`);
 
   // ── 1a. Resolve agent backend ──────────────────────────────────────────────
-  const { resolveBackend, runAgent, runAgentStreaming } = await import('./infra/agent-backends/index.js');
+  const { resolveBackend, runAgent, runAgentStreaming } = await import(
+    './infra/agent-backends/index.js'
+  );
   const defaultBackend = resolveBackend(config);
-  const modelSelection = config.piProvider !== undefined || config.piModel !== undefined
-    ? {
-        ...(config.piProvider !== undefined ? { provider: config.piProvider } : {}),
-        ...(config.piModel !== undefined ? { model: config.piModel } : {}),
-      }
-    : undefined;
+  const modelSelection =
+    config.piProvider !== undefined || config.piModel !== undefined
+      ? {
+          ...(config.piProvider !== undefined ? { provider: config.piProvider } : {}),
+          ...(config.piModel !== undefined ? { model: config.piModel } : {}),
+        }
+      : undefined;
   const withModelSelection = (opts: AgentOptions): AgentOptions =>
     modelSelection ? { ...opts, modelSelection } : opts;
   console.info(`[main] Agent backend: ${defaultBackend.name}`);
@@ -154,14 +166,19 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
     opts.backend ?? config.agentBackend;
 
   const runClaudeFn: (options: AgentOptions) => Promise<AgentResult> =
-    injected.runClaudeFn ?? ((opts) =>
+    injected.runClaudeFn ??
+    ((opts) =>
       runAgent(
         resolveBackend({ agentBackend: resolveBackendForOptions(opts) }),
         withModelSelection(opts),
       ));
 
-  const runClaudeStreamingFn: (options: AgentOptions, onChunk: OnStreamChunk) => Promise<AgentResult> =
-    injected.runClaudeStreamingFn ?? ((opts, onChunk) =>
+  const runClaudeStreamingFn: (
+    options: AgentOptions,
+    onChunk: OnStreamChunk,
+  ) => Promise<AgentResult> =
+    injected.runClaudeStreamingFn ??
+    ((opts, onChunk) =>
       runAgentStreaming(
         resolveBackend({ agentBackend: resolveBackendForOptions(opts) }),
         withModelSelection(opts),
@@ -169,7 +186,9 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
       ));
 
   // ── 1b. Resolve cortex extraction (always-on, no config needed) ──────────
-  const { resolveCortexExtractScript, createCortexExtractor } = await import('./infra/cortex-extract.js');
+  const { resolveCortexExtractScript, createCortexExtractor } = await import(
+    './infra/cortex-extract.js'
+  );
   const cortexScriptPath = resolveCortexExtractScript();
   const triggerCortexExtraction = cortexScriptPath
     ? createCortexExtractor(cortexScriptPath)
@@ -187,11 +206,9 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
   const recordSkillQuality = createSkillQualityRecorder(skillQualityLogPath);
   console.info(`[main] Skill quality recorder enabled: ${skillQualityLogPath}`);
 
-  // ── 1c. Guard chat runClaude with mutex ──
-  // Chat jobs need a mutex to prevent concurrent Claude subprocesses
-  // from corrupting shared session state.
-  // Scheduled jobs run without a mutex — they spawn independent
-  // subprocesses operating on disjoint files, so concurrency is safe.
+  // ── 1c. Guard streaming chat execution with a mutex ──
+  // Serialize backend-neutral chat agent runs that share conversation state.
+  // Scheduled jobs run independently on disjoint activity/session lineages.
   const chatMutex = createAsyncMutex();
 
   const guardedRunClaudeStreamingChat: typeof runClaudeStreamingFn = async (options, onChunk) => {
@@ -239,27 +256,35 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
   //    Tests inject their own createSessionStoreFn/createQuotaTrackerFn and skip this.
   const needsSharedRedis = !injected.createSessionStoreFn || !injected.createQuotaTrackerFn;
   const sharedRedis = needsSharedRedis
-    ? await import('ioredis').then(({ default: Redis }) =>
-        new Redis({ host: config.redisHost, port: config.redisPort, maxRetriesPerRequest: null }))
+    ? await import('ioredis').then(
+        ({ default: Redis }) =>
+          new Redis({ host: config.redisHost, port: config.redisPort, maxRetriesPerRequest: null }),
+      )
     : null;
 
-  const createSessionStoreFn = injected.createSessionStoreFn ?? (async (_redis: { host: string; port: number }) => {
-    if (!sharedRedis) throw new Error('BUG: sharedRedis is null but default createSessionStoreFn is in use — check needsSharedRedis condition');
-    const ioredis = sharedRedis;
-    const { createSessionStore } = await import('./infra/session-store.js');
-    const client: import('./infra/session-store.js').RedisClient = {
-      get: (key) => ioredis.get(key),
-      set: (key, value, options) => {
-        if (options?.PX) return ioredis.set(key, value, 'PX', options.PX);
-        return ioredis.set(key, value);
-      },
-      del: (key) => ioredis.del(key),
-    };
-    return {
-      sessionStore: createSessionStore(client),
-      disconnect: () => ioredis.quit().then(() => {}),
-    };
-  });
+  const createSessionStoreFn =
+    injected.createSessionStoreFn ??
+    (async (_redis: { host: string; port: number }) => {
+      if (!sharedRedis)
+        throw new Error(
+          'BUG: sharedRedis is null but default createSessionStoreFn is in use — check needsSharedRedis condition',
+        );
+      const ioredis = sharedRedis;
+      const { createSessionStore } = await import('./infra/session-store.js');
+      const client: import('./infra/session-store.js').RedisClient = {
+        get: (key) => ioredis.get(key),
+        set: (key, value, options) => {
+          if (options?.PX) return ioredis.set(key, value, 'PX', options.PX);
+          return ioredis.set(key, value);
+        },
+        del: (key) => ioredis.del(key),
+        eval: (script, numberOfKeys, ...args) => ioredis.eval(script, numberOfKeys, ...args),
+      };
+      return {
+        sessionStore: createSessionStore(client, config.agentBackend),
+        disconnect: () => ioredis.quit().then(() => {}),
+      };
+    });
 
   const { sessionStore, disconnect: disconnectRedis } = await createSessionStoreFn({
     host: config.redisHost,
@@ -272,7 +297,11 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
   const skillWatcher: SkillWatcher = createSkillWatcherFn(config.skillsDir);
 
   // ── 6. Create scheduler ────────────────────────────────────────────────────
-  const scheduler: CronScheduler = createSchedulerFn(queues.enqueueScheduled, queues.isScheduledJobKnown, queues.isScheduledJobCompleted);
+  const scheduler: CronScheduler = createSchedulerFn(
+    queues.enqueueScheduled,
+    queues.isScheduledJobKnown,
+    queues.isScheduledJobCompleted,
+  );
 
   // ── 7. Wire skill watcher onChange to scheduler.reconcile ─────────────────
   skillWatcher.onRegistryChange((registry) => {
@@ -286,21 +315,21 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
   // ── 8a. Lazy-init NotebookLM adapter (AD-5: created on first research job) ─
   let notebookLMAdapter: import('./infra/notebooklm-client.js').NotebookLMAdapter | undefined;
 
-  const getOrCreateNotebookLMAdapter = async (): Promise<import('./infra/notebooklm-client.js').NotebookLMAdapter | null> => {
+  const getOrCreateNotebookLMAdapter = async (): Promise<
+    import('./infra/notebooklm-client.js').NotebookLMAdapter | null
+  > => {
     if (notebookLMAdapter) return notebookLMAdapter;
     const { createNotebookLMAdapter } = await import('./infra/notebooklm-client.js');
-    const hasToken = config.notebooklmAuthToken && config.notebooklmCookies;
-    const hasGoogle = config.googleEmail && config.googlePassword;
-    if (hasToken) {
+    const authToken = config.notebooklmAuthToken;
+    const cookies = config.notebooklmCookies;
+    const email = config.googleEmail;
+    const password = config.googlePassword;
+    if (authToken && cookies) {
       console.info('[main] Initializing NotebookLM adapter with token auth...');
-      notebookLMAdapter = await createNotebookLMAdapter({
-        kind: 'token', authToken: config.notebooklmAuthToken!, cookies: config.notebooklmCookies!,
-      });
-    } else if (hasGoogle) {
+      notebookLMAdapter = await createNotebookLMAdapter({ kind: 'token', authToken, cookies });
+    } else if (email && password) {
       console.info('[main] Initializing NotebookLM adapter with Google auto-login...');
-      notebookLMAdapter = await createNotebookLMAdapter({
-        kind: 'google', email: config.googleEmail!, password: config.googlePassword!,
-      });
+      notebookLMAdapter = await createNotebookLMAdapter({ kind: 'google', email, password });
     } else {
       console.warn('[main] NotebookLM credentials not configured — research jobs will fail');
       return null;
@@ -310,21 +339,29 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
   };
 
   // ── 8b. Create quota tracker using shared Redis connection ─────────────────
-  const createQuotaTrackerFn = injected.createQuotaTrackerFn ?? (async (_redis: { host: string; port: number }) => {
-    if (!sharedRedis) throw new Error('BUG: sharedRedis is null but default createQuotaTrackerFn is in use — check needsSharedRedis condition');
-    const quotaRedis = sharedRedis;
-    const { createQuotaTracker } = await import('./infra/quota-tracker.js');
-    const qtClient: import('./infra/quota-tracker.js').QuotaRedisClient = {
-      get: (key) => quotaRedis.get(key),
-      set: (key, value, mode, ttlSeconds) => quotaRedis.set(key, value, mode, ttlSeconds),
-      incrby: (key, count) => quotaRedis.incrby(key, count),
-      expire: (key, ttlSeconds) => quotaRedis.expire(key, ttlSeconds),
-    };
-    // Don't disconnect here — the shared connection is owned by the session store
-    return { tracker: createQuotaTracker(qtClient), disconnect: async () => {} };
-  });
+  const createQuotaTrackerFn =
+    injected.createQuotaTrackerFn ??
+    (async (_redis: { host: string; port: number }) => {
+      if (!sharedRedis)
+        throw new Error(
+          'BUG: sharedRedis is null but default createQuotaTrackerFn is in use — check needsSharedRedis condition',
+        );
+      const quotaRedis = sharedRedis;
+      const { createQuotaTracker } = await import('./infra/quota-tracker.js');
+      const qtClient: import('./infra/quota-tracker.js').QuotaRedisClient = {
+        get: (key) => quotaRedis.get(key),
+        set: (key, value, mode, ttlSeconds) => quotaRedis.set(key, value, mode, ttlSeconds),
+        incrby: (key, count) => quotaRedis.incrby(key, count),
+        expire: (key, ttlSeconds) => quotaRedis.expire(key, ttlSeconds),
+      };
+      // Don't disconnect here — the shared connection is owned by the session store
+      return { tracker: createQuotaTracker(qtClient), disconnect: async () => {} };
+    });
 
-  const quotaTracker = await createQuotaTrackerFn({ host: config.redisHost, port: config.redisPort });
+  const quotaTracker = await createQuotaTrackerFn({
+    host: config.redisHost,
+    port: config.redisPort,
+  });
 
   // ── 8c. Create vault writer ───────────────────────────────────────────────
   const vaultWriter = await import('./infra/vault-writer.js').then((m) => m.createVaultWriter());
@@ -337,23 +374,33 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
   // ── 8. Create workers ──────────────────────────────────────────────────────
   const workers: Workers = createWorkersFn({
     redisConnection: { host: config.redisHost, port: config.redisPort },
-    chatHandler: (job) => handleChatJobFn(job, { runClaudeStreaming: guardedRunClaudeStreamingChat, telegram, config, sessionStore, ...(triggerCortexExtraction ? { triggerCortexExtraction } : {}) }),
+    chatHandler: (job) =>
+      handleChatJobFn(job, {
+        runClaudeStreaming: guardedRunClaudeStreamingChat,
+        telegram,
+        config,
+        sessionStore,
+        completionMode: 'durable',
+      }),
     scheduledHandler: (job) =>
       handleScheduledJobFn(job, {
         runClaude: runClaudeFn,
         telegram,
         skillRegistry: skillWatcher.getRegistry(),
         config,
+        processEnvironment: process.env,
         sessionStore,
-        ...(triggerCortexExtraction ? { triggerCortexExtraction } : {}),
         recordSkillQuality,
+        completionMode: 'durable',
       }),
     reminderHandler: (job) => handleReminderJobFn(job, { telegram }),
     recurringReminderHandler: (job) => handleRecurringReminderJobFn(job, { telegram }),
     researchHandler: async (job) => {
       const notebookLM = await getOrCreateNotebookLMAdapter();
       if (!notebookLM) {
-        throw new Error('NotebookLM adapter not configured: set NOTEBOOKLM_AUTH_TOKEN + NOTEBOOKLM_COOKIES, or GOOGLE_EMAIL + GOOGLE_PASSWORD');
+        throw new Error(
+          'NotebookLM adapter not configured: set NOTEBOOKLM_AUTH_TOKEN + NOTEBOOKLM_COOKIES, or GOOGLE_EMAIL + GOOGLE_PASSWORD',
+        );
       }
       const researchDeps: ResearchDeps = {
         notebookLM,
@@ -369,8 +416,12 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
             allowedTools: [],
             timeoutMs: 30_000,
           });
-          if (result.ok && result.sessionId && triggerCortexExtraction) {
-            triggerCortexExtraction(result.sessionId, config.workspacePath);
+          if (!result.ok) {
+            console.warn(
+              `[main] Research memory-summary agent failed: ${formatAgentFailure(result.failure)}`,
+            );
+          } else if (result.sessionId && triggerCortexExtraction) {
+            await triggerCortexExtraction(result.sessionId, config.workspacePath);
           }
         },
       };
@@ -379,36 +430,41 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
     podcastHandler: async (job) => {
       const notebookLM = await getOrCreateNotebookLMAdapter();
       if (!notebookLM) {
-        throw new Error('NotebookLM adapter not configured: set NOTEBOOKLM_AUTH_TOKEN + NOTEBOOKLM_COOKIES, or GOOGLE_EMAIL + GOOGLE_PASSWORD');
+        throw new Error(
+          'NotebookLM adapter not configured: set NOTEBOOKLM_AUTH_TOKEN + NOTEBOOKLM_COOKIES, or GOOGLE_EMAIL + GOOGLE_PASSWORD',
+        );
       }
-      return handlePodcastJobFn(job, { notebookLM, telegram });
+      return handlePodcastJobFn(job, {
+        notebookLM,
+        telegram,
+        vaultBasePath: config.obsidianVaultPath ?? config.workspacePath,
+      });
     },
     telegram,
+    sessionStore,
+    activityResults: queues.activityResults,
+    deliveryOutbox: queues.deliveryOutbox,
+    ...(triggerCortexExtraction ? { triggerCortexExtraction } : {}),
     config,
     onScheduledJobCompleted: (job) => scheduler.resolveDependents(job.skillId, job.triggeredAt),
     markScheduledJobCompleted: (jobId) => queues.markScheduledJobCompleted(jobId),
   });
 
   // ── 9. Wire Telegram onMessage → message router ────────────────────────────
-  // routeMessage is fire-and-forget (returns void) and catches its own async
-  // errors internally. This try/catch guards against synchronous throws in
-  // command parsing or dep wiring so a single bad message never silently drops.
-  telegram.onMessage((msg) => {
-    try {
-      routeMessage(msg, {
-        telegram,
-        sessionStore,
-        queues,
-        quotaTracker: quotaTracker.tracker,
-        getSkillRegistry: skillWatcher.getRegistry,
-        getNotebookLM: getOrCreateNotebookLMAdapter,
-        vaultBasePath: config.obsidianVaultPath ?? config.workspacePath,
-      });
-    } catch (err) {
-      console.error(`[telegram] routeMessage failed for chatId=${msg.chatId}:`, err);
-      telegram.sendMessage(msg.chatId, '⚠️ Failed to process your message. Try again.').catch(() => {});
-    }
-  });
+  // The returned promise is the durable ingress boundary. A rejection stops
+  // polling without acknowledging the update, so Telegram can redeliver it.
+  telegram.onMessage((msg) =>
+    routeMessage(msg, {
+      telegram,
+      sessionStore,
+      queues,
+      quotaTracker: quotaTracker.tracker,
+      agentBackend: config.agentBackend,
+      getSkillRegistry: skillWatcher.getRegistry,
+      getNotebookLM: getOrCreateNotebookLMAdapter,
+      vaultBasePath: config.obsidianVaultPath ?? config.workspacePath,
+    }),
+  );
 
   // ── 10. Start skill watcher and wait for initial load ───────────────────────
   // Must complete before workers start so the skill registry is populated
@@ -421,22 +477,14 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
     ),
   ]);
 
-  // ── 10b. Drain stale chat jobs from previous instance ───────────────────
-  // Chat jobs are ephemeral user messages — any left in the queue from before
-  // this restart are stale (the Claude session they referenced is gone).
-  // drain() removes waiting jobs; clean() removes delayed (pending retries)
-  // and failed jobs that would otherwise resurrect via BullMQ backoff.
-  try {
-    await queues.chat.drain();
-    await queues.chat.clean(0, 0, 'delayed');
-    await queues.chat.clean(0, 0, 'failed');
-    console.info('[main] Drained stale chat jobs from previous instance');
-  } catch (err: unknown) {
-    console.warn('[main] Failed to drain stale chat jobs:', err);
-  }
+  // Accepted chat jobs are durable work and survive process restarts. Never
+  // drain them during startup; stable Telegram update IDs deduplicate replay.
 
   // ── 11. Start workers ──────────────────────────────────────────────────────
-  workers.start();
+  // Workers were constructed with autorun:false. Do not open Telegram ingress
+  // until every BullMQ connection is ready and every run loop has been started.
+  await workers.start();
+  console.info('[main] Workers ready');
 
   // ── 12. Start Telegram bot ─────────────────────────────────────────────────
   await telegram.start();
@@ -452,25 +500,39 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
 
   // ── Graceful shutdown ─────────────────────────────────────────────────────
 
-  let isShuttingDown = false;
+  let shutdownPromise: Promise<void> | null = null;
 
-  const shutdown = async (): Promise<void> => {
-    if (isShuttingDown) return;
-    isShuttingDown = true;
-    console.info('[main] Shutting down...');
-    await Promise.all([
-      workers.stop(),
-      Promise.resolve(scheduler.stop()),
-      skillWatcher.stop(),
-      telegram.stop(),
-    ]);
-    await Promise.all([queues.chat.close(), queues.scheduled.close(), queues.reminder.close(), queues.research.close(), queues.podcast.close()]);
-    await Promise.all([
-      disconnectRedis(),
-      quotaTracker.disconnect(),
-      notebookLMAdapter?.dispose() ?? Promise.resolve(),
-    ]);
-    console.info('[main] Shutdown complete');
+  const shutdown = (): Promise<void> => {
+    if (shutdownPromise !== null) return shutdownPromise;
+
+    shutdownPromise = (async () => {
+      if (activeProcessListenerCleanup === removeProcessListeners) {
+        removeProcessListeners();
+        activeProcessListenerCleanup = null;
+      }
+      console.info('[main] Shutting down...');
+      // Close ingress and producers first, then drain active workers, then close
+      // queue connections. This prevents new work from arriving behind a worker
+      // that has already begun shutdown.
+      await Promise.all([Promise.resolve(scheduler.stop()), skillWatcher.stop(), telegram.stop()]);
+      await workers.stop();
+      await Promise.all([
+        queues.chat.close(),
+        queues.scheduled.close(),
+        queues.reminder.close(),
+        queues.research.close(),
+        queues.podcast.close(),
+        queues.delivery.close(),
+      ]);
+      await Promise.all([
+        disconnectRedis(),
+        quotaTracker.disconnect(),
+        notebookLMAdapter?.dispose() ?? Promise.resolve(),
+      ]);
+      console.info('[main] Shutdown complete');
+    })();
+
+    return shutdownPromise;
   };
 
   const handleSignal = (): void => {
@@ -496,22 +558,32 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
     handleSignal();
   };
 
-  process.once('SIGTERM', handleSignal);
-  process.once('SIGINT', handleSignal);
-
   // Top-level error handlers — without these, an unhandled rejection from any
   // of the dozens of `.catch` chains (or a top-level await throw) tears the
   // process down with whatever Node prints by default. systemd then crash-loops
   // until StartLimitBurst (5 in 5min) trips. Log these explicitly so the cause
   // survives in journalctl.
-  process.on('uncaughtException', (err) => {
+  const handleUncaughtException = (err: unknown): void => {
     console.error('[main] uncaughtException — exiting:', err);
     process.exit(1);
-  });
-  process.on('unhandledRejection', (reason) => {
+  };
+  const handleUnhandledRejection = (reason: unknown): void => {
     console.error('[main] unhandledRejection:', reason);
     // Don't exit — this is recoverable; SIGTERM-driven shutdown still works.
-  });
+  };
+  const removeProcessListeners = (): void => {
+    process.off('SIGTERM', handleSignal);
+    process.off('SIGINT', handleSignal);
+    process.off('uncaughtException', handleUncaughtException);
+    process.off('unhandledRejection', handleUnhandledRejection);
+  };
+
+  activeProcessListenerCleanup?.();
+  process.once('SIGTERM', handleSignal);
+  process.once('SIGINT', handleSignal);
+  process.on('uncaughtException', handleUncaughtException);
+  process.on('unhandledRejection', handleUnhandledRejection);
+  activeProcessListenerCleanup = removeProcessListeners;
 
   return shutdown;
 }
