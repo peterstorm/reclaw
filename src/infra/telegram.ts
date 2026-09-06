@@ -4,6 +4,7 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { Bot } from 'grammy';
 import { markdownToTelegramHtml } from '../core/markdown-to-telegram.js';
 import { splitMessage } from '../core/message-splitter.js';
+import { MAX_STORED_UPLOAD_BYTES, type StoredUpload } from '../core/stored-upload.js';
 import {
   type ReplyContext,
   type TelegramUpdateId,
@@ -20,6 +21,7 @@ import {
   parseSupportedDocument,
 } from './document-text.js';
 import type { PdfTextExtractor } from './pdf-text.js';
+import { persistTelegramUpload } from './upload-store.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -33,6 +35,7 @@ export type TelegramIncomingMessage = {
   readonly replyContext?: ReplyContext;
   readonly imagePaths?: readonly string[];
   readonly documentPaths?: readonly string[];
+  readonly storedUploads?: readonly StoredUpload[];
 };
 
 export type TelegramIncomingDisposition =
@@ -227,12 +230,15 @@ export function createTelegramAdapter(config: {
   onFatalError?: (err: unknown) => void;
   /** Persistent attachment spool override, primarily for isolated tests. */
   attachmentDir?: string;
+  /** Permanent user-owned upload storage override, primarily for isolated tests. */
+  uploadDir?: string;
   /** PDF parser override used by isolated Telegram adapter tests. */
   pdfTextExtractor?: PdfTextExtractor;
 }): TelegramAdapter {
   const bot = new Bot(config.token);
   const userIdSet: ReadonlySet<number> = new Set(config.authorizedUserIds as readonly number[]);
   const attachmentDir = config.attachmentDir ?? DEFAULT_ATTACHMENT_DIR;
+  const uploadDir = config.uploadDir;
   const pdfTextExtractor = config.pdfTextExtractor;
 
   let messageHandler:
@@ -372,8 +378,68 @@ export function createTelegramAdapter(config: {
     const telegramDocument = ctx.message.document;
     const document = parseSupportedDocument(telegramDocument.file_name, telegramDocument.mime_type);
     if (!document.ok) {
+      if (document.error.kind === 'conflicting-document-metadata') {
+        await trackUpdate(chatId, async () => {
+          await sendMessage(chatId, formatDocumentClaimError(document.error));
+        });
+        return;
+      }
+
+      const tooLargeMessage = `That file is too large. The limit is ${MAX_STORED_UPLOAD_BYTES / 1024 / 1024} MB.`;
+      if (
+        telegramDocument.file_size !== undefined &&
+        telegramDocument.file_size > MAX_STORED_UPLOAD_BYTES
+      ) {
+        await trackUpdate(chatId, async () => {
+          await sendMessage(chatId, tooLargeMessage);
+        });
+        return;
+      }
+
+      const handler = messageHandler;
+      if (handler === null) throw new Error('Telegram message handler is not registered');
+
       await trackUpdate(chatId, async () => {
-        await sendMessage(chatId, formatDocumentClaimError(document.error));
+        const file = await bot.api.getFile(telegramDocument.file_id);
+        if (!file.file_path) throw new Error('Telegram getFile returned no file_path');
+        const url = `https://api.telegram.org/file/bot${config.token}/${file.file_path}`;
+        const response = await fetch(url, {
+          signal: AbortSignal.timeout(DOCUMENT_DOWNLOAD_TIMEOUT_MS),
+        });
+        if (!response.ok) throw new Error(`File download failed: ${response.status}`);
+
+        const contentLength = Number(response.headers.get('content-length'));
+        if (Number.isFinite(contentLength) && contentLength > MAX_STORED_UPLOAD_BYTES) {
+          await sendMessage(chatId, tooLargeMessage);
+          return;
+        }
+        const body = await readBoundedBody(response, MAX_STORED_UPLOAD_BYTES);
+        if (!body.ok) {
+          await sendMessage(chatId, tooLargeMessage);
+          return;
+        }
+        if (body.data.byteLength === 0) {
+          await sendMessage(chatId, 'That file is empty, so there is nothing to store.');
+          return;
+        }
+
+        const storedUpload = await persistTelegramUpload({
+          updateId: updateId.value,
+          fileName: telegramDocument.file_name,
+          mimeType: telegramDocument.mime_type,
+          data: body.data,
+          ...(uploadDir !== undefined ? { uploadDir } : {}),
+        });
+        const caption = ctx.message.caption ?? '';
+        const replyContext = replyContextFromTelegram(ctx.message.reply_to_message, userId);
+        await handler({
+          updateId: updateId.value,
+          userId,
+          chatId,
+          text: caption,
+          ...(replyContext !== undefined ? { replyContext } : {}),
+          storedUploads: [storedUpload],
+        });
       });
       return;
     }

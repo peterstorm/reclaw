@@ -126,7 +126,8 @@ export async function routeMessage(
 
   const hasAttachments =
     (msg.imagePaths !== undefined && msg.imagePaths.length > 0) ||
-    (msg.documentPaths !== undefined && msg.documentPaths.length > 0);
+    (msg.documentPaths !== undefined && msg.documentPaths.length > 0) ||
+    (msg.storedUploads !== undefined && msg.storedUploads.length > 0);
   const command = hasAttachments ? ({ kind: 'chat' } as const) : parseCommandKind(msg.text);
 
   return match(command)
@@ -189,6 +190,9 @@ export async function routeMessage(
         ...(msg.imagePaths && msg.imagePaths.length > 0 ? { imagePaths: msg.imagePaths } : {}),
         ...(msg.documentPaths && msg.documentPaths.length > 0
           ? { documentPaths: msg.documentPaths }
+          : {}),
+        ...(msg.storedUploads && msg.storedUploads.length > 0
+          ? { storedUploads: msg.storedUploads }
           : {}),
       });
 

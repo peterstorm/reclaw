@@ -200,12 +200,31 @@ describe('parseChatJob', () => {
     if (result.ok) expect(result.value.documentPaths).toEqual(['/state/1001.pdf.txt']);
   });
 
-  it.each([{ imagePaths: [''] }, { documentPaths: [''] }])(
-    'rejects attachment paths with empty strings: $imagePaths$documentPaths',
-    (paths) => {
-      expect(parseChatJob({ ...validChatData(), ...paths }).ok).toBe(false);
+  it('parses chat jobs with permanent uploads', () => {
+    const storedUploads = [
+      {
+        path: '/data/telegram-1.skill',
+        displayName: 'bundle.skill',
+        mimeType: 'application/octet-stream',
+        sizeBytes: 4,
+      },
+    ];
+    const result = parseChatJob({ ...validChatData(), text: '', storedUploads });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.storedUploads).toEqual(storedUploads);
+  });
+
+  it.each([
+    { imagePaths: [''] },
+    { documentPaths: [''] },
+    {
+      storedUploads: [
+        { path: '/data/file.skill', displayName: 'bad\nname', mimeType: null, sizeBytes: 4 },
+      ],
     },
-  );
+  ])('rejects malformed attachment metadata: $imagePaths$documentPaths$storedUploads', (paths) => {
+    expect(parseChatJob({ ...validChatData(), ...paths }).ok).toBe(false);
+  });
 
   it('rejects null input', () => {
     expect(parseChatJob(null).ok).toBe(false);

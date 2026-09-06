@@ -273,12 +273,12 @@ promptTemplate: |
     - ACWR impact: flag if this session pushes ACWR above 1.3
 
   - **Recovery implications for running** (informed by workout content):
-    - Hours until next scheduled run (Tue evening → Thu run is ~36h away)
-    - If anaerobic TE > 3.0: "Significant anaerobic stress — expect legs to be heavy for 24-36h. Thursday's quality run may need volume adjustment."
-    - If anaerobic TE ≤ 2.0 and aerobic TE ≤ 3.0: "Moderate session — should not significantly impact Thursday's run."
-    - If RPE > 7/10 or feel ≤ 2/5: "Subjectively hard — factor into Thursday readiness regardless of metrics."
+    - Hours until the next Monday quality run (calculate from the activity end time)
+    - If anaerobic TE > 3.0: "Significant anaerobic stress — expect legs to be heavy for 24-36h. Monday's quality run may need volume adjustment."
+    - If anaerobic TE ≤ 2.0 and aerobic TE ≤ 3.0: "Moderate session — should not significantly impact Monday's run."
+    - If RPE > 7/10 or feel ≤ 2/5: "Subjectively hard — factor into Monday readiness regardless of metrics."
     - If duration > 30min and max HR > 160: "High likelihood of DOMS in 24-48h."
-    - **Movement-specific recovery**: Heavy lower-body barbell work (squats, deadlifts, cleans, thrusters) → high leg fatigue, significant running impact; upper-body/gymnastics dominant (pull-ups, HSPU, muscle-ups) → minimal running impact; mixed sessions → moderate. Call this out explicitly — "this was a leg-heavy session" or "upper-body bias, legs should be fresh for Thursday."
+    - **Movement-specific recovery**: Heavy lower-body barbell work (squats, deadlifts, cleans, thrusters) → high leg fatigue, significant running impact; upper-body/gymnastics dominant (pull-ups, HSPU, muscle-ups) → minimal running impact; mixed sessions → moderate. Call this out explicitly — "this was a leg-heavy session" or "upper-body bias, legs should be fresh for Monday."
 
   - **Subjective vs objective**: Compare RPE/feel against HR data. High RPE with moderate HR in CrossFit often means muscular fatigue rather than cardiovascular stress — important for running recovery context. If weights were heavy, a high RPE with low HR makes perfect sense (CNS/muscular load, not cardiovascular).
 

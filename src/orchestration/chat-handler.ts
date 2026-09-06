@@ -314,6 +314,7 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<ChatH
     job.imagePaths,
     job.documentPaths,
     job.replyContext,
+    job.storedUploads,
   );
   const resumeSessionId = executionConversation.sessionId ?? undefined;
 
@@ -427,6 +428,7 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<ChatH
       job.imagePaths,
       job.documentPaths,
       job.replyContext,
+      job.storedUploads,
     );
     result = await deps.runClaudeStreaming(
       {

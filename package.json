@@ -33,5 +33,8 @@
   "overrides": {
     "playwright": "1.59.1",
     "playwright-core": "1.59.1"
+  },
+  "patchedDependencies": {
+    "notebooklm-kit@2.2.0": "patches/notebooklm-kit@2.2.0.patch"
   }
 }

@@ -33,6 +33,11 @@ import { readFileSync, writeFileSync, mkdirSync, symlinkSync, existsSync, readdi
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
+import {
+  NOTEBOOKLM_WEB_ORIGIN,
+  NOTEBOOKLM_WEB_ORIGINS,
+  isNotebookLMWebUrl,
+} from '../src/infra/notebooklm-web.js';
 
 // NOTE: playwright-core and notebooklm-kit snapshot PLAYWRIGHT_BROWSERS_PATH at
 // import time, so they are dynamically imported in main() *after* the shim sets it.
@@ -108,7 +113,7 @@ async function main(): Promise<void> {
     const page = await ctx.newPage();
 
     await page.goto(
-      'https://accounts.google.com/ServiceLogin?continue=https://notebooklm.google.com/',
+      `https://accounts.google.com/ServiceLogin?continue=${NOTEBOOKLM_WEB_ORIGIN}/`,
       { waitUntil: 'networkidle', timeout: 60_000 },
     );
 
@@ -126,14 +131,19 @@ async function main(): Promise<void> {
       .catch(() => page.keyboard.press('Enter'));
     console.error('[reauth] password submitted');
 
-    await page.waitForURL(/notebooklm\.google\.com/, { timeout: 45_000 }).catch(() => undefined);
+    await page
+      .waitForURL((url) => isNotebookLMWebUrl(url.href), { timeout: 45_000 })
+      .catch(() => undefined);
     await page.waitForTimeout(3_000);
-    if (!/notebooklm\.google\.com/.test(page.url())) {
+    if (!isNotebookLMWebUrl(page.url())) {
       const heading = await page.locator('h1, [role=heading]').first().innerText().catch(() => '?');
       throw new Error(`login did not reach NotebookLM (stuck at "${heading}", url=${page.url()})`);
     }
 
-    await page.goto('https://notebooklm.google.com/', { waitUntil: 'domcontentloaded', timeout: 45_000 });
+    await page.goto(`${NOTEBOOKLM_WEB_ORIGIN}/`, {
+      waitUntil: 'domcontentloaded',
+      timeout: 45_000,
+    });
     await page.waitForTimeout(3_000);
 
     const authToken = await page.evaluate(
@@ -143,7 +153,7 @@ async function main(): Promise<void> {
     if (!authToken) throw new Error('SNlM0e auth token not found on NotebookLM page');
 
     const cookies = await ctx.cookies([
-      'https://notebooklm.google.com',
+      ...NOTEBOOKLM_WEB_ORIGINS,
       'https://accounts.google.com',
       'https://google.com',
     ]);

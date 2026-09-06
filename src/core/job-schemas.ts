@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { ResearchJobData } from './research-types.js';
+import { makeStoredUpload } from './stored-upload.js';
 import {
   type ChatJob,
   MAX_REPLY_CONTEXT_CHARS,
@@ -43,6 +44,13 @@ const ReplyContextSchema = z.discriminatedUnion('kind', [
   }),
 ]);
 
+const StoredUploadSchema = z.object({
+  path: z.string().min(1),
+  displayName: z.string().min(1).max(255),
+  mimeType: z.string().min(1).max(255).nullable(),
+  sizeBytes: z.number().int().positive().safe(),
+});
+
 const ChatJobSchema = z.object({
   kind: z.literal('chat'),
   id: z.string().min(1),
@@ -59,6 +67,7 @@ const ChatJobSchema = z.object({
   replyContext: ReplyContextSchema.optional(),
   imagePaths: z.array(z.string().min(1)).readonly().optional(),
   documentPaths: z.array(z.string().min(1)).readonly().optional(),
+  storedUploads: z.array(StoredUploadSchema).readonly().optional(),
 });
 
 const ScheduledJobSchema = z.object({
@@ -140,6 +149,11 @@ export function parseChatJob(data: unknown): Result<ChatJob, string> {
       ? ok(null)
       : makeAgentSessionId(parsed.data.conversation.sessionId);
   if (!sessionId.ok) return withJobError('chat', sessionId);
+  const storedUploads = parsed.data.storedUploads?.map(makeStoredUpload);
+  const invalidStoredUpload = storedUploads?.find((upload) => !upload.ok);
+  if (invalidStoredUpload !== undefined && !invalidStoredUpload.ok) {
+    return err(`Invalid chat job: ${invalidStoredUpload.error}`);
+  }
 
   return withJobError(
     'chat',
@@ -159,6 +173,9 @@ export function parseChatJob(data: unknown): Result<ChatJob, string> {
       ...(parsed.data.imagePaths !== undefined ? { imagePaths: parsed.data.imagePaths } : {}),
       ...(parsed.data.documentPaths !== undefined
         ? { documentPaths: parsed.data.documentPaths }
+        : {}),
+      ...(storedUploads !== undefined
+        ? { storedUploads: storedUploads.flatMap((upload) => (upload.ok ? [upload.value] : [])) }
         : {}),
     }),
   );

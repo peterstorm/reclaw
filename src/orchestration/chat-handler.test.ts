@@ -258,6 +258,38 @@ describe('handleChatJob', () => {
     );
   });
 
+  it('includes permanent upload metadata in the agent prompt', async () => {
+    const job = makeChatJob({
+      text: '',
+      storedUploads: [
+        {
+          path: '/data/telegram-42.skill',
+          displayName: 'bundle.skill',
+          mimeType: 'application/octet-stream',
+          sizeBytes: 4,
+        },
+      ],
+    });
+    const runClaudeStreaming = makeRunClaudeStreaming({
+      ok: true,
+      output: 'Stored',
+      sessionId: null,
+      durationMs: 100,
+    });
+
+    await handleChatJob(job, {
+      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      telegram: makeTelegram(),
+      config: makeConfig(),
+      sessionStore: makeSessionStore(),
+      completionMode: 'durable',
+    });
+
+    expect(runClaudeStreaming.mock.calls[0]?.[0].prompt).toContain(
+      '[Stored uploaded file: "bundle.skill"]',
+    );
+  });
+
   it('uses empty personality fallback when personality file read fails (FR-009)', async () => {
     mockReadFile.mockRejectedValue(new Error('ENOENT: no such file'));
 

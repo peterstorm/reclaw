@@ -673,6 +673,49 @@ describe('routeMessage', () => {
       );
     });
 
+    it('preserves permanent upload metadata in the durable chat job', async () => {
+      const deps = makeDeps();
+      const storedUploads = [
+        {
+          path: '/data/telegram-1001.skill',
+          displayName: 'bundle.skill',
+          mimeType: 'application/octet-stream',
+          sizeBytes: 4,
+        },
+      ];
+
+      await routeMessage(makeMsg({ text: '', storedUploads }), deps);
+
+      expect(deps.queues.enqueueChat).toHaveBeenCalledWith(
+        expect.objectContaining({ text: '', storedUploads }),
+      );
+    });
+
+    it('treats command-like upload captions as chat', async () => {
+      const deps = makeDeps();
+      await routeMessage(
+        makeMsg({
+          text: '/help',
+          storedUploads: [
+            {
+              path: '/data/telegram-1001.skill',
+              displayName: 'bundle.skill',
+              mimeType: null,
+              sizeBytes: 4,
+            },
+          ],
+        }),
+        deps,
+      );
+      expect(deps.queues.enqueueChat).toHaveBeenCalledWith(
+        expect.objectContaining({ text: '/help' }),
+      );
+      expect(deps.telegram.sendMessage).not.toHaveBeenCalledWith(
+        456,
+        expect.stringContaining('Available commands'),
+      );
+    });
+
     it('returns cleanup ownership when a terminal duplicate no longer needs its recreated spool file', async () => {
       const deps = makeDeps();
       (deps.queues.enqueueChat as ReturnType<typeof vi.fn>).mockResolvedValueOnce(

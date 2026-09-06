@@ -22,6 +22,7 @@ import {
 } from 'notebooklm-kit';
 import type { Result } from '../core/types.js';
 import type { SourceMeta, ChatResponse, WebSource } from '../core/research-types.js';
+import { NOTEBOOKLM_WEB_ORIGIN } from './notebooklm-web.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -287,7 +288,7 @@ export const FALLBACK_BL = 'boq_labs-tailwind-frontend_20260325.12_p0';
  */
 export async function fetchCurrentBuildLabel(): Promise<string> {
   try {
-    const response = await fetch('https://notebooklm.google.com/', {
+    const response = await fetch(`${NOTEBOOKLM_WEB_ORIGIN}/`, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
         'Accept': 'text/html',

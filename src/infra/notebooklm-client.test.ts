@@ -261,16 +261,21 @@ describe('fetchCurrentBuildLabel', () => {
     globalThis.fetch = originalFetch;
   });
 
-  it('extracts bl from page HTML containing the pattern', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
+  it('extracts bl from the canonical NotebookLM page', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       text: () => Promise.resolve(
         '<script>var cfg = {"bl":"boq_labs-tailwind-frontend_20260327.15_p0"}</script>',
       ),
-    }) as any;
+    });
+    globalThis.fetch = fetchMock as any;
 
     const bl = await fetchCurrentBuildLabel();
     expect(bl).toBe('boq_labs-tailwind-frontend_20260327.15_p0');
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://notebook.google.com/',
+      expect.objectContaining({ redirect: 'follow' }),
+    );
   });
 
   it('returns fallback when page does not contain bl pattern', async () => {

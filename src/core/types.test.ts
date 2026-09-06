@@ -395,6 +395,26 @@ describe('makeChatJob', () => {
     }
   });
 
+  it('accepts empty text when a permanent upload is present', () => {
+    const r = makeChatJob({
+      id: validJobId(),
+      userId: validUserId(),
+      text: '',
+      chatId: 1,
+      receivedAt: new Date().toISOString(),
+      storedUploads: [
+        {
+          path: '/home/user/.local/share/reclaw/uploads/telegram-1.skill',
+          displayName: 'bundle.skill',
+          mimeType: 'application/octet-stream',
+          sizeBytes: 4,
+        },
+      ],
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.storedUploads?.[0]?.displayName).toBe('bundle.skill');
+  });
+
   it('rejects empty text with empty attachment arrays', () => {
     const r = makeChatJob({
       id: validJobId(),
@@ -404,6 +424,7 @@ describe('makeChatJob', () => {
       receivedAt: new Date().toISOString(),
       imagePaths: [],
       documentPaths: [],
+      storedUploads: [],
     });
     expect(r.ok).toBe(false);
   });
@@ -457,7 +478,7 @@ describe('makeChatJob', () => {
     if (result.ok) expect(result.value.replyContext).toEqual(replyContext.value);
   });
 
-  it('lists image and PDF text files for durable cleanup', () => {
+  it('lists only temporary files for durable cleanup', () => {
     const r = makeChatJob({
       id: validJobId(),
       userId: validUserId(),
@@ -466,6 +487,14 @@ describe('makeChatJob', () => {
       receivedAt: new Date().toISOString(),
       imagePaths: ['/state/photo.jpg'],
       documentPaths: ['/state/report.pdf.txt'],
+      storedUploads: [
+        {
+          path: '/data/telegram-1.skill',
+          displayName: 'bundle.skill',
+          mimeType: null,
+          sizeBytes: 4,
+        },
+      ],
     });
     if (!r.ok) throw new Error(r.error);
 

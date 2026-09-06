@@ -41,7 +41,7 @@ A long-running Telegram-fronted personal agent. Reclaw routes messages, schedule
 Reclaw is a single Bun process (`bun src/main.ts`) running as a systemd `--user` service. On boot, `main.ts:bootstrap` wires:
 
 1. **Config** — Zod-validated env vars (`src/infra/config.ts`).
-2. **Telegram adapter** — `grammy` long-polling, authorized-user gate, and bounded PDF/Markdown text ingestion (`src/infra/telegram.ts`, `src/infra/document-text.ts`, `src/infra/pdf-text.ts`).
+2. **Telegram adapter** — `grammy` long-polling, authorized-user gate, bounded PDF/Markdown text ingestion, and persistent opaque file uploads (`src/infra/telegram.ts`, `src/infra/document-text.ts`, `src/infra/pdf-text.ts`, `src/infra/upload-store.ts`).
 3. **Six BullMQ queues** — chat, scheduled, reminder, research, podcast, and delivery (`src/infra/queue.ts`).
 4. **Shared `ioredis` connection** — used by session store and quota tracker so they don't open separate sockets.
 5. **Skill watcher** — `chokidar` on `workspace/skills/*.yaml` → emits a `SkillRegistry` (`src/infra/skill-watcher.ts`).
@@ -97,7 +97,7 @@ All jobs are discriminated unions in `src/core/types.ts`. The full set:
 
 ```ts
 type Job =
-  | ChatJob              // { kind: 'chat', id, userId, text, chatId, receivedAt, imagePaths?, documentPaths? }
+  | ChatJob              // { kind: 'chat', id, userId, text, chatId, receivedAt, imagePaths?, documentPaths?, storedUploads? }
   | ScheduledJob         // { kind: 'scheduled', id, skillId, triggeredAt, validUntil }
   | ReminderJob          // { kind: 'reminder', id, chatId, text, createdAt, delayMs }
   | RecurringReminderJob // { kind: 'recurring-reminder', id, chatId, text, intervalMs, cronPattern?, schedulerId, ... }
@@ -188,7 +188,9 @@ telegram:<update_id>:<chat|reminder|recurring|research|podcast|run>
 
 If Redis or enqueueing fails, the middleware rejects, grammY polling stops before confirming that update, and systemd restarts Reclaw. Telegram can then redeliver the update; BullMQ's `jobId` uniqueness collapses a replay if the first enqueue actually succeeded.
 
-Accepted chat jobs are never drained during startup. Waiting and delayed work survives service restarts. Photo inputs and bounded text from PDF or Markdown documents are atomically spooled under `~/.local/state/reclaw/images` with mode `0600` rather than `/tmp`, then removed through a durable file-cleanup delivery after successful chat execution. The shared document path classifies filename/MIME claims, streams downloads through a format-specific byte limit, line-prefixes every extracted line inside an explicitly untrusted envelope, and preserves stable update-derived spool identities. PDF ingress accepts up to 20 MB, verifies `%PDF-` magic bytes, and parses page-by-page in a killable `prlimit`-confined Bun subprocess (15s wall clock, 20s CPU, 2 GiB address space, 200 pages, 400,000 extracted characters). Markdown ingress accepts `.md`/`.markdown` or Markdown MIME types up to 1 MB, requires non-empty UTF-8 without binary, unsafe control, or bidi-control characters, and truncates decoded text at 400,000 characters. Expected content rejections receive explicit responses without enqueueing.
+Accepted chat jobs are never drained during startup. Waiting and delayed work survives service restarts. Photo inputs and bounded text from PDF or Markdown documents are atomically spooled under `~/.local/state/reclaw/images` with mode `0600` rather than `/tmp`, then removed through a durable file-cleanup delivery after successful chat execution. The shared document path classifies filename/MIME claims, streams downloads through a format-specific byte limit, line-prefixes every extracted line inside an explicitly untrusted envelope, and preserves stable update-derived spool identities. PDF ingress accepts up to 20 MB, verifies `%PDF-` magic bytes, and parses page-by-page in a killable `prlimit`-confined Bun subprocess (15s wall clock, 20s CPU, 2 GiB address space, 200 pages, 400,000 extracted characters). Markdown ingress accepts `.md`/`.markdown` or Markdown MIME types up to 1 MB, requires non-empty UTF-8 without binary, unsafe control, or bidi-control characters, and truncates decoded text at 400,000 characters. Expected supported-format content rejections receive explicit responses without enqueueing.
+
+Other authenticated Telegram document types are retained as opaque user files under `~/.local/share/reclaw/uploads/`. They are capped at 20 MB, atomically written mode `0600` under a mode-`0700` directory, assigned an update-derived filename with only a bounded safe extension, and accompanied by exact original-name/MIME metadata. Reclaw does not execute or unpack them. `ChatJob.storedUploads` carries safe path metadata to the agent and is deliberately excluded from temporary attachment cleanup, so files such as `.skill` bundles remain available after the chat completes. See ADR 0012.
 
 This boundary provides at-least-once ingress and idempotent queue acceptance, not exactly-once command delivery. A confirmation-send failure may replay a synchronous command or repeat its confirmation. Successful queued chat and scheduled agent executions are protected from downstream retry by ADR 0009.
 
@@ -558,6 +560,7 @@ src/
   main.ts                     # bootstrap — wires everything
   core/                       # pure logic (no I/O) — heavily unit-tested
     types.ts                  # Job discriminated union, branded IDs
+    stored-upload.ts          # validated permanent-upload metadata and naming policy
     activity.ts               # ActivityResult + DeliveryJob ADTs and codecs
     agent-failure.ts          # typed agent failures + retry/session policy
     job-schemas.ts            # Source-job Zod parsers at worker boundary
@@ -576,6 +579,7 @@ src/
     telegram.ts               # grammy adapter + authenticated attachment ingress
     document-text.ts          # supported-document policy, decoding, and untrusted envelope
     pdf-text.ts               # confined PDF.js extraction used by document ingress
+    upload-store.ts           # atomic persistent opaque-file storage + metadata sidecars
     queue.ts                  # BullMQ source queues + delivery outbox
     activity-store.ts         # immutable Redis ActivityResult repository
     session-store.ts          # Redis generation transitions + revision CAS

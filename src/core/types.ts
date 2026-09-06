@@ -1,4 +1,5 @@
 import type { SkillEnvironmentVariable } from './agent-environment.js';
+import type { StoredUpload } from './stored-upload.js';
 import { type VaultRelativePath, parseVaultRelativePath } from './vault-path.js';
 
 // ─── Branded Types ────────────────────────────────────────────────────────────
@@ -239,6 +240,8 @@ export type ChatJob = {
   readonly imagePaths?: readonly string[];
   /** Bounded text spooled from supported documents at the authenticated ingress boundary. */
   readonly documentPaths?: readonly string[];
+  /** User-owned files persisted outside the temporary attachment cleanup lifecycle. */
+  readonly storedUploads?: readonly StoredUpload[];
 };
 
 /**
@@ -352,10 +355,12 @@ export function makeChatJob(params: {
   replyContext?: ReplyContext;
   imagePaths?: readonly string[];
   documentPaths?: readonly string[];
+  storedUploads?: readonly StoredUpload[];
 }): Result<ChatJob, string> {
   const hasImages = params.imagePaths !== undefined && params.imagePaths.length > 0;
   const hasDocuments = params.documentPaths !== undefined && params.documentPaths.length > 0;
-  if (params.text.trim().length === 0 && !hasImages && !hasDocuments) {
+  const hasStoredUploads = params.storedUploads !== undefined && params.storedUploads.length > 0;
+  if (params.text.trim().length === 0 && !hasImages && !hasDocuments && !hasStoredUploads) {
     return err('Chat job text must not be empty.');
   }
   if (!Number.isInteger(params.chatId)) {
@@ -381,6 +386,7 @@ export function makeChatJob(params: {
     ...(params.replyContext !== undefined ? { replyContext: params.replyContext } : {}),
     ...(hasImages ? { imagePaths: params.imagePaths } : {}),
     ...(hasDocuments ? { documentPaths: params.documentPaths } : {}),
+    ...(hasStoredUploads ? { storedUploads: params.storedUploads } : {}),
   });
 }
 

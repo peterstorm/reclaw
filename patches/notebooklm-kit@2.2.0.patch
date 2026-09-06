@@ -1,0 +1,320 @@
+diff --git a/dist/src/auth/auth.js b/dist/src/auth/auth.js
+index 05f126fe7078c857c6b86de1e2ccecd394b12c7b..4504b595c5704b7fea9707aacdb43138c3d7de26 100644
+--- a/dist/src/auth/auth.js
++++ b/dist/src/auth/auth.js
+@@ -102,7 +102,7 @@ async function extractCredentials(page, debug = false) {
+         console.log('Navigating to NotebookLM...');
+     }
+     // Navigate to NotebookLM
+-    await page.goto('https://notebooklm.google.com/', {
++    await page.goto('https://notebook.google.com/', {
+         waitUntil: 'domcontentloaded',
+         timeout: 60000
+     });
+@@ -143,7 +143,7 @@ async function extractCredentials(page, debug = false) {
+         throw new NotebookLMAuthError('Failed to extract auth token. The page may still be loading.');
+     }
+     // Automatically extract cookies from browser context
+-    // Get cookies that would be sent to notebooklm.google.com
++    // Get cookies that would be sent to notebook.google.com
+     if (debug) {
+         console.log('Extracting cookies from browser context...');
+     }
+@@ -160,10 +160,10 @@ async function extractCredentials(page, debug = false) {
+         catch (e) {
+             // Ignore if document.cookie is not accessible
+         }
+-        // Method 2: Get cookies from browser context for notebooklm.google.com
+-        const contextCookies = await page.context().cookies('https://notebooklm.google.com');
++        // Method 2: Get cookies from browser context for notebook.google.com
++        const contextCookies = await page.context().cookies('https://notebook.google.com');
+         if (debug) {
+-            console.log(`Found ${contextCookies.length} cookies from context for notebooklm.google.com`);
++            console.log(`Found ${contextCookies.length} cookies from context for notebook.google.com`);
+         }
+         // Build a map of unique cookies (prefer context cookies as they're more complete)
+         const cookieMap = new Map();
+@@ -179,9 +179,9 @@ async function extractCredentials(page, debug = false) {
+         }
+         // Then, add/override with context cookies (these include HttpOnly cookies)
+         for (const cookie of contextCookies) {
+-            // Only include cookies that are relevant for notebooklm.google.com
++            // Only include cookies that are relevant for notebook.google.com
+             const domain = cookie.domain || '';
+-            if (domain.includes('notebooklm.google.com') ||
++            if (domain.includes('notebook.google.com') ||
+                 domain.includes('.google.com') ||
+                 domain === '' ||
+                 !domain) {
+@@ -236,7 +236,7 @@ function promptForCookies() {
+         console.log('\n📋 Please copy cookies from your browser:');
+         console.log('   1. Open DevTools (F12) in the browser');
+         console.log('   2. Go to Network tab');
+-        console.log('   3. Click on any request to notebooklm.google.com');
++        console.log('   3. Click on any request to notebook.google.com');
+         console.log('   4. Copy the "Cookie" header value');
+         console.log('   5. Paste it below\n');
+         rl.question('Enter cookies: ', (cookies) => {
+diff --git a/dist/src/auth/refresh.js b/dist/src/auth/refresh.js
+index 75f10efe362cb3e51dea441b046a4006478425a7..a15ba954f91a70fdc8601522f730b8c106d68437 100644
+--- a/dist/src/auth/refresh.js
++++ b/dist/src/auth/refresh.js
+@@ -87,8 +87,8 @@ export class RefreshClient {
+                 'Authorization': `SAPISIDHASH ${timestamp}_${authHash}`,
+                 'Content-Type': 'application/json+protobuf',
+                 'Cookie': this.cookies,
+-                'Origin': 'https://notebooklm.google.com',
+-                'Referer': 'https://notebooklm.google.com/',
++                'Origin': 'https://notebook.google.com',
++                'Referer': 'https://notebook.google.com/',
+                 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
+             },
+             body: requestBody,
+@@ -122,7 +122,7 @@ export class RefreshClient {
+      * Format: SHA1(timestamp + " " + SAPISID + " " + origin)
+      */
+     generateSAPISIDHASH(timestamp) {
+-        const origin = 'https://notebooklm.google.com';
++        const origin = 'https://notebook.google.com';
+         const data = `${timestamp} ${this.sapisid} ${origin}`;
+         const hash = createHash('sha1');
+         hash.update(data);
+@@ -166,7 +166,7 @@ export function parseAuthToken(token) {
+  */
+ export async function extractGSessionId(cookies) {
+     try {
+-        const response = await fetch('https://notebooklm.google.com/', {
++        const response = await fetch('https://notebook.google.com/', {
+             headers: {
+                 'Cookie': cookies,
+                 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36',
+diff --git a/dist/src/rpc/rpc-client.js b/dist/src/rpc/rpc-client.js
+index 0393f5efb5c112166420bc316018ea6754f03f1f..673dc6b0e6bbfd94bbb1883324afa66efa73df11 100644
+--- a/dist/src/rpc/rpc-client.js
++++ b/dist/src/rpc/rpc-client.js
+@@ -13,14 +13,14 @@ export class RPCClient {
+         this.config = config;
+         // Build batch execute config
+         const batchConfig = {
+-            host: 'notebooklm.google.com',
++            host: 'notebook.google.com',
+             app: 'LabsTailwindUi',
+             authToken: config.authToken,
+             cookies: config.cookies,
+             headers: {
+                 'content-type': 'application/x-www-form-urlencoded;charset=UTF-8',
+-                'origin': 'https://notebooklm.google.com',
+-                'referer': 'https://notebooklm.google.com/',
++                'origin': 'https://notebook.google.com',
++                'referer': 'https://notebook.google.com/',
+                 'x-same-domain': '1',
+                 'accept': '*/*',
+                 'accept-language': 'en-US,en;q=0.9',
+diff --git a/dist/src/services/artifacts.js b/dist/src/services/artifacts.js
+index 1357d872b6ae29c5cff565c125d6e432a4529773..182dfc4329c890d34d7861afaf4d8d27e4379d8a 100644
+--- a/dist/src/services/artifacts.js
++++ b/dist/src/services/artifacts.js
+@@ -426,7 +426,7 @@ export class ArtifactsService {
+         if (Array.isArray(response)) {
+             if (response.length === 0) {
+                 success = true;
+-                shareUrl = `https://notebooklm.google.com/notebook/${trimmedNotebookId}`;
++                shareUrl = `https://notebook.google.com/notebook/${trimmedNotebookId}`;
+             }
+             else {
+                 const data = response[0];
+@@ -443,21 +443,21 @@ export class ArtifactsService {
+                     success = data.success !== false;
+                 }
+                 else {
+-                    shareUrl = `https://notebooklm.google.com/notebook/${trimmedNotebookId}`;
++                    shareUrl = `https://notebook.google.com/notebook/${trimmedNotebookId}`;
+                     success = true;
+                 }
+             }
+         }
+         else if (response && typeof response === 'object') {
+-            shareUrl = response.shareUrl || `https://notebooklm.google.com/notebook/${trimmedNotebookId}`;
++            shareUrl = response.shareUrl || `https://notebook.google.com/notebook/${trimmedNotebookId}`;
+             success = response.success !== false;
+         }
+         else {
+-            shareUrl = `https://notebooklm.google.com/notebook/${trimmedNotebookId}`;
++            shareUrl = `https://notebook.google.com/notebook/${trimmedNotebookId}`;
+             success = true;
+         }
+         if (!shareUrl) {
+-            shareUrl = `https://notebooklm.google.com/notebook/${trimmedNotebookId}`;
++            shareUrl = `https://notebook.google.com/notebook/${trimmedNotebookId}`;
+         }
+         if (!success) {
+             return {
+@@ -3991,7 +3991,7 @@ async function downloadWithNodeHttp(url, cookies) {
+         const headers = {
+             'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+             'Accept-Language': 'en-IN,en-GB;q=0.9,en;q=0.8,en-US;q=0.7',
+-            'Referer': 'https://notebooklm.google.com/',
++            'Referer': 'https://notebook.google.com/',
+             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0',
+             'sec-fetch-dest': 'image',
+             'sec-fetch-mode': 'no-cors',
+@@ -4033,14 +4033,14 @@ async function downloadWithFetch(url, cookies) {
+     const headers = {
+         'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+         'Accept-Language': 'en-IN,en-GB;q=0.9,en;q=0.8,en-US;q=0.7',
+-        'Referer': 'https://notebooklm.google.com/',
++        'Referer': 'https://notebook.google.com/',
+         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0',
+         'sec-fetch-dest': 'image',
+         'sec-fetch-mode': 'no-cors',
+         'sec-fetch-site': 'cross-site',
+     };
+     if (url.includes('rd-notebooklm') || url.includes('notebooklm')) {
+-        headers['Origin'] = 'https://notebooklm.google.com';
++        headers['Origin'] = 'https://notebook.google.com';
+     }
+     if (cookies && cookies.trim()) {
+         headers['Cookie'] = cookies;
+@@ -4268,7 +4268,7 @@ async function downloadImageWithPlaywright(url, page) {
+ /**
+  * Parse cookie string into Playwright cookie format
+  */
+-function parseCookies(cookieString, domain = 'notebooklm.google.com') {
++function parseCookies(cookieString, domain = 'notebook.google.com') {
+     const cookies = [];
+     const pairs = cookieString.split(';');
+     for (const pair of pairs) {
+@@ -4528,8 +4528,8 @@ function downloadPdfFromUrl(url, cookies) {
+                 'Accept': '*/*',
+                 'Accept-Language': 'en-US,en;q=0.9',
+                 'Accept-Encoding': 'identity',
+-                'Referer': 'https://notebooklm.google.com/',
+-                'Origin': 'https://notebooklm.google.com',
++                'Referer': 'https://notebook.google.com/',
++                'Origin': 'https://notebook.google.com',
+             },
+         };
+         const req = httpModule.request(options, (res) => {
+@@ -5067,7 +5067,7 @@ async function followRedirectsToFinalUrl(url, cookies) {
+             'Accept-Encoding': 'identity;q=1, *;q=0',
+             'Accept-Language': 'en-IN,en-GB;q=0.9,en;q=0.8,en-US;q=0.7',
+             'Range': 'bytes=0-',
+-            'Referer': 'https://notebooklm.google.com/',
++            'Referer': 'https://notebook.google.com/',
+             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0',
+             'sec-ch-ua': '"Microsoft Edge";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
+             'sec-fetch-dest': 'video',
+@@ -5333,7 +5333,7 @@ function extractSAPISID(cookies) {
+  * Generate SAPISIDHASH for authorization
+  */
+ function generateSAPISIDHASH(sapisid, timestamp) {
+-    const origin = 'https://notebooklm.google.com';
++    const origin = 'https://notebook.google.com';
+     const data = `${timestamp} ${sapisid} ${origin}`;
+     const hash = createHash('sha1');
+     hash.update(data);
+@@ -5369,8 +5369,8 @@ async function preAuthenticateForDownload(cookies) {
+                         'Accept-Language': 'en-IN,en-GB;q=0.9,en;q=0.8,en-US;q=0.7',
+                         'Content-Type': 'text/plain;charset=UTF-8',
+                         'Cookie': cookies,
+-                        'Origin': 'https://notebooklm.google.com',
+-                        'Referer': 'https://notebooklm.google.com/',
++                        'Origin': 'https://notebook.google.com',
++                        'Referer': 'https://notebook.google.com/',
+                         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0',
+                     },
+                 }, (res) => {
+@@ -5394,8 +5394,8 @@ async function preAuthenticateForDownload(cookies) {
+                         'Accept-Language': 'en-IN,en-GB;q=0.9,en;q=0.8,en-US;q=0.7',
+                         'Content-Type': 'text/plain;charset=UTF-8',
+                         'Cookie': cookies,
+-                        'Origin': 'https://notebooklm.google.com',
+-                        'Referer': 'https://notebooklm.google.com/',
++                        'Origin': 'https://notebook.google.com',
++                        'Referer': 'https://notebook.google.com/',
+                     },
+                     body: '[]',
+                     signal: AbortSignal.timeout(5000),
+diff --git a/dist/src/services/notebooks.js b/dist/src/services/notebooks.js
+index 6829849d0fa6325dd2900c9b5acf050e815491a0..a159f608a527d8c1f8fa73081d572176c4370304 100644
+--- a/dist/src/services/notebooks.js
++++ b/dist/src/services/notebooks.js
+@@ -232,7 +232,7 @@ export class NotebooksService {
+             if (response.length === 0) {
+                 // Empty array means success - construct share URL from notebook ID
+                 success = true;
+-                shareUrl = `https://notebooklm.google.com/notebook/${trimmedNotebookId}`;
++                shareUrl = `https://notebook.google.com/notebook/${trimmedNotebookId}`;
+             }
+             else {
+                 // Response contains data
+@@ -251,23 +251,23 @@ export class NotebooksService {
+                 }
+                 else {
+                     // Fallback: construct from notebook ID
+-                    shareUrl = `https://notebooklm.google.com/notebook/${trimmedNotebookId}`;
++                    shareUrl = `https://notebook.google.com/notebook/${trimmedNotebookId}`;
+                     success = true;
+                 }
+             }
+         }
+         else if (response && typeof response === 'object') {
+-            shareUrl = response.shareUrl || `https://notebooklm.google.com/notebook/${trimmedNotebookId}`;
++            shareUrl = response.shareUrl || `https://notebook.google.com/notebook/${trimmedNotebookId}`;
+             success = response.success !== false;
+         }
+         else {
+             // Fallback: construct from notebook ID
+-            shareUrl = `https://notebooklm.google.com/notebook/${trimmedNotebookId}`;
++            shareUrl = `https://notebook.google.com/notebook/${trimmedNotebookId}`;
+             success = true;
+         }
+         // If shareUrl is still empty, construct from notebook ID
+         if (!shareUrl) {
+-            shareUrl = `https://notebooklm.google.com/notebook/${trimmedNotebookId}`;
++            shareUrl = `https://notebook.google.com/notebook/${trimmedNotebookId}`;
+         }
+         // If share failed, return minimal result
+         if (!success) {
+@@ -346,7 +346,7 @@ export class NotebooksService {
+                 isShared = sharingData.isShared === true;
+             }
+             // Extract shareUrl - may not be in this response, construct from notebookId
+-            const shareUrl = sharingData?.shareUrl || `https://notebooklm.google.com/notebook/${notebookId}`;
++            const shareUrl = sharingData?.shareUrl || `https://notebook.google.com/notebook/${notebookId}`;
+             // Access type: 1 = anyone with link, 2 = restricted
+             // We need to infer from the sharing state - if there are users and link is enabled
+             // For now, default to restricted (2) unless we can determine otherwise
+@@ -390,7 +390,7 @@ export class NotebooksService {
+         catch (error) {
+             // Return minimal info if parsing fails
+             return {
+-                shareUrl: `https://notebooklm.google.com/notebook/${notebookId}`,
++                shareUrl: `https://notebook.google.com/notebook/${notebookId}`,
+                 accessType: 2,
+                 isShared: false,
+             };
+diff --git a/dist/src/utils/streaming-client.js b/dist/src/utils/streaming-client.js
+index 2fef93ba111c0a99ea0590b0bda1be809fb65191..c7b25fd1d214685312f83cd7dc69e701729d6703 100644
+--- a/dist/src/utils/streaming-client.js
++++ b/dist/src/utils/streaming-client.js
+@@ -475,7 +475,7 @@ export class StreamingClient {
+             rt: 'c',
+             'source-path': sourcePath,
+         });
+-        return `https://notebooklm.google.com/_/LabsTailwindUi/data/google.internal.labs.tailwind.orchestration.v1.LabsTailwindOrchestrationService/GenerateFreeFormStreamed?${params.toString()}`;
++        return `https://notebook.google.com/_/LabsTailwindUi/data/google.internal.labs.tailwind.orchestration.v1.LabsTailwindOrchestrationService/GenerateFreeFormStreamed?${params.toString()}`;
+     }
+     /**
+      * Build request headers
+@@ -485,8 +485,8 @@ export class StreamingClient {
+             'accept': '*/*',
+             'accept-language': 'en-US,en;q=0.9',
+             'content-type': 'application/x-www-form-urlencoded;charset=UTF-8',
+-            'origin': 'https://notebooklm.google.com',
+-            'referer': 'https://notebooklm.google.com/',
++            'origin': 'https://notebook.google.com',
++            'referer': 'https://notebook.google.com/',
+             'sec-fetch-dest': 'empty',
+             'sec-fetch-mode': 'cors',
+             'sec-fetch-site': 'same-origin',

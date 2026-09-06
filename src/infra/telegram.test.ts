@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { splitMessage } from '../core/message-splitter.js';
+import { MAX_STORED_UPLOAD_BYTES } from '../core/stored-upload.js';
 import { makeTelegramUserId } from '../core/types.js';
 import { MAX_MARKDOWN_BYTES } from './document-text.js';
 import type { TelegramAdapter } from './telegram.js';
@@ -67,6 +68,7 @@ function makeAdapter(): TelegramAdapter {
     token: 'test-token',
     authorizedUserIds: [userIdResult.value],
     attachmentDir: '/tmp/reclaw-images',
+    uploadDir: '/tmp/reclaw-uploads',
     pdfTextExtractor: mockPdfTextExtractor,
   });
 }
@@ -693,18 +695,67 @@ describe('message:document handler', () => {
     }
   });
 
-  it('acknowledges unsupported documents with the supported-format response', async () => {
+  it('persists an arbitrary .skill upload and routes its permanent metadata', async () => {
+    const adapter = makeAdapter();
+    const handler = vi.fn().mockResolvedValue({ kind: 'remove-source-files' });
+    adapter.onMessage(handler);
+    mockGetFile.mockResolvedValueOnce({ file_path: 'documents/bundle.skill' });
+    const data = new Uint8Array([0x50, 0x4b, 0x03, 0x04]);
+    const mockFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(data));
+
+    try {
+      await simulateDocument(
+        123456,
+        789,
+        {
+          file_id: 'skill-file',
+          file_name: 'bundle.skill',
+          mime_type: 'application/octet-stream',
+          file_size: data.byteLength,
+        },
+        'Save this for later',
+      );
+
+      expect(handler).toHaveBeenCalledWith({
+        updateId: 1003,
+        userId: 123456,
+        chatId: 789,
+        text: 'Save this for later',
+        storedUploads: [
+          {
+            path: '/tmp/reclaw-uploads/telegram-1003.skill',
+            displayName: 'bundle.skill',
+            mimeType: 'application/octet-stream',
+            sizeBytes: data.byteLength,
+          },
+        ],
+      });
+      expect(new Uint8Array(await readFile('/tmp/reclaw-uploads/telegram-1003.skill'))).toEqual(
+        data,
+      );
+      expect(
+        JSON.parse(await readFile('/tmp/reclaw-uploads/telegram-1003.metadata.json', 'utf8')),
+      ).toMatchObject({ originalFileName: 'bundle.skill', sizeBytes: data.byteLength });
+      expect(existsSync('/tmp/reclaw-uploads/telegram-1003.skill')).toBe(true);
+    } finally {
+      mockFetch.mockRestore();
+      await rm('/tmp/reclaw-uploads', { recursive: true, force: true });
+    }
+  });
+
+  it('rejects oversized arbitrary uploads before downloading them', async () => {
     const adapter = makeAdapter();
     const handler = vi.fn();
     adapter.onMessage(handler);
 
     await simulateDocument(123456, 789, {
-      file_id: 'word-file',
-      file_name: 'report.docx',
-      mime_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      file_id: 'large-file',
+      file_name: 'large.skill',
+      mime_type: 'application/octet-stream',
+      file_size: MAX_STORED_UPLOAD_BYTES + 1,
     });
 
-    expect(mockSendMessage).toHaveBeenCalledWith(789, expect.stringContaining('PDF and Markdown'), {
+    expect(mockSendMessage).toHaveBeenCalledWith(789, expect.stringContaining('too large'), {
       parse_mode: 'HTML',
     });
     expect(mockGetFile).not.toHaveBeenCalled();

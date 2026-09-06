@@ -1,10 +1,10 @@
-# Running Coach — Thursday Workout Types
+# Running Coach — Monday Workout Types
 
-Read this file on Thursday firings only — it is the catalog of available
-quality-day workout formats. Tuesday/Sunday firings prescribe a default easy
+Read this file on Monday firings only — it is the catalog of available
+quality-day workout formats. Wednesday/Thursday firings prescribe a backup easy
 run and don't need this catalog.
 
-The 8 types below cover the spectrum of useful Thursday stimuli. Selection
+The 8 types below cover the spectrum of useful Monday stimuli. Selection
 logic (limiter bias, rotation, readiness tiebreakers) lives in the main
 skill prompt — this file is purely the catalog.
 
