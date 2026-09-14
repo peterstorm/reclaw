@@ -1,5 +1,5 @@
 name: Workstation Procurement Watch
-schedule: "45 9 * * *"  # Daily 09:45. Two distinct modes, see "Run mode": Monday = full ~55-source sweep + report; other days = targeted watch of the cached list + the 14 price targets only. The daily run is deliberately cheap — running the full sweep daily cannot fit the 900s timeout.
+schedule: "45 9 * * *"  # Daily 09:45. Two distinct modes, see "Run mode": Monday = full ~55-source sweep + report; other days = targeted watch of the cached list + the 15 price targets only. The daily run is deliberately cheap — running the full sweep daily cannot fit the 900s timeout.
 permissionProfile: scheduled
 validityWindowMinutes: 240
 timeout: 900
@@ -133,6 +133,7 @@ promptTemplate: |
   | Threadripper PRO 9955WX | <= 11,000 DKK |
   | WRX90 motherboard | <= 7,000 DKK |
   | 128 GB ECC RAM | <= 3,500 DKK |
+  | 512 GB DDR5 ECC RDIMM (8×64 GB, full 8-channel WRX90 kit) | <= 13,000 DKK |
   | Complete WRX90 workstation | <= 30,000 DKK |
   | Dell Precision 7875 | <= 30,000 DKK |
   | ThinkStation P8 | <= 25,000 DKK |
@@ -187,7 +188,7 @@ promptTemplate: |
      most recently seen. If more than 25 qualify, say so in the coverage line.
 
   2. **Check the immediate price targets.** For each row in the "Immediate price
-     targets" table, run one targeted search for that item. These fourteen thresholds are
+     targets" table, run one targeted search for that item. These fifteen thresholds are
      the same-day promise of this skill; nothing else is. The three RTX PRO 6000
      Blackwell variants and the two compact GB10 system models are separate searches
      and separate price populations.
@@ -678,7 +679,7 @@ promptTemplate: |
   Why it matters: [1-2 lines]
   Recommended action: [buy / verify / wait]
 
-  Coverage: targeted watch — [N] cached listings re-checked, [M]/14 price targets searched
+  Coverage: targeted watch — [N] cached listings re-checked, [M]/15 price targets searched
   ```
 
   **Monday report format:**
@@ -736,7 +737,7 @@ promptTemplate: |
   - "Skipped for time" and "blocked/unreachable" are different findings and are
     never merged.
   - `ALL_CLEAR` on a TARGETED WATCH day asserts only that the cached watch list and
-    the fourteen price targets were checked. It never implies the wider market was.
+    the fifteen price targets were checked. It never implies the wider market was.
 
   ## Quality guardrails
 
