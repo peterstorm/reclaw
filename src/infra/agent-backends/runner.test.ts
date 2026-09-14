@@ -125,6 +125,14 @@ function baseOptions(overrides: Partial<AgentOptions> = {}): AgentOptions {
 
 // ─── runAgent Tests ───────────────────────────────────────────────────────────
 
+/** Narrows the union to the text field — the off-phase field is unrepresentable. */
+const textOf = (c: StreamChunk | undefined): string | undefined =>
+  c?.phase === 'text' ? c.text : undefined;
+
+/** Narrows the union to the thinking field. */
+const thinkingOf = (c: StreamChunk | undefined): string | undefined =>
+  c?.phase === 'thinking' ? c.thinking : undefined;
+
 describe('runAgent', () => {
   it('returns ok:true with output, sessionId, and durationMs > 0 on success', async () => {
     const result = await runAgent(mockBackend, baseOptions());
@@ -321,7 +329,7 @@ describe('runAgent', () => {
 // ─── runAgentStreaming Tests ──────────────────────────────────────────────────
 
 describe('runAgentStreaming', () => {
-  it('calls onChunk with accumulated text for text deltas', async () => {
+  it('calls onChunk with current block text for text deltas', async () => {
     const stdout = 'TEXT:hello \nTEXT:world\n';
     const chunks: StreamChunk[] = [];
     const onChunk: OnStreamChunk = (chunk) => chunks.push({ ...chunk });
@@ -334,10 +342,10 @@ describe('runAgentStreaming', () => {
 
     expect(result.ok).toBe(true);
     expect(chunks.length).toBeGreaterThanOrEqual(2);
-    expect(chunks[0]?.text).toBe('hello ');
     expect(chunks[0]?.phase).toBe('text');
-    expect(chunks[1]?.text).toBe('hello world');
+    expect(textOf(chunks[0])).toBe('hello ');
     expect(chunks[1]?.phase).toBe('text');
+    expect(textOf(chunks[1])).toBe('hello world');
   });
 
   it('calls onChunk with accumulated thinking for thinking deltas', async () => {
@@ -348,12 +356,12 @@ describe('runAgentStreaming', () => {
     await runAgentStreaming(mockBackend, baseOptions({ _spawn: mockSpawn(stdout) }), onChunk);
 
     expect(chunks.length).toBeGreaterThanOrEqual(2);
-    expect(chunks[0]?.thinking).toBe('analyzing ');
     expect(chunks[0]?.phase).toBe('thinking');
-    expect(chunks[1]?.thinking).toBe('analyzing problem');
+    expect(thinkingOf(chunks[0])).toBe('analyzing ');
+    expect(thinkingOf(chunks[1])).toBe('analyzing problem');
   });
 
-  it('block_start resets current block text/thinking and increments counter', async () => {
+  it('block_start flips the phase and resets the current block accumulator', async () => {
     const stdout =
       'BLOCK:thinking\nTHINK:first\nBLOCK:text\nTEXT:answer\nBLOCK:thinking\nTHINK:second\n';
     const chunks: StreamChunk[] = [];
@@ -362,27 +370,25 @@ describe('runAgentStreaming', () => {
     await runAgentStreaming(mockBackend, baseOptions({ _spawn: mockSpawn(stdout) }), onChunk);
 
     // After first BLOCK:thinking
-    expect(chunks[0]?.thinkingBlockCount).toBe(1);
-    expect(chunks[0]?.currentBlockThinking).toBe('');
+    expect(chunks[0]?.phase).toBe('thinking');
+    expect(thinkingOf(chunks[0])).toBe('');
 
     // After THINK:first
-    expect(chunks[1]?.currentBlockThinking).toBe('first');
-    expect(chunks[1]?.thinkingBlockCount).toBe(1);
+    expect(thinkingOf(chunks[1])).toBe('first');
 
     // After BLOCK:text
-    expect(chunks[2]?.textBlockCount).toBe(1);
-    expect(chunks[2]?.currentBlockText).toBe('');
+    expect(chunks[2]?.phase).toBe('text');
+    expect(textOf(chunks[2])).toBe('');
 
     // After TEXT:answer
-    expect(chunks[3]?.currentBlockText).toBe('answer');
+    expect(textOf(chunks[3])).toBe('answer');
 
-    // After second BLOCK:thinking — currentBlockThinking resets
-    expect(chunks[4]?.thinkingBlockCount).toBe(2);
-    expect(chunks[4]?.currentBlockThinking).toBe('');
+    // After second BLOCK:thinking — the thinking accumulator resets
+    expect(chunks[4]?.phase).toBe('thinking');
+    expect(thinkingOf(chunks[4])).toBe('');
 
-    // After THINK:second — accumulated thinking includes both blocks
-    expect(chunks[5]?.thinking).toBe('firstsecond');
-    expect(chunks[5]?.currentBlockThinking).toBe('second');
+    // After THINK:second — the new block accumulates independently
+    expect(thinkingOf(chunks[5])).toBe('second');
   });
 
   it('captures session ID from extractSessionId during stream', async () => {
@@ -525,5 +531,26 @@ describe('runAgentStreaming', () => {
       backend: 'mock',
       detail: 'overloaded_error',
     });
+  });
+
+  it('keeps streaming when the onChunk callback throws', async () => {
+    const stdout = 'TEXT:hello \nTEXT:world\n';
+    let calls = 0;
+    const onChunk: OnStreamChunk = () => {
+      calls++;
+      throw new Error('telegram edit failed');
+    };
+
+    const result = await runAgentStreaming(
+      mockBackend,
+      baseOptions({ _spawn: mockSpawn(stdout) }),
+      onChunk,
+    );
+
+    // Both deltas reached the callback and both faults were contained —
+    // emitChunk's try/catch keeps callback faults out of the stdout read loop,
+    // so an otherwise-healthy stream completes.
+    expect(calls).toBe(2);
+    expect(result.ok).toBe(true);
   });
 });

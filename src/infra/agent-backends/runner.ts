@@ -27,15 +27,6 @@ const getDefaultSpawn = (): SpawnFn => Bun.spawn as unknown as SpawnFn;
 
 // ─── Diagnostics ──────────────────────────────────────────────────────────────
 
-/**
- * Build a human-readable failure detail for a nonzero subprocess exit.
- *
- * Claude routinely exits nonzero with an EMPTY stderr, emitting its real
- * diagnostic as a structured error frame on *stdout*. Reporting only stderr
- * yields the opaque "exited with code 1:" seen in production. Prefer, in order:
- * stderr → the backend's parsed errorMessage → the tail of raw stdout. Capped
- * so a runaway stream can't bloat the error string / logs.
- */
 function failed(failure: AgentFailure): AgentResult {
   return { ok: false, failure };
 }
@@ -50,6 +41,15 @@ function spawnFailure(backend: string, error: unknown): AgentFailure {
   return classified.kind === 'configuration' ? classified : { kind: 'spawn', backend, detail };
 }
 
+/**
+ * Build a human-readable failure detail for a nonzero subprocess exit.
+ *
+ * Claude routinely exits nonzero with an EMPTY stderr, emitting its real
+ * diagnostic as a structured error frame on *stdout*. Reporting only stderr
+ * yields the opaque "exited with code 1:" seen in production. Prefer, in order:
+ * stderr → the backend's parsed errorMessage → the tail of raw stdout. Capped
+ * so a runaway stream can't bloat the error string / logs.
+ */
 function buildExitDetail(backend: AgentBackend, stderrText: string, rawStdout: string): string {
   const stderr = stderrText.trim();
   if (stderr !== '') return stderr.slice(0, 800);
@@ -181,8 +181,8 @@ export async function runAgent(backend: AgentBackend, options: AgentOptions): Pr
 /**
  * Execute an agent subprocess with line-by-line streaming.
  *
- * FR-102: Streaming with callbacks — onChunk receives StreamChunk with
- *         accumulated thinking/text, block counts, and phase.
+ * FR-102: Streaming with callbacks — onChunk receives StreamChunk with the
+ *         current phase and the current block's accumulated thinking/text.
  * FR-105: Timeout enforcement.
  * FR-108: Identical return shape.
  * FR-113: Prompt delivered via stdin.
@@ -243,28 +243,23 @@ export async function runAgentStreaming(
     proc.kill();
   }, timeoutMs);
 
-  // Streaming accumulator
-  let accumulatedThinking = '';
+  // Streaming accumulators. The global text accumulator backs the exit-0
+  // protocol fallback; thinking is never read globally (the consumer renders
+  // only the current block), so it is not accumulated here.
   let accumulatedText = '';
   let currentBlockThinking = '';
   let currentBlockText = '';
-  let thinkingBlockCount = 0;
-  let textBlockCount = 0;
   let currentPhase: 'thinking' | 'text' = 'thinking';
   let sessionId: string | null = null;
   const collectedLines: string[] = [];
 
   const emitChunk = (): void => {
     try {
-      onChunk({
-        phase: currentPhase,
-        thinking: accumulatedThinking,
-        text: accumulatedText,
-        currentBlockThinking,
-        currentBlockText,
-        thinkingBlockCount,
-        textBlockCount,
-      });
+      onChunk(
+        currentPhase === 'thinking'
+          ? { phase: 'thinking', thinking: currentBlockThinking }
+          : { phase: 'text', text: currentBlockText },
+      );
     } catch (cbErr) {
       // Callback faults must not propagate into the stdout read loop —
       // a throwing onChunk (e.g. Telegram edit failure) should not abort
@@ -286,18 +281,14 @@ export async function runAgentStreaming(
     const delta = backend.extractStreamDelta(line);
     if (delta !== null) {
       if (delta.type === 'block_start') {
+        currentPhase = delta.blockType;
         if (delta.blockType === 'thinking') {
-          thinkingBlockCount++;
           currentBlockThinking = '';
-          currentPhase = 'thinking';
         } else {
-          textBlockCount++;
           currentBlockText = '';
-          currentPhase = 'text';
         }
         emitChunk();
       } else if (delta.type === 'thinking') {
-        accumulatedThinking += delta.thinking;
         currentBlockThinking += delta.thinking;
         currentPhase = 'thinking';
         emitChunk();

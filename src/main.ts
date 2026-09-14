@@ -380,7 +380,6 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
         telegram,
         config,
         sessionStore,
-        completionMode: 'durable',
       }),
     scheduledHandler: (job) =>
       handleScheduledJobFn(job, {

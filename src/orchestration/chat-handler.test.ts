@@ -94,29 +94,15 @@ const makeSessionStore = (): SessionStore & {
   };
 };
 
-/** Helper to build a StreamChunk with all required fields. */
-const chunk = (
-  phase: 'thinking' | 'text',
-  thinking: string,
-  text: string,
-  overrides: Partial<StreamChunk> = {},
-): StreamChunk => ({
-  phase,
-  thinking,
-  text,
-  currentBlockThinking: overrides.currentBlockThinking ?? (phase === 'thinking' ? thinking : ''),
-  currentBlockText: overrides.currentBlockText ?? (phase === 'text' ? text : ''),
-  thinkingBlockCount: overrides.thinkingBlockCount ?? 0,
-  textBlockCount: overrides.textBlockCount ?? 0,
-});
+/** Union constructors for one stream step — the off-phase field is unrepresentable. */
+const thinkingChunk = (thinking: string): StreamChunk => ({ phase: 'thinking', thinking });
+const textChunk = (text: string): StreamChunk => ({ phase: 'text', text });
 
 /** Creates a mock runClaudeStreaming that calls onChunk with a final text chunk before resolving. */
 const makeRunClaudeStreaming = (result: AgentResult) =>
   vi.fn().mockImplementation((_options: unknown, onChunk?: OnStreamChunk) => {
     if (result.ok && onChunk) {
-      onChunk(
-        chunk('text', '', result.output, { textBlockCount: 1, currentBlockText: result.output }),
-      );
+      onChunk(textChunk(result.output));
     }
     return Promise.resolve(result);
   });
@@ -129,7 +115,7 @@ describe('handleChatJob', () => {
     mockReadFile.mockResolvedValue('' as unknown as ArrayBuffer);
   });
 
-  it('returns ok result on successful claude execution', async () => {
+  it('returns a completed outcome on successful execution', async () => {
     const job = makeChatJob();
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
@@ -147,8 +133,8 @@ describe('handleChatJob', () => {
       sessionStore,
     });
 
-    expect(result.ok).toBe(true);
-    if (result.ok) {
+    expect(result.kind).toBe('completed');
+    if (result.kind === 'completed') {
       expect(result.response).toBe('Hello from claude!');
     }
   });
@@ -250,7 +236,6 @@ describe('handleChatJob', () => {
       telegram: makeTelegram(),
       config: makeConfig(),
       sessionStore,
-      completionMode: 'durable',
     });
 
     expect(runClaudeStreaming.mock.calls[0]?.[0].prompt).toContain(
@@ -282,7 +267,6 @@ describe('handleChatJob', () => {
       telegram: makeTelegram(),
       config: makeConfig(),
       sessionStore: makeSessionStore(),
-      completionMode: 'durable',
     });
 
     expect(runClaudeStreaming.mock.calls[0]?.[0].prompt).toContain(
@@ -310,12 +294,12 @@ describe('handleChatJob', () => {
       sessionStore,
     });
 
-    expect(result.ok).toBe(true);
+    expect(result.kind).toBe('completed');
     const callArgs = runClaudeStreaming.mock.calls[0]?.[0];
     expect(callArgs.prompt).toBe('Hello!');
   });
 
-  it('sends placeholder before Claude runs and edits it with final response', async () => {
+  it('sends the status message before running and the response edits it via completion operations', async () => {
     const job = makeChatJob({ chatId: 789 });
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
@@ -326,26 +310,26 @@ describe('handleChatJob', () => {
       durationMs: 200,
     });
 
-    await handleChatJob(job, {
+    const result = await handleChatJob(job, {
       runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
       telegram,
       config: makeConfig(),
       sessionStore,
     });
 
-    // Placeholder "..." should have been sent
-    expect(telegram.sendMessage).toHaveBeenCalledWith(789, '...');
+    // The status message "…" should have been sent once, italic HTML
+    expect(telegram.sendMessage).toHaveBeenCalledOnce();
+    expect(telegram.sendMessage).toHaveBeenCalledWith(789, '<i>…</i>', { html: true });
 
-    // Final response should edit the placeholder (messageId=42 from mock)
-    const editCalls = (telegram.editMessage as ReturnType<typeof vi.fn>).mock.calls;
-    const lastEdit = editCalls.at(-1);
-    if (lastEdit === undefined) throw new Error('Expected a final Telegram edit');
-    expect(lastEdit[0]).toBe(789);
-    expect(lastEdit[1]).toBe(42);
-    expect(lastEdit[2]).toBe('Final response');
+    // The response's first chunk edits the status message (messageId=42) via
+    // the deferred completion operations — the delivery outbox executes them.
+    expect(result.kind).toBe('completed');
+    expect(result).toMatchObject({
+      telegramOperations: [{ kind: 'edit', messageId: 42, text: 'Final response', format: 'html' }],
+    });
   });
 
-  it('returns durable completion effects before session, final delivery, and Cortex I/O', async () => {
+  it('returns durable completion effects: session lineage, deliveries, and source paths', async () => {
     const job = makeChatJob({
       chatId: 789,
       imagePaths: ['/state/image.jpg'],
@@ -353,7 +337,6 @@ describe('handleChatJob', () => {
     });
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const triggerCortexExtraction = vi.fn();
     const runClaudeStreaming = makeRunClaudeStreaming({
       ok: true,
       output: 'Durable response',
@@ -366,8 +349,6 @@ describe('handleChatJob', () => {
       telegram,
       config: makeConfig(),
       sessionStore,
-      triggerCortexExtraction,
-      completionMode: 'durable',
     });
 
     expect(result).toMatchObject({
@@ -384,15 +365,15 @@ describe('handleChatJob', () => {
         },
       ],
     });
+    // Session commit is the worker's job (chat-session delivery), not the handler's.
     expect(sessionStore.commitSession).not.toHaveBeenCalled();
-    // Live preview edits remain best-effort; the final HTML edit is deferred.
+    // Live status edits remain best-effort; the final HTML edit is deferred.
     expect(telegram.editMessage).not.toHaveBeenCalledWith(789, 42, 'Durable response', {
       html: true,
     });
-    expect(triggerCortexExtraction).not.toHaveBeenCalled();
   });
 
-  it('preserves typed agent failure data in durable mode', async () => {
+  it('preserves typed agent failure data', async () => {
     const failure = {
       kind: 'provider-rate-limited',
       backend: 'pi',
@@ -406,13 +387,12 @@ describe('handleChatJob', () => {
       telegram: makeTelegram(),
       config: makeConfig(),
       sessionStore: makeSessionStore(),
-      completionMode: 'durable',
     });
 
     expect(result).toEqual({ kind: 'failed', failure });
   });
 
-  it('does not use sendChunkedMessage when placeholder succeeds', async () => {
+  it('does not use sendChunkedMessage when the status message succeeds', async () => {
     const job = makeChatJob({ chatId: 789 });
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
@@ -433,10 +413,10 @@ describe('handleChatJob', () => {
     expect(telegram.sendChunkedMessage).not.toHaveBeenCalled();
   });
 
-  it('falls back to sendChunkedMessage when placeholder send fails', async () => {
+  it('returns all-send operations when the status message fails to send', async () => {
     const job = makeChatJob({ chatId: 789 });
     const telegram = makeTelegram();
-    // First sendMessage (placeholder) fails, second (error/result) should work
+    // The status message send fails — no streaming, no tracked message.
     (telegram.sendMessage as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
       new Error('Telegram API error'),
     );
@@ -448,32 +428,35 @@ describe('handleChatJob', () => {
       durationMs: 200,
     });
 
-    await handleChatJob(job, {
+    const result = await handleChatJob(job, {
       runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
       telegram,
       config: makeConfig(),
       sessionStore,
     });
 
-    // Should fall back to chunked message
-    expect(telegram.sendChunkedMessage).toHaveBeenCalledOnce();
-    const firstChunkedCall = (
-      telegram.sendChunkedMessage as ReturnType<typeof vi.fn>
-    ).mock.calls.at(0);
-    if (firstChunkedCall === undefined) throw new Error('Expected a chunked Telegram send');
-    const [chatId, chunks] = firstChunkedCall;
-    expect(chatId).toBe(789);
-    expect(chunks).toEqual(['Fallback response']);
+    expect(result.kind).toBe('completed');
+    if (result.kind !== 'completed') throw new Error('Expected a completed outcome');
+    // Every operation is a send — the status message never existed to edit.
+    expect(result.telegramOperations.length).toBeGreaterThan(0);
+    for (const operation of result.telegramOperations) {
+      expect(operation.kind).toBe('send');
+    }
+    // No status edits were attempted without a tracked message.
+    expect(telegram.editMessage).not.toHaveBeenCalled();
   });
 
-  it("stays silent on claude failure — user error is the dead-letter handler's job (FR-012)", async () => {
+  it("stays silent on failure — the user error is the dead-letter handler's job (FR-012)", async () => {
     const job = makeChatJob({ chatId: 999 });
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const runClaudeStreaming = makeRunClaudeStreaming({
-      ok: false,
-      failure: { kind: 'process-exit', backend: 'claude', exitCode: 1, detail: 'failure' },
-    });
+    const failure = {
+      kind: 'process-exit',
+      backend: 'claude',
+      exitCode: 1,
+      detail: 'failure',
+    } as const;
+    const runClaudeStreaming = makeRunClaudeStreaming({ ok: false, failure });
 
     const result = await handleChatJob(job, {
       runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
@@ -482,24 +465,20 @@ describe('handleChatJob', () => {
       sessionStore,
     });
 
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error).toBe('claude exited with code 1: failure');
-    }
+    expect(result).toEqual({ kind: 'failed', failure });
 
-    // Handler must NOT send a per-attempt "Sorry" — that produced one duplicate
-    // message per BullMQ retry. The worker's dead-letter handler sends a single
-    // user-friendly message after the final retry.
+    // The handler must NOT send a per-attempt "Sorry" — that produced one
+    // duplicate message per BullMQ retry. The worker's dead-letter handler
+    // sends a single user-friendly message after the final retry.
     const editCalls = (telegram.editMessage as ReturnType<typeof vi.fn>).mock.calls;
     const sendCalls = (telegram.sendMessage as ReturnType<typeof vi.fn>).mock.calls;
     const mentionsSorry = (text: unknown): boolean =>
       typeof text === 'string' && text.toLowerCase().includes('sorry');
     expect(editCalls.some((c) => mentionsSorry(c[2]))).toBe(false);
-    // Only the placeholder send is expected; no error message.
     expect(sendCalls.some((c) => mentionsSorry(c[1]))).toBe(false);
   });
 
-  it('does not send chunked message on claude failure', async () => {
+  it('does not send chunked message on failure', async () => {
     const job = makeChatJob();
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
@@ -518,7 +497,7 @@ describe('handleChatJob', () => {
     expect(telegram.sendChunkedMessage).not.toHaveBeenCalled();
   });
 
-  it('response matches claude output string exactly', async () => {
+  it('response matches the agent output string exactly', async () => {
     const claudeOutput = 'The answer is 42.';
     const job = makeChatJob({ text: 'What is the answer?' });
     const telegram = makeTelegram();
@@ -537,64 +516,13 @@ describe('handleChatJob', () => {
       sessionStore,
     });
 
-    expect(result.ok).toBe(true);
-    if (result.ok) {
+    expect(result.kind).toBe('completed');
+    if (result.kind === 'completed') {
       expect(result.response).toBe(claudeOutput);
     }
   });
 
   // ─── Session tests ──────────────────────────────────────────────────────────
-
-  it('saves session on success when sessionId returned', async () => {
-    const job = makeChatJob({ chatId: 456 });
-    const telegram = makeTelegram();
-    const sessionStore = makeSessionStore();
-    const runClaudeStreaming = makeRunClaudeStreaming({
-      ok: true,
-      output: 'hi',
-      sessionId: 'sess-new',
-      durationMs: 100,
-    });
-
-    await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
-      telegram,
-      config: makeConfig(),
-      sessionStore,
-    });
-
-    expect(sessionStore.commitSession).toHaveBeenCalledOnce();
-    expect(sessionStore.commitSession).toHaveBeenCalledWith(
-      expect.objectContaining({
-        chatId: 456,
-        expectedGeneration: 0,
-        expectedRevision: 0,
-        backend: 'claude',
-        sessionId: 'sess-new',
-      }),
-    );
-  });
-
-  it('does not save session when sessionId is null', async () => {
-    const job = makeChatJob();
-    const telegram = makeTelegram();
-    const sessionStore = makeSessionStore();
-    const runClaudeStreaming = makeRunClaudeStreaming({
-      ok: true,
-      output: 'hi',
-      sessionId: null,
-      durationMs: 100,
-    });
-
-    await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
-      telegram,
-      config: makeConfig(),
-      sessionStore,
-    });
-
-    expect(sessionStore.commitSession).not.toHaveBeenCalled();
-  });
 
   it('resumes existing valid session — sends message-only prompt', async () => {
     const job = makeChatJob({ text: 'follow up question' });
@@ -658,7 +586,6 @@ describe('handleChatJob', () => {
       telegram: makeTelegram(),
       config: makeConfig(),
       sessionStore,
-      completionMode: 'durable',
     });
 
     expect(runClaudeStreaming.mock.calls[0]?.[0]).toMatchObject({
@@ -703,7 +630,6 @@ describe('handleChatJob', () => {
       telegram: makeTelegram(),
       config: makeConfig(),
       sessionStore,
-      completionMode: 'durable',
     });
 
     expect(runClaudeStreaming.mock.calls[0]?.[0]).toMatchObject({
@@ -751,18 +677,20 @@ describe('handleChatJob', () => {
       sessionStore,
     });
 
-    expect(result.ok).toBe(true);
-    if (result.ok) {
+    expect(result.kind).toBe('completed');
+    if (result.kind === 'completed') {
       expect(result.response).toBe('recovered');
+      expect(result.sessionId).toBe('sess-fresh');
     }
     // Should have called runClaudeStreaming twice
     expect(runClaudeStreaming).toHaveBeenCalledTimes(2);
     // First with resume, second without
     expect(runClaudeStreaming.mock.calls[0]?.[0].resumeSessionId).toBe('sess-stale');
     expect(runClaudeStreaming.mock.calls[1]?.[0].resumeSessionId).toBeUndefined();
-    // Fallback does not mutate lineage before the fresh result commits.
+    // Fallback does not mutate lineage; the session commit is the worker's
+    // job (chat-session delivery), not the handler's.
     expect(sessionStore.advance).not.toHaveBeenCalled();
-    expect(sessionStore.commitSession).toHaveBeenCalledOnce();
+    expect(sessionStore.commitSession).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -799,22 +727,16 @@ describe('handleChatJob', () => {
       sessionStore,
     });
 
-    expect(result.ok).toBe(false);
+    expect(result).toEqual({ kind: 'failed', failure });
     expect(runClaudeStreaming).toHaveBeenCalledOnce();
     expect(sessionStore.advance).not.toHaveBeenCalled();
   });
 
-  // ─── Block-based streaming tests ───────────────────────────────────────────
+  // ─── Status streaming tests ─────────────────────────────────────────────────
 
-  it('preserves thinking in italic HTML and sends response as new message', async () => {
+  it('streams thinking as throttled status edits on the single status message', async () => {
     const job = makeChatJob({ chatId: 789 });
     const telegram = makeTelegram();
-    let sendCount = 0;
-    (telegram.sendMessage as ReturnType<typeof vi.fn>).mockImplementation(() => {
-      sendCount++;
-      // 1=placeholder(42), 2=text block msg(43)
-      return Promise.resolve(sendCount === 1 ? 42 : 43);
-    });
     const sessionStore = makeSessionStore();
     const thinking = 'Let me analyze this carefully and consider the options...';
 
@@ -822,22 +744,9 @@ describe('handleChatJob', () => {
       .fn()
       .mockImplementation((_opts: unknown, onChunk?: OnStreamChunk) => {
         if (onChunk) {
-          // Block start events + deltas
-          onChunk(
-            chunk('thinking', thinking, '', {
-              currentBlockThinking: thinking,
-              thinkingBlockCount: 1,
-              textBlockCount: 0,
-            }),
-          );
-          onChunk(
-            chunk('text', thinking, 'Final answer', {
-              currentBlockThinking: thinking,
-              currentBlockText: 'Final answer',
-              thinkingBlockCount: 1,
-              textBlockCount: 1,
-            }),
-          );
+          onChunk(thinkingChunk(thinking));
+          onChunk(thinkingChunk(`${thinking} more`));
+          onChunk(textChunk('Final answer'));
         }
         return Promise.resolve({
           ok: true,
@@ -854,24 +763,92 @@ describe('handleChatJob', () => {
       sessionStore,
     });
 
-    expect(result.ok).toBe(true);
+    expect(result.kind).toBe('completed');
 
-    // Finalization: thinking edited into placeholder as italic HTML
+    // Exactly one status message, italic HTML
+    expect(telegram.sendMessage).toHaveBeenCalledOnce();
+    expect(telegram.sendMessage).toHaveBeenCalledWith(789, '<i>…</i>', { html: true });
+
+    // One status edit: the first thinking chunk spends the empty throttle
+    // clock; the later chunks — including the writing phase change — arrive
+    // within the window, so the total invariant holds (no unthrottled edit).
     const editCalls = (telegram.editMessage as ReturnType<typeof vi.fn>).mock.calls;
-    const thinkingEdit = editCalls.find(
-      (c: unknown[]) => c[1] === 42 && (c[2] as string).includes('<i>'),
-    );
-    expect(thinkingEdit).toBeDefined();
-    expect(thinkingEdit?.[3]).toEqual({ html: true });
+    expect(editCalls.length).toBe(1);
+    const firstEdit = editCalls[0];
+    if (firstEdit === undefined) throw new Error('Expected a thinking status edit');
+    expect(firstEdit[0]).toBe(789);
+    expect(firstEdit[1]).toBe(42);
+    expect(firstEdit[3]).toEqual({ html: true });
+    expect(firstEdit[2]).toContain('…thinking: ');
 
-    // Final thinking edit contains the full thinking content
-    const finalThinkingEdit = editCalls.find(
-      (c: unknown[]) => c[1] === 42 && (c[2] as string) === `<i>${thinking}</i>`,
-    );
-    expect(finalThinkingEdit).toBeDefined();
+    // Completion operations: the response edits the status message; thinking
+    // content is never delivered as its own message.
+    expect(result).toMatchObject({
+      kind: 'completed',
+      response: 'Final answer',
+      telegramOperations: [{ kind: 'edit', messageId: 42, text: 'Final answer', format: 'html' }],
+    });
   });
 
-  it('uses single message when no thinking occurs', async () => {
+  it('never sends thinking content as a separate message', async () => {
+    const job = makeChatJob({ chatId: 789 });
+    const telegram = makeTelegram();
+    const sessionStore = makeSessionStore();
+    const thinking = 'Deep internal reasoning that must not flood the chat.';
+
+    const runClaudeStreaming = vi
+      .fn()
+      .mockImplementation(async (_opts: unknown, onChunk?: OnStreamChunk) => {
+        if (onChunk) {
+          // Simulate a long agentic turn: several thinking and text phases
+          // with real gaps, then the final text.
+          onChunk(thinkingChunk(thinking));
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          onChunk(textChunk('Part one'));
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          onChunk(thinkingChunk(`${thinking} part two`));
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          onChunk(textChunk('Part onePart two'));
+        }
+        return {
+          ok: true,
+          output: 'Part onePart two',
+          sessionId: null,
+          durationMs: 5_000,
+        };
+      });
+
+    const result = await handleChatJob(job, {
+      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      telegram,
+      config: makeConfig(),
+      sessionStore,
+    });
+
+    expect(result.kind).toBe('completed');
+
+    // One sendMessage total — the status message. No per-block messages, no
+    // italic thinking dumps.
+    expect(telegram.sendMessage).toHaveBeenCalledOnce();
+    const sendCalls = (telegram.sendMessage as ReturnType<typeof vi.fn>).mock.calls;
+    const firstSend = sendCalls[0];
+    if (firstSend === undefined) throw new Error('Expected a status message send');
+    expect(firstSend[1]).toBe('<i>…</i>');
+
+    // Every edit targets the status message (42) — thinking never gets its own.
+    const editCalls = (telegram.editMessage as ReturnType<typeof vi.fn>).mock.calls;
+    for (const c of editCalls) {
+      expect(c[1]).toBe(42);
+    }
+
+    // Completion operations contain no italic thinking — only response chunks.
+    if (result.kind !== 'completed') throw new Error('Expected a completed outcome');
+    for (const operation of result.telegramOperations) {
+      expect(operation.text).not.toContain('<i>');
+    }
+  });
+
+  it('edits the status message with the response first chunk when no thinking occurs', async () => {
     const job = makeChatJob({ chatId: 789 });
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
@@ -884,451 +861,40 @@ describe('handleChatJob', () => {
       durationMs: 200,
     });
 
-    await handleChatJob(job, {
+    const result = await handleChatJob(job, {
       runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
       telegram,
       config: makeConfig(),
       sessionStore,
     });
 
-    // Only one sendMessage call (placeholder), no second message
+    // Only one sendMessage call (the status message)
     expect(telegram.sendMessage).toHaveBeenCalledOnce();
-    expect(telegram.sendMessage).toHaveBeenCalledWith(789, '...');
+    expect(telegram.sendMessage).toHaveBeenCalledWith(789, '<i>…</i>', { html: true });
 
-    // Final response edits placeholder (msgId=42)
-    const editCalls = (telegram.editMessage as ReturnType<typeof vi.fn>).mock.calls;
-    const lastEdit = editCalls.at(-1);
-    if (lastEdit === undefined) throw new Error('Expected a final Telegram edit');
-    expect(lastEdit[1]).toBe(42);
-    expect(lastEdit[2]).toBe('Direct answer');
+    // The response's first chunk edits the status message via completion ops
+    expect(result).toMatchObject({
+      kind: 'completed',
+      telegramOperations: [{ kind: 'edit', messageId: 42, text: 'Direct answer', format: 'html' }],
+    });
 
-    // sendChunkedMessage NOT used — placeholder was edited instead
+    // sendChunkedMessage NOT used — the status message was edited instead
     expect(telegram.sendChunkedMessage).not.toHaveBeenCalled();
   });
 
-  it('does not overwrite streamed thinking with error on failure (dead-letter sends the apology)', async () => {
+  it('splits a long response into an edit plus sends in the completion operations', async () => {
     const job = makeChatJob({ chatId: 789 });
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const thinking = 'Analyzing the problem...';
-
-    const runClaudeStreaming = vi
-      .fn()
-      .mockImplementation((_opts: unknown, onChunk?: OnStreamChunk) => {
-        if (onChunk) {
-          onChunk(
-            chunk('thinking', thinking, '', {
-              currentBlockThinking: thinking,
-              thinkingBlockCount: 1,
-            }),
-          );
-        }
-        return Promise.resolve({
-          ok: false,
-          failure: { kind: 'process-exit', backend: 'claude', exitCode: 1, detail: 'crashed' },
-        });
-      });
-
-    const result = await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
-      telegram,
-      config: makeConfig(),
-      sessionStore,
-    });
-
-    expect(result.ok).toBe(false);
-
-    // Handler stays silent — neither the placeholder nor a new message carries
-    // a "Sorry" string. The worker's dead-letter handler is responsible for the
-    // single user-facing message after final retry.
-    const sendCalls = (telegram.sendMessage as ReturnType<typeof vi.fn>).mock.calls;
-    const editCalls = (telegram.editMessage as ReturnType<typeof vi.fn>).mock.calls;
-    const mentionsSorry = (text: unknown): boolean =>
-      typeof text === 'string' && text.toLowerCase().includes('sorry');
-    expect(sendCalls.some((c) => mentionsSorry(c[1]))).toBe(false);
-    expect(editCalls.some((c) => mentionsSorry(c[2]))).toBe(false);
-  });
-
-  it('captures full thinking content even when most chunks are throttled', async () => {
-    const job = makeChatJob({ chatId: 789 });
-    const telegram = makeTelegram();
-    const sessionStore = makeSessionStore();
-
-    // Simulate rapid thinking deltas — only first passes the 1500ms throttle,
-    // rest are throttled. Block content must still capture the full content.
-    const runClaudeStreaming = vi
-      .fn()
-      .mockImplementation((_opts: unknown, onChunk?: OnStreamChunk) => {
-        if (onChunk) {
-          onChunk(
-            chunk('thinking', 'The', '', {
-              currentBlockThinking: 'The',
-              thinkingBlockCount: 1,
-            }),
-          );
-          onChunk(
-            chunk('thinking', 'The user wants', '', {
-              currentBlockThinking: 'The user wants',
-              thinkingBlockCount: 1,
-            }),
-          );
-          onChunk(
-            chunk('thinking', 'The user wants to understand how this works in detail', '', {
-              currentBlockThinking: 'The user wants to understand how this works in detail',
-              thinkingBlockCount: 1,
-            }),
-          );
-          onChunk(
-            chunk(
-              'text',
-              'The user wants to understand how this works in detail',
-              'Here is the answer',
-              {
-                currentBlockThinking: 'The user wants to understand how this works in detail',
-                currentBlockText: 'Here is the answer',
-                thinkingBlockCount: 1,
-                textBlockCount: 1,
-              },
-            ),
-          );
-        }
-        return Promise.resolve({
-          ok: true,
-          output: 'Here is the answer',
-          sessionId: null,
-          durationMs: 500,
-        });
-      });
-
-    await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
-      telegram,
-      config: makeConfig(),
-      sessionStore,
-    });
-
-    // Finalization must use the FULL thinking, not just the first throttled chunk
-    const fullThinking = 'The user wants to understand how this works in detail';
-    const editCalls = (telegram.editMessage as ReturnType<typeof vi.fn>).mock.calls;
-    const finalThinkingEdit = editCalls.find(
-      (c: unknown[]) => c[1] === 42 && (c[2] as string) === `<i>${fullThinking}</i>`,
-    );
-    expect(finalThinkingEdit).toBeDefined();
-    expect(finalThinkingEdit?.[3]).toEqual({ html: true });
-  });
-
-  it('creates separate messages for multiple thinking/text blocks', async () => {
-    const job = makeChatJob({ chatId: 789 });
-    const telegram = makeTelegram();
-    let sendCount = 0;
-    (telegram.sendMessage as ReturnType<typeof vi.fn>).mockImplementation(() => {
-      sendCount++;
-      // 1=placeholder(42), 2=text1 msg(43), 3=thinking2 msg(44), 4=text2 msg(45)
-      return Promise.resolve(40 + sendCount + 1);
-    });
-    const sessionStore = makeSessionStore();
-
-    const runClaudeStreaming = vi
-      .fn()
-      .mockImplementation(async (_opts: unknown, onChunk?: OnStreamChunk) => {
-        if (onChunk) {
-          // Block 1: thinking
-          onChunk(
-            chunk('thinking', 'First thought', '', {
-              currentBlockThinking: 'First thought',
-              thinkingBlockCount: 1,
-              textBlockCount: 0,
-            }),
-          );
-          // Wait for throttle + async sendMessage
-          await new Promise((r) => setTimeout(r, 1600));
-          // Block 2: text
-          onChunk(
-            chunk('text', 'First thought', 'Part 1 answer', {
-              currentBlockThinking: 'First thought',
-              currentBlockText: 'Part 1 answer',
-              thinkingBlockCount: 1,
-              textBlockCount: 1,
-            }),
-          );
-          await new Promise((r) => setTimeout(r, 1600));
-          // Block 3: thinking again
-          onChunk(
-            chunk('thinking', 'First thought\nSecond thought', '', {
-              currentBlockThinking: 'Second thought',
-              currentBlockText: 'Part 1 answer',
-              thinkingBlockCount: 2,
-              textBlockCount: 1,
-            }),
-          );
-          await new Promise((r) => setTimeout(r, 1600));
-          // Block 4: text again
-          onChunk(
-            chunk('text', 'First thought\nSecond thought', 'Part 1 answerPart 2 answer', {
-              currentBlockThinking: 'Second thought',
-              currentBlockText: 'Part 2 answer',
-              thinkingBlockCount: 2,
-              textBlockCount: 2,
-            }),
-          );
-          await new Promise((r) => setTimeout(r, 50));
-        }
-        return {
-          ok: true,
-          output: 'Part 1 answerPart 2 answer',
-          sessionId: null,
-          durationMs: 5000,
-        };
-      });
-
-    await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
-      telegram,
-      config: makeConfig(),
-      sessionStore,
-    });
-
-    // Should have sent 4 messages: placeholder + 3 new block messages
-    const sendCalls = (telegram.sendMessage as ReturnType<typeof vi.fn>).mock.calls;
-    expect(sendCalls.length).toBeGreaterThanOrEqual(4);
-
-    // Finalization: each block's message gets edited with proper content
-    const editCalls = (telegram.editMessage as ReturnType<typeof vi.fn>).mock.calls;
-
-    // Thinking block 1 (placeholder=42) should have italic HTML
-    const thinking1Edit = editCalls.find(
-      (c: unknown[]) => c[1] === 42 && (c[2] as string) === '<i>First thought</i>',
-    );
-    expect(thinking1Edit).toBeDefined();
-
-    // Thinking block 2 (msg=44) should have italic HTML
-    const thinking2Edit = editCalls.find(
-      (c: unknown[]) => c[1] === 44 && (c[2] as string) === '<i>Second thought</i>',
-    );
-    expect(thinking2Edit).toBeDefined();
-  }, 10000);
-
-  it('updates blocks via catch-up and transition edits during rapid transitions', async () => {
-    const job = makeChatJob({ chatId: 789 });
-    const telegram = makeTelegram();
-    let sendCount = 0;
-    (telegram.sendMessage as ReturnType<typeof vi.fn>).mockImplementation(() => {
-      sendCount++;
-      // 1=placeholder(42), 2=text1(43), 3=thinking2(44), 4=text2(45)
-      return Promise.resolve(40 + sendCount + 1);
-    });
-    const sessionStore = makeSessionStore();
-
-    // Rapid transitions — NO 1600ms gaps, simulates the real bug scenario
-    const runClaudeStreaming = vi
-      .fn()
-      .mockImplementation(async (_opts: unknown, onChunk?: OnStreamChunk) => {
-        if (onChunk) {
-          // Thinking 1 — reuses placeholder (42), immediate
-          onChunk(
-            chunk('thinking', 'First thought', '', {
-              currentBlockThinking: 'First thought',
-              thinkingBlockCount: 1,
-            }),
-          );
-          // Text 1 — creates new msg (43), content arrives before sendMessage resolves
-          onChunk(
-            chunk('text', 'First thought', 'Answer one', {
-              currentBlockText: 'Answer one',
-              thinkingBlockCount: 1,
-              textBlockCount: 1,
-            }),
-          );
-          // Let sendMessage promises resolve so catch-up edits fire
-          await new Promise((r) => setTimeout(r, 10));
-          // Thinking 2 — creates new msg (44), should trigger transition edit on text1
-          onChunk(
-            chunk('thinking', 'First thought\nSecond thought', 'Answer one', {
-              currentBlockThinking: 'Second thought',
-              thinkingBlockCount: 2,
-              textBlockCount: 1,
-            }),
-          );
-          await new Promise((r) => setTimeout(r, 10));
-          // Text 2 — creates new msg (45)
-          onChunk(
-            chunk('text', 'First thought\nSecond thought', 'Answer oneAnswer two', {
-              currentBlockText: 'Answer two',
-              thinkingBlockCount: 2,
-              textBlockCount: 2,
-            }),
-          );
-          await new Promise((r) => setTimeout(r, 10));
-        }
-        return { ok: true, output: 'Answer oneAnswer two', sessionId: null, durationMs: 200 };
-      });
-
-    await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
-      telegram,
-      config: makeConfig(),
-      sessionStore,
-    });
-
-    const editCalls = (telegram.editMessage as ReturnType<typeof vi.fn>).mock.calls;
-
-    // Text→thinking transition edit: text1 (msg 43) should have been edited
-    // with its content BEFORE finalization (transition edit or catch-up edit)
-    const text1Edits = editCalls.filter(
-      (c: unknown[]) =>
-        c[1] === 43 && typeof c[2] === 'string' && (c[2] as string).includes('Answer one'),
-    );
-    // Should have at least 2 edits on text1: one from catch-up/transition + one from finalization
-    expect(text1Edits.length).toBeGreaterThanOrEqual(2);
-
-    // Thinking→text transition edit: thinking1 (placeholder 42) should have italic content
-    const thinking1Edits = editCalls.filter(
-      (c: unknown[]) => c[1] === 42 && typeof c[2] === 'string' && (c[2] as string).includes('<i>'),
-    );
-    expect(thinking1Edits.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it('streams text into a new message after thinking instead of waiting', async () => {
-    const job = makeChatJob({ chatId: 789 });
-    const telegram = makeTelegram();
-    // sendMessage returns different IDs: 42 for placeholder, 43 for text preview
-    let sendCount = 0;
-    (telegram.sendMessage as ReturnType<typeof vi.fn>).mockImplementation(() => {
-      sendCount++;
-      return Promise.resolve(sendCount === 1 ? 42 : 43);
-    });
-    const sessionStore = makeSessionStore();
-
-    const runClaudeStreaming = vi
-      .fn()
-      .mockImplementation(async (_opts: unknown, onChunk?: OnStreamChunk) => {
-        if (onChunk) {
-          // Thinking chunk — passes throttle (first call)
-          onChunk(
-            chunk('thinking', 'Let me think...', '', {
-              currentBlockThinking: 'Let me think...',
-              thinkingBlockCount: 1,
-            }),
-          );
-          // Wait for throttle window to pass so text chunk also passes
-          await new Promise((r) => setTimeout(r, 1600));
-          // Text chunk — should create a new message
-          onChunk(
-            chunk('text', 'Let me think...', 'Here is my response', {
-              currentBlockThinking: 'Let me think...',
-              currentBlockText: 'Here is my response',
-              thinkingBlockCount: 1,
-              textBlockCount: 1,
-            }),
-          );
-          // Wait for sendMessage promise to resolve
-          await new Promise((r) => setTimeout(r, 50));
-        }
-        return { ok: true, output: 'Here is my response', sessionId: null, durationMs: 2000 };
-      });
-
-    await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
-      telegram,
-      config: makeConfig(),
-      sessionStore,
-    });
-
-    // Should have sent: placeholder (42) + text block message (43)
-    const sendCalls = (telegram.sendMessage as ReturnType<typeof vi.fn>).mock.calls;
-    expect(sendCalls.length).toBeGreaterThanOrEqual(2);
-
-    // Finalization should edit the text message (43) with HTML
-    const editCalls = (telegram.editMessage as ReturnType<typeof vi.fn>).mock.calls;
-    const finalTextEdit = editCalls.find(
-      (c: unknown[]) => c[1] === 43 && c[2] === 'Here is my response',
-    );
-    expect(finalTextEdit).toBeDefined();
-    expect(telegram.sendChunkedMessage).not.toHaveBeenCalled();
-  });
-
-  // ─── Cortex extraction tests ────────────────────────────────────────────────
-
-  it('triggers cortex extraction with sessionId and cwd on success', async () => {
-    const job = makeChatJob();
-    const telegram = makeTelegram();
-    const sessionStore = makeSessionStore();
-    const triggerCortexExtraction = vi.fn();
+    // Long enough to exceed the 4096-char Telegram limit after HTML conversion.
+    const longOutput = `${'Paragraph one of a long answer. '.repeat(300)}Final tail.`;
     const runClaudeStreaming = makeRunClaudeStreaming({
       ok: true,
-      output: 'hi',
-      sessionId: 'sess-abc',
-      durationMs: 100,
-    });
-
-    await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
-      telegram,
-      config: makeConfig({ workspacePath: '/my/workspace' }),
-      sessionStore,
-      triggerCortexExtraction,
-    });
-
-    expect(triggerCortexExtraction).toHaveBeenCalledOnce();
-    expect(triggerCortexExtraction).toHaveBeenCalledWith('sess-abc', '/my/workspace');
-  });
-
-  it('does not trigger cortex extraction when sessionId is null', async () => {
-    const job = makeChatJob();
-    const telegram = makeTelegram();
-    const sessionStore = makeSessionStore();
-    const triggerCortexExtraction = vi.fn();
-    const runClaudeStreaming = makeRunClaudeStreaming({
-      ok: true,
-      output: 'hi',
+      output: longOutput,
       sessionId: null,
-      durationMs: 100,
+      durationMs: 200,
     });
 
-    await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
-      telegram,
-      config: makeConfig(),
-      sessionStore,
-      triggerCortexExtraction,
-    });
-
-    expect(triggerCortexExtraction).not.toHaveBeenCalled();
-  });
-
-  it('does not trigger cortex extraction on claude failure', async () => {
-    const job = makeChatJob();
-    const telegram = makeTelegram();
-    const sessionStore = makeSessionStore();
-    const triggerCortexExtraction = vi.fn();
-    const runClaudeStreaming = makeRunClaudeStreaming({
-      ok: false,
-      failure: { kind: 'timeout', backend: 'claude', timeoutMs: 120_000 },
-    });
-
-    await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
-      telegram,
-      config: makeConfig(),
-      sessionStore,
-      triggerCortexExtraction,
-    });
-
-    expect(triggerCortexExtraction).not.toHaveBeenCalled();
-  });
-
-  it('works without triggerCortexExtraction (optional dep)', async () => {
-    const job = makeChatJob();
-    const telegram = makeTelegram();
-    const sessionStore = makeSessionStore();
-    const runClaudeStreaming = makeRunClaudeStreaming({
-      ok: true,
-      output: 'hi',
-      sessionId: 'sess-1',
-      durationMs: 100,
-    });
-
-    // No triggerCortexExtraction in deps — should not throw
     const result = await handleChatJob(job, {
       runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
       telegram,
@@ -1336,6 +902,64 @@ describe('handleChatJob', () => {
       sessionStore,
     });
 
-    expect(result.ok).toBe(true);
+    expect(result.kind).toBe('completed');
+    if (result.kind !== 'completed') throw new Error('Expected a completed outcome');
+
+    // First chunk edits the status message; every later chunk is a send.
+    const operations = result.telegramOperations;
+    expect(operations.length).toBeGreaterThan(1);
+    const firstOperation = operations[0];
+    if (firstOperation === undefined || firstOperation.kind !== 'edit') {
+      throw new Error('Expected the first operation to edit the status message');
+    }
+    expect(firstOperation.messageId).toBe(42);
+    for (const operation of operations.slice(1)) {
+      expect(operation.kind).toBe('send');
+    }
+    // Splitter invariant: every delivered chunk fits Telegram's message limit.
+    for (const operation of operations) {
+      expect(operation.text.length).toBeLessThanOrEqual(4096);
+    }
+  });
+
+  it('completes the turn when a status edit is rejected mid-stream', async () => {
+    const job = makeChatJob({ chatId: 789 });
+    const telegram = makeTelegram();
+    // Every status edit fails — the warn is logged, the turn completes.
+    (telegram.editMessage as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('Telegram API error'),
+    );
+    const sessionStore = makeSessionStore();
+
+    const runClaudeStreaming = vi
+      .fn()
+      .mockImplementation((_opts: unknown, onChunk?: OnStreamChunk) => {
+        if (onChunk) {
+          onChunk(thinkingChunk('analyzing'));
+          onChunk(textChunk('Final answer'));
+        }
+        return Promise.resolve({
+          ok: true,
+          output: 'Final answer',
+          sessionId: null,
+          durationMs: 200,
+        });
+      });
+
+    const result = await handleChatJob(job, {
+      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      telegram,
+      config: makeConfig(),
+      sessionStore,
+    });
+
+    // The rejected editMessage must not abort the turn.
+    expect(result.kind).toBe('completed');
+    if (result.kind !== 'completed') throw new Error('Expected a completed outcome');
+    expect(result.response).toBe('Final answer');
+    // The edits were attempted against the status message.
+    expect(telegram.editMessage).toHaveBeenCalled();
+    // drainPreviews settles the best-effort effects without throwing.
+    await result.drainPreviews();
   });
 });

@@ -64,24 +64,29 @@ export type StreamDelta =
   | { readonly type: 'text'; readonly text: string }
   | { readonly type: 'block_start'; readonly blockType: 'thinking' | 'text' };
 
-export type StreamChunk = {
-  readonly phase: 'thinking' | 'text';
-  readonly thinking: string;
-  readonly text: string;
-  readonly currentBlockThinking: string;
-  readonly currentBlockText: string;
-  readonly thinkingBlockCount: number;
-  readonly textBlockCount: number;
-};
+/**
+ * One stream step, as observed by the consumer.
+ *
+ * The runner owns phase tracking and per-block accumulators; the chunk is a
+ * discriminated union so the off-phase field is unrepresentable — a consumer
+ * cannot read the wrong accumulator, and the phase/field correlation is a
+ * type-level invariant instead of a comment-level convention.
+ */
+export type StreamChunk =
+  | { readonly phase: 'thinking'; readonly thinking: string }
+  | { readonly phase: 'text'; readonly text: string };
 
 /**
- * Streaming callback, invoked once per accumulated chunk.
+ * Streaming callback, invoked once per stream delta and block start.
  *
  * MUST be synchronous. The runner calls it fire-and-forget and does NOT await
  * the return value — returning a Promise would float (unhandled rejection on
  * throw, no ordering guarantee against subsequent chunks). The `void` return
- * type enforces this at the call site. Keep handlers cheap; push any async
- * work (I/O, network) onto a separate queue rather than doing it here.
+ * type only discards results at conforming call sites; it does not reject
+ * Promise-returning implementations, so the synchronous-handler invariant is
+ * upheld by this contract and the runner's callback try/catch, not by the
+ * compiler. Keep handlers cheap; push any async work (I/O, network) onto a
+ * separate queue rather than doing it here.
  */
 export type OnStreamChunk = (chunk: StreamChunk) => void;
 
