@@ -1,0 +1,6 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": ["src/main.ts", "scripts/*.ts", "ops/*.ts"],
+  "ignoreBinaries": ["redis-server", "prlimit", "kubectl"],
+  "ignoreDependencies": ["@vitest/coverage-v8"]
+}

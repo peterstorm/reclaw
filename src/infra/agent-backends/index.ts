@@ -27,5 +27,3 @@ export type {
   OnStreamChunk,
   SpawnFn,
 } from './types.js';
-export { claudeBackend } from './claude-backend.js';
-export { piBackend } from './pi-backend.js';

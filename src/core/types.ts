@@ -327,20 +327,8 @@ export function isScheduledJob(job: Job): job is ScheduledJob {
   return job.kind === 'scheduled';
 }
 
-export function isReminderJob(job: Job): job is ReminderJob {
-  return job.kind === 'reminder';
-}
-
-export function isRecurringReminderJob(job: Job): job is RecurringReminderJob {
-  return job.kind === 'recurring-reminder';
-}
-
 export function isResearchJob(job: Job): job is ResearchJob {
   return job.kind === 'research';
-}
-
-export function isPodcastJob(job: Job): job is PodcastJob {
-  return job.kind === 'podcast';
 }
 
 // ─── Job Factory Functions ─────────────────────────────────────────────────────
