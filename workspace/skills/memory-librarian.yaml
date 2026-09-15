@@ -57,7 +57,7 @@ promptTemplate: |
   "
   ```
 
-  Also check global DB at `~/.claude/memory/cortex-global.db` with the same query.
+  Also check global DB at `~/.pi/agent/memory/cortex-global.db` with the same query.
 
   Focus on memories tagged as pattern, architecture, decision, gotcha — things with lasting reference value.
 

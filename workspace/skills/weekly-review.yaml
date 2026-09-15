@@ -13,9 +13,12 @@ promptTemplate: |
 
   **Journal entries:**
   Daily journal notes are stored in year/month folders: `~/dev/notes/remotevault/personal/journal/YYYY/MM/YYYY-MM-DD.md`
-  Read this week's entries (`-newermt` takes a time expression directly — do not pass a date through `-newer`, which expects a reference *file*):
+  Select this week's entries by **filename date** (mtime is unreliable — edits/appends backdate a
+  note's mtime arbitrarily; the filename is the authoritative day). Filter on the `YYYY-MM-DD.md`
+  basename against a computed cutoff:
   ```
-  find ~/dev/notes/remotevault/personal/journal -path '*/[0-9][0-9][0-9][0-9]/[0-9][0-9]/*.md' -newermt '7 days ago' 2>/dev/null | sort
+  find ~/dev/notes/remotevault/personal/journal -path '*/[0-9][0-9][0-9][0-9]/[0-9][0-9]/*.md' 2>/dev/null \
+    | sort | awk -F/ -v cutoff="$(date -d '7 days ago' +%F)" '{ f=$NF; sub(/\.md$/, "", f); if (f >= cutoff) print }'
   ```
 
   **Cortex memory:**

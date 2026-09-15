@@ -99,9 +99,11 @@ promptTemplate: |
     (homelab-watchdog, anything with ALL_CLEAR semantics by design) —
     persistent suppression is the healthy state. Do NOT alert.
   - Skills that *should* produce output every run (morning-briefing,
-    tech-digest, evening-journal, hardware-intel) — 3+ consecutive
-    suppressions in 7 days is a degradation signal (feed problem, API down,
-    upstream data gap). Alert with the count.
+    evening-journal, hardware-intel) — 3+ suppressions in 7 days is a
+    degradation signal (feed problem, API down, upstream data gap). Alert with the count.
+  - `tech-digest` has ALL_CLEAR semantics by design (0 recent items = healthy) and
+    its fetch-failure branch emits its own 🔴 alert — persistent suppression there
+    is the healthy state. Do NOT alert on it.
 
   When in doubt about a skill's intent, read its yaml at
   `/home/peterstorm/dev/claude-plugins/reclaw/workspace/skills/<skill-id>.yaml`
@@ -120,7 +122,7 @@ promptTemplate: |
     Latest: <most recent error reason, truncated to ~80 chars>
     Suggested: <one short concrete next step, e.g. "check Garmin auth", "review feed list">
 
-  <skill-id> — <count> consecutive suppressions
+  <skill-id> — <count> suppressions in 7 days
     Likely upstream/data issue. <Concrete check, e.g. "tech-digest: 3+ feeds may be down">
   ```
 

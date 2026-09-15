@@ -144,10 +144,9 @@ describe('resolveAnswerCitations', () => {
       expect(resolvedText).toBe('See [98, 99].');
     });
 
-    it('partially resolves when some citations are in range and some are not', () => {
+    it('drops the out-of-range remainder when some citations are in range and some are not', () => {
       const { resolvedText } = resolveAnswerCitations('See [1, 99].', sources);
-      expect(resolvedText).toContain('[[First Source#Passage 1]]');
-      expect(resolvedText).toContain('[99]');
+      expect(resolvedText).toBe('See [[First Source#Passage 1]].');
     });
 
     it('handles en-dash range [1–3]', () => {

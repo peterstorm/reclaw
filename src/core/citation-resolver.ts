@@ -162,12 +162,16 @@ export function resolveAnswerCitations(
         return `[[${noteTitle}#Passage ${n}]]`;
       });
 
-      // If every citation was out of range, preserve the original bracket syntax
+      // If every citation was out of range, preserve the original bracket syntax —
+      // the model may be numbering against a different scheme; dropping would hide that.
       if (parts.every((p) => p.startsWith('[') && !p.startsWith('[['))) {
         return _match;
       }
 
-      return parts.join(', ');
+      // Mixed group: the matching passages confirm the numbering scheme, so the
+      // out-of-range remainder is hallucinated — drop it rather than leave a bare
+      // `[N]` sitting beside resolved wikilinks in user-facing text.
+      return parts.filter((p) => !p.startsWith('[') || p.startsWith('[[')).join(', ');
     },
   );
 

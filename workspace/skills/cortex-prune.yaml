@@ -30,7 +30,7 @@ promptTemplate: |
   "
   ```
 
-  Also check global DB at `~/.claude/memory/cortex-global.db` with the same query.
+  Also check global DB at `~/.pi/agent/memory/cortex-global.db` with the same query.
 
   (Skill-quality signals no longer live in cortex — they're written to
   `~/.cache/reclaw/skill-quality.jsonl`, which this skill never touches. There is
@@ -139,7 +139,7 @@ promptTemplate: |
   To restore a mistakenly-archived memory: `UPDATE memories SET status='active' WHERE id='<uuid>'`
   (the manifest at `~/.cache/reclaw/prune-log.jsonl` has the id + reason for every archive).
 
-  **Global DB:** repeat Steps 1-3 for `~/.claude/memory/cortex-global.db` (same fetch,
+  **Global DB:** repeat Steps 1-3 for `~/.pi/agent/memory/cortex-global.db` (same fetch,
   same evaluation, same archive with `db: 'global'` in the manifest). Skip only if the
   Step 1 global fetch returned zero rows.
 
