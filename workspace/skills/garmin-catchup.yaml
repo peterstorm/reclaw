@@ -80,3 +80,12 @@ promptTemplate: |
 
   Respond with exactly `ALL_CLEAR` — this is a background data sync, not a user-facing notification.
   (Most mornings this will be `ALL_CLEAR` with no changes; that is the healthy default.)
+
+  ## If the fetch itself fails
+
+  If the Garmin fetch errors (non-zero exit, HTTP failure, or no usable JSON), do **not** send
+  ALL_CLEAR, because nothing was synced. Send this instead:
+
+      🔴 garmin-catchup could not run: <one-line reason, e.g. exit status / last stderr line>
+
+  (Same contract as credential-health: silence must mean "synced, all fine".)

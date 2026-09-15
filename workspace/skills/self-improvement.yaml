@@ -134,8 +134,10 @@ promptTemplate: |
   - Links to relevant resources
 
   ### Priority Recommendation
-  - Pick the single highest-impact improvement and explain why it should be next
-  - Reference effort estimate (quick win vs. multi-session project)
+  - List the recommendations in priority order (highest first), with effort estimate per item
+    (quick win vs. multi-session project)
+  - When the carryover/stagnation triggers fire (Step 2c/2d), the priority is the carryover
+    **batch**, not a single new item — lead with the batch and the smallest-effort wedge into it
 
   ## Step 5 — Update the MOC
 

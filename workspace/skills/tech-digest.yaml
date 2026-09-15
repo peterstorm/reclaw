@@ -25,8 +25,16 @@ promptTemplate: |
   Output is JSON: `{ generatedAt, count, errors: [{source, error}], items: [{source, title, link, date, summary}] }`.
 
   - If `errors` is non-empty, note which feeds failed at the end of the digest (one line).
-  - If `count` is 0, respond with exactly ALL_CLEAR — no backticks, nothing else
-    (everything recent was already covered).
+  - If `count` is 0 **and `errors` is empty**, respond with exactly ALL_CLEAR — no backticks,
+    nothing else (everything recent was already covered).
+  - If `count` is 0 **but `errors` is non-empty** (total feed outage — nothing fetched because the
+    sources themselves failed), do **not** send ALL_CLEAR, because nothing was checked. Send
+    this instead:
+
+        🔴 tech-digest could not run: all N feeds failed — <first error line, e.g. "dn: fetch timeout">
+
+    Silence from this skill must mean "checked, nothing new" — a digest that fails quietly is
+    worse than no digest (same contract as credential-health).
 
   ## Step 2 — Pick your items
 
