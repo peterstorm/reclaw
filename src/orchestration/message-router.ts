@@ -80,7 +80,7 @@ type Command =
   | { readonly kind: 'chat' };
 
 /** Parse raw message text into a Command for exhaustive routing. */
-export function parseCommandKind(text: string): Command {
+function parseCommandKind(text: string): Command {
   const trimmed = text.trim();
   if (trimmed === '/new') return { kind: 'new' };
   if (trimmed.startsWith('/remind')) return { kind: 'remind' };

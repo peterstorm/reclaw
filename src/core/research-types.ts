@@ -46,7 +46,7 @@ export type TraceEvent = {
  * Plain arrays rather than Map/Set because ResolvedNote is JSON-serialized into
  * the research job's Redis checkpoint and read back on resume.
  */
-export type CitedPassages = {
+type CitedPassages = {
   readonly sourceIndex: number;
   /** Passage numbers used in this source's wikilinks — i.e. the exact `## Passage N` anchors it needs. */
   readonly passages: readonly number[];
@@ -81,7 +81,7 @@ export type ArtifactMeta = {
 };
 
 /** Quality grade for a completed research job. */
-export type QualityGrade = 'good' | 'partial' | 'poor';
+type QualityGrade = 'good' | 'partial' | 'poor';
 
 /** Quality evaluation result with grade and warning messages. */
 export type QualityResult = {

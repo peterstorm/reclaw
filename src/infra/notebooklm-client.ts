@@ -37,7 +37,7 @@ export type AdapterError = {
 };
 
 /** Audio overview customization options. */
-export type AudioCustomization = {
+type AudioCustomization = {
   /** 0=Deep Dive, 1=Brief, 2=Critique, 3=Debate */
   readonly format?: 0 | 1 | 2 | 3;
   /** 1=Short, 2=Default, 3=Long */

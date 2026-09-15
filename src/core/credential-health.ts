@@ -38,9 +38,9 @@ export function formatDuration(ms: number): string {
 
 // ─── Probe outcomes ───────────────────────────────────────────────────────────
 
-export type CredentialId = 'notebooklm' | 'garmin' | 'agent-claude' | 'agent-pi';
+type CredentialId = 'notebooklm' | 'garmin' | 'agent-claude' | 'agent-pi';
 
-export const CREDENTIAL_LABELS: Record<CredentialId, string> = {
+const CREDENTIAL_LABELS: Record<CredentialId, string> = {
   notebooklm: 'NotebookLM',
   garmin: 'Garmin Connect',
   'agent-claude': 'Claude OAuth (agent backend)',

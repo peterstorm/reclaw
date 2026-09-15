@@ -10,7 +10,7 @@ import {
 import type { TelegramUpdateId } from '../core/types.js';
 
 /** Durable user-owned storage. Unlike the attachment spool, these files are never auto-deleted. */
-export const DEFAULT_UPLOAD_DIR = join(homedir(), '.local', 'share', 'reclaw', 'uploads');
+const DEFAULT_UPLOAD_DIR = join(homedir(), '.local', 'share', 'reclaw', 'uploads');
 
 type TelegramUploadMetadata = {
   readonly schemaVersion: 1;

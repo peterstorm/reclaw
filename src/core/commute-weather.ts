@@ -8,7 +8,7 @@
 
 import { type Result, err, ok } from './types.js';
 
-export type Hour = {
+type Hour = {
   readonly time: string;
   readonly tempC: number | null;
   readonly feelsLikeC: number | null;

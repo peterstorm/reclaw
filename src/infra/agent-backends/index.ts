@@ -19,11 +19,8 @@ export function resolveBackend(config: Pick<AppConfig, 'agentBackend'>): AgentBa
 export { runAgent, runAgentStreaming } from './runner.js';
 export type {
   AgentBackend,
-  AgentModelSelection,
   AgentOptions,
   AgentResult,
-  StreamDelta,
   StreamChunk,
   OnStreamChunk,
-  SpawnFn,
 } from './types.js';

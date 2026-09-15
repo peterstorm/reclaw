@@ -612,18 +612,6 @@ export function scheduledFailed(error: string): ScheduledOutcome {
 }
 
 // ─── Permission Profile ────────────────────────────────────────────────────────
-
-/**
- * FR-011: Distinct permission profiles for chat vs scheduled jobs.
- * chat: broad authenticated personal-agent access.
- * scheduled: smaller unattended automation capability set.
- */
-export type PermissionProfile = {
-  readonly name: 'chat' | 'scheduled';
-  readonly allowedTools: readonly string[];
-  readonly deniedPaths: readonly string[];
-};
-
 // ─── Skill Config ──────────────────────────────────────────────────────────────
 
 /** Parsed from a YAML file in workspace/skills/. */

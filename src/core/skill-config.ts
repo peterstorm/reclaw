@@ -6,7 +6,7 @@ import { type Result, type SkillConfig, err, makeSkillId, ok } from './types.js'
 
 // ─── Zod Schema ───────────────────────────────────────────────────────────────
 
-export const SkillConfigSchema = z
+const SkillConfigSchema = z
   .object({
     // Optional. The authoritative id is derived from the filename; an embedded `id` is only
     // permitted if it MATCHES (validated in parseSkillConfig). This stops a renamed file from

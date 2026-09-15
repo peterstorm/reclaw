@@ -46,18 +46,6 @@ interface RepeatGroup {
 
 type WorkoutStep = ExecutableStep | RepeatGroup;
 
-interface WorkoutSegment {
-  readonly segmentOrder: number;
-  readonly workoutSteps: ReadonlyArray<WorkoutStep>;
-}
-
-export interface WorkoutJson {
-  readonly workoutName: string;
-  readonly sportType: { readonly sportTypeId: number; readonly sportTypeKey: string };
-  readonly workoutSegments: ReadonlyArray<WorkoutSegment>;
-  readonly estimatedDistanceInMeters?: number | null;
-  readonly description?: string;
-}
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 

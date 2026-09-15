@@ -47,7 +47,7 @@ type TelegramBatchState = {
 };
 
 /** Persisted before conversation-scoped message references were introduced. */
-export type LegacyTelegramBatchDelivery = TelegramBatchState & {
+type LegacyTelegramBatchDelivery = TelegramBatchState & {
   readonly schemaVersion: 1;
   readonly sessionId: ClaudeSessionId | null;
 };
@@ -61,7 +61,7 @@ export type TelegramBatchDelivery = TelegramBatchState & {
 };
 
 /** Persisted legacy delivery. Execution is now a safe no-op. */
-export type LegacyChatSessionDelivery = {
+type LegacyChatSessionDelivery = {
   readonly schemaVersion: 1;
   readonly kind: 'chat-session';
   readonly id: DeliveryId;
@@ -109,7 +109,7 @@ export type DeliveryJob =
   | CortexDelivery
   | FileCleanupDelivery;
 
-export type ActivityOutcome =
+type ActivityOutcome =
   | {
       readonly kind: 'chat-completed';
       readonly response: string;

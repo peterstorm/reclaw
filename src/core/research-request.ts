@@ -29,7 +29,7 @@ function extractUrls(text: string): readonly string[] {
  * Derive a human-readable topic from a URL's path segments.
  * Strips protocol, domain, query params, and converts dashes/underscores to spaces.
  */
-export function topicFromUrl(url: string): string {
+function topicFromUrl(url: string): string {
   try {
     const parsed = new URL(url);
     // Use the last meaningful path segment(s)

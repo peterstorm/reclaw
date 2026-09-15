@@ -5,15 +5,15 @@ import { z } from 'zod';
 import { type Result, err, ok } from '../core/types.js';
 
 export const MAX_PDF_BYTES = 20 * 1024 * 1024;
-export const MAX_PDF_PAGES = 200;
-export const MAX_PDF_TEXT_CHARS = 400_000;
+const MAX_PDF_PAGES = 200;
+const MAX_PDF_TEXT_CHARS = 400_000;
 const MAX_PDF_IMAGE_PIXELS = 16_777_216;
 const PDF_EXTRACTION_TIMEOUT_MS = 15_000;
 const PDF_WORKER_CPU_SECONDS = 20;
 // Bun/JSC reserves more than 1.5 GiB of virtual address space at startup.
 const PDF_WORKER_MEMORY_BYTES = 2 * 1024 * 1024 * 1024;
 
-export type PdfText = {
+type PdfText = {
   readonly text: string;
   readonly totalPages: number;
   readonly truncated: boolean;

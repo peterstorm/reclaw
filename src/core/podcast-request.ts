@@ -43,7 +43,7 @@ export function audioLengthToCode(length: AudioLength): 1 | 2 | 3 {
 const VALID_FORMATS: readonly AudioFormat[] = ['deep-dive', 'brief', 'critique', 'debate'];
 const VALID_LENGTHS: readonly AudioLength[] = ['short', 'default', 'long'];
 
-export const PODCAST_USAGE =
+const PODCAST_USAGE =
   'Usage: /podcast <vault-path> [--format deep-dive|brief|critique|debate] [--length short|default|long]';
 
 // ─── Parser ───────────────────────────────────────────────────────────────────
