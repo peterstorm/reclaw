@@ -250,6 +250,12 @@ promptTemplate: |
   - Deload: every 4th week, reduce Monday volume/intensity. CrossFit deload is the athlete's responsibility.
   - Track current training "week" via cortex.
 
+  ### Fueling / RED-S flag (energy availability)
+  - For 1a, read daily **body weight** (`weightKg` from the cached Garmin JSON / fitness notes) across the last 14 days, and compare against weekly running volume + CrossFit load.
+  - **Flag RED-S risk** when: body weight is trending **down** (>1kg over the window) *while* weekly training load rises, OR the athlete reports cutting calories/dieting during a build block.
+  - When flagged: put a ⚠️ note in the Monday/wed/Thu output — "building the aerobic engine is not the time to cut calories; eat enough to support the work, build the engine first, lose fat afterwards." Do NOT prescribe a calorie deficit; the coach's job is to flag energy availability, not diet. Do not reduce volume for the flag alone — the flag is a coaching note, not a red-light trigger.
+  - Log the flag to cortex: "Running coach RED-S flag {{date}}: [weight trend + load context]".
+
   ## Step 3 — Design the Workout
 
   ### Monday — Hard/Quality Session
@@ -278,6 +284,7 @@ promptTemplate: |
   ### Wednesday — Optional CrossFit Day
 
   **Primary role:** Recovery context after Monday's quality run + coaching for optional CrossFit. Always schedule a Garmin **backup** easy run (5-7km easy, no pace target, HR cap 145). If readiness is red, schedule a shorter recovery run (3-4km).
+  **Append strides (unless red):** After the easy run, add 4-5×20s strides (fast-but-steady accelerations, ~95% effort on the sprint portion, full recovery between = ~60s easy). Cost almost nothing to recover from and keeps fast-twitch fibers awake / maintains running economy. Skip if readiness is red or the athlete is fatigued.
 
   **Output:**
   ```
@@ -289,7 +296,7 @@ promptTemplate: |
   📈 Week so far: [X]km running + [N] CrossFit sessions
   [Note if build/deload week]
 
-  🏃 Backup easy run scheduled on Garmin: [X]km easy, no pace target, HR < 145
+  🏃 Backup easy run scheduled on Garmin: [X]km easy, no pace target, HR < 145 + 4×20s strides at the end
 
   💡 [Recovery-focused coaching note]
   ```
@@ -297,6 +304,7 @@ promptTemplate: |
   ### Thursday — Recovery / CrossFit Context Day
 
   **Primary role:** Assess recovery from Monday's quality run and any Wednesday CrossFit. Always schedule a Garmin **backup** easy run (5-7km easy, no pace target, HR cap 145). If readiness is red, schedule a shorter recovery run (3-4km).
+  **Append strides (unless red):** Same as Wednesday — 4-5×20s strides after the easy run, full recovery between. Keeps fast-twitch fibers awake during a week with low running volume; skip on red readiness.
 
   **Output:**
   ```
@@ -308,7 +316,7 @@ promptTemplate: |
   📈 Week so far: [X]km running + [N] CrossFit sessions
   [Note if build/deload week]
 
-  🏃 Backup easy run scheduled on Garmin: [X]km easy, no pace target, HR < 145
+  🏃 Backup easy run scheduled on Garmin: [X]km easy, no pace target, HR < 145 + 4×20s strides at the end
 
   💡 [Recovery-focused coaching note]
   ```
@@ -354,6 +362,7 @@ promptTemplate: |
   - If test report generated: "Running coach test result ({{date}}): [type] — [result]. vs previous: [comparison]. Limiter implication: [assessment]."
   - If block review generated: "Running coach block review ({{date}}): [1-sentence summary]. Next block change: [the one recommendation]."
   - If octopus scheduled: "Running coach: Last octopus session {{date}}"
+  - If RED-S flagged: "Running coach RED-S flag {{date}}: [weight trend + load context]."
 
   **Wednesday/Thursday:**
   - "Running coach {{date}} (Wed/Thu): Recovery/context day. Readiness [X]. Backup run scheduled. [If ran or did CrossFit: brief summary]."
@@ -379,6 +388,7 @@ promptTemplate: |
   [If zone adjusted: "Pace zones tightened..."]
 
   💡 [Coaching note]
+  [⚠️ If RED-S flagged: "Energy availability: your weight is trending down while load is up — eat enough to support the work; build the engine first, cut later."]
   ```
 
   If **test week**, replace the Workout section with the test prescription.
