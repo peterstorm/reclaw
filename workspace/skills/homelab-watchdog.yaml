@@ -75,19 +75,26 @@ promptTemplate: |
   ```
   Alert if available memory < 1GB (the server is a dedicated box, it should have plenty).
 
+  ### 7b. Reclaw memory composition (anon vs page cache)
+  ```
+  CG=/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/reclaw.service
+  grep -E '^(anon|file) ' $CG/memory.stat 2>/dev/null | awk '{printf "%s: %.2fG\n", $1, $2/1073741824}'
+  ```
+  The cgroup `memory.peak`/`memory.current` includes **page cache** charged when reclaw-hosted sessions read big files — a multi-G "peak" is normal and NOT a leak. Alert only if **anon** exceeds 2G sustained (real process-memory hog; the 2026-09-18 "13.2G peak" was ~95% reclaimable cache, anon was 0.32G). Ignore file-cache growth entirely.
+
   ### 8. Reclaw self-check
   ```
   systemctl --user is-active reclaw 2>&1
   ```
   ```
-  redis-cli -p 6380 ping 2>&1
+  redis-cli -p 6381 ping 2>&1
   ```
   ```
-  redis-cli -p 6380 ZCARD bull:reclaw-scheduled:failed 2>&1
+  redis-cli -p 6381 ZCARD bull:reclaw-scheduled:failed 2>&1
   ```
   Alert if reclaw is not active, Redis is unreachable, or there are failed jobs in the dead-letter queue.
   BullMQ stores failed jobs in a sorted set — ZCARD/ZRANGE, never LLEN (WRONGTYPE). If count > 0, inspect with:
-  `redis-cli -p 6380 ZRANGE bull:reclaw-scheduled:failed 0 -1` then `HGET bull:reclaw-scheduled:<jobId> failedReason`.
+  `redis-cli -p 6381 ZRANGE bull:reclaw-scheduled:failed 0 -1` then `HGET bull:reclaw-scheduled:<jobId> failedReason`.
 
   ### 9. User services health
   ```
