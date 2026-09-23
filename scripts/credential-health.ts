@@ -62,12 +62,14 @@ import {
   type NotebookLMProbe,
   type Probe,
   type ProbeOutcome,
+  classifyApiKeyProbe,
   classifyOAuthExpiry,
   decideGarminRepair,
   decideNotebookLMRepair,
   parseClaudeCredentials,
   renderReport,
   resolveNotebookLMSource,
+  resolvePiProviderAuth,
 } from '../src/core/credential-health.js';
 
 const execFileAsync = promisify(execFile);
@@ -539,13 +541,38 @@ function piTarget(): { provider: string; model: string } | null {
 }
 
 /**
+ * Read one provider entry out of ~/.pi/agent/models.json. Returns null when the
+ * store is missing or malformed — resolvePiProviderAuth then falls back to the
+ * OAuth probe path.
+ */
+function piProviderEntry(provider: string): unknown {
+  try {
+    const parsed: unknown = JSON.parse(
+      readFileSync(join(homedir(), '.pi', 'agent', 'models.json'), 'utf8'),
+    );
+    if (parsed === null || typeof parsed !== 'object') return null;
+    const providers = (parsed as Record<string, unknown>).providers;
+    if (providers === null || typeof providers !== 'object') return null;
+    return (providers as Record<string, unknown>)[provider] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Probe the pi backend by asking it for a bearer token with 30 minutes of life
  * left: `pi auth print-bearer-token` refreshes an expired token on the way, so a
  * zero exit proves the whole refresh chain still works — which reading an
  * `expires` field out of auth.json would not.
  *
- * The token itself is captured and dropped on the floor. It must never reach a
- * log line or a Telegram message; only the exit status is used.
+ * A key-authenticated provider (e.g. a local vLLM server) has no OAuth token to
+ * produce — `print-bearer-token` fails on it even when the provider is perfectly
+ * healthy. For those, probe the endpoint the runtime actually talks to instead
+ * (GET /models with the configured key): 200 proves the key is accepted AND the
+ * engine is serving.
+ *
+ * Neither the bearer token nor the apiKey may ever reach a log line or a
+ * Telegram message; only the probe verdict is used.
  */
 async function probePiToken(): Promise<Probe> {
   const target = piTarget();
@@ -561,6 +588,58 @@ async function probePiToken(): Promise<Probe> {
   }
 
   const remedy = `re-authenticate the \`${target.provider}\` provider in an interactive \`pi\` session on the homelab`;
+
+  const auth = resolvePiProviderAuth(piProviderEntry(target.provider));
+  if (auth.kind === 'static-key') {
+    // Resolve the key exactly the way the runtime does. models.json may hold a
+    // literal key or a `!command` (pi evaluates the latter and its
+    // print-api-key subcommand is the authoritative resolver — desktop-vllm
+    // stores `!cat ~/.config/ds4-flash/api-key`, which a literal read would
+    // misreport as an invalid key). Fall back to the literal value only when
+    // the subcommand is unavailable and the stored value is not a command.
+    let apiKey = auth.apiKey;
+    try {
+      const { stdout } = await execFileAsync(
+        'pi',
+        ['auth', 'print-api-key', '--provider', target.provider, '--model', target.model],
+        { timeout: PI_PROBE_TIMEOUT_MS, env: process.env },
+      );
+      const resolved = stdout.trim();
+      if (resolved !== '') apiKey = resolved;
+    } catch (e) {
+      if (auth.apiKey.startsWith('!') || (e as { code?: unknown }).code === 'ENOENT') {
+        const isMissing = (e as { code?: unknown }).code === 'ENOENT';
+        return {
+          id: 'agent-pi',
+          outcome: isMissing
+            ? {
+                kind: 'unknown',
+                detail: '`pi` is not on PATH, so the api key could not be resolved',
+              }
+            : {
+                kind: 'broken',
+                detail: `the provider's api key could not be resolved: ${errorMessage(e)}`,
+                remedy:
+                  'fix the `apiKey` (a `!command`) for the provider in ~/.pi/agent/models.json',
+              },
+        };
+      }
+    }
+
+    try {
+      const res = await fetch(`${auth.baseUrl.replace(/\/+$/, '')}/models`, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(PI_PROBE_TIMEOUT_MS),
+      });
+      return { id: 'agent-pi', outcome: classifyApiKeyProbe({ status: res.status, error: null }) };
+    } catch (e) {
+      return {
+        id: 'agent-pi',
+        outcome: classifyApiKeyProbe({ status: null, error: errorMessage(e) }),
+      };
+    }
+  }
+
   try {
     await execFileAsync(
       'pi',

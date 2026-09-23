@@ -407,6 +407,82 @@ export function parseClaudeCredentials(content: string): OAuthExpiry | null {
   };
 }
 
+// ─── Pi provider auth resolution ─────────────────────────────────────────────
+
+/**
+ * How the pi agent authenticates to the provider named by RECLAW_PI_PROVIDER.
+ *
+ * Two disjoint realities live in ~/.pi/agent/models.json: OAuth-backed
+ * providers (token refresh chain, probeable via `pi auth print-bearer-token`)
+ * and key-authenticated endpoints such as a local vLLM server (static apiKey,
+ * no OAuth exists to probe — asking for a bearer token fails even when the
+ * provider is perfectly healthy, which misreported desktop-vllm as broken on
+ * 2026-09-23). Modelling the auth kind is what lets the probe ask the right
+ * question instead of reporting a healthy provider as broken.
+ *
+ * `apiKey` is a credential: like the OAuth bearer token, it must never reach a
+ * log line or a report message; only the probe verdict may.
+ */
+export type PiProviderAuth =
+  | { readonly kind: 'static-key'; readonly baseUrl: string; readonly apiKey: string }
+  | { readonly kind: 'oauth' };
+
+/**
+ * Classify a provider entry from models.json. Anything that is not a
+ * well-formed static-key entry is treated as OAuth: that is the conservative
+ * default, because the OAuth probe (`print-bearer-token`) is how the runtime
+ * itself authenticates cloud providers, and an absent entry cannot be probed
+ * by endpoint anyway.
+ */
+export function resolvePiProviderAuth(providerEntry: unknown): PiProviderAuth {
+  if (providerEntry !== null && typeof providerEntry === 'object') {
+    const record = providerEntry as Record<string, unknown>;
+    const apiKey = record.apiKey;
+    const baseUrl = record.baseUrl;
+    if (
+      typeof apiKey === 'string' &&
+      apiKey !== '' &&
+      typeof baseUrl === 'string' &&
+      baseUrl !== ''
+    ) {
+      return { kind: 'static-key', baseUrl, apiKey };
+    }
+  }
+  return { kind: 'oauth' };
+}
+
+/**
+ * Pure classification of a static-key endpoint probe. 200 proves the key is
+ * accepted AND the engine is serving. 401/403 is a credential fault (broken);
+ * an unreachable endpoint is also a fault reclaw cannot survive (broken);
+ * any other HTTP status is a behaviour we do not understand (unknown).
+ */
+export function classifyApiKeyProbe(input: {
+  readonly status: number | null;
+  readonly error: string | null;
+}): ProbeOutcome {
+  const keyRemedy = 'fix the `apiKey` for the provider in ~/.pi/agent/models.json';
+  if (input.status === 200) {
+    return { kind: 'healthy', detail: 'api key accepted by the provider endpoint' };
+  }
+  if (input.status === 401 || input.status === 403) {
+    return {
+      kind: 'broken',
+      detail: `api key rejected by the provider endpoint (HTTP ${String(input.status)})`,
+      remedy: keyRemedy,
+    };
+  }
+  if (input.status !== null) {
+    return { kind: 'unknown', detail: `provider endpoint answered HTTP ${String(input.status)}` };
+  }
+  return {
+    kind: 'broken',
+    detail: `provider endpoint unreachable: ${input.error ?? 'unknown error'}`,
+    remedy:
+      'check that the inference server at the provider baseUrl is up (see ~/.pi/agent/models.json)',
+  };
+}
+
 // ─── Report rendering ─────────────────────────────────────────────────────────
 
 export type Report =

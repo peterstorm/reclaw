@@ -4,6 +4,7 @@ import {
   MS_PER_HOUR,
   type NotebookLMSource,
   type Probe,
+  classifyApiKeyProbe,
   classifyOAuthExpiry,
   decideGarminRepair,
   decideNotebookLMRepair,
@@ -11,6 +12,7 @@ import {
   parseClaudeCredentials,
   renderReport,
   resolveNotebookLMSource,
+  resolvePiProviderAuth,
 } from './credential-health.js';
 
 const NOW = Date.UTC(2026, 7, 9, 12, 0, 0);
@@ -376,5 +378,62 @@ describe('renderReport', () => {
     const report = renderReport([broken, healthy]);
     expect(report.kind).toBe('alert');
     if (report.kind === 'alert') expect(report.message).not.toContain('Garmin');
+  });
+});
+
+// ─── resolvePiProviderAuth ────────────────────────────────────────────────────
+
+describe('resolvePiProviderAuth', () => {
+  it('classifies a well-formed key-authenticated provider entry as static-key', () => {
+    const auth = resolvePiProviderAuth({
+      baseUrl: 'http://192.168.0.80:8000/v1',
+      apiKey: 'sk-local',
+      models: [],
+    });
+    expect(auth).toEqual({
+      kind: 'static-key',
+      baseUrl: 'http://192.168.0.80:8000/v1',
+      apiKey: 'sk-local',
+    });
+  });
+
+  it.each([
+    ['missing entry', null],
+    ['non-object entry', 'nope'],
+    ['empty apiKey', { baseUrl: 'http://x/v1', apiKey: '' }],
+    ['non-string apiKey', { baseUrl: 'http://x/v1', apiKey: 42 }],
+    ['missing baseUrl', { apiKey: 'sk-local' }],
+    ['empty baseUrl', { baseUrl: '', apiKey: 'sk-local' }],
+  ])('treats %s as oauth (conservative default)', (_label, entry) => {
+    expect(resolvePiProviderAuth(entry)).toEqual({ kind: 'oauth' });
+  });
+});
+
+// ─── classifyApiKeyProbe ──────────────────────────────────────────────────────
+
+describe('classifyApiKeyProbe', () => {
+  it('reports healthy on HTTP 200', () => {
+    expect(classifyApiKeyProbe({ status: 200, error: null })).toEqual({
+      kind: 'healthy',
+      detail: 'api key accepted by the provider endpoint',
+    });
+  });
+
+  it('reports broken with a remedy on 401 and 403, without echoing the key', () => {
+    for (const status of [401, 403]) {
+      const outcome = classifyApiKeyProbe({ status, error: null });
+      expect(outcome.kind).toBe('broken');
+      if (outcome.kind === 'broken') expect(outcome.detail).toContain(String(status));
+    }
+  });
+
+  it('reports unknown for an understood-but-unexpected HTTP status', () => {
+    expect(classifyApiKeyProbe({ status: 503, error: null }).kind).toBe('unknown');
+  });
+
+  it('reports broken with the endpoint remedy when the endpoint is unreachable', () => {
+    const outcome = classifyApiKeyProbe({ status: null, error: 'Connection refused' });
+    expect(outcome.kind).toBe('broken');
+    if (outcome.kind === 'broken') expect(outcome.detail).toContain('Connection refused');
   });
 });
