@@ -1,0 +1,92 @@
+name: Discount Watch
+schedule: "15 5 * * *"  # daily 05:15 — after Prej's nightly data refresh (03:00–04:25), before the 07:20 morning briefing
+permissionProfile: scheduled
+validityWindowMinutes: 60
+timeout: 300
+backend: pi
+promptTemplate: |
+  {{personality}}
+
+  Today is {{dayOfWeek}}, {{date}}.
+
+  Your job: check current prices + offers for the user's grocery watchlist via the Prej API
+  (primary) and the ShelfAtlas API (for items Prej doesn't catalogue), then report CHANGES
+  only. This is a watcher — silence is the happy path.
+
+  **Watchlist:**
+  1. Coca-Cola Zero 1,5 L — Prej products `848` (primary, 6 chains; canonical GTIN
+     5449000134288) and `34037` (Nemlig/Wolt listing, GTIN 0000057095967, Nemlig runs
+     multi-buys like "4 for 70 kr"). Two distinct listings exist; track both.
+  2. Pampers size 7 Touch Pants — Prej does NOT catalogue Pampers (verified 2026-10-07:
+     site/API search for "pamp" returns only pampas grass / Pampero rum). Use ShelfAtlas.
+     ShelfAtlas ALSO has zero Pampers offers right now (verified 2026-10-07: q=pampers →
+     0 groups; the live-offer pool is flyer-derived and Pampers isn't in any current
+     flyer, while e.g. "pepsi max" returns groups — the API itself works). So the
+     baseline is "absent everywhere": the item's job is to ALERT ON FIRST APPEARANCE.
+     An empty result is normal and silent. The day a size-7 Touch Pants group appears,
+     that IS a change — report it (chain, price, validity) even though there is no
+     prior price to compare against.
+
+  **Credentials** — from reclaw's systemd env (sops-nix rendered); fall back to the plain
+  files if the env vars are unset (e.g. manual /run). Never echo the key values into the
+  report:
+  ```
+  PREJ_KEY="${PREJ_API_KEY:-$(cat ~/.config/reclaw/prej-api-key 2>/dev/null)}"
+  SA_KEY="${SHELFATLAS_API_KEY:-$(cat ~/.config/reclaw/shelfatlas-api-key 2>/dev/null)}"
+  ```
+
+  **Step 1 — Prej: fetch current state for the Coke Zero listings.** Prices come back in
+  øre (integer, 1/100 DKK) — divide by 100. `offer_ends` is inclusive (last day the offer
+  applies). `null offer_starts` does NOT mean "not an offer". `multi_buy` holds deals like
+  "3 for 135" (quantity/price/price_each).
+  ```
+  for id in 848 34037; do
+    curl -s -m 30 -H "Authorization: Bearer $PREJ_KEY" \
+      "https://api.prej.app/v1/products/$id" -o /tmp/prej-$id.json -w "$id %{http_code}\n"
+  done
+  ```
+  On 401 → report that the Prej key is missing/invalid and STOP (do not silently skip).
+  On 429 → read `retry_after_seconds` from the body; note the rate limit and treat the fetch
+  as failed for today; do NOT retry in a loop (free tier is 25 req/day).
+  If a product ID 404s (catalogue reorganisation), fall back to search once:
+  `GET /v1/products?q=coca+cola+zero+1,5&limit=10` and re-pin the new ID in this file's
+  watchlist section before reporting.
+
+  Sanity-check the JSON before use: the product name must contain "1,5" and prices must be
+  plausible integers (1000–10000 øre for 1,5 L). If a response is an error object or
+  implausible, report the failure and do NOT overwrite the cache for that item.
+
+  **Step 2 — ShelfAtlas: fetch Pampers size 7 Touch Pants.**
+  ```
+  curl -s -m 30 -H "Authorization: Bearer $SA_KEY" \
+    "https://shelfatlas.com/api/v1/public/catalog/offers/search?q=pampers%20touch%20pants&limit=20" \
+    -o /tmp/sa-pampers.json -w "%{http_code}\n"
+  ```
+  Note each offer's price, chain, and validity window. If no size-7 matches, that is the
+  expected "still absent" state — stay silent about it (it is not an error and not news).
+  If a group appears, report it as NEW (first appearance). If no ShelfAtlas key is
+  configured, say so once and ask the user to grab a free key at https://shelfatlas.com
+  (Free tier: 1,000 req/month).
+
+  **Step 3 — Compare against the cache.**
+  ```
+  cat ~/.cache/reclaw/discount-watch.json 2>/dev/null
+  ```
+  Cache schema: `{"date": "YYYY-MM-DD", "items": {"<item_key>": {"prej_id": <id|null>,
+  "best_price_ore": <int|null>, "chains": [{"chain": "<slug>", "price_ore": <int>,
+  "is_offer": <bool>, "offer_ends": "<date>"|null, "multi_buy": "<string>"|null}],
+  "source": "prej"|"shelfatlas", "title": "<name>"}}}`. First run (no cache): record baseline
+  and give the full current state.
+
+  What counts as CHANGE and is report-worthy: any price drop or rise, a new offer appearing
+  (was not is_offer, now is), an offer's `offer_ends` moving (especially ending within 2 days),
+  a chain leaving/entering the price set, multi-buy deals appearing or changing.
+
+  **Step 4 — Write the new cache** (ensure dir exists, only after successful fetches for that
+  item; keep per-item granularity so one failed source doesn't blank the other).
+
+  **Step 5 — Report.** Only if something changed (or first run): lead with the changes
+  (direction + delta in kroner), then the current best price per item with chain names
+  ("Coca-Cola Zero 1,5 L — 9,95 kr hos Bilka (tilbud til 12-10) · Lidl 12,95"). Format Danish
+  style: 9,95 kr. If nothing changed: reply exactly `OK` — the scheduler treats a bare
+  `OK`/`ALL_CLEAR` as a silent success and suppresses the Telegram message.
