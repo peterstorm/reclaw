@@ -23,6 +23,9 @@ promptTemplate: |
      is Libero, NOT Pampers — the old Pampers item was removed because Pampers is
      absent from both platforms anyway.) Prej catalogues Libero properly, so query
      Prej FIRST; ShelfAtlas is the fallback for flyer-only offers.
+  3. Libero Touch Pants str. 7 at online pharmacies (NOT in Prej/ShelfAtlas): pinned
+     med24.dk product page — Touch 7 Pants 16-26 kg, 14 stk (72 kr verified 2026-10-08,
+     i.e. 5,14 kr/stk). Compare per-unit against the Prej listings.
 
   **Credentials** — from reclaw's systemd env (sops-nix rendered); fall back to the plain
   files if the env vars are unset (e.g. manual /run). Never echo the key values into the
@@ -76,6 +79,24 @@ promptTemplate: |
   same offer isn't reported twice (match on chain + approximate pack price). If no
   ShelfAtlas key is configured, say so once and ask the user to grab a free key at
   https://shelfatlas.com (Free tier: 1,000 req/month).
+
+  **Step 3b — Online pharmacy sweep for the Libero item** (pharmacies are NOT in Prej
+  or ShelfAtlas — this is where the cheapest pants often live): pinned product page,
+  server-side rendered, prices in the schema.org JSON (prices are DKK decimals here,
+  NOT øre):
+  ```
+  UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
+  curl -sL -m 20 -A "$UA" \
+    "https://med24.dk/mor-og-barn/pusle-og-pleje/bleer-og-tilbehoer/libero-touch-7-pants-16-26-kg-14-stk" \
+    -o /tmp/med24-libero.html -w "%{http_code}\n"
+  grep -oE '"price":[0-9]+([.,][0-9]+)?' /tmp/med24-libero.html | head -3
+  ```
+  Verified 2026-10-08: 200, price 72 DKK (Touch 7 Pants 16-26 kg, 14 stk → 5,14 kr/stk).
+  **Always compare per-unit prices** across pack sizes (Prej's 22-pak at 85 kr is
+  3,86 kr/stk — cheaper per unit than med24's 14-pack despite the higher line price).
+  Other online pharmacies (apopro.dk, apotek.dk): attempt the search page once with the
+  same UA; both are JS-rendered/API-gated as of 2026-10-08 (no product data in static
+  HTML) — if no product links or prices come back, skip them quietly. Don't retry loops.
 
   **Step 4 — Compare against the cache.**
   ```
