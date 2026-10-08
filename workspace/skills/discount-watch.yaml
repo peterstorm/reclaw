@@ -17,15 +17,12 @@ promptTemplate: |
   1. Coca-Cola Zero 1,5 L — Prej products `848` (primary, 6 chains; canonical GTIN
      5449000134288) and `34037` (Nemlig/Wolt listing, GTIN 0000057095967, Nemlig runs
      multi-buys like "4 for 70 kr"). Two distinct listings exist; track both.
-  2. Pampers size 7 Touch Pants — Prej does NOT catalogue Pampers (verified 2026-10-07:
-     site/API search for "pamp" returns only pampas grass / Pampero rum). Use ShelfAtlas.
-     ShelfAtlas ALSO has zero Pampers offers right now (verified 2026-10-07: q=pampers →
-     0 groups; the live-offer pool is flyer-derived and Pampers isn't in any current
-     flyer, while e.g. "pepsi max" returns groups — the API itself works). So the
-     baseline is "absent everywhere": the item's job is to ALERT ON FIRST APPEARANCE.
-     An empty result is normal and silent. The day a size-7 Touch Pants group appears,
-     that IS a change — report it (chain, price, validity) even though there is no
-     prior price to compare against.
+  2. Libero Touch Pants str. 7 — Prej products `19845` (22-pack, GTIN 7322542265338,
+     4 chains) and `52931` (bulk pack, GTIN 7322541739786, Nemlig runs 2-for deals).
+     Two distinct listings exist; track both. (2026-10-08 correction: the user's brand
+     is Libero, NOT Pampers — the old Pampers item was removed because Pampers is
+     absent from both platforms anyway.) Prej catalogues Libero properly, so query
+     Prej FIRST; ShelfAtlas is the fallback for flyer-only offers.
 
   **Credentials** — from reclaw's systemd env (sops-nix rendered); fall back to the plain
   files if the env vars are unset (e.g. manual /run). Never echo the key values into the
@@ -56,19 +53,31 @@ promptTemplate: |
   plausible integers (1000–10000 øre for 1,5 L). If a response is an error object or
   implausible, report the failure and do NOT overwrite the cache for that item.
 
-  **Step 2 — ShelfAtlas: fetch Pampers size 7 Touch Pants.**
+  **Step 2 — Prej: fetch the Libero Touch Pants listings** (same request shape as Step 1;
+  names must contain "Str" and "7", prices plausible 5000–20000 øre):
+  ```
+  for id in 19845 52931; do
+    curl -s -m 30 -H "Authorization: Bearer $PREJ_KEY" \
+      "https://api.prej.app/v1/products/$id" -o /tmp/prej-lib-$id.json -w "$id %{http_code}\n"
+  done
+  ```
+  If an ID 404s, fall back to one search:
+  `GET /v1/products?q=libero+touch+pant&limit=15` and re-pin the IDs above.
+
+  **Step 3 — ShelfAtlas: fallback sweep for flyer-only diaper offers** (catches
+  Libero/Pampers leaflet deals the Prej nightly scrape hasn't absorbed):
   ```
   curl -s -m 30 -H "Authorization: Bearer $SA_KEY" \
-    "https://shelfatlas.com/api/v1/public/catalog/offers/search?q=pampers%20touch%20pants&limit=20" \
-    -o /tmp/sa-pampers.json -w "%{http_code}\n"
+    "https://shelfatlas.com/api/v1/public/catalog/offers/search?q=libero%20touch&limit=20" \
+    -o /tmp/sa-libero.json -w "%{http_code}\n"
   ```
-  Note each offer's price, chain, and validity window. If no size-7 matches, that is the
-  expected "still absent" state — stay silent about it (it is not an error and not news).
-  If a group appears, report it as NEW (first appearance). If no ShelfAtlas key is
-  configured, say so once and ask the user to grab a free key at https://shelfatlas.com
-  (Free tier: 1,000 req/month).
+  Group results by the opaque `key` (compare, never parse). Use this only to catch
+  flyer-only deals the Prej listings miss — cross-check against the Prej prices so the
+  same offer isn't reported twice (match on chain + approximate pack price). If no
+  ShelfAtlas key is configured, say so once and ask the user to grab a free key at
+  https://shelfatlas.com (Free tier: 1,000 req/month).
 
-  **Step 3 — Compare against the cache.**
+  **Step 4 — Compare against the cache.**
   ```
   cat ~/.cache/reclaw/discount-watch.json 2>/dev/null
   ```
@@ -82,10 +91,10 @@ promptTemplate: |
   (was not is_offer, now is), an offer's `offer_ends` moving (especially ending within 2 days),
   a chain leaving/entering the price set, multi-buy deals appearing or changing.
 
-  **Step 4 — Write the new cache** (ensure dir exists, only after successful fetches for that
+  **Step 5 — Write the new cache** (ensure dir exists, only after successful fetches for that
   item; keep per-item granularity so one failed source doesn't blank the other).
 
-  **Step 5 — Report.** Only if something changed (or first run): lead with the changes
+  **Step 6 — Report.** Only if something changed (or first run): lead with the changes
   (direction + delta in kroner), then the current best price per item with chain names
   ("Coca-Cola Zero 1,5 L — 9,95 kr hos Bilka (tilbud til 12-10) · Lidl 12,95"). Format Danish
   style: 9,95 kr. If nothing changed: reply exactly `OK` — the scheduler treats a bare
