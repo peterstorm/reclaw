@@ -8,6 +8,7 @@ name: Curriculum Builder
 schedule: "30 2 * * *"
 permissionProfile: scheduled
 backend: claude
+model: opus
 validityWindowMinutes: 300
 timeout: 3600
 promptTemplate: |

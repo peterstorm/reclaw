@@ -2,7 +2,16 @@ import { parseExpression } from 'cron-parser';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 import { SKILL_ENVIRONMENT_VARIABLES } from './agent-environment.js';
-import { type Result, type SkillConfig, err, makeSkillId, ok } from './types.js';
+import { type AgentTarget, makeClaudeModel } from './model-selection.js';
+import {
+  type AgentBackendName,
+  type Result,
+  type SkillAgent,
+  type SkillConfig,
+  err,
+  makeSkillId,
+  ok,
+} from './types.js';
 
 // ─── Zod Schema ───────────────────────────────────────────────────────────────
 
@@ -38,6 +47,7 @@ const SkillConfigSchema = z
     // silently capping every skill that omits the field at 2 minutes.
     timeout: z.number().int().positive().optional(),
     backend: z.enum(['claude', 'pi']).optional(),
+    model: z.string().optional(),
     environment: z.array(z.enum(SKILL_ENVIRONMENT_VARIABLES)).default([]),
     dependsOn: z.string().min(1).nullable().default(null),
   })
@@ -47,6 +57,27 @@ const SkillConfigSchema = z
   });
 
 // ─── Parsers (pure) ───────────────────────────────────────────────────────────
+
+const MODEL_NEEDS_CLAUDE =
+  'requires "backend: claude" — Pi\'s model is service-wide (RECLAW_PI_MODEL), and a model without an explicit backend would follow whatever AGENT_BACKEND is';
+
+function parseAgentTarget(
+  backend: AgentBackendName,
+  model: string | undefined,
+): Result<AgentTarget, string> {
+  if (model === undefined) return ok({ backend });
+  if (backend !== 'claude') return err(`model: ${MODEL_NEEDS_CLAUDE}`);
+  const parsed = makeClaudeModel(model);
+  return parsed.ok ? ok({ backend, model: parsed.value }) : err(`model: ${parsed.error}`);
+}
+
+function parseSkillAgent(
+  backend: AgentBackendName | undefined,
+  model: string | undefined,
+): Result<SkillAgent, string> {
+  if (backend !== undefined) return parseAgentTarget(backend, model);
+  return model === undefined ? ok({}) : err(`model: ${MODEL_NEEDS_CLAUDE}`);
+}
 
 /**
  * Parse a YAML skill config file. Returns a Result<SkillConfig, string>.
@@ -103,7 +134,13 @@ export function parseSkillConfig(
     dependsOnId = depResult.value;
   }
 
+  const agent = parseSkillAgent(result.data.backend, result.data.model);
+  if (!agent.ok) {
+    return err(`Skill config validation failed in "${filePath}": ${agent.error}`);
+  }
+
   return ok({
+    ...agent.value,
     id: idResult.value,
     name: result.data.name,
     schedule: result.data.schedule,
@@ -113,7 +150,6 @@ export function parseSkillConfig(
     // Only set timeout when explicitly provided — exactOptionalPropertyTypes forbids an
     // explicit `undefined`, and an absent key is exactly what signals "inherit the default".
     ...(result.data.timeout !== undefined ? { timeout: result.data.timeout } : {}),
-    ...(result.data.backend !== undefined ? { backend: result.data.backend } : {}),
     environment: result.data.environment,
     dependsOn: dependsOnId,
   } satisfies SkillConfig);

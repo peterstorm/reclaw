@@ -8,6 +8,7 @@ permissionProfile: scheduled
 # Claude, not the default Pi backend: Pi depends on the desktop vLLM box, which is often off
 # (pi "Connection error" at most hours, 2026-10-15..18). A daily habit must not be flaky.
 backend: claude
+model: sonnet
 validityWindowMinutes: 240
 timeout: 300
 promptTemplate: |

@@ -8,6 +8,7 @@ vi.mock('node:fs/promises', () => ({
 }));
 
 import fs from 'node:fs/promises';
+import type { ClaudeModel } from '../core/model-selection.js';
 import { getAllowedTools } from '../core/permissions.js';
 import type { ScheduledJob, SkillConfig, SkillRegistry } from '../core/types.js';
 import type {
@@ -397,6 +398,35 @@ describe('handleScheduledJob', () => {
     const callArgs = runClaude.mock.calls.at(0)?.[0];
     expect(callArgs).toBeDefined();
     expect(callArgs?.backend).toBe('pi');
+  });
+
+  it("passes a Claude skill's pinned model to the agent runner", async () => {
+    const runClaude = makeRunClaude({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
+    const sonnetSkill = makeSkillConfig({ backend: 'claude', model: 'sonnet' as ClaudeModel });
+
+    await handleScheduledJob(makeScheduledJob(), {
+      runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
+      telegram: makeTelegram(),
+      skillRegistry: makeRegistry([sonnetSkill]),
+      config: makeConfig(),
+    });
+
+    const callArgs = runClaude.mock.calls.at(0)?.[0];
+    expect(callArgs?.backend).toBe('claude');
+    expect(callArgs?.modelSelection).toEqual({ model: 'sonnet' });
+  });
+
+  it('requests no model when the skill pins none, leaving the choice to the runner', async () => {
+    const runClaude = makeRunClaude({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
+
+    await handleScheduledJob(makeScheduledJob(), {
+      runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
+      telegram: makeTelegram(),
+      skillRegistry: makeRegistry([makeSkillConfig({ backend: 'claude' })]),
+      config: makeConfig(),
+    });
+
+    expect(runClaude.mock.calls.at(0)?.[0]).not.toHaveProperty('modelSelection');
   });
 
   it('falls back to global scheduledTimeoutMs when skill has no timeout', async () => {

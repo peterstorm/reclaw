@@ -7,7 +7,10 @@
  */
 
 import type { AgentFailure } from '../../core/agent-failure.js';
+import type { AgentModelSelection } from '../../core/model-selection.js';
 import type { AgentBackendName } from '../../core/types.js';
+
+export type { AgentModelSelection };
 
 // ─── Subprocess Spawn ─────────────────────────────────────────────────────────
 
@@ -29,11 +32,6 @@ export type SpawnFn = (
 };
 
 // ─── Agent Options & Result ───────────────────────────────────────────────────
-
-export type AgentModelSelection = {
-  readonly provider?: string;
-  readonly model?: string;
-};
 
 export type AgentOptions = {
   readonly prompt: string;

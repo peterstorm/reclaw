@@ -425,6 +425,8 @@ environment: [GARMIN_EMAIL]       # optional — closed, explicit service-enviro
 validityWindowMinutes: 60         # optional (default 30) — catch-up discards a fire older than this
 timeout: 600                      # optional SECONDS. OMIT to inherit SCHEDULED_TIMEOUT_MS (20 min).
 dependsOn: garmin-sync            # optional — run after this skill completes; requires schedule: null
+backend: claude                   # optional — 'claude' or 'pi'; omit to use AGENT_BACKEND
+model: sonnet                     # optional — Claude --model alias/id; ONLY with backend: claude
 promptTemplate: |                 # required — {{variable}} interpolation, see below
   {{scheduledPreamble}}
   ...
@@ -435,6 +437,7 @@ Key facts that bite people:
 - **The skill `id` is the filename** (minus `.yaml`), not a field. An `id:` key is permitted only if it *matches* the filename (validated) — otherwise the parse fails. Don't add one.
 - **`timeout` is seconds and is a ceiling, not an extension.** Setting it *lowers* the cap from the 20-minute default. Omit it for anything heavy. (A schema default used to silently cap field-less skills at 120s; that was fixed — omitting now correctly inherits the 20-minute `SCHEDULED_TIMEOUT_MS`.)
 - **`dependsOn` needs `schedule: null`.** A skill can't both be cron-scheduled and be a dependent. Chains cascade (`A → B → C`) and are restart-safe via completion markers.
+- **`model` requires `backend: claude`.** It becomes `claude --model <value>` (`src/core/model-selection.ts`); without it, Claude runs use the CLI default (`~/.claude/settings.json` `model`), so changing your interactive `/model` default changes every unpinned skill. A model with no `backend`, or with `backend: pi`, fails the parse: Pi's model is service-wide (`RECLAW_PI_MODEL`), and that variable only ever applies to Pi runs. A reply to a skill's message resumes its session, and `claude --resume` keeps the session's model, so the conversation stays on the pinned model.
 - **`promptTemplate` variables:** `{{date}}`, `{{dayOfWeek}}`, `{{personality}}`, `{{scheduledPreamble}}` (the canonical "automated job / ALL_CLEAR" contract — prefer it over hand-writing that boilerplate), `{{latitude}}`/`{{longitude}}`/`{{timezone}}`/`{{locationName}}`, and `{{workspacePath}}` (a.k.a. `{{cwd}}`). Unknown `{{vars}}` are left verbatim.
 - **`ALL_CLEAR` suppression is exact-match:** a scheduled run whose trimmed output is exactly `ALL_CLEAR` sends nothing. Any stray backtick or formatting defeats it and pages the user.
 
@@ -454,7 +457,7 @@ A curriculum learning system over the vault (`learning/curriculum/`): master lea
 
 - **One command surface:** `bun scripts/learn.ts <status|lesson|read|round|grade|suspend|unsuspend|build-next|feynman|feynman-log|validate>` — prints JSON; refuses (exit 1, nothing written) on an unknown card/round or a corrupt log. `grade … --answer -` reads the answer from stdin (skills pass it through a quoted heredoc).
 - **State:** only the append-only `learning/curriculum/.state/study-log.jsonl`. Card schedules, reading progress and stats are a pure fold (`src/core/study-plan.ts`, ts-fsrs with fuzz off → deterministic). Models grade answers; the core decides what a grade means.
-- **Skills:** `learn-lesson` (07:00), `learn-recall` (11:30/15:30/19:30), `learn-feynman` (Sun 17:00), `curriculum-builder` (02:30, builds the next note when fewer than `buildBuffer` built topics are unread). All `backend: claude` — the desktop/Pi backend is too often unreachable for a daily habit, and the builder needs web research. Replies to their messages resume the skill session, which then calls `learn.ts`.
+- **Skills:** `learn-lesson` (07:00), `learn-recall` (11:30/15:30/19:30), `learn-feynman` (Sun 17:00), `curriculum-builder` (02:30, builds the next note when fewer than `buildBuffer` built topics are unread). All `backend: claude` — the desktop/Pi backend is too often unreachable for a daily habit, and the builder needs web research. The three learn skills pin `model: sonnet` (grading short answers); the builder pins `model: opus` (deep research). Replies to their messages resume the skill session, which then calls `learn.ts`.
 - **Notes** are validated by `parseMasterNote` (strict format, all-or-nothing). Authoring spec: `workspace/skills/shared/master-note-guide.md`. Domain MOCs are generated: `bun scripts/curriculum-mocs.ts`.
 - **Dry-run anything** against a copy: `RECLAW_VAULT_ROOT=/tmp/vault-copy bun scripts/learn.ts …`.
 
@@ -495,7 +498,7 @@ All config is env-driven (no config file). See `src/infra/config.ts` for the Zod
 | `GEMINI_API_KEY`                 | optional               | Used by research LLM adapter                           |
 | `AGENT_BACKEND`                 | `claude`               | Agent subprocess backend: `claude` or `pi`             |
 | `RECLAW_PI_PROVIDER`            | unset                  | Optional Pi `--provider`; unset means use Pi defaults  |
-| `RECLAW_PI_MODEL`               | unset                  | Optional Pi `--model`; unset means use Pi defaults     |
+| `RECLAW_PI_MODEL`               | unset                  | Optional Pi `--model` (Pi runs only); unset means use Pi defaults |
 | `LATITUDE` / `LONGITUDE` / `TIMEZONE` / `LOCATION_NAME` | Copenhagen defaults | Weather, sun-time skills        |
 
 Pi model override example for trying DeepSeek v4 Flash through reclaw:

@@ -34,6 +34,27 @@ describe('claudeBackend', () => {
       expect(args[resumeIdx + 1]).toBe('sess-abc-123');
     });
 
+    it('passes a selected model as --model', () => {
+      const args = claudeBackend.buildArgs({
+        allowedTools: ['Read'],
+        modelSelection: { model: 'sonnet' },
+      });
+
+      const modelIdx = args.indexOf('--model');
+      expect(modelIdx).toBeGreaterThan(-1);
+      expect(args[modelIdx + 1]).toBe('sonnet');
+    });
+
+    it('omits --model without a selection and ignores provider (no Claude equivalent)', () => {
+      expect(claudeBackend.buildArgs({ allowedTools: ['Read'] })).not.toContain('--model');
+      const withProvider = claudeBackend.buildArgs({
+        allowedTools: ['Read'],
+        modelSelection: { provider: 'desktop-vllm' },
+      });
+      expect(withProvider).not.toContain('--model');
+      expect(withProvider).not.toContain('desktop-vllm');
+    });
+
     it('formats allowedTools as comma-separated in --allowedTools', () => {
       const args = claudeBackend.buildArgs({
         allowedTools: ['Read', 'Write', 'Bash', 'recall', 'remember'],

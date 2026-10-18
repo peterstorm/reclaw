@@ -1,8 +1,14 @@
 import { formatAgentFailure } from './core/agent-failure.js';
 import { createAsyncMutex } from './core/async-mutex.js';
+import { type ServiceModelSelections, resolveModelSelection } from './core/model-selection.js';
 import { makeTelegramUserId } from './core/types.js';
-import type { AgentBackendName, Result, ScheduledJob } from './core/types.js';
-import type { AgentOptions, AgentResult, OnStreamChunk } from './infra/agent-backends/index.js';
+import type { Result, ScheduledJob } from './core/types.js';
+import type {
+  AgentBackend,
+  AgentOptions,
+  AgentResult,
+  OnStreamChunk,
+} from './infra/agent-backends/index.js';
 import type { AppConfig } from './infra/config.js';
 import type { Queues } from './infra/queue.js';
 import type { SessionStore } from './infra/session-store.js';
@@ -151,39 +157,38 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
     './infra/agent-backends/index.js'
   );
   const defaultBackend = resolveBackend(config);
-  const modelSelection =
+  const serviceModelSelections: ServiceModelSelections =
     config.piProvider !== undefined || config.piModel !== undefined
       ? {
-          ...(config.piProvider !== undefined ? { provider: config.piProvider } : {}),
-          ...(config.piModel !== undefined ? { model: config.piModel } : {}),
+          pi: {
+            ...(config.piProvider !== undefined ? { provider: config.piProvider } : {}),
+            ...(config.piModel !== undefined ? { model: config.piModel } : {}),
+          },
         }
-      : undefined;
-  const withModelSelection = (opts: AgentOptions): AgentOptions =>
-    modelSelection ? { ...opts, modelSelection } : opts;
+      : {};
   console.info(`[main] Agent backend: ${defaultBackend.name}`);
 
-  const resolveBackendForOptions = (opts: AgentOptions): AgentBackendName =>
-    opts.backend ?? config.agentBackend;
+  // Resolve the backend first, then the model for THAT backend — the Pi defaults must never
+  // reach a Claude run (a per-skill `backend: claude` would otherwise get `--model <vLLM id>`).
+  const forBackend = (opts: AgentOptions): [AgentBackend, AgentOptions] => {
+    const backend = opts.backend ?? config.agentBackend;
+    const { modelSelection: requested, ...rest } = opts;
+    const modelSelection = resolveModelSelection(backend, requested, serviceModelSelections);
+    return [
+      resolveBackend({ agentBackend: backend }),
+      modelSelection ? { ...rest, modelSelection } : rest,
+    ];
+  };
 
   const runClaudeFn: (options: AgentOptions) => Promise<AgentResult> =
-    injected.runClaudeFn ??
-    ((opts) =>
-      runAgent(
-        resolveBackend({ agentBackend: resolveBackendForOptions(opts) }),
-        withModelSelection(opts),
-      ));
+    injected.runClaudeFn ?? ((opts) => runAgent(...forBackend(opts)));
 
   const runClaudeStreamingFn: (
     options: AgentOptions,
     onChunk: OnStreamChunk,
   ) => Promise<AgentResult> =
     injected.runClaudeStreamingFn ??
-    ((opts, onChunk) =>
-      runAgentStreaming(
-        resolveBackend({ agentBackend: resolveBackendForOptions(opts) }),
-        withModelSelection(opts),
-        onChunk,
-      ));
+    ((opts, onChunk) => runAgentStreaming(...forBackend(opts), onChunk));
 
   // ── 1b. Resolve cortex extraction (always-on, no config needed) ──────────
   const { resolveCortexExtractScript, createCortexExtractor } = await import(

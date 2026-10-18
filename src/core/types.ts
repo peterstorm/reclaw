@@ -1,4 +1,5 @@
 import type { SkillEnvironmentVariable } from './agent-environment.js';
+import type { ClaudeTarget } from './model-selection.js';
 import type { StoredUpload } from './stored-upload.js';
 import { type VaultRelativePath, parseVaultRelativePath } from './vault-path.js';
 
@@ -614,8 +615,15 @@ export function scheduledFailed(error: string): ScheduledOutcome {
 // ─── Permission Profile ────────────────────────────────────────────────────────
 // ─── Skill Config ──────────────────────────────────────────────────────────────
 
+/**
+ * Which agent runs a skill. Omit `backend` to use AGENT_BACKEND. Only a skill that names
+ * `backend: claude` can pin a model: Pi's model is service-wide (RECLAW_PI_MODEL), and a model
+ * whose meaning depended on the service default would silently change with it.
+ */
+export type SkillAgent = { readonly backend?: 'pi' } | ClaudeTarget;
+
 /** Parsed from a YAML file in workspace/skills/. */
-export type SkillConfig = {
+export type SkillConfig = SkillAgent & {
   readonly id: SkillId;
   readonly name: string;
   readonly schedule: string | null; // cron expression, null = on-demand only
@@ -623,7 +631,6 @@ export type SkillConfig = {
   readonly permissionProfile: 'chat' | 'scheduled';
   readonly validityWindowMinutes: number;
   readonly timeout?: number; // seconds; omit to inherit SCHEDULED_TIMEOUT_MS (20 min default)
-  readonly backend?: AgentBackendName; // optional per-skill backend override; omit to use AGENT_BACKEND
   /** Service environment values explicitly granted to this trusted scheduled skill. */
   readonly environment: readonly SkillEnvironmentVariable[];
   readonly dependsOn: SkillId | null; // skill that must complete before this one runs

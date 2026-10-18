@@ -5,7 +5,7 @@
  * No subprocess lifecycle logic — that belongs in the shared runner.
  */
 
-import type { AgentBackend, StreamDelta } from './types.js';
+import type { AgentBackend, AgentModelSelection, StreamDelta } from './types.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -49,9 +49,16 @@ function enabledClaudeBuiltins(allowedTools: readonly string[]): readonly string
 export const claudeBackend: AgentBackend = {
   name: 'claude',
 
-  buildArgs(opts: { resumeSessionId?: string; allowedTools: readonly string[] }): string[] {
+  buildArgs(opts: {
+    resumeSessionId?: string;
+    allowedTools: readonly string[];
+    modelSelection?: AgentModelSelection;
+  }): string[] {
     const enabledBuiltins = enabledClaudeBuiltins(opts.allowedTools);
 
+    // No model → the CLI default (settings.json `model`). A resumed session keeps the model it
+    // was started with, so replies to a pinned skill's message stay on that model. The Claude
+    // CLI has no provider concept; `provider` is ignored.
     return [
       'claude',
       '-p',
@@ -60,6 +67,7 @@ export const claudeBackend: AgentBackend = {
       '--include-partial-messages',
       '--permission-mode',
       'dontAsk',
+      ...(opts.modelSelection?.model ? ['--model', opts.modelSelection.model] : []),
       ...(opts.resumeSessionId ? ['--resume', opts.resumeSessionId] : []),
       '--tools',
       enabledBuiltins.join(','),

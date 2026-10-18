@@ -128,6 +128,45 @@ describe('parseSkillConfig', () => {
     if (!r.ok) expect(r.error).toContain('backend');
   });
 
+  it('parses a Claude model pinned alongside backend: claude', () => {
+    const r = parseSkillConfig(
+      'name: "Test"\npromptTemplate: "Do it"\npermissionProfile: "scheduled"\nbackend: claude\nmodel: sonnet',
+      '/skills/test-skill.yaml',
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toMatchObject({ backend: 'claude', model: 'sonnet' });
+  });
+
+  it('leaves model absent when omitted, so the CLI default applies', () => {
+    const r = parseSkillConfig(
+      'name: "Test"\npromptTemplate: "Do it"\npermissionProfile: "scheduled"\nbackend: claude',
+      '/skills/test-skill.yaml',
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).not.toHaveProperty('model');
+  });
+
+  it.each([
+    ['without an explicit backend', 'model: sonnet'],
+    ['with backend: pi', 'backend: pi\nmodel: sonnet'],
+  ])('rejects a model %s', (_case, fields) => {
+    const r = parseSkillConfig(
+      `name: "Test"\npromptTemplate: "Do it"\npermissionProfile: "scheduled"\n${fields}`,
+      '/skills/test-skill.yaml',
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('requires "backend: claude"');
+  });
+
+  it('rejects a model that would parse as a CLI flag', () => {
+    const r = parseSkillConfig(
+      'name: "Test"\npromptTemplate: "Do it"\npermissionProfile: "scheduled"\nbackend: claude\nmodel: "--dangerously-skip-permissions"',
+      '/skills/test-skill.yaml',
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('invalid Claude model');
+  });
+
   it('parses explicit service-environment grants', () => {
     const r = parseSkillConfig(
       'name: "Garmin"\npromptTemplate: "Run sync"\npermissionProfile: "scheduled"\nenvironment: [GARMIN_EMAIL, GARMIN_PASSWORD]',

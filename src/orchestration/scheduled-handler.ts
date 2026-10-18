@@ -162,6 +162,7 @@ export async function handleScheduledJob(
 
   // 7. Run agent subprocess (FR-007)
   const sessionBackend = skill.backend ?? deps.config.agentBackend;
+  const model = skill.backend === 'claude' ? skill.model : undefined;
   const result = await deps.runClaude({
     prompt,
     cwd: deps.config.workspacePath,
@@ -169,6 +170,7 @@ export async function handleScheduledJob(
     timeoutMs: skill.timeout ? skill.timeout * 1000 : deps.config.scheduledTimeoutMs,
     ...(Object.keys(environment).length > 0 ? { env: environment } : {}),
     backend: sessionBackend,
+    ...(model !== undefined ? { modelSelection: { model } } : {}),
   });
 
   // 8. Handle failure — no user notification for scheduled (goes to dead letter)
