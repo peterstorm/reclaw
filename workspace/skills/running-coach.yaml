@@ -125,7 +125,7 @@ promptTemplate: |
 
   ## Periodic Testing & Block Review (Mondays only)
 
-  Every 4-6 weeks on a Monday, replace the normal quality workout with a standardized test. Check cortex for "Running coach: Last test" — if 4+ weeks ago (or no test recorded), this Monday is a test day.
+  Every 6-8 weeks on a Monday, replace the normal quality workout with a standardized test. Check cortex for "Running coach: Last test" — if 6+ weeks ago (or no test recorded), this Monday is a test day. Prefer scheduling the test as a parkrun when one lines up. With only one quality day per week, 4 weeks of change is near test noise; 6-8 weeks gives a cleaner signal. Between tests, use Garmin's auto-detected threshold pace and hard-session data for mid-block calibration.
 
   **Conditions for testing:**
   - Readiness must be green (≥65, sleep ≥70, HRV in baseline)
@@ -275,7 +275,7 @@ promptTemplate: |
 
   **Selection logic (limiter-biased, NOT fixed rotation):**
 
-  1. **Test week?** Check cortex for last test date. If 4+ weeks ago and readiness is green → prescribe the appropriate test (see Periodic Testing). Skip the rest.
+  1. **Test week?** Check cortex for last test date. If 6+ weeks ago and readiness is green → prescribe the appropriate test (see Periodic Testing). Skip the rest.
   2. **Post-test week?** If last Monday was a test → generate test report + block review first, then prescribe a lighter recovery-focused session.
   3. **Octopus week?** If last octopus session was 2-3 weeks ago → schedule type 8.
   4. **Determine current limiter** (Limiter Detection). Re-evaluate if cortex assessment is >2 weeks old; when evidence is unclear, use the current-5K-duration prior.
