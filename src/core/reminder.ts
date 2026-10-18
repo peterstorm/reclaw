@@ -1,5 +1,5 @@
 import * as chrono from 'chrono-node';
-import { type Result, ok, err } from './types.js';
+import { type Result, err, ok } from './types.js';
 
 // ─── Duration Parsing ─────────────────────────────────────────────────────────
 
@@ -21,16 +21,12 @@ export function parseDuration(input: string): Result<number, string> {
     return err(`Invalid duration format: "${input}". Use e.g. 30m, 2h, 1d, 1h30m.`);
   }
 
-  const days = parseInt(match[1] ?? '0', 10);
-  const hours = parseInt(match[2] ?? '0', 10);
-  const minutes = parseInt(match[3] ?? '0', 10);
-  const seconds = parseInt(match[4] ?? '0', 10);
+  const days = Number.parseInt(match[1] ?? '0', 10);
+  const hours = Number.parseInt(match[2] ?? '0', 10);
+  const minutes = Number.parseInt(match[3] ?? '0', 10);
+  const seconds = Number.parseInt(match[4] ?? '0', 10);
 
-  const ms =
-    days * 86_400_000 +
-    hours * 3_600_000 +
-    minutes * 60_000 +
-    seconds * 1_000;
+  const ms = days * 86_400_000 + hours * 3_600_000 + minutes * 60_000 + seconds * 1_000;
 
   if (ms <= 0) {
     return err('Duration must be greater than zero.');
@@ -57,8 +53,8 @@ export function parseAbsoluteTime(input: string, now: Date = new Date()): Result
     return err(`Invalid time format: "${input}".`);
   }
 
-  let hours = parseInt(match[1]!, 10);
-  const minutes = parseInt(match[2] ?? '0', 10);
+  let hours = Number.parseInt(match[1]!, 10);
+  const minutes = Number.parseInt(match[2] ?? '0', 10);
   const meridiem = match[3] as 'am' | 'pm' | undefined;
 
   // Validate ranges
@@ -167,25 +163,50 @@ export function parseRemindCancelCommand(input: string): string | null {
 
 export type RecurringParsed =
   | { readonly type: 'interval'; readonly intervalMs: number; readonly text: string }
-  | { readonly type: 'cron'; readonly cronPattern: string; readonly cronDescription: string; readonly text: string };
+  | {
+      readonly type: 'cron';
+      readonly cronPattern: string;
+      readonly cronDescription: string;
+      readonly text: string;
+    };
 
 const DAY_MAP: Record<string, string> = {
-  sunday: '0', sun: '0',
-  monday: '1', mon: '1',
-  tuesday: '2', tue: '2', tues: '2',
-  wednesday: '3', wed: '3',
-  thursday: '4', thu: '4', thur: '4', thurs: '4',
-  friday: '5', fri: '5',
-  saturday: '6', sat: '6',
-  weekday: '1-5', weekdays: '1-5',
-  weekend: '0,6', weekends: '0,6',
-  day: '*', daily: '*',
+  sunday: '0',
+  sun: '0',
+  monday: '1',
+  mon: '1',
+  tuesday: '2',
+  tue: '2',
+  tues: '2',
+  wednesday: '3',
+  wed: '3',
+  thursday: '4',
+  thu: '4',
+  thur: '4',
+  thurs: '4',
+  friday: '5',
+  fri: '5',
+  saturday: '6',
+  sat: '6',
+  weekday: '1-5',
+  weekdays: '1-5',
+  weekend: '0,6',
+  weekends: '0,6',
+  day: '*',
+  daily: '*',
 };
 
 const DAY_DISPLAY: Record<string, string> = {
-  '0': 'Sunday', '1': 'Monday', '2': 'Tuesday', '3': 'Wednesday',
-  '4': 'Thursday', '5': 'Friday', '6': 'Saturday',
-  '1-5': 'weekday', '0,6': 'weekend day', '*': 'day',
+  '0': 'Sunday',
+  '1': 'Monday',
+  '2': 'Tuesday',
+  '3': 'Wednesday',
+  '4': 'Thursday',
+  '5': 'Friday',
+  '6': 'Saturday',
+  '1-5': 'weekday',
+  '0,6': 'weekend day',
+  '*': 'day',
 };
 
 const TIME_KEYWORDS: Record<string, { hour: number; minute: number }> = {
@@ -278,8 +299,8 @@ function parseClockTime(input: string): Result<{ hour: number; minute: number },
   const match = pattern.exec(input.toLowerCase());
   if (!match) return err('Invalid clock time.');
 
-  let hour = parseInt(match[1]!, 10);
-  const minute = parseInt(match[2] ?? '0', 10);
+  let hour = Number.parseInt(match[1]!, 10);
+  const minute = Number.parseInt(match[2] ?? '0', 10);
   const meridiem = match[3] as 'am' | 'pm' | undefined;
 
   if (meridiem) {
@@ -324,7 +345,7 @@ export function parseRecurringReminder(input: string): Result<RecurringParsed, s
 
   return err(
     'Usage: /remind every <interval|day> [at <time>] <message>\n' +
-    'Examples: /remind every 1d take vitamins, /remind every Sunday at noon water plants'
+      'Examples: /remind every 1d take vitamins, /remind every Sunday at noon water plants',
   );
 }
 
@@ -357,7 +378,10 @@ export type ParsedReminder =
  *   "/remind tomorrow at 3pm call dentist"
  *   "/remind next friday deploy release"
  */
-export function parseRemindCommand(input: string, now: Date = new Date()): Result<ParsedReminder, string> {
+export function parseRemindCommand(
+  input: string,
+  now: Date = new Date(),
+): Result<ParsedReminder, string> {
   const trimmed = input.trim();
 
   // Strip the /remind prefix
@@ -380,13 +404,19 @@ export function parseRemindCommand(input: string, now: Date = new Date()): Resul
         kind: 'cron-recurring',
       });
     }
-    return ok({ intervalMs: recurResult.value.intervalMs, text: recurResult.value.text, kind: 'recurring' });
+    return ok({
+      intervalMs: recurResult.value.intervalMs,
+      text: recurResult.value.text,
+      kind: 'recurring',
+    });
   }
 
   // Split into time-spec and message (for duration/absolute parsing)
   const spaceIdx = withoutPrefix.indexOf(' ');
   if (spaceIdx === -1) {
-    return err('Usage: /remind <duration|time|date> <message>. Examples: /remind 30m take a break, /remind tomorrow at 3pm meeting');
+    return err(
+      'Usage: /remind <duration|time|date> <message>. Examples: /remind 30m take a break, /remind tomorrow at 3pm meeting',
+    );
   }
 
   const timeSpec = withoutPrefix.slice(0, spaceIdx);
@@ -409,10 +439,16 @@ export function parseRemindCommand(input: string, now: Date = new Date()): Resul
   // Try semantic date parsing on the full text after /remind
   const semanticResult = parseSemanticDate(withoutPrefix, now);
   if (semanticResult.ok) {
-    return ok({ delayMs: semanticResult.value.delayMs, text: semanticResult.value.text, kind: 'semantic' });
+    return ok({
+      delayMs: semanticResult.value.delayMs,
+      text: semanticResult.value.text,
+      kind: 'semantic',
+    });
   }
 
-  return err(`Could not parse a duration, time, or date from: "${withoutPrefix}". Examples: 30m, 14:30, tomorrow at 3pm, next friday`);
+  return err(
+    `Could not parse a duration, time, or date from: "${withoutPrefix}". Examples: 30m, 14:30, tomorrow at 3pm, next friday`,
+  );
 }
 
 // ─── Reminder list + confirmation formatting ────────────────────────────────
@@ -433,7 +469,9 @@ type ReminderListEntry = {
 export function formatReminderList(reminders: readonly ReminderListEntry[]): string | null {
   if (reminders.length === 0) return null;
   const lines = reminders.map((r, i) => {
-    const schedule = r.cronDescription ?? (r.cronPattern ? r.cronPattern : `every ${formatDuration(r.intervalMs)}`);
+    const schedule =
+      r.cronDescription ??
+      (r.cronPattern ? r.cronPattern : `every ${formatDuration(r.intervalMs)}`);
     return `${i + 1}. \`${r.schedulerId}\` ${schedule} — ${r.text}`;
   });
   return `Active recurring reminders:\n\n${lines.join('\n')}\n\nCancel with: /remind cancel <id>`;

@@ -178,7 +178,10 @@ export function splitHtml(html: string, maxLength = DEFAULT_MAX_LENGTH): readonl
     let chunk = remaining.slice(0, cutAt);
     let unclosed = getUnclosedTags(chunk);
     // Close unclosed tags at end of this chunk
-    let closers = [...unclosed].reverse().map((t) => `</${t.name}>`).join('');
+    let closers = [...unclosed]
+      .reverse()
+      .map((t) => `</${t.name}>`)
+      .join('');
 
     // Guard the maxLength invariant: TAG_OVERHEAD only *reserves* room for closers,
     // it doesn't bound them. Deeply nested tags can produce closers longer than the
@@ -190,7 +193,10 @@ export function splitHtml(html: string, maxLength = DEFAULT_MAX_LENGTH): readonl
       if (cutAt <= 0) cutAt = room;
       chunk = remaining.slice(0, cutAt);
       unclosed = getUnclosedTags(chunk);
-      closers = [...unclosed].reverse().map((t) => `</${t.name}>`).join('');
+      closers = [...unclosed]
+        .reverse()
+        .map((t) => `</${t.name}>`)
+        .join('');
     }
 
     // Reopen them at start of next chunk

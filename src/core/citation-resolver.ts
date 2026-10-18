@@ -65,7 +65,11 @@ const SOURCE_REF_INDEX = 5;
 function extractSourceIdFromPassage(entry: unknown): string | undefined {
   if (!Array.isArray(entry)) return undefined;
   const sourceRef = entry[SOURCE_REF_INDEX];
-  if (!Array.isArray(sourceRef) || !Array.isArray(sourceRef[0]) || !Array.isArray(sourceRef[0][0])) {
+  if (
+    !Array.isArray(sourceRef) ||
+    !Array.isArray(sourceRef[0]) ||
+    !Array.isArray(sourceRef[0][0])
+  ) {
     return undefined;
   }
   const id = sourceRef[0][0][0];
@@ -144,7 +148,7 @@ export function resolveAnswerCitations(
       const citationNumbers = expandCitationGroup(inner);
 
       const parts: string[] = citationNumbers.map((n) => {
-        const sourceIndex = passageToSourceMap?.get(n) ?? (n - 1);
+        const sourceIndex = passageToSourceMap?.get(n) ?? n - 1;
         const source = sources[sourceIndex];
         if (source === undefined) {
           return `[${n}]`;
@@ -189,15 +193,15 @@ function expandCitationGroup(inner: string): readonly number[] {
   for (const segment of segments) {
     const rangeParts = segment.split(/\s*[-–]\s*/);
     if (rangeParts.length === 2) {
-      const start = parseInt(rangeParts[0]!, 10);
-      const end = parseInt(rangeParts[1]!, 10);
+      const start = Number.parseInt(rangeParts[0]!, 10);
+      const end = Number.parseInt(rangeParts[1]!, 10);
       if (!isNaN(start) && !isNaN(end) && end >= start && end - start < 100) {
         for (let i = start; i <= end; i++) {
           numbers.push(i);
         }
       }
     } else {
-      const n = parseInt(segment, 10);
+      const n = Number.parseInt(segment, 10);
       if (!isNaN(n)) {
         numbers.push(n);
       }
@@ -263,7 +267,7 @@ export function generatePassageAnchors(
  */
 export function sanitizeTitleForWikilink(title: string): string {
   return title
-    .replace(/[/\\:*?"<>|[\]#^]/g, '')  // strip filesystem-illegal + wikilink-invalid chars
+    .replace(/[/\\:*?"<>|[\]#^]/g, '') // strip filesystem-illegal + wikilink-invalid chars
     .replace(/\s+/g, ' ')
     .trim();
 }

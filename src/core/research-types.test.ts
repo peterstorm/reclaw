@@ -1,12 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import {
-  isTerminal,
-  makeResearchJobData,
-  stateProgress,
-} from './research-types.js';
-import type {
-  ResearchState,
-} from './research-types.js';
+import { isTerminal, makeResearchJobData, stateProgress } from './research-types.js';
+import type { ResearchState } from './research-types.js';
 
 // ─── makeResearchJobData ──────────────────────────────────────────────────────
 
@@ -180,7 +174,11 @@ describe('isTerminal', () => {
   });
 
   it('returns true for failed state', () => {
-    const state: ResearchState = { kind: 'failed', error: 'something went wrong', failedState: 'querying' };
+    const state: ResearchState = {
+      kind: 'failed',
+      error: 'something went wrong',
+      failedState: 'querying',
+    };
     expect(isTerminal(state)).toBe(true);
   });
 

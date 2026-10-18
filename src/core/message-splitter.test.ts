@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { splitMessage, splitHtml } from './message-splitter.js';
+import { splitHtml, splitMessage } from './message-splitter.js';
 
 // ─── Core invariant helpers ───────────────────────────────────────────────────
 
@@ -210,7 +210,9 @@ describe('splitHtml', () => {
     const result = splitHtml(html, 4096);
 
     for (const chunk of result) {
-      const openTags = [...chunk.matchAll(/<([a-z]+)(?:\s[^>]*)?>/gi)].map((m) => m[1]!.toLowerCase());
+      const openTags = [...chunk.matchAll(/<([a-z]+)(?:\s[^>]*)?>/gi)].map((m) =>
+        m[1]!.toLowerCase(),
+      );
       const closeTags = [...chunk.matchAll(/<\/([a-z]+)>/gi)].map((m) => m[1]!.toLowerCase());
       // Every open tag should have a matching close
       for (const tag of openTags) {
@@ -228,7 +230,13 @@ describe('splitHtml', () => {
     // reserved TAG_OVERHEAD budget, a naive split would push chunk+closers past
     // maxLength — the exact failure the splitter exists to prevent.
     const opens = ['<b>', '<i>', '<u>', '<s>', '<code>', '<pre>'];
-    const nested = opens.join('') + 'x'.repeat(500) + [...opens].reverse().map((t) => t.replace('<', '</')).join('');
+    const nested =
+      opens.join('') +
+      'x'.repeat(500) +
+      [...opens]
+        .reverse()
+        .map((t) => t.replace('<', '</'))
+        .join('');
     const maxLength = 60; // smaller than the nested closers can demand
     const result = splitHtml(nested, maxLength);
 

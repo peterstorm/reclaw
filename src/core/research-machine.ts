@@ -331,9 +331,10 @@ function handleWritingVault(
   ctx: ResearchContext,
 ): { state: ResearchState; context: ResearchContext } {
   // Route to generating_artifacts if audio/video requested, otherwise straight to notifying
-  const nextKind = (ctx.generateAudio || ctx.generateVideo)
-    ? 'generating_artifacts' as const
-    : 'notifying' as const;
+  const nextKind =
+    ctx.generateAudio || ctx.generateVideo
+      ? ('generating_artifacts' as const)
+      : ('notifying' as const);
 
   if (event.type === 'VAULT_WRITTEN') {
     const nextContext: ResearchContext = {

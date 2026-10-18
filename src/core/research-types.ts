@@ -8,9 +8,9 @@
 // searching_sources, adding_sources, awaiting_processing, generating_questions,
 // querying, resolving_citations, writing_vault, notifying, done/failed.
 
+import type { TopicSlug } from './topic-slug.js';
 import { err, ok } from './types.js';
 import type { Result } from './types.js';
-import type { TopicSlug } from './topic-slug.js';
 
 // ─── Value Objects ─────────────────────────────────────────────────────────────
 
@@ -133,7 +133,12 @@ export type ResearchState =
 export type ResearchEvent =
   | { readonly type: 'TOPIC_DERIVED'; readonly topic: string; readonly topicSlug: TopicSlug }
   | { readonly type: 'NOTEBOOK_CREATED'; readonly notebookId: string }
-  | { readonly type: 'SOURCES_DISCOVERED'; readonly webSources: readonly WebSource[]; readonly sessionId: string; readonly claudeDiscoveredUrls: readonly string[] }
+  | {
+      readonly type: 'SOURCES_DISCOVERED';
+      readonly webSources: readonly WebSource[];
+      readonly sessionId: string;
+      readonly claudeDiscoveredUrls: readonly string[];
+    }
   | { readonly type: 'SOURCES_ADDED'; readonly sourceUrlById: Readonly<Record<string, string>> }
   | { readonly type: 'SOURCES_READY'; readonly sources: readonly SourceMeta[] }
   | { readonly type: 'QUESTIONS_GENERATED'; readonly questions: readonly string[] }
@@ -143,7 +148,11 @@ export type ResearchEvent =
   | { readonly type: 'CITATIONS_RESOLVED'; readonly resolvedNotes: readonly ResolvedNote[] }
   | { readonly type: 'VAULT_WRITTEN'; readonly hubPath: string }
   | { readonly type: 'EMERGENCY_WRITTEN'; readonly path: string }
-  | { readonly type: 'ARTIFACTS_GENERATED'; readonly artifacts: readonly ArtifactMeta[]; readonly artifactFailures: readonly string[] }
+  | {
+      readonly type: 'ARTIFACTS_GENERATED';
+      readonly artifacts: readonly ArtifactMeta[];
+      readonly artifactFailures: readonly string[];
+    }
   | { readonly type: 'NOTIFIED' }
   | { readonly type: 'ERROR'; readonly error: string; readonly retriable: boolean };
 

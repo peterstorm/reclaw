@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { resolveBackend } from './index';
 import { claudeBackend } from './claude-backend';
+import { resolveBackend } from './index';
 import { piBackend } from './pi-backend';
 
 describe('resolveBackend', () => {

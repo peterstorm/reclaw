@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  type OpenMeteoResponse,
   buildForecastUrl,
   distillForecast,
   parseDayOffset,
   round,
-  type OpenMeteoResponse,
 } from './commute-weather.js';
 
 describe('round', () => {
@@ -71,10 +71,7 @@ describe('distillForecast', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.day).toBe('2026-07-16');
-    expect(result.value.hours.map((h) => h.time)).toEqual([
-      '2026-07-16T07:00',
-      '2026-07-16T08:00',
-    ]);
+    expect(result.value.hours.map((h) => h.time)).toEqual(['2026-07-16T07:00', '2026-07-16T08:00']);
     // worst case across the two hours: feels-like 14–15, 60% rain (1.5mm), gusts 30
     expect(result.value.line).toBe('14–15°C feels-like, 60% rain (1.5mm), gusts 30 km/h');
   });

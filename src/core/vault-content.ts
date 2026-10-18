@@ -8,8 +8,13 @@
 // FR-042: Source notes: frontmatter with type/url/notebookId/date/topics/up link
 // FR-043: Q&A notes: question heading, resolved answer, cited sources, up link
 
-import type { ResearchContext, SourceMeta, QualityResult, ResolvedNote } from './research-types.js';
-import { resolveAnswerCitations, generatePassageAnchors, sanitizeTitleForWikilink, type CitationResolutionResult } from './citation-resolver.js';
+import {
+  type CitationResolutionResult,
+  generatePassageAnchors,
+  resolveAnswerCitations,
+  sanitizeTitleForWikilink,
+} from './citation-resolver.js';
+import type { QualityResult, ResearchContext, ResolvedNote, SourceMeta } from './research-types.js';
 
 // ─── VaultNote ─────────────────────────────────────────────────────────────────
 
@@ -31,12 +36,14 @@ export type VaultNote = {
  * Strips characters that are illegal on common filesystems and Obsidian.
  */
 function sanitizeFilename(title: string): string {
-  return title
-    .replace(/[/\\:*?"<>|[\]#^]/g, '')  // strip filesystem-illegal + Obsidian-invalid chars
-    .replace(/\s+/g, ' ')
-    .trim()
-    // Prevent leading/trailing dots or spaces
-    .replace(/^[.\s]+|[.\s]+$/g, '');
+  return (
+    title
+      .replace(/[/\\:*?"<>|[\]#^]/g, '') // strip filesystem-illegal + Obsidian-invalid chars
+      .replace(/\s+/g, ' ')
+      .trim()
+      // Prevent leading/trailing dots or spaces
+      .replace(/^[.\s]+|[.\s]+$/g, '')
+  );
 }
 
 /** Base folder for all research notes relative to vault root. */
@@ -252,18 +259,15 @@ export function buildEmergencyNote(ctx: ResearchContext): VaultNote {
   const relativePath = `${RESEARCH_BASE}/${slug}/_emergency.md`;
   const researchDate = ctx.startedAt.split('T')[0] ?? ctx.startedAt;
 
-  const answersSection =
-    Object.entries(ctx.answers)
-      .map(([question, response]) => {
-        return `### ${question}\n\n${response.text}`;
-      })
-      .join('\n\n---\n\n');
+  const answersSection = Object.entries(ctx.answers)
+    .map(([question, response]) => {
+      return `### ${question}\n\n${response.text}`;
+    })
+    .join('\n\n---\n\n');
 
   const sourcesSection =
     ctx.sources.length > 0
-      ? ctx.sources
-          .map((s) => `- [${s.title}](${s.url}) (${s.sourceType})`)
-          .join('\n')
+      ? ctx.sources.map((s) => `- [${s.title}](${s.url}) (${s.sourceType})`).join('\n')
       : '_No sources available._';
 
   const content = `---
@@ -364,7 +368,10 @@ export function buildAllVaultNotes(
   for (const [question, response] of Object.entries(ctx.answers)) {
     const preResolved = resolvedMap.get(question);
     const result = preResolved
-      ? { resolvedText: preResolved.content, citedPassagesBySource: citedPassagesFromNote(preResolved) }
+      ? {
+          resolvedText: preResolved.content,
+          citedPassagesBySource: citedPassagesFromNote(preResolved),
+        }
       : resolveAnswerCitations(response.text, ctx.sources);
 
     resolvedAnswers.set(question, result);
@@ -387,7 +394,16 @@ export function buildAllVaultNotes(
     const source = ctx.sources[i]!;
     const passageNumbers = [...(anchorsBySource.get(i) ?? [])];
     const anchors = generatePassageAnchors(source, passageNumbers);
-    notes.push(buildSourceNote(source, ctx.topicSlug ?? 'untitled', hubPath, anchors, researchDate, notebookId));
+    notes.push(
+      buildSourceNote(
+        source,
+        ctx.topicSlug ?? 'untitled',
+        hubPath,
+        anchors,
+        researchDate,
+        notebookId,
+      ),
+    );
   }
 
   // ── 3. Q&A notes ─────────────────────────────────────────────────────────────
@@ -398,7 +414,15 @@ export function buildAllVaultNotes(
       .map((idx) => ctx.sources[idx])
       .filter((s): s is SourceMeta => s !== undefined);
 
-    notes.push(buildQANote(question, resolved.resolvedText, citedSources, ctx.topicSlug ?? 'untitled', hubPath));
+    notes.push(
+      buildQANote(
+        question,
+        resolved.resolvedText,
+        citedSources,
+        ctx.topicSlug ?? 'untitled',
+        hubPath,
+      ),
+    );
   }
 
   return notes;

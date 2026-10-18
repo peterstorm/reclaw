@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
-  parseDuration,
-  parseAbsoluteTime,
-  parseSemanticDate,
-  parseRemindCommand,
-  parseRecurringReminder,
-  isRemindListCommand,
-  parseRemindCancelCommand,
-  formatDuration,
   formatAbsoluteTime,
+  formatDuration,
   formatSemanticDate,
+  isRemindListCommand,
+  parseAbsoluteTime,
+  parseDuration,
+  parseRecurringReminder,
+  parseRemindCancelCommand,
+  parseRemindCommand,
+  parseSemanticDate,
 } from './reminder.js';
 
 // ─── parseDuration ────────────────────────────────────────────────────────────
@@ -379,7 +379,9 @@ describe('parseRemindCancelCommand', () => {
   });
 
   it('handles complex IDs', () => {
-    expect(parseRemindCancelCommand('/remind cancel recur:123:456-abcd')).toBe('recur:123:456-abcd');
+    expect(parseRemindCancelCommand('/remind cancel recur:123:456-abcd')).toBe(
+      'recur:123:456-abcd',
+    );
   });
 
   it('is case insensitive on prefix', () => {

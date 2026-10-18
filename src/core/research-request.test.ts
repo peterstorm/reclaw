@@ -50,10 +50,7 @@ describe('parseResearchCommand', () => {
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.value.prompt).toBe('machine learning');
-      expect(r.value.sourceHints).toEqual([
-        'https://papers.ai',
-        'https://arxiv.org/abs/123',
-      ]);
+      expect(r.value.sourceHints).toEqual(['https://papers.ai', 'https://arxiv.org/abs/123']);
     }
   });
 
@@ -184,9 +181,7 @@ describe('parseResearchCommand', () => {
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.value.prompt).toBe('transformers explained');
-      expect(r.value.sourceHints).toEqual([
-        'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
-      ]);
+      expect(r.value.sourceHints).toEqual(['https://www.youtube.com/watch?v=dQw4w9WgXcQ']);
     }
   });
 
@@ -220,7 +215,9 @@ describe('parseResearchCommand', () => {
   });
 
   it('uses explicit text as prompt when provided alongside --link', () => {
-    const r = parseResearchCommand('/research My research topic --link https://example.com/some-path');
+    const r = parseResearchCommand(
+      '/research My research topic --link https://example.com/some-path',
+    );
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.value.prompt).toBe('My research topic');
@@ -236,10 +233,7 @@ describe('parseResearchCommand', () => {
     if (r.ok) {
       expect(r.value.prompt).toBe('AI safety');
       // --link URL comes first, then additional URLs
-      expect(r.value.sourceHints).toEqual([
-        'https://primary.com/article',
-        'https://extra.com/ref',
-      ]);
+      expect(r.value.sourceHints).toEqual(['https://primary.com/article', 'https://extra.com/ref']);
     }
   });
 

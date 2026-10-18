@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
-  paceToMs,
-  msToPace,
-  paceToSeconds,
-  paceRange,
   deriveZones,
   estimateFromVo2Max,
+  msToPace,
+  paceRange,
+  paceToMs,
+  paceToSeconds,
 } from './pace.js';
 
 // ─── paceToMs ────────────────────────────────────────────────────────────────
@@ -149,13 +149,13 @@ describe('deriveZones', () => {
   const zones = deriveZones({ minutes: 4, seconds: 50 });
 
   it('recovery is P + 90 to P + 110', () => {
-    expect(paceToSeconds(zones.recovery.min)).toBe(290 + 90);  // 6:20
+    expect(paceToSeconds(zones.recovery.min)).toBe(290 + 90); // 6:20
     expect(paceToSeconds(zones.recovery.max)).toBe(290 + 110); // 6:40
   });
 
   it('easy is P + 60 to P + 90', () => {
-    expect(paceToSeconds(zones.easy.min)).toBe(290 + 60);  // 5:50
-    expect(paceToSeconds(zones.easy.max)).toBe(290 + 90);  // 6:20
+    expect(paceToSeconds(zones.easy.min)).toBe(290 + 60); // 5:50
+    expect(paceToSeconds(zones.easy.max)).toBe(290 + 90); // 6:20
   });
 
   it('steady is P + 40 to P + 60', () => {
@@ -164,8 +164,8 @@ describe('deriveZones', () => {
   });
 
   it('tempo is P + 5 to P + 20', () => {
-    expect(paceToSeconds(zones.tempo.min)).toBe(290 + 5);   // 4:55
-    expect(paceToSeconds(zones.tempo.max)).toBe(290 + 20);  // 5:10
+    expect(paceToSeconds(zones.tempo.min)).toBe(290 + 5); // 4:55
+    expect(paceToSeconds(zones.tempo.max)).toBe(290 + 20); // 5:10
   });
 
   it('interval is P - 5 to P + 5', () => {
@@ -180,8 +180,12 @@ describe('deriveZones', () => {
 
   it('zones are ordered from fastest to slowest', () => {
     const zoneOrder = [
-      zones.repetition, zones.interval, zones.tempo,
-      zones.steady, zones.easy, zones.recovery,
+      zones.repetition,
+      zones.interval,
+      zones.tempo,
+      zones.steady,
+      zones.easy,
+      zones.recovery,
     ];
     for (let i = 0; i < zoneOrder.length - 1; i++) {
       expect(paceToSeconds(zoneOrder[i]!.max)).toBeLessThanOrEqual(

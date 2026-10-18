@@ -55,7 +55,7 @@ export function paceToSeconds(pace: Pace): number {
 export function paceRange(
   targetMinutes: number,
   targetSeconds: number,
-  marginSeconds: number = 10,
+  marginSeconds = 10,
 ): PaceTarget {
   const center = targetMinutes * 60 + targetSeconds;
   const fast = center - marginSeconds; // faster = fewer seconds = higher m/s
@@ -92,11 +92,11 @@ function addSeconds(pace: Pace, offsetSeconds: number): Pace {
  */
 export function deriveZones(fiveKPace: Pace): ZoneTable {
   return {
-    recovery:   { min: addSeconds(fiveKPace, 90),  max: addSeconds(fiveKPace, 110) },
-    easy:       { min: addSeconds(fiveKPace, 60),  max: addSeconds(fiveKPace, 90) },
-    steady:     { min: addSeconds(fiveKPace, 40),  max: addSeconds(fiveKPace, 60) },
-    tempo:      { min: addSeconds(fiveKPace, 5),   max: addSeconds(fiveKPace, 20) },
-    interval:   { min: addSeconds(fiveKPace, -5),  max: addSeconds(fiveKPace, 5) },
+    recovery: { min: addSeconds(fiveKPace, 90), max: addSeconds(fiveKPace, 110) },
+    easy: { min: addSeconds(fiveKPace, 60), max: addSeconds(fiveKPace, 90) },
+    steady: { min: addSeconds(fiveKPace, 40), max: addSeconds(fiveKPace, 60) },
+    tempo: { min: addSeconds(fiveKPace, 5), max: addSeconds(fiveKPace, 20) },
+    interval: { min: addSeconds(fiveKPace, -5), max: addSeconds(fiveKPace, 5) },
     repetition: { min: addSeconds(fiveKPace, -30), max: addSeconds(fiveKPace, -10) },
   };
 }
@@ -148,7 +148,9 @@ export function estimateFromVo2Max(vo2max: number): Pace | null {
 
   // Linear interpolation
   const ratio = (vo2max - lower.vo2max) / (upper.vo2max - lower.vo2max);
-  const fiveKSeconds = Math.round(lower.fiveKSeconds + ratio * (upper.fiveKSeconds - lower.fiveKSeconds));
+  const fiveKSeconds = Math.round(
+    lower.fiveKSeconds + ratio * (upper.fiveKSeconds - lower.fiveKSeconds),
+  );
   const paceSeconds = Math.round(fiveKSeconds / 5);
 
   return { minutes: Math.floor(paceSeconds / 60), seconds: paceSeconds % 60 };

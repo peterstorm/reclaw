@@ -1,5 +1,10 @@
-import { describe, it, expect } from 'vitest';
-import { shouldRecord, toRecord, type SkillQualitySignal, type SkillRunStatus } from './skill-quality.js';
+import { describe, expect, it } from 'vitest';
+import {
+  type SkillQualitySignal,
+  type SkillRunStatus,
+  shouldRecord,
+  toRecord,
+} from './skill-quality.js';
 import type { SkillId } from './types.js';
 
 const skillId = 'morning-briefing' as SkillId;

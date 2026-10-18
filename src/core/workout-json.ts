@@ -46,11 +46,17 @@ interface RepeatGroup {
 
 type WorkoutStep = ExecutableStep | RepeatGroup;
 
-
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const VALID_STEP_TYPE_IDS = new Set([1, 2, 3, 4, 5, 6]); // warmup, cooldown, interval, recovery, rest, repeat
-const VALID_STEP_TYPE_KEYS = new Set(['warmup', 'cooldown', 'interval', 'recovery', 'rest', 'repeat']);
+const VALID_STEP_TYPE_KEYS = new Set([
+  'warmup',
+  'cooldown',
+  'interval',
+  'recovery',
+  'rest',
+  'repeat',
+]);
 const VALID_CONDITION_TYPE_IDS = new Set([1, 2, 3, 7]); // lap.button, time, distance, iterations
 
 // ─── Validation ──────────────────────────────────────────────────────────────
@@ -171,7 +177,9 @@ function validateExecutableStep(
   if (ec && ec['conditionTypeKey'] === 'distance') {
     const unit = s['preferredEndConditionUnit'] as Record<string, unknown> | null;
     if (!unit || unit['unitKey'] !== 'kilometer') {
-      errors.push(`${path}: distance steps must have preferredEndConditionUnit with unitKey "kilometer"`);
+      errors.push(
+        `${path}: distance steps must have preferredEndConditionUnit with unitKey "kilometer"`,
+      );
     }
   }
 
@@ -221,7 +229,9 @@ function validateRepeatGroup(
   }
 
   if (s['numberOfIterations'] !== s['endConditionValue']) {
-    errors.push(`${path}: numberOfIterations (${s['numberOfIterations']}) must match endConditionValue (${s['endConditionValue']})`);
+    errors.push(
+      `${path}: numberOfIterations (${s['numberOfIterations']}) must match endConditionValue (${s['endConditionValue']})`,
+    );
   }
 
   const children = s['workoutSteps'] as unknown[] | undefined;

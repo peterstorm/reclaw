@@ -1,14 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import {
-  buildHubNote,
-  buildSourceNote,
-  buildQANote,
-  buildEmergencyNote,
-  buildAllVaultNotes,
-} from './vault-content.js';
 import { resolveAnswerCitations } from './citation-resolver.js';
-import type { ResearchContext, QualityResult, ResolvedNote, SourceMeta, ChatResponse } from './research-types.js';
+import type {
+  ChatResponse,
+  QualityResult,
+  ResearchContext,
+  ResolvedNote,
+  SourceMeta,
+} from './research-types.js';
 import type { TopicSlug } from './topic-slug.js';
+import {
+  buildAllVaultNotes,
+  buildEmergencyNote,
+  buildHubNote,
+  buildQANote,
+  buildSourceNote,
+} from './vault-content.js';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -168,50 +174,113 @@ describe('buildSourceNote', () => {
 
   describe('FR-042: source note frontmatter', () => {
     it('returns a VaultNote with relativePath under reclaw/research/{slug}/Sources/', () => {
-      const note = buildSourceNote(source, topicSlug, hubPath, passageAnchors, researchDate, notebookId);
+      const note = buildSourceNote(
+        source,
+        topicSlug,
+        hubPath,
+        passageAnchors,
+        researchDate,
+        notebookId,
+      );
       expect(note.relativePath).toBe(
         'reclaw/research/artificial-intelligence/Sources/First Article.md',
       );
     });
 
     it('contains source_type in frontmatter', () => {
-      const note = buildSourceNote(source, topicSlug, hubPath, passageAnchors, researchDate, notebookId);
+      const note = buildSourceNote(
+        source,
+        topicSlug,
+        hubPath,
+        passageAnchors,
+        researchDate,
+        notebookId,
+      );
       expect(note.content).toContain('source_type: web');
     });
 
     it('contains url in frontmatter (single-quoted for YAML safety)', () => {
-      const note = buildSourceNote(source, topicSlug, hubPath, passageAnchors, researchDate, notebookId);
+      const note = buildSourceNote(
+        source,
+        topicSlug,
+        hubPath,
+        passageAnchors,
+        researchDate,
+        notebookId,
+      );
       expect(note.content).toContain("url: 'https://example.com/first'");
     });
 
     it('contains notebook_id in frontmatter using notebookId parameter', () => {
-      const note = buildSourceNote(source, topicSlug, hubPath, passageAnchors, researchDate, notebookId);
+      const note = buildSourceNote(
+        source,
+        topicSlug,
+        hubPath,
+        passageAnchors,
+        researchDate,
+        notebookId,
+      );
       expect(note.content).toContain("notebook_id: 'notebook-abc'");
     });
 
     it('contains date in frontmatter', () => {
-      const note = buildSourceNote(source, topicSlug, hubPath, passageAnchors, researchDate, notebookId);
+      const note = buildSourceNote(
+        source,
+        topicSlug,
+        hubPath,
+        passageAnchors,
+        researchDate,
+        notebookId,
+      );
       // date should be present in the format YYYY-MM-DD
       expect(note.content).toMatch(/date: \d{4}-\d{2}-\d{2}/);
     });
 
     it('contains exact researchDate passed in', () => {
-      const note = buildSourceNote(source, topicSlug, hubPath, passageAnchors, '2026-01-15', notebookId);
+      const note = buildSourceNote(
+        source,
+        topicSlug,
+        hubPath,
+        passageAnchors,
+        '2026-01-15',
+        notebookId,
+      );
       expect(note.content).toContain('date: 2026-01-15');
     });
 
     it('contains topic tag in frontmatter', () => {
-      const note = buildSourceNote(source, topicSlug, hubPath, passageAnchors, researchDate, notebookId);
+      const note = buildSourceNote(
+        source,
+        topicSlug,
+        hubPath,
+        passageAnchors,
+        researchDate,
+        notebookId,
+      );
       expect(note.content).toContain('artificial-intelligence');
     });
 
     it('contains up link in frontmatter (single-quoted for YAML safety)', () => {
-      const note = buildSourceNote(source, topicSlug, hubPath, passageAnchors, researchDate, notebookId);
+      const note = buildSourceNote(
+        source,
+        topicSlug,
+        hubPath,
+        passageAnchors,
+        researchDate,
+        notebookId,
+      );
       expect(note.content).toContain(`up: '${hubPath}'`);
     });
 
     it('has YAML frontmatter delimiters', () => {
-      const note = buildSourceNote(source, topicSlug, hubPath, passageAnchors, researchDate, notebookId);
+      const note = buildSourceNote(
+        source,
+        topicSlug,
+        hubPath,
+        passageAnchors,
+        researchDate,
+        notebookId,
+      );
       expect(note.content).toMatch(/^---\n/);
       expect(note.content).toMatch(/\n---\n/);
     });
@@ -223,7 +292,14 @@ describe('buildSourceNote', () => {
         url: 'https://example.com/page#section',
         sourceType: 'web',
       };
-      const note = buildSourceNote(fragmentSource, topicSlug, hubPath, '', researchDate, notebookId);
+      const note = buildSourceNote(
+        fragmentSource,
+        topicSlug,
+        hubPath,
+        '',
+        researchDate,
+        notebookId,
+      );
       // The # must be inside quotes, not treated as YAML comment
       expect(note.content).toContain("url: 'https://example.com/page#section'");
     });
@@ -231,7 +307,14 @@ describe('buildSourceNote', () => {
 
   describe('FR-033: passage anchors', () => {
     it('includes passage anchors in the note body', () => {
-      const note = buildSourceNote(source, topicSlug, hubPath, '## Passage 1\n\n## Passage 3', researchDate, notebookId);
+      const note = buildSourceNote(
+        source,
+        topicSlug,
+        hubPath,
+        '## Passage 1\n\n## Passage 3',
+        researchDate,
+        notebookId,
+      );
       expect(note.content).toContain('## Passage 1');
       expect(note.content).toContain('## Passage 3');
     });
@@ -244,7 +327,14 @@ describe('buildSourceNote', () => {
 
   describe('wikilink back to hub', () => {
     it('contains disambiguated wikilink to hub note', () => {
-      const note = buildSourceNote(source, topicSlug, hubPath, passageAnchors, researchDate, notebookId);
+      const note = buildSourceNote(
+        source,
+        topicSlug,
+        hubPath,
+        passageAnchors,
+        researchDate,
+        notebookId,
+      );
       expect(note.content).toContain('[[artificial-intelligence/_index|artificial-intelligence]]');
     });
   });
@@ -276,8 +366,7 @@ describe('buildSourceNote', () => {
 
 describe('buildQANote', () => {
   const question = 'What is artificial intelligence?';
-  const resolvedAnswer =
-    'AI is the simulation of human intelligence [[First Article#Passage 1]].';
+  const resolvedAnswer = 'AI is the simulation of human intelligence [[First Article#Passage 1]].';
   const citedSources = [sources[0]!];
   const topicSlug = makeTopicSlug('artificial-intelligence');
   const hubPath = 'reclaw/research/artificial-intelligence/_index.md';
@@ -360,9 +449,7 @@ describe('buildQANote', () => {
 describe('buildEmergencyNote', () => {
   it('returns a VaultNote with relativePath ending in _emergency.md', () => {
     const note = buildEmergencyNote(makeContext());
-    expect(note.relativePath).toBe(
-      'reclaw/research/artificial-intelligence/_emergency.md',
-    );
+    expect(note.relativePath).toBe('reclaw/research/artificial-intelligence/_emergency.md');
   });
 
   it('marks the note as emergency in frontmatter', () => {
@@ -506,9 +593,7 @@ describe('buildAllVaultNotes', () => {
         const titlePart = inner.split('#')[0]!.trim();
         if (titlePart.endsWith('/_index')) continue; // hub note link
         // Check that a source note exists with this title in its path
-        const matchingSource = sourceNotes.find((sn) =>
-          sn.relativePath.includes(titlePart),
-        );
+        const matchingSource = sourceNotes.find((sn) => sn.relativePath.includes(titlePart));
         expect(matchingSource).toBeDefined();
       }
     }
@@ -521,9 +606,7 @@ describe('buildAllVaultNotes', () => {
       },
     });
     const notes = buildAllVaultNotes(ctx, goodQuality);
-    const firstSourceNote = notes.find((n) =>
-      n.relativePath.includes('Sources/First Article.md'),
-    );
+    const firstSourceNote = notes.find((n) => n.relativePath.includes('Sources/First Article.md'));
     expect(firstSourceNote).toBeDefined();
     // Source at index 0 is cited by [1]
     expect(firstSourceNote!.content).toContain('## Passage 1');
@@ -536,7 +619,10 @@ describe('buildAllVaultNotes', () => {
   // so the whole run's citations were dead in Obsidian.
   it('anchors match the wikilinks when passage numbers differ from source positions', () => {
     // Passage 15 belongs to source index 1; passage 3 belongs to source index 0.
-    const passageMap = new Map([[15, 1], [3, 0]]);
+    const passageMap = new Map([
+      [15, 1],
+      [3, 0],
+    ]);
     const answer = 'ML uses statistical models [15] as shown earlier [3].';
     const resolution = resolveAnswerCitations(answer, sources, passageMap);
 
@@ -569,7 +655,11 @@ describe('buildAllVaultNotes', () => {
   });
 
   it('every generated passage wikilink resolves to a heading in its source note', () => {
-    const passageMap = new Map([[15, 1], [3, 0], [16, 1]]);
+    const passageMap = new Map([
+      [15, 1],
+      [3, 0],
+      [16, 1],
+    ]);
     const answer = 'First [3], then [15], and also [16].';
     const resolution = resolveAnswerCitations(answer, sources, passageMap);
     const preResolved: ResolvedNote = {
@@ -589,14 +679,17 @@ describe('buildAllVaultNotes', () => {
     const sourceNotes = notes.filter((n) => n.relativePath.includes('/Sources/'));
     const qaNotes = notes.filter((n) => n.relativePath.includes('/QA/'));
 
-    const links = qaNotes.flatMap((n) => [...n.content.matchAll(/\[\[([^\]#]+)#Passage (\d+)\]\]/g)]);
+    const links = qaNotes.flatMap((n) => [
+      ...n.content.matchAll(/\[\[([^\]#]+)#Passage (\d+)\]\]/g),
+    ]);
     expect(links.length).toBe(3);
 
     for (const [, title, passage] of links) {
       const target = sourceNotes.find((sn) => sn.relativePath.includes(`Sources/${title}.md`));
       expect(target, `no source note for "${title!}"`).toBeDefined();
-      expect(target!.content, `missing anchor for [[${title!}#Passage ${passage!}]]`)
-        .toContain(`## Passage ${passage!}`);
+      expect(target!.content, `missing anchor for [[${title!}#Passage ${passage!}]]`).toContain(
+        `## Passage ${passage!}`,
+      );
     }
   });
 

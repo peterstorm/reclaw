@@ -1,4 +1,4 @@
-import { type Result, ok, err } from './types.js';
+import { type Result, err, ok } from './types.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -43,7 +43,11 @@ function topicFromUrl(url: string): string {
       // Take up to last 3 segments, clean them up
       const topic = segments
         .slice(-3)
-        .map((s) => decodeURIComponent(s).replace(/[-_]+/g, ' ').replace(/\.[a-zA-Z]{2,4}$/, ''))
+        .map((s) =>
+          decodeURIComponent(s)
+            .replace(/[-_]+/g, ' ')
+            .replace(/\.[a-zA-Z]{2,4}$/, ''),
+        )
         .join(' ')
         .trim();
       if (topic.length > 0) return topic;
@@ -107,10 +111,7 @@ export function parseResearchCommand(text: string): Result<ResearchRequest, stri
   const promptText = remainder.replace(/https?:\/\/\S+/gi, '').trim();
 
   // Build sourceHints: --link URL first, then inline URLs
-  const sourceHints: readonly string[] = [
-    ...(linkUrl ? [linkUrl] : []),
-    ...inlineUrls,
-  ];
+  const sourceHints: readonly string[] = [...(linkUrl ? [linkUrl] : []), ...inlineUrls];
 
   // Determine prompt
   let prompt = promptText;

@@ -107,10 +107,7 @@ function convertFormattedText(text: string): string {
   result = result.replace(/\b_([^_]+)_\b/g, '<i>$1</i>');
 
   // Links: [text](url) — HTML entities were already escaped, so match &amp; etc.
-  result = result.replace(
-    /\[([^\]]+)\]\(([^)]+)\)/g,
-    '<a href="$2">$1</a>',
-  );
+  result = result.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
 
   return result;
 }

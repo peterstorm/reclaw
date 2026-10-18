@@ -209,7 +209,12 @@ describe('transition: searching_sources -> SOURCES_DISCOVERED', () => {
 
   it('clears lastError on success', () => {
     const state: ResearchState = { kind: 'searching_sources' };
-    const event: ResearchEvent = { type: 'SOURCES_DISCOVERED', webSources: [], sessionId: 'session-001', claudeDiscoveredUrls: [] };
+    const event: ResearchEvent = {
+      type: 'SOURCES_DISCOVERED',
+      webSources: [],
+      sessionId: 'session-001',
+      claudeDiscoveredUrls: [],
+    };
     const ctx = makeContext({ lastError: 'prior error' });
 
     const result = transition(state, event, ctx);
@@ -282,7 +287,10 @@ describe('transition: awaiting_processing -> SOURCES_READY', () => {
 
   it('stores sources in context', () => {
     const state: ResearchState = { kind: 'awaiting_processing' };
-    const sources = [makeSourceMeta('src-1'), makeSourceMeta('src-2', 'Source 2', 'https://other.com')];
+    const sources = [
+      makeSourceMeta('src-1'),
+      makeSourceMeta('src-2', 'Source 2', 'https://other.com'),
+    ];
     const event: ResearchEvent = { type: 'SOURCES_READY', sources };
     const ctx = makeContext();
 
@@ -419,7 +427,7 @@ describe('transition: querying -> QUERY_ANSWERED', () => {
   });
 
   it('accumulates multiple answers in context', () => {
-    const initialCtx = makeContext({ answers: { 'Q1': makeChatResponse('A1') } });
+    const initialCtx = makeContext({ answers: { Q1: makeChatResponse('A1') } });
     const state: ResearchState = { kind: 'querying', questionsRemaining: 2 };
     const event: ResearchEvent = {
       type: 'QUERY_ANSWERED',
@@ -594,7 +602,7 @@ describe('transition: querying -> ALL_QUERIES_DONE', () => {
     const state: ResearchState = { kind: 'querying', questionsRemaining: 0 };
     const event: ResearchEvent = { type: 'ALL_QUERIES_DONE' };
     const ctx = makeContext({
-      answers: { 'Q1': makeChatResponse('Answer to Q1') },
+      answers: { Q1: makeChatResponse('Answer to Q1') },
       skippedQuestions: ['Q2'],
     });
 
@@ -956,7 +964,11 @@ describe('transition: generating_artifacts -> ARTIFACTS_GENERATED', () => {
   it('transitions to notifying with artifacts stored in context', () => {
     const state: ResearchState = { kind: 'generating_artifacts' };
     const artifacts = [
-      { type: 'audio' as const, artifactId: 'audio-001', url: 'https://notebooklm.google.com/audio/001' },
+      {
+        type: 'audio' as const,
+        artifactId: 'audio-001',
+        url: 'https://notebooklm.google.com/audio/001',
+      },
     ];
     const event: ResearchEvent = { type: 'ARTIFACTS_GENERATED', artifacts, artifactFailures: [] };
     const ctx = makeContext();
@@ -968,7 +980,11 @@ describe('transition: generating_artifacts -> ARTIFACTS_GENERATED', () => {
 
   it('clears lastError on success', () => {
     const state: ResearchState = { kind: 'generating_artifacts' };
-    const event: ResearchEvent = { type: 'ARTIFACTS_GENERATED', artifacts: [], artifactFailures: [] };
+    const event: ResearchEvent = {
+      type: 'ARTIFACTS_GENERATED',
+      artifacts: [],
+      artifactFailures: [],
+    };
     const ctx = makeContext({ lastError: 'prior error' });
 
     const result = transition(state, event, ctx);
@@ -1056,7 +1072,7 @@ describe('immutability: transition never mutates input', () => {
   });
 
   it('original answers are unchanged after QUERY_ANSWERED', () => {
-    const originalCtx = makeContext({ answers: { 'Q1': makeChatResponse('A1') } });
+    const originalCtx = makeContext({ answers: { Q1: makeChatResponse('A1') } });
     const state: ResearchState = { kind: 'querying', questionsRemaining: 2 };
     const event: ResearchEvent = {
       type: 'QUERY_ANSWERED',
@@ -1122,61 +1138,93 @@ describe('full pipeline happy path', () => {
 
     // 1. creating_notebook -> searching_sources
     let r = transition(state, { type: 'NOTEBOOK_CREATED', notebookId: 'nb-001' }, ctx);
-    state = r.state; ctx = r.context;
+    state = r.state;
+    ctx = r.context;
     expect(state.kind).toBe('searching_sources');
     expect(ctx.notebookId).toBe('nb-001');
 
     // 2. searching_sources -> adding_sources
-    r = transition(state, { type: 'SOURCES_DISCOVERED', webSources: [], sessionId: 'session-001', claudeDiscoveredUrls: [] }, ctx);
-    state = r.state; ctx = r.context;
+    r = transition(
+      state,
+      {
+        type: 'SOURCES_DISCOVERED',
+        webSources: [],
+        sessionId: 'session-001',
+        claudeDiscoveredUrls: [],
+      },
+      ctx,
+    );
+    state = r.state;
+    ctx = r.context;
     expect(state.kind).toBe('adding_sources');
 
     // 3. adding_sources -> awaiting_processing
     r = transition(state, { type: 'SOURCES_ADDED', sourceUrlById: {} }, ctx);
-    state = r.state; ctx = r.context;
+    state = r.state;
+    ctx = r.context;
     expect(state.kind).toBe('awaiting_processing');
 
     // 4. awaiting_processing -> generating_questions
     const sources = [makeSourceMeta()];
     r = transition(state, { type: 'SOURCES_READY', sources }, ctx);
-    state = r.state; ctx = r.context;
+    state = r.state;
+    ctx = r.context;
     expect(state.kind).toBe('generating_questions');
     expect(ctx.sources).toHaveLength(1);
 
     // 5. generating_questions -> querying
     r = transition(state, { type: 'QUESTIONS_GENERATED', questions: ['Q1', 'Q2'] }, ctx);
-    state = r.state; ctx = r.context;
+    state = r.state;
+    ctx = r.context;
     expect(state.kind).toBe('querying');
     if (state.kind === 'querying') expect(state.questionsRemaining).toBe(2);
 
     // 6. querying -> QUERY_ANSWERED (x2) then ALL_QUERIES_DONE
-    r = transition(state, { type: 'QUERY_ANSWERED', question: 'Q1', answer: makeChatResponse() }, ctx);
-    state = r.state; ctx = r.context;
-    r = transition(state, { type: 'QUERY_ANSWERED', question: 'Q2', answer: makeChatResponse() }, ctx);
-    state = r.state; ctx = r.context;
+    r = transition(
+      state,
+      { type: 'QUERY_ANSWERED', question: 'Q1', answer: makeChatResponse() },
+      ctx,
+    );
+    state = r.state;
+    ctx = r.context;
+    r = transition(
+      state,
+      { type: 'QUERY_ANSWERED', question: 'Q2', answer: makeChatResponse() },
+      ctx,
+    );
+    state = r.state;
+    ctx = r.context;
     expect(Object.keys(ctx.answers)).toHaveLength(2);
 
     r = transition(state, { type: 'ALL_QUERIES_DONE' }, ctx);
-    state = r.state; ctx = r.context;
+    state = r.state;
+    ctx = r.context;
     expect(state.kind).toBe('resolving_citations');
 
     // 7. resolving_citations -> writing_vault
-    r = transition(state, {
-      type: 'CITATIONS_RESOLVED',
-      resolvedNotes: [{ type: 'hub', filename: 'hub.md', content: '# Hub' }],
-    }, ctx);
-    state = r.state; ctx = r.context;
+    r = transition(
+      state,
+      {
+        type: 'CITATIONS_RESOLVED',
+        resolvedNotes: [{ type: 'hub', filename: 'hub.md', content: '# Hub' }],
+      },
+      ctx,
+    );
+    state = r.state;
+    ctx = r.context;
     expect(state.kind).toBe('writing_vault');
 
     // 8. writing_vault -> notifying
     r = transition(state, { type: 'VAULT_WRITTEN', hubPath: '/vault/hub.md' }, ctx);
-    state = r.state; ctx = r.context;
+    state = r.state;
+    ctx = r.context;
     expect(state.kind).toBe('notifying');
     expect(ctx.hubPath).toBe('/vault/hub.md');
 
     // 9. notifying -> done
     r = transition(state, { type: 'NOTIFIED' }, ctx);
-    state = r.state; ctx = r.context;
+    state = r.state;
+    ctx = r.context;
     expect(state.kind).toBe('done');
   });
 });
@@ -1185,7 +1233,7 @@ describe('full pipeline happy path', () => {
 
 describe('FR-053: all accumulated data preserved before failure', () => {
   it('keeps answers and sources when writing_vault fails', () => {
-    const answers = { 'Q1': makeChatResponse('A1') };
+    const answers = { Q1: makeChatResponse('A1') };
     const sources = [makeSourceMeta()];
     const ctx = makeContext({
       answers,
@@ -1207,7 +1255,7 @@ describe('FR-053: all accumulated data preserved before failure', () => {
       notebookId: 'nb-999',
       sources: [makeSourceMeta()],
       questions: ['Q1'],
-      answers: { 'Q1': makeChatResponse() },
+      answers: { Q1: makeChatResponse() },
       chatsUsed: 3,
     });
     const state: ResearchState = { kind: 'writing_vault' };

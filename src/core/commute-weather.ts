@@ -76,8 +76,11 @@ function buildLine(hours: readonly Hour[]): string {
   const maxMm = Math.max(...hours.map((x) => (typeof x.precipMm === 'number' ? x.precipMm : 0)));
   const maxGust = Math.max(...hours.map((x) => x.gustKmh ?? 0));
   const temps = hours.map((x) => x.feelsLikeC ?? x.tempC).filter((n): n is number => n !== null);
-  const feels = temps.length ? `${Math.min(...temps)}–${Math.max(...temps)}°C feels-like` : 'temp n/a';
-  const rain = maxProb > 0 ? `${maxProb}% rain${maxMm > 0 ? ` (${maxMm.toFixed(1)}mm)` : ''}` : 'dry';
+  const feels = temps.length
+    ? `${Math.min(...temps)}–${Math.max(...temps)}°C feels-like`
+    : 'temp n/a';
+  const rain =
+    maxProb > 0 ? `${maxProb}% rain${maxMm > 0 ? ` (${maxMm.toFixed(1)}mm)` : ''}` : 'dry';
   const wind = maxGust > 0 ? `gusts ${maxGust} km/h` : 'calm';
   return `${feels}, ${rain}, ${wind}`;
 }

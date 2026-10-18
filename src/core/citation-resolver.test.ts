@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
-  resolveAnswerCitations,
   citedSourceIndicesOf,
   extractPassageToSourceMap,
   generatePassageAnchors,
+  resolveAnswerCitations,
   sanitizeTitleForWikilink,
 } from './citation-resolver.js';
 import type { SourceMeta } from './research-types.js';
@@ -20,7 +20,12 @@ const makeSource = (overrides: Partial<SourceMeta> = {}): SourceMeta => ({
 
 const sources: readonly SourceMeta[] = [
   makeSource({ id: 'src-1', title: 'First Source', url: 'https://first.com' }),
-  makeSource({ id: 'src-2', title: 'Second Source', url: 'https://second.com', sourceType: 'youtube' }),
+  makeSource({
+    id: 'src-2',
+    title: 'Second Source',
+    url: 'https://second.com',
+    sourceType: 'youtube',
+  }),
   makeSource({ id: 'src-3', title: 'Third Source', url: 'https://third.com', sourceType: 'pdf' }),
 ];
 
@@ -50,7 +55,9 @@ describe('resolveAnswerCitations', () => {
 
     it('replaces three different markers in one text', () => {
       const { resolvedText } = resolveAnswerCitations('[1] [2] [3]', sources);
-      expect(resolvedText).toBe('[[First Source#Passage 1]] [[Second Source#Passage 2]] [[Third Source#Passage 3]]');
+      expect(resolvedText).toBe(
+        '[[First Source#Passage 1]] [[Second Source#Passage 2]] [[Third Source#Passage 3]]',
+      );
     });
 
     it('replaces repeated occurrences of the same marker', () => {
@@ -81,7 +88,9 @@ describe('resolveAnswerCitations', () => {
 
   describe('citedSourceIndices set', () => {
     it('returns empty set for text with no citations', () => {
-      const citedSourceIndices = citedSourceIndicesOf(resolveAnswerCitations('No citations here.', sources));
+      const citedSourceIndices = citedSourceIndicesOf(
+        resolveAnswerCitations('No citations here.', sources),
+      );
       expect(citedSourceIndices.size).toBe(0);
     });
 
@@ -103,7 +112,9 @@ describe('resolveAnswerCitations', () => {
     });
 
     it('deduplicates repeated citations (same index counted once)', () => {
-      const citedSourceIndices = citedSourceIndicesOf(resolveAnswerCitations('[1] [1] [1]', sources));
+      const citedSourceIndices = citedSourceIndicesOf(
+        resolveAnswerCitations('[1] [1] [1]', sources),
+      );
       expect(citedSourceIndices.size).toBe(1);
       expect(citedSourceIndices.has(0)).toBe(true);
     });
@@ -123,7 +134,9 @@ describe('resolveAnswerCitations', () => {
 
     it('resolves range [1-3] into three wikilinks', () => {
       const { resolvedText } = resolveAnswerCitations('See [1-3].', sources);
-      expect(resolvedText).toBe('See [[First Source#Passage 1]], [[Second Source#Passage 2]], [[Third Source#Passage 3]].');
+      expect(resolvedText).toBe(
+        'See [[First Source#Passage 1]], [[Second Source#Passage 2]], [[Third Source#Passage 3]].',
+      );
     });
 
     it('resolves comma-separated with spaces [1, 3]', () => {
@@ -151,7 +164,9 @@ describe('resolveAnswerCitations', () => {
 
     it('handles en-dash range [1–3]', () => {
       const { resolvedText } = resolveAnswerCitations('See [1\u20133].', sources);
-      expect(resolvedText).toBe('See [[First Source#Passage 1]], [[Second Source#Passage 2]], [[Third Source#Passage 3]].');
+      expect(resolvedText).toBe(
+        'See [[First Source#Passage 1]], [[Second Source#Passage 2]], [[Third Source#Passage 3]].',
+      );
     });
   });
 
@@ -177,7 +192,11 @@ describe('resolveAnswerCitations', () => {
 
     it('handles multi-digit citation numbers like [10]', () => {
       const moresources: SourceMeta[] = Array.from({ length: 10 }, (_, i) =>
-        makeSource({ id: `src-${i + 1}`, title: `Source ${i + 1}`, url: `https://source${i + 1}.com` }),
+        makeSource({
+          id: `src-${i + 1}`,
+          title: `Source ${i + 1}`,
+          url: `https://source${i + 1}.com`,
+        }),
       );
       const { resolvedText } = resolveAnswerCitations('See [10].', moresources);
       expect(resolvedText).toBe('See [[Source 10#Passage 10]].');
@@ -219,14 +238,22 @@ describe('resolveAnswerCitations', () => {
   describe('passageToSourceMap integration', () => {
     it('uses passageToSourceMap to resolve [N] to the correct source', () => {
       // passage 1 → source index 2 (Third Source), passage 2 → source index 0 (First Source)
-      const map = new Map([[1, 2], [2, 0]]);
+      const map = new Map([
+        [1, 2],
+        [2, 0],
+      ]);
       const { resolvedText } = resolveAnswerCitations('See [1] and [2].', sources, map);
       expect(resolvedText).toBe('See [[Third Source#Passage 1]] and [[First Source#Passage 2]].');
     });
 
     it('reports correct citedSourceIndices from passageToSourceMap', () => {
-      const map = new Map([[1, 2], [2, 2]]); // both passages from Third Source
-      const citedSourceIndices = citedSourceIndicesOf(resolveAnswerCitations('[1] [2]', sources, map));
+      const map = new Map([
+        [1, 2],
+        [2, 2],
+      ]); // both passages from Third Source
+      const citedSourceIndices = citedSourceIndicesOf(
+        resolveAnswerCitations('[1] [2]', sources, map),
+      );
       expect(citedSourceIndices.size).toBe(1);
       expect(citedSourceIndices.has(2)).toBe(true);
     });
@@ -250,7 +277,10 @@ describe('resolveAnswerCitations', () => {
     });
 
     it('handles comma-separated citations with passageToSourceMap', () => {
-      const map = new Map([[1, 0], [5, 2]]);
+      const map = new Map([
+        [1, 0],
+        [5, 2],
+      ]);
       const { resolvedText } = resolveAnswerCitations('See [1, 5].', sources, map);
       expect(resolvedText).toBe('See [[First Source#Passage 1]], [[Third Source#Passage 5]].');
     });
@@ -327,12 +357,15 @@ describe('extractPassageToSourceMap', () => {
   });
 
   it('handles entries with unexpected nested structure gracefully', () => {
-    const rawData: unknown[] = ['text', [
-      [null, null, null, null, null, [[[sources[0]!.id]]]],  // valid
-      'not-an-object',                                        // invalid
-      42,                                                      // invalid
-      [null, null, null, null, null, [[[sources[2]!.id]]]],  // valid
-    ]];
+    const rawData: unknown[] = [
+      'text',
+      [
+        [null, null, null, null, null, [[[sources[0]!.id]]]], // valid
+        'not-an-object', // invalid
+        42, // invalid
+        [null, null, null, null, null, [[[sources[2]!.id]]]], // valid
+      ],
+    ];
     const map = extractPassageToSourceMap(rawData, sources);
     expect(map.get(1)).toBe(0);
     expect(map.has(2)).toBe(false);
@@ -392,9 +425,7 @@ describe('generatePassageAnchors', () => {
     });
 
     it('uses empty anchor for passages not in rawPassages map', () => {
-      const rawPassages: ReadonlyMap<number, string> = new Map([
-        [1, 'Raw text for 1.'],
-      ]);
+      const rawPassages: ReadonlyMap<number, string> = new Map([[1, 'Raw text for 1.']]);
       const result = generatePassageAnchors(source, [1, 2], rawPassages);
       expect(result).toContain('## Passage 1\n\nRaw text for 1.');
       expect(result).toContain('## Passage 2');
@@ -405,16 +436,14 @@ describe('generatePassageAnchors', () => {
     });
 
     it('trims raw passage text', () => {
-      const rawPassages: ReadonlyMap<number, string> = new Map([
-        [1, '  trimmed text  '],
-      ]);
+      const rawPassages: ReadonlyMap<number, string> = new Map([[1, '  trimmed text  ']]);
       const result = generatePassageAnchors(source, [1], rawPassages);
       expect(result).toBe('## Passage 1\n\ntrimmed text');
     });
 
     it('treats empty-string rawPassage same as missing (empty anchor)', () => {
       const rawPassages: ReadonlyMap<number, string> = new Map([
-        [1, '   '],  // whitespace-only
+        [1, '   '], // whitespace-only
       ]);
       const result = generatePassageAnchors(source, [1], rawPassages);
       expect(result).toBe('## Passage 1');

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { computeMetrics, evaluateQuality } from './research-quality.js';
-import type { ResearchContext, ResearchMetrics, ChatResponse, SourceMeta } from './research-types.js';
+import type {
+  ChatResponse,
+  ResearchContext,
+  ResearchMetrics,
+  SourceMeta,
+} from './research-types.js';
 import type { TopicSlug } from './topic-slug.js';
 
 // ─── Test Fixtures ────────────────────────────────────────────────────────────
@@ -96,7 +101,7 @@ describe('computeMetrics — basic field mapping', () => {
 
   it('returns durationMs as the difference between now and startedAt', () => {
     const startedAt = new Date(1_000_000).toISOString(); // fixed epoch ms
-    const now = 1_005_000;                               // 5000 ms later
+    const now = 1_005_000; // 5000 ms later
     const ctx = makeContext({ startedAt });
     const metrics = computeMetrics(ctx, now);
     expect(metrics.durationMs).toBe(5_000);
@@ -177,7 +182,7 @@ describe('computeMetrics — sourcesCited', () => {
       questions: ['Q1', 'Q2'],
       answers: {
         Q1: makeChatResponse('Answer 1', [1, 2]),
-        Q2: makeChatResponse('Answer 2', [2, 3]),  // source 2 is shared
+        Q2: makeChatResponse('Answer 2', [2, 3]), // source 2 is shared
       },
     });
     const metrics = computeMetrics(ctx);
@@ -328,7 +333,7 @@ describe('evaluateQuality — grade "partial"', () => {
     const ctx = makeContext({
       questions: ['Q1', 'Q2', 'Q3', 'Q4', 'Q5'],
       answers: {
-        Q1: makeChatResponse('A1', [1, 1]),  // only source 1 cited
+        Q1: makeChatResponse('A1', [1, 1]), // only source 1 cited
         Q2: makeChatResponse('A2', [1, 1]),
         Q3: makeChatResponse('A3', [1, 1]),
         Q4: makeChatResponse('A4', [1, 1]),
@@ -385,14 +390,14 @@ describe('evaluateQuality — grade "poor"', () => {
   it('returns "poor" for 2+ warnings', () => {
     const metrics: ResearchMetrics = {
       questionsAsked: 5,
-      questionsAnswered: 1,      // 20% answered -> completeness warning
+      questionsAnswered: 1, // 20% answered -> completeness warning
       questionsSkipped: 4,
-      totalCitations: 0,         // 0 avg citations -> density warning
-      sourcesIngested: 5,        // 5 available -> diversity check active
+      totalCitations: 0, // 0 avg citations -> density warning
+      sourcesIngested: 5, // 5 available -> diversity check active
       chatsUsed: 1,
       durationMs: 30_000,
-      avgCitationsPerAnswer: 0,  // density warning
-      sourcesCited: 0,           // 0 cited (<= 1) -> diversity warning
+      avgCitationsPerAnswer: 0, // density warning
+      sourcesCited: 0, // 0 cited (<= 1) -> diversity warning
     };
     const ctx = makeContext();
     const result = evaluateQuality(ctx, metrics);
@@ -480,8 +485,8 @@ describe('evaluateQuality — completeness warning rule', () => {
       w.toLowerCase().includes('completeness'),
     );
     expect(completenessWarning).toBeDefined();
-    expect(completenessWarning).toContain('1');  // questionsAnswered
-    expect(completenessWarning).toContain('4');  // questionsAsked
+    expect(completenessWarning).toContain('1'); // questionsAnswered
+    expect(completenessWarning).toContain('4'); // questionsAsked
   });
 });
 
@@ -580,16 +585,14 @@ describe('evaluateQuality — source diversity warning rule', () => {
     const fourSources = [1, 2, 3, 4].map((i) => makeSource(`s${i}`, `S${i}`));
     const ctx = makeContext({
       questions: ['Q1'],
-      answers: { Q1: makeChatResponse('A1', []) },  // no citations -> 0 sources cited
+      answers: { Q1: makeChatResponse('A1', []) }, // no citations -> 0 sources cited
       sources: fourSources,
     });
     const metrics = computeMetrics(ctx);
     expect(metrics.sourcesIngested).toBe(4);
     expect(metrics.sourcesCited).toBe(0);
     const result = evaluateQuality(ctx, metrics);
-    const hasDiversityWarning = result.warnings.some((w) =>
-      w.toLowerCase().includes('diversity'),
-    );
+    const hasDiversityWarning = result.warnings.some((w) => w.toLowerCase().includes('diversity'));
     expect(hasDiversityWarning).toBe(true);
   });
 
@@ -598,7 +601,7 @@ describe('evaluateQuality — source diversity warning rule', () => {
     const ctx = makeContext({
       questions: ['Q1', 'Q2'],
       answers: {
-        Q1: makeChatResponse('A1', [1, 1, 1]),  // only source 1
+        Q1: makeChatResponse('A1', [1, 1, 1]), // only source 1
         Q2: makeChatResponse('A2', [1]),
       },
       sources: fiveSources,
@@ -607,9 +610,7 @@ describe('evaluateQuality — source diversity warning rule', () => {
     expect(metrics.sourcesIngested).toBe(5);
     expect(metrics.sourcesCited).toBe(1);
     const result = evaluateQuality(ctx, metrics);
-    const hasDiversityWarning = result.warnings.some((w) =>
-      w.toLowerCase().includes('diversity'),
-    );
+    const hasDiversityWarning = result.warnings.some((w) => w.toLowerCase().includes('diversity'));
     expect(hasDiversityWarning).toBe(true);
   });
 
@@ -618,7 +619,7 @@ describe('evaluateQuality — source diversity warning rule', () => {
     const ctx = makeContext({
       questions: ['Q1'],
       answers: {
-        Q1: makeChatResponse('A1', [1, 2]),  // 2 unique sources cited
+        Q1: makeChatResponse('A1', [1, 2]), // 2 unique sources cited
       },
       sources: fiveSources,
     });
@@ -626,9 +627,7 @@ describe('evaluateQuality — source diversity warning rule', () => {
     expect(metrics.sourcesIngested).toBe(5);
     expect(metrics.sourcesCited).toBe(2);
     const result = evaluateQuality(ctx, metrics);
-    const hasDiversityWarning = result.warnings.some((w) =>
-      w.toLowerCase().includes('diversity'),
-    );
+    const hasDiversityWarning = result.warnings.some((w) => w.toLowerCase().includes('diversity'));
     expect(hasDiversityWarning).toBe(false);
   });
 
@@ -637,7 +636,7 @@ describe('evaluateQuality — source diversity warning rule', () => {
     const ctx = makeContext({
       questions: ['Q1'],
       answers: {
-        Q1: makeChatResponse('A1', [1]),  // only 1 source cited
+        Q1: makeChatResponse('A1', [1]), // only 1 source cited
       },
       sources: threeSources,
     });
@@ -645,9 +644,7 @@ describe('evaluateQuality — source diversity warning rule', () => {
     expect(metrics.sourcesIngested).toBe(3);
     expect(metrics.sourcesCited).toBe(1);
     const result = evaluateQuality(ctx, metrics);
-    const hasDiversityWarning = result.warnings.some((w) =>
-      w.toLowerCase().includes('diversity'),
-    );
+    const hasDiversityWarning = result.warnings.some((w) => w.toLowerCase().includes('diversity'));
     expect(hasDiversityWarning).toBe(false);
   });
 
@@ -660,9 +657,7 @@ describe('evaluateQuality — source diversity warning rule', () => {
     const metrics = computeMetrics(ctx);
     expect(metrics.sourcesIngested).toBe(0);
     const result = evaluateQuality(ctx, metrics);
-    const hasDiversityWarning = result.warnings.some((w) =>
-      w.toLowerCase().includes('diversity'),
-    );
+    const hasDiversityWarning = result.warnings.some((w) => w.toLowerCase().includes('diversity'));
     expect(hasDiversityWarning).toBe(false);
   });
 
@@ -675,11 +670,9 @@ describe('evaluateQuality — source diversity warning rule', () => {
     });
     const metrics = computeMetrics(ctx);
     const result = evaluateQuality(ctx, metrics);
-    const diversityWarning = result.warnings.find((w) =>
-      w.toLowerCase().includes('diversity'),
-    );
+    const diversityWarning = result.warnings.find((w) => w.toLowerCase().includes('diversity'));
     expect(diversityWarning).toBeDefined();
-    expect(diversityWarning).toContain('6');  // sourcesIngested
+    expect(diversityWarning).toContain('6'); // sourcesIngested
   });
 });
 
@@ -854,7 +847,7 @@ describe('US6 quality grade thresholds', () => {
     const ctx = makeContext({
       questions: ['Q1', 'Q2', 'Q3'],
       answers: {
-        Q1: makeChatResponse('A1', []),  // answered but 0 citations
+        Q1: makeChatResponse('A1', []), // answered but 0 citations
       },
       sources: [],
     });

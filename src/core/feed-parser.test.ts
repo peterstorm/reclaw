@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  type FeedItem,
   decodeEntities,
   extractLink,
   firstField,
@@ -9,14 +10,13 @@ import {
   sortNewestFirst,
   stripHtml,
   summarize,
-  type FeedItem,
 } from './feed-parser.js';
 
 describe('decodeEntities', () => {
   it('decodes the supported named/numeric entities', () => {
-    expect(decodeEntities('a &lt;b&gt; &amp; &quot;c&quot; &#39;d&#39; &apos;e&apos; f&nbsp;g')).toBe(
-      `a <b> & "c" 'd' 'e' f g`,
-    );
+    expect(
+      decodeEntities('a &lt;b&gt; &amp; &quot;c&quot; &#39;d&#39; &apos;e&apos; f&nbsp;g'),
+    ).toBe(`a <b> & "c" 'd' 'e' f g`);
   });
 
   it('decodes &amp; last so &amp;lt; does not become <', () => {

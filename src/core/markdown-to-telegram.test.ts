@@ -23,7 +23,9 @@ describe('markdownToTelegramHtml', () => {
   });
 
   it('converts inline code', () => {
-    expect(markdownToTelegramHtml('run `npm install` now')).toBe('run <code>npm install</code> now');
+    expect(markdownToTelegramHtml('run `npm install` now')).toBe(
+      'run <code>npm install</code> now',
+    );
   });
 
   it('escapes HTML inside inline code', () => {

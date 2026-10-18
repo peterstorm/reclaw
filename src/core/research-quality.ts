@@ -20,7 +20,7 @@
 //   - 1 warning  = "partial"
 //   - 2+ warnings = "poor"
 
-import type { ResearchContext, ResearchMetrics, QualityResult } from './research-types.js';
+import type { QualityResult, ResearchContext, ResearchMetrics } from './research-types.js';
 
 // ─── Thresholds ────────────────────────────────────────────────────────────────
 
@@ -56,10 +56,7 @@ const SOURCE_DIVERSITY_CITED_MAX = 1;
  * - avgCitationsPerAnswer: totalCitations / questionsAnswered (0 if none answered)
  * - sourcesCited: count of unique source indices cited across all answers
  */
-export function computeMetrics(
-  ctx: ResearchContext,
-  now: number = Date.now(),
-): ResearchMetrics {
+export function computeMetrics(ctx: ResearchContext, now: number = Date.now()): ResearchMetrics {
   const questionsAsked = ctx.questions.length;
   const questionsAnswered = Object.keys(ctx.answers).length;
   const questionsSkipped = ctx.skippedQuestions.length;
@@ -83,8 +80,7 @@ export function computeMetrics(
   const durationMs = Number.isNaN(startMs) ? 0 : now - startMs;
 
   // Average citations per answered question; 0 if no questions were answered
-  const avgCitationsPerAnswer =
-    questionsAnswered > 0 ? totalCitations / questionsAnswered : 0;
+  const avgCitationsPerAnswer = questionsAnswered > 0 ? totalCitations / questionsAnswered : 0;
 
   const sourcesCited = citedSourceIndices.size;
 
@@ -119,10 +115,7 @@ export function computeMetrics(
  *   - 1 warning  -> "partial"
  *   - 2+ warnings -> "poor"
  */
-export function evaluateQuality(
-  _ctx: ResearchContext,
-  metrics: ResearchMetrics,
-): QualityResult {
+export function evaluateQuality(_ctx: ResearchContext, metrics: ResearchMetrics): QualityResult {
   const warnings: string[] = [];
 
   // Rule 1 — Completeness
@@ -160,8 +153,7 @@ export function evaluateQuality(
   }
 
   // Grade
-  const grade =
-    warnings.length === 0 ? 'good' : warnings.length === 1 ? 'partial' : 'poor';
+  const grade = warnings.length === 0 ? 'good' : warnings.length === 1 ? 'partial' : 'poor';
 
   return {
     grade,
