@@ -1,5 +1,5 @@
 name: Discount Watch
-schedule: "15 5 * * *"  # daily 05:15 — after Prej's nightly data refresh (03:00–04:25), before the 07:20 morning briefing
+schedule: "0 12 * * *"  # daily 12:00 — moved from 05:15 (overnight jobs kept failing/stale-skipping); noon is after Prej's nightly data refresh (03:00–04:25)
 permissionProfile: scheduled
 # Pi/vLLM unreachable (desktop off) or out of quota → rerun once on Claude; the message says so.
 fallback: { backend: claude, model: sonnet }
@@ -117,7 +117,53 @@ promptTemplate: |
   **Step 5 — Write the new cache** (ensure dir exists, only after successful fetches for that
   item; keep per-item granularity so one failed source doesn't blank the other).
 
-  **Step 6 — Report.** Only if something changed (or first run): lead with the changes
+  **Step 6 — Ingredient sweep (ONLY if today is a Monday — {{dayOfWeek}}).** Weekly
+  check of the core recipe-ingredient watchlist (Prej only; ShelfAtlas NOT used here).
+  Skip this step entirely on other days, and leave the ingredient cache untouched.
+
+  Canonical ingredient products (pinned IDs from the 2026-10-09 sweep; if a detail fetch
+  404s, search once with the listed query and re-pin here — same rules as Steps 1-2):
+  | key | product | prej_id | search query |
+  |---|---|---|---|
+  | hakket_okse | GS Hakket Oksekød 8-12% 400g | 24605 | hakket okse |
+  | kyllingebryst | Gestus Kyllingebryst 1000g | 39695 | kyllingebryst |
+  | laks | Dansk Hel Laksefilet 600g | 108990 | laksefilet |
+  | piskefloede | Arla Karolines Køkken Piskefløde 36% 250ml | 830 | fløde 3% (URL-encode: fl%C3%B8de) |
+  | champignon | Svampe Champignon 400g | 40564 | champignon |
+
+  GOTCHA: Prej search is name-fuzzy ("champignon" also matches smøreost/pizza). Only
+  re-pin IDs whose name AND quantity match the canonical product. In the detail response
+  prices live under `.product.prices[]` (`price` in øre, `chain_name`, `is_offer`,
+  `offer_ends`, `multi_buy`) — NOT at the top level, and search results carry no prices.
+  Budget: ~5 detail requests + ~5 search requests on re-pin days; fits the 25/day cap
+  alongside Steps 1-4.
+
+  ```
+  for pair in "hakket_okse:24605" "kyllingebryst:39695" "laks:108990" "piskefloede:830" "champignon:40564"; do
+    key="${pair%%:*}"; id="${pair##*:}"
+    curl -s -m 30 -H "Authorization: Bearer $PREJ_KEY" \
+      "https://api.prej.app/v1/products/$id" -o "/tmp/prej-ing-$key.json" -w "$key %{http_code}\n"
+  done
+  ```
+
+  Sanity-check each: `.product.name` must match the canonical name and prices must be
+  plausible (okse 3000–6000 øre, kylling 7000–13000, laks 8000–14000, fløde 1000–2000,
+  svampe 1500–3500). On failure for an item: keep its previous cache entry and note the
+  failure once — don't blank it.
+
+  Compare against the ingredient cache: `cat ~/.cache/reclaw/recipe-prices.json`. First
+  run (no cache): record baseline and give the full current state. Schema:
+  `{"date": "YYYY-MM-DD", "items": {"<key>": {"name": "<canonical name>", "best":
+  "<human-readable best-price summary>"}}}`.
+
+  Report-worthy CHANGES (same change rules as Step 4): price change, offer appearing or
+  ending, offer end date moving (especially within 2 days), chain entering/leaving the
+  price set, multi-buy appearing. Include the ingredient changes in the SAME final
+  message as Steps 1-5 (single Telegram message — never two, per the last-message relay
+  rule), under an "Ingredients" heading, Danish style:
+  "Kyllingebryst 1 kg — 79 kr hos Spar (tilbud til 14-10) · ellers 99,95 Meny".
+
+  **Step 7 — Report.** Only if something changed (or first run): lead with the changes
   (direction + delta in kroner), then the current best price per item with chain names
   ("Coca-Cola Zero 1,5 L — 9,95 kr hos Bilka (tilbud til 12-10) · Lidl 12,95"). Format Danish
   style: 9,95 kr. If nothing changed: reply exactly `OK` — the scheduler treats a bare
