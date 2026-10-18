@@ -1,6 +1,8 @@
 name: Vault Lint
 schedule: "0 14 * * 0"
 permissionProfile: scheduled
+# Pi/vLLM unreachable (desktop off) or out of quota → rerun once on Claude; the message says so.
+fallback: { backend: claude, model: sonnet }
 validityWindowMinutes: 120
 timeout: 600
 promptTemplate: |

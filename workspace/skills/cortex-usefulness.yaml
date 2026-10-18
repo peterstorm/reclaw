@@ -1,6 +1,8 @@
 name: Cortex Usefulness Signal (v0)
 schedule: "0 0 * * *"  # midnight — runs BEFORE cortex-prune (which now depends on this) so usefulness bumps land while memories are still active and prune can honor them.
 permissionProfile: scheduled
+# Pi/vLLM unreachable (desktop off) or out of quota → rerun once on Claude; the message says so.
+fallback: { backend: claude, model: sonnet }
 validityWindowMinutes: 60
 timeout: 300
 promptTemplate: |

@@ -1,6 +1,8 @@
 name: Workstation Procurement Watch
 schedule: "45 9 * * *"  # Daily 09:45. Two distinct modes, see "Run mode": Monday = full ~55-source sweep + report; other days = targeted watch of the cached list + the 15 price targets only. The daily run is deliberately cheap — running the full sweep daily cannot fit the 900s timeout.
 permissionProfile: scheduled
+# Pi/vLLM unreachable (desktop off) or out of quota → rerun once on Claude; the message says so.
+fallback: { backend: claude, model: sonnet }
 validityWindowMinutes: 240
 timeout: 900
 promptTemplate: |

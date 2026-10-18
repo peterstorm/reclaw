@@ -1,6 +1,8 @@
 name: Insights Engine
 schedule: "0 11 * * 3"
 permissionProfile: scheduled
+# Pi/vLLM unreachable (desktop off) or out of quota → rerun once on Claude; the message says so.
+fallback: { backend: claude, model: sonnet }
 validityWindowMinutes: 120
 timeout: 600
 promptTemplate: |

@@ -1,6 +1,8 @@
 name: Weekly Review
 schedule: "30 10 * * 0"
 permissionProfile: scheduled
+# Pi/vLLM unreachable (desktop off) or out of quota → rerun once on Claude; the message says so.
+fallback: { backend: claude, model: sonnet }
 validityWindowMinutes: 60
 promptTemplate: |
   {{personality}}

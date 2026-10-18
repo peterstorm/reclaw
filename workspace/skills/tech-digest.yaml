@@ -1,6 +1,8 @@
 name: Daily Tech Digest
 schedule: "0 8 * * *"
 permissionProfile: scheduled
+# Pi/vLLM unreachable (desktop off) or out of quota → rerun once on Claude; the message says so.
+fallback: { backend: claude, model: sonnet }
 validityWindowMinutes: 240
 timeout: 600
 promptTemplate: |

@@ -1,6 +1,8 @@
 name: Homelab Watchdog
 schedule: "0 10 * * *"  # daily at 10:00. Re-enabled 2026-06-27 (was paused 2026-05-15, prior "0 */6 * * *"). Manually triggerable via /run homelab-watchdog.
 permissionProfile: scheduled
+# Pi/vLLM unreachable (desktop off) or out of quota → rerun once on Claude; the message says so.
+fallback: { backend: claude, model: sonnet }
 validityWindowMinutes: 30
 timeout: 300
 promptTemplate: |

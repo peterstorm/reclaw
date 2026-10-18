@@ -1,6 +1,8 @@
 name: Reclaw Evolve
 schedule: "0 5 * * 1"  # Monday 05:00 — weekly. The prompt mines a 7-day window; a daily cron re-mined each transcript up to 7× and spammed near-identical proposal notes.
 permissionProfile: scheduled
+# Pi/vLLM unreachable (desktop off) or out of quota → rerun once on Claude; the message says so.
+fallback: { backend: claude, model: sonnet }
 validityWindowMinutes: 60
 promptTemplate: |
   {{personality}}

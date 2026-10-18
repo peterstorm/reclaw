@@ -1,6 +1,8 @@
 name: Garmin Late-Activity Catch-up
 schedule: "0 6 * * *"
 permissionProfile: scheduled
+# Pi/vLLM unreachable (desktop off) or out of quota → rerun once on Claude; the message says so.
+fallback: { backend: claude, model: sonnet }
 environment: [GARMIN_EMAIL, GARMIN_PASSWORD]
 validityWindowMinutes: 90
 promptTemplate: |

@@ -1,6 +1,8 @@
 name: Evening Report
 schedule: "0 21 * * *"
 permissionProfile: scheduled
+# Pi/vLLM unreachable (desktop off) or out of quota → rerun once on Claude; the message says so.
+fallback: { backend: claude, model: sonnet }
 validityWindowMinutes: 60
 timeout: 600
 promptTemplate: |

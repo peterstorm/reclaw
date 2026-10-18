@@ -1,6 +1,8 @@
 name: Discount Watch
 schedule: "15 5 * * *"  # daily 05:15 — after Prej's nightly data refresh (03:00–04:25), before the 07:20 morning briefing
 permissionProfile: scheduled
+# Pi/vLLM unreachable (desktop off) or out of quota → rerun once on Claude; the message says so.
+fallback: { backend: claude, model: sonnet }
 validityWindowMinutes: 60
 timeout: 300
 backend: pi
