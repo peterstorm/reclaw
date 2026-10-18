@@ -20,6 +20,7 @@
     "grammy": "^1.45.1",
     "ioredis": "^6.0.0",
     "notebooklm-kit": "^2.2.0",
+    "ts-fsrs": "5.4.2",
     "ts-pattern": "^5.9.0",
     "unpdf": "1.8.1",
     "yaml": "^2.9.0",

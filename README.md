@@ -29,6 +29,7 @@ A long-running Telegram-fronted personal agent. Reclaw routes messages, schedule
 - [Workers](#workers) — the consumer side of every queue
 - [Other Redis-resident state](#other-redis-resident-state)
 - [Skills](#skills)
+- [Learning loop](#learning-loop) — curriculum, recall rounds, FSRS over an append-only log
 - [Sessions & multi-turn](#sessions--multi-turn)
 - [Configuration](#configuration)
 - [Operations](#operations)
@@ -444,6 +445,18 @@ When a cron fires, the scheduler builds a `ScheduledJob` and calls `enqueueSched
 **Capability note (security):** both backends enforce the semantic tool list. Interactive Telegram chat intentionally uses the broad personal-agent profile: filesystem editing/search, Bash, web access, memory, skills, and subagents. Claude maps this to native `Task`/`Skill` capabilities; Pi maps it to its installed `subagent` extension and discovers installed skills such as `obsidian-vault`. Scheduled execution defaults to the smaller Read/Write/Bash/web/memory profile and does not inherit interactive delegation. Claude uses `--permission-mode dontAsk`, `--tools`, and `--allowedTools`; Pi uses `--tools`; an empty list maps to Claude `--tools ""` or Pi `--no-tools`. Agent subprocesses receive a closed runtime/provider environment rather than the complete service environment. Credential-dependent scheduled skills must declare closed `environment` grants, and unknown names invalidate the skill. This is ambient-authority reduction, not an OS sandbox: an agent with Bash/Read still runs as Reclaw's Unix user. Prefer fixed extraction scripts for untrusted content and see ADR 0005.
 
 Skills are not part of this repo — they live in the workspace at `~/dev/claude-plugins/reclaw/workspace/skills/`. See the workspace's `CLAUDE.md` for skill conventions.
+
+---
+
+## Learning loop
+
+A curriculum learning system over the vault (`learning/curriculum/`): master learning notes read one lesson a day, recall cards answered in free text over Telegram, FSRS scheduling. Vocabulary: [CONTEXT.md](CONTEXT.md). Design note: vault `reclaw/skills/learning-loop.md`.
+
+- **One command surface:** `bun scripts/learn.ts <status|lesson|read|round|grade|suspend|unsuspend|build-next|feynman|feynman-log|validate>` — prints JSON; refuses (exit 1, nothing written) on an unknown card/round or a corrupt log. `grade … --answer -` reads the answer from stdin (skills pass it through a quoted heredoc).
+- **State:** only the append-only `learning/curriculum/.state/study-log.jsonl`. Card schedules, reading progress and stats are a pure fold (`src/core/study-plan.ts`, ts-fsrs with fuzz off → deterministic). Models grade answers; the core decides what a grade means.
+- **Skills:** `learn-lesson` (07:00), `learn-recall` (11:30/15:30/19:30), `learn-feynman` (Sun 17:00), `curriculum-builder` (02:30, builds the next note when fewer than `buildBuffer` built topics are unread). All `backend: claude` — the desktop/Pi backend is too often unreachable for a daily habit, and the builder needs web research. Replies to their messages resume the skill session, which then calls `learn.ts`.
+- **Notes** are validated by `parseMasterNote` (strict format, all-or-nothing). Authoring spec: `workspace/skills/shared/master-note-guide.md`. Domain MOCs are generated: `bun scripts/curriculum-mocs.ts`.
+- **Dry-run anything** against a copy: `RECLAW_VAULT_ROOT=/tmp/vault-copy bun scripts/learn.ts …`.
 
 ---
 

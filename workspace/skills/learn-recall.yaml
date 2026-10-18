@@ -1,0 +1,83 @@
+name: Learn — Recall Round
+# 11:30 / 15:30 / 19:30: asks up to 3 FSRS-due recall cards (interleaved across topics, new
+# cards capped per day). The user answers in their own words by swipe-replying; this same
+# session grades each answer against the card's reference answer and records the grade via
+# scripts/learn.ts. Models judge answers; the CLI owns scheduling. Replaces vault-review.
+# See vault: reclaw/skills/learning-loop.md
+schedule: "30 11,15,19 * * *"
+permissionProfile: scheduled
+# Claude, not the default Pi backend: Pi depends on the desktop vLLM box, which is often off
+# (pi "Connection error" at most hours, 2026-10-15..18). A daily habit must not be flaky.
+backend: claude
+validityWindowMinutes: 90
+timeout: 300
+promptTemplate: |
+  {{personality}}
+
+  Today is {{dayOfWeek}}, {{date}}.
+
+  You run a spaced-repetition recall round over the user's curriculum cards. They answer in
+  their own words by swipe-replying to your message; you grade later in this same session.
+  Scheduling (FSRS) is entirely the CLI's job — you only judge answers and record grades.
+
+  ## Step 1 — Pick the round
+
+  ```
+  bun {{scriptsDir}}/learn.ts round
+  ```
+
+  - `kind: nothing-due` → respond with exactly ALL_CLEAR — no backticks, nothing else.
+  - `kind: round` → `{ round, cards: [{ id, topicTitle, notePath, lesson, question, answer, isNew }] }`.
+    Keep `round`, every card `id` and every reference `answer` — you need them to grade.
+  - If the command fails, send its error line. Never invent CLI output.
+
+  ## Step 2 — Send the questions — NEVER the answers
+
+  Exactly this shape:
+
+  🧠 **Recall** — <N> question(s)
+
+  **1.** <question> _(<topicTitle>)_ <append " 🆕" if isNew>
+  **2.** …
+
+  Reply with numbered answers in your own words — short is fine, "?" if you don't know.
+  From memory, no peeking.
+
+  This message is the last assistant message and is relayed verbatim. Do not reveal, hint at,
+  or paraphrase any reference answer in it.
+
+  ## When the user replies (this session is resumed) — grade
+
+  For each numbered answer, compare its MEANING with that card's reference answer (the
+  reference names the key points a correct answer must contain):
+  - **again** — core idea missing or wrong; or "?", blank, "don't know".
+  - **hard** — core idea right, but a key point missing or a notable error / imprecision.
+  - **good** — all key points present. Wording may differ completely.
+  - **easy** — complete and precise AND fluent: correctly extends, applies, or quantifies.
+  Judge substance, never phrasing or length. Between two grades, pick the lower.
+
+  Record every grade, passing their answer verbatim on stdin through a QUOTED heredoc so
+  nothing in it is interpreted by the shell:
+
+  ```
+  bun {{scriptsDir}}/learn.ts grade <round> <card-id> <again|hard|good|easy> --answer - <<'ANSWER'
+  <their answer for that card, verbatim>
+  ANSWER
+  ```
+
+  Then reply with one block per graded question:
+  - **1. good ✓** — one line confirming the key point (or naming what was slightly off).
+  - **2. again ✗** — the reference answer in 1–3 sentences, then "Re-read: <topicTitle>, Lesson <lesson>."
+  End with "Next up: <the soonest nextDueAt among these cards, as a relative time>".
+
+  Rules:
+  - Answered only some? Grade those only. Unanswered cards stay pending and return in a later
+    round — never grade them yourself.
+  - Dispute / override ("2 was good", "override 2 hard"): re-run `grade` with the same round,
+    the same card and THEIR grade (the CLI records it as an override). The user's call wins.
+    Confirm in one line.
+  - Broken card ("that question is ambiguous / wrong"): run
+    `bun {{scriptsDir}}/learn.ts suspend <card-id> <their reason>` and say it is suspended
+    until the note is fixed. Don't grade it.
+  - A follow-up question about the material → answer briefly from the note at
+    `~/dev/notes/remotevault/<notePath>`.

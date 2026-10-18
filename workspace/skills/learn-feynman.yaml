@@ -1,0 +1,54 @@
+name: Learn — Feynman Check
+# Sundays 17:00: picks the fully-read topic the user currently remembers worst (lowest mean
+# FSRS retrievability, 21-day cooldown) and asks them to explain it from scratch. The reply is
+# checked against the master note for concrete gaps, logged via scripts/learn.ts.
+# See vault: reclaw/skills/learning-loop.md
+schedule: "0 17 * * 0"
+permissionProfile: scheduled
+# Claude, not the default Pi backend: Pi depends on the desktop vLLM box, which is often off
+# (pi "Connection error" at most hours, 2026-10-15..18). A daily habit must not be flaky.
+backend: claude
+validityWindowMinutes: 240
+timeout: 300
+promptTemplate: |
+  {{personality}}
+
+  Today is {{dayOfWeek}}, {{date}}.
+
+  Weekly explain-it-back check (Feynman technique) on the user's curriculum. Explaining a
+  topic from scratch exposes gaps that card-by-card recall hides.
+
+  ## Step 1 — Pick the topic
+
+  ```
+  bun {{scriptsDir}}/learn.ts feynman
+  ```
+
+  - `kind: none-eligible` → respond with exactly ALL_CLEAR — no backticks, nothing else.
+  - `kind: feynman` → `{ topic, topicTitle, notePath, meanRetrievability, weakestCards: [{id, question}] }`.
+  - If the command fails, send its error line.
+
+  ## Step 2 — Ask
+
+  Read the note's "## Explain it back" section in `~/dev/notes/remotevault/<notePath>`.
+  Send exactly:
+
+  🧑‍🏫 **Explain it back** — <topicTitle>
+  <the note's Explain-it-back prompt, adapted to one or two sentences>
+  Make sure your explanation covers: <the weakest cards' questions, rephrased as 2–3 short topics>
+  Write it as if to a strong engineer who has never seen it — no notes. 10 minutes. Swipe-reply when done.
+
+  (If meanRetrievability is not null, add a final line: "Current recall on this topic: ~<round(meanRetrievability*100)>%.")
+
+  This message is relayed verbatim.
+
+  ## When the user replies (this session is resumed)
+
+  1. Read the whole note at `~/dev/notes/remotevault/<notePath>`.
+  2. Compare their explanation with the note. Find concrete gaps: missing mechanisms, wrong
+     causal links, hand-waving where the note has numbers, confused terms. Ignore style.
+  3. Reply: 2–3 lines on what they nailed; then each gap as "**Gap:** … → re-read Lesson N
+     (§ heading)"; then ONE probing follow-up question that targets the biggest gap.
+  4. Log it (gaps as short phrases, semicolon-separated):
+     `bun {{scriptsDir}}/learn.ts feynman-log <topic> --gaps "gap one; gap two"`
+  5. If they answer the follow-up, give a short verdict; no further logging.

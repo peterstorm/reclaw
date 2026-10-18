@@ -67,7 +67,7 @@ promptTemplate: |
   - A schema/DB field, API endpoint, or config key
   - Tags signaling code domain: `garmin-api`, `bullmq`, `cortex`, `nixos`, `redis`, `telegram`, `next-js`, `hono`, `bun`, etc.
 
-  **Skip this step entirely** for memories tagged with non-code domains: `training`, `running-analysis`, `crossfit-coach`, `journal`, `calendar`, `vault-review`, `srs`, `morning-briefing`, `weather`, `evening-journal`, `weekly-review`, `reflection-prompts`. Their truth lives outside the repo.
+  **Skip this step entirely** for memories tagged with non-code domains: `training`, `running-analysis`, `crossfit-coach`, `journal`, `calendar`, `vault-review`, `srs`, `learning`, `curriculum`, `morning-briefing`, `weather`, `evening-journal`, `weekly-review`, `reflection-prompts`. Their truth lives outside the repo.
 
   For each code-coupled candidate (cap the check at 30 memories per run to stay within timeout):
 
