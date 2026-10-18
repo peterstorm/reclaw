@@ -9,6 +9,8 @@ schedule: "30 2 * * *"
 permissionProfile: scheduled
 backend: claude
 model: opus
+# Deliberately no `fallback:` — on Pi the build would be unresearched. A failed night costs
+# nothing: the buffer holds 3 built topics, and the next night builds.
 validityWindowMinutes: 300
 timeout: 3600
 promptTemplate: |

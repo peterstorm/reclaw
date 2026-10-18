@@ -167,6 +167,59 @@ describe('parseSkillConfig', () => {
     if (!r.ok) expect(r.error).toContain('invalid Claude model');
   });
 
+  it.each([
+    ['fallback: pi', { backend: 'pi' }],
+    ['fallback: { backend: pi }', { backend: 'pi' }],
+  ])('parses %s on a Claude skill', (field, expected) => {
+    const r = parseSkillConfig(
+      `name: "Test"\npromptTemplate: "Do it"\npermissionProfile: "scheduled"\nbackend: claude\nmodel: sonnet\n${field}`,
+      '/skills/test-skill.yaml',
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.fallback).toEqual(expected);
+  });
+
+  it('parses a Claude fallback with its own pinned model on a Pi skill', () => {
+    const r = parseSkillConfig(
+      'name: "Test"\npromptTemplate: "Do it"\npermissionProfile: "scheduled"\nbackend: pi\nfallback: { backend: claude, model: sonnet }',
+      '/skills/test-skill.yaml',
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.fallback).toEqual({ backend: 'claude', model: 'sonnet' });
+  });
+
+  it.each([
+    ['the same backend as the primary', 'backend: claude\nfallback: claude', 'different backend'],
+    [
+      'a model on a Pi fallback',
+      'backend: claude\nfallback: { backend: pi, model: glm }',
+      'fallback.model',
+    ],
+    [
+      'a flag-like fallback model',
+      'backend: pi\nfallback: { backend: claude, model: "-x" }',
+      'invalid Claude model',
+    ],
+    ['an unknown backend', 'fallback: openai', 'fallback'],
+    ['an unknown key', 'fallback: { backend: pi, provider: x }', 'fallback'],
+  ])('rejects a fallback with %s', (_case, fields, message) => {
+    const r = parseSkillConfig(
+      `name: "Test"\npromptTemplate: "Do it"\npermissionProfile: "scheduled"\n${fields}`,
+      '/skills/test-skill.yaml',
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain(message);
+  });
+
+  it('leaves fallback absent when omitted', () => {
+    const r = parseSkillConfig(
+      'name: "Test"\npromptTemplate: "Do it"\npermissionProfile: "scheduled"\nbackend: claude',
+      '/skills/test-skill.yaml',
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).not.toHaveProperty('fallback');
+  });
+
   it('parses explicit service-environment grants', () => {
     const r = parseSkillConfig(
       'name: "Garmin"\npromptTemplate: "Run sync"\npermissionProfile: "scheduled"\nenvironment: [GARMIN_EMAIL, GARMIN_PASSWORD]',

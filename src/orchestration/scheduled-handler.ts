@@ -1,8 +1,10 @@
 import fs from 'node:fs/promises';
 import { resolveSkillEnvironment } from '../core/agent-environment.js';
 import { type AgentFailure, formatAgentFailure } from '../core/agent-failure.js';
+import { fallbackNotice, planFallback } from '../core/backend-fallback.js';
 import { localDate, localDayOfWeek } from '../core/clock.js';
 import { splitMessage } from '../core/message-splitter.js';
+import { type AgentTarget, requestedModel } from '../core/model-selection.js';
 import { getAllowedTools } from '../core/permissions.js';
 import { buildPrompt } from '../core/prompt-builder.js';
 import type { SkillQualitySignal, SkillRunStatus } from '../core/skill-quality.js';
@@ -160,18 +162,40 @@ export async function handleScheduledJob(
   // 6. Get allowed tools for the skill's parsed profile (pure, FR-011)
   const allowedTools = getAllowedTools(skill.permissionProfile);
 
-  // 7. Run agent subprocess (FR-007)
-  const sessionBackend = skill.backend ?? deps.config.agentBackend;
-  const model = skill.backend === 'claude' ? skill.model : undefined;
-  const result = await deps.runClaude({
-    prompt,
-    cwd: deps.config.workspacePath,
-    allowedTools,
-    timeoutMs: skill.timeout ? skill.timeout * 1000 : deps.config.scheduledTimeoutMs,
-    ...(Object.keys(environment).length > 0 ? { env: environment } : {}),
-    backend: sessionBackend,
-    ...(model !== undefined ? { modelSelection: { model } } : {}),
-  });
+  // 7. Run agent subprocess (FR-007), then the skill's fallback if the primary backend
+  // could not serve (the decision is pure: core/backend-fallback.ts).
+  const run = (target: AgentTarget): Promise<AgentResult> => {
+    const modelSelection = requestedModel(target);
+    return deps.runClaude({
+      prompt,
+      cwd: deps.config.workspacePath,
+      allowedTools,
+      timeoutMs: skill.timeout ? skill.timeout * 1000 : deps.config.scheduledTimeoutMs,
+      ...(Object.keys(environment).length > 0 ? { env: environment } : {}),
+      backend: target.backend,
+      ...(modelSelection !== undefined ? { modelSelection } : {}),
+    });
+  };
+  const runWithFallback = async (
+    primary: AgentTarget,
+  ): Promise<{ result: AgentResult; sessionBackend: AgentBackendName; notice: string | null }> => {
+    const first = await run(primary);
+    const fallback = first.ok ? null : planFallback(primary.backend, skill.fallback, first.failure);
+    if (first.ok || fallback === null) {
+      return { result: first, sessionBackend: primary.backend, notice: null };
+    }
+    console.warn(
+      `[scheduled] ${job.skillId}: ${formatAgentFailure(first.failure)} — falling back to ${fallback.backend}`,
+    );
+    return {
+      result: await run(fallback),
+      sessionBackend: fallback.backend,
+      notice: fallbackNotice(first.failure, fallback),
+    };
+  };
+  const { result, sessionBackend, notice } = await runWithFallback(
+    skill.backend === 'claude' ? skill : { backend: skill.backend ?? deps.config.agentBackend },
+  );
 
   // 8. Handle failure — no user notification for scheduled (goes to dead letter)
   if (!result.ok) {
@@ -182,17 +206,20 @@ export async function handleScheduledJob(
       : scheduledFailed(message);
   }
 
-  // 9. Suppress notification if output is the ALL_CLEAR sentinel (alert-only skills)
+  // 9. Suppress notification if output is the ALL_CLEAR sentinel (alert-only skills). A
+  // fallback run is announced on its message, never on a suppressed one.
   const isSuppressed = result.output.trim() === SUPPRESS_SENTINEL;
+  const response =
+    notice === null || isSuppressed ? result.output : `${notice}\n\n${result.output}`;
 
   const parsedSessionId = result.sessionId === null ? null : makeClaudeSessionId(result.sessionId);
   const sessionId = parsedSessionId === null || !parsedSessionId.ok ? null : parsedSessionId.value;
 
   if (deps.completionMode === 'durable') {
-    emit(isSuppressed ? 'suppressed' : 'success', result.output.length, null);
+    emit(isSuppressed ? 'suppressed' : 'success', response.length, null);
     return {
       kind: 'completed',
-      response: result.output,
+      response,
       suppressed: isSuppressed,
       sessionId,
       sessionBackend,
@@ -201,7 +228,7 @@ export async function handleScheduledJob(
 
   // 10. Split response and send to all authorized users (unless suppressed)
   if (!isSuppressed) {
-    const chunks = splitMessage(result.output);
+    const chunks = splitMessage(response);
     for (const userId of deps.config.authorizedUserIds) {
       const messageIds = await deps.telegram.sendChunkedMessage(userId, chunks);
 
@@ -225,6 +252,6 @@ export async function handleScheduledJob(
   }
 
   // 12. Emit quality signal and return success
-  emit(isSuppressed ? 'suppressed' : 'success', result.output.length, null);
-  return scheduledCompleted(result.output);
+  emit(isSuppressed ? 'suppressed' : 'success', response.length, null);
+  return scheduledCompleted(response);
 }

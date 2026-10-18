@@ -429,6 +429,157 @@ describe('handleScheduledJob', () => {
     expect(runClaude.mock.calls.at(0)?.[0]).not.toHaveProperty('modelSelection');
   });
 
+  // ─── Backend fallback ───────────────────────────────────────────────────────
+
+  const QUOTA = {
+    ok: false,
+    failure: {
+      kind: 'provider-quota-exhausted',
+      backend: 'claude',
+      detail: "You've hit your session limit · resets 2:50pm",
+    },
+  } as const;
+  const sonnetWithPiFallback = makeSkillConfig({
+    backend: 'claude',
+    model: 'sonnet' as ClaudeModel,
+    fallback: { backend: 'pi' },
+  });
+  const twoRuns = (...results: AgentResult[]) => {
+    const fn = vi.fn();
+    for (const r of results) fn.mockResolvedValueOnce(r);
+    return fn;
+  };
+
+  it('reruns on the fallback when Claude is out of usage, announces it, and records pi for replies', async () => {
+    const runClaude = twoRuns(QUOTA, {
+      ok: true,
+      output: 'Question 1…',
+      sessionId: 'pi-sess',
+      durationMs: 100,
+    });
+
+    const result = await handleScheduledJob(makeScheduledJob(), {
+      runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
+      telegram: makeTelegram(),
+      skillRegistry: makeRegistry([sonnetWithPiFallback]),
+      config: makeConfig(),
+      completionMode: 'durable',
+    });
+
+    expect(runClaude).toHaveBeenCalledTimes(2);
+    expect(runClaude.mock.calls[0]?.[0]).toMatchObject({
+      backend: 'claude',
+      modelSelection: { model: 'sonnet' },
+    });
+    // The Claude-only model must not follow the run to Pi.
+    expect(runClaude.mock.calls[1]?.[0].backend).toBe('pi');
+    expect(runClaude.mock.calls[1]?.[0]).not.toHaveProperty('modelSelection');
+    expect(result).toMatchObject({ kind: 'completed', sessionBackend: 'pi', suppressed: false });
+    if (result.kind !== 'completed') throw new Error('expected completion');
+    expect(result.response).toMatch(/^⚠️ Fallback: ran on pi — claude usage quota is exhausted/);
+    expect(result.response.endsWith('\n\nQuestion 1…')).toBe(true);
+  });
+
+  it('keeps a fallback ALL_CLEAR suppressed and un-annotated', async () => {
+    const runClaude = twoRuns(QUOTA, {
+      ok: true,
+      output: 'ALL_CLEAR',
+      sessionId: null,
+      durationMs: 1,
+    });
+    const telegram = makeTelegram();
+
+    const result = await handleScheduledJob(makeScheduledJob(), {
+      runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
+      telegram,
+      skillRegistry: makeRegistry([sonnetWithPiFallback]),
+      config: makeConfig(),
+    });
+
+    expect(result).toEqual({ kind: 'completed', response: 'ALL_CLEAR' });
+    expect(telegram.sendChunkedMessage).not.toHaveBeenCalled();
+  });
+
+  it('does not fall back on a task failure such as a timeout', async () => {
+    const runClaude = twoRuns({
+      ok: false,
+      failure: { kind: 'timeout', backend: 'claude', timeoutMs: 300_000 },
+    });
+
+    const result = await handleScheduledJob(makeScheduledJob(), {
+      runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
+      telegram: makeTelegram(),
+      skillRegistry: makeRegistry([sonnetWithPiFallback]),
+      config: makeConfig(),
+    });
+
+    expect(runClaude).toHaveBeenCalledOnce();
+    expect(result.kind).toBe('failed');
+  });
+
+  it('does not fall back when the skill configures none', async () => {
+    const runClaude = twoRuns(QUOTA);
+
+    const result = await handleScheduledJob(makeScheduledJob(), {
+      runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
+      telegram: makeTelegram(),
+      skillRegistry: makeRegistry([makeSkillConfig({ backend: 'claude' })]),
+      config: makeConfig(),
+      completionMode: 'durable',
+    });
+
+    expect(runClaude).toHaveBeenCalledOnce();
+    expect(result).toEqual({ kind: 'failed', cause: { kind: 'agent', failure: QUOTA.failure } });
+  });
+
+  it('reports the fallback failure when both backends are down, so BullMQ retries the pair', async () => {
+    const piDown = {
+      kind: 'provider-unavailable',
+      backend: 'pi',
+      detail: 'Connection error.',
+    } as const;
+    const runClaude = twoRuns(QUOTA, { ok: false, failure: piDown });
+
+    const result = await handleScheduledJob(makeScheduledJob(), {
+      runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
+      telegram: makeTelegram(),
+      skillRegistry: makeRegistry([sonnetWithPiFallback]),
+      config: makeConfig(),
+      completionMode: 'durable',
+    });
+
+    expect(runClaude).toHaveBeenCalledTimes(2);
+    expect(result).toEqual({ kind: 'failed', cause: { kind: 'agent', failure: piDown } });
+  });
+
+  it('falls back from an implicit Pi primary (AGENT_BACKEND=pi) to Claude with its model', async () => {
+    const runClaude = twoRuns(
+      {
+        ok: false,
+        failure: { kind: 'provider-unavailable', backend: 'pi', detail: 'Connection error.' },
+      },
+      { ok: true, output: 'Briefing', sessionId: 'c-sess', durationMs: 1 },
+    );
+    const skill = makeSkillConfig({
+      fallback: { backend: 'claude', model: 'sonnet' as ClaudeModel },
+    });
+
+    const result = await handleScheduledJob(makeScheduledJob(), {
+      runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
+      telegram: makeTelegram(),
+      skillRegistry: makeRegistry([skill]),
+      config: makeConfig({ agentBackend: 'pi' }),
+      completionMode: 'durable',
+    });
+
+    expect(runClaude.mock.calls[0]?.[0].backend).toBe('pi');
+    expect(runClaude.mock.calls[1]?.[0]).toMatchObject({
+      backend: 'claude',
+      modelSelection: { model: 'sonnet' },
+    });
+    expect(result).toMatchObject({ kind: 'completed', sessionBackend: 'claude' });
+  });
+
   it('falls back to global scheduledTimeoutMs when skill has no timeout', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();

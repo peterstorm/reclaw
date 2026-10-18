@@ -15,6 +15,7 @@ import {
   type AgentFailure,
   agentFailurePolicy,
   formatAgentFailure,
+  parseQuotaExhaustedMessage,
 } from '../core/agent-failure.js';
 import {
   parseChatJob,
@@ -119,7 +120,11 @@ export function formatDeadLetterMessage(
   errorMessage: string,
 ): string {
   if (jobKind === 'chat') {
-    return 'Sorry, I ran into a problem processing your message. Please try again.';
+    // "Try again" is wrong advice while a usage window is spent: say when it resets instead.
+    const quota = parseQuotaExhaustedMessage(errorMessage);
+    return quota === null
+      ? 'Sorry, I ran into a problem processing your message. Please try again.'
+      : `⏳ ${quota.backend} is out of usage (${quota.detail}). Your message wasn't processed — send it again after the reset, or /new to start a fresh conversation on the default backend.`;
   }
   return `[reclaw] Job permanently failed after all retries.\nKind: ${jobKind}\nID: ${jobId}\nError: ${errorMessage}`;
 }

@@ -13,6 +13,16 @@ export type AgentFailure =
       readonly detail: string;
     }
   | {
+      /**
+       * A subscription/plan usage window is used up ("You've hit your session limit · resets
+       * 2:50pm", Codex "The usage limit has been reached"). Unlike a rate limit it does not
+       * clear within a retry backoff — it resets hours later.
+       */
+      readonly kind: 'provider-quota-exhausted';
+      readonly backend: string;
+      readonly detail: string;
+    }
+  | {
       readonly kind: 'provider-rate-limited';
       readonly backend: string;
       readonly detail: string;
@@ -95,6 +105,12 @@ export function classifyAgentDiagnostic(backend: string, rawDetail: string): Age
   const detail = normalizeAgentFailureDetail(rawDetail);
   const lower = detail.toLowerCase();
 
+  // First: Claude's wording mentions "session" ("hit your session limit") and must never be
+  // read as an invalid conversation session.
+  if (includesAny(lower, ['hit your', 'usage limit', 'weekly limit', 'out of extra usage'])) {
+    return { kind: 'provider-quota-exhausted', backend, detail };
+  }
+
   const mentionsSession = includesAny(lower, ['session', 'conversation', 'resume']);
   const invalidatesSession = includesAny(lower, [
     'not found',
@@ -159,6 +175,12 @@ export function classifyAgentDiagnostic(backend: string, rawDetail: string): Age
       'temporarily unavailable',
       'connection refused',
       'connection reset',
+      'connection error',
+      'request timed out',
+      'fetch failed',
+      'econnrefused',
+      'ehostunreach',
+      'enginecore encountered',
       'network error',
       'bad gateway',
       'gateway timeout',
@@ -207,6 +229,7 @@ export function agentFailurePolicy(failure: AgentFailure): AgentFailurePolicy {
       mayRetryWithoutSession: true,
     }))
     .with(
+      { kind: 'provider-quota-exhausted' },
       { kind: 'provider-authentication' },
       { kind: 'provider-billing' },
       { kind: 'configuration' },
@@ -216,6 +239,24 @@ export function agentFailurePolicy(failure: AgentFailure): AgentFailurePolicy {
     .otherwise(() => ({ retryable: true, mayRetryWithoutSession: false }));
 }
 
+const QUOTA_EXHAUSTED_INFIX = ' usage quota is exhausted: ';
+
+/**
+ * Recover a quota-exhausted failure from its rendered message. A BullMQ dead letter carries
+ * only the thrown message string, so this is the inverse of formatAgentFailure for that one
+ * kind — kept beside the formatter so the two cannot drift.
+ */
+export function parseQuotaExhaustedMessage(
+  message: string,
+): { readonly backend: string; readonly detail: string } | null {
+  const at = message.indexOf(QUOTA_EXHAUSTED_INFIX);
+  if (at <= 0) return null;
+  return {
+    backend: message.slice(0, at),
+    detail: message.slice(at + QUOTA_EXHAUSTED_INFIX.length),
+  };
+}
+
 /** Stable diagnostic rendering for logs, quality records, and dead letters. */
 export function formatAgentFailure(failure: AgentFailure): string {
   return match(failure)
@@ -223,6 +264,10 @@ export function formatAgentFailure(failure: AgentFailure): string {
     .with(
       { kind: 'session-invalid' },
       (item) => `${item.backend} session is invalid: ${item.detail}`,
+    )
+    .with(
+      { kind: 'provider-quota-exhausted' },
+      (item) => `${item.backend}${QUOTA_EXHAUSTED_INFIX}${item.detail}`,
     )
     .with(
       { kind: 'provider-rate-limited' },

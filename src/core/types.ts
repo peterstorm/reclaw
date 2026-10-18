@@ -1,5 +1,5 @@
 import type { SkillEnvironmentVariable } from './agent-environment.js';
-import type { ClaudeTarget } from './model-selection.js';
+import type { AgentTarget, ClaudeTarget } from './model-selection.js';
 import type { StoredUpload } from './stored-upload.js';
 import { type VaultRelativePath, parseVaultRelativePath } from './vault-path.js';
 
@@ -624,6 +624,11 @@ export type SkillAgent = { readonly backend?: 'pi' } | ClaudeTarget;
 
 /** Parsed from a YAML file in workspace/skills/. */
 export type SkillConfig = SkillAgent & {
+  /**
+   * Where to rerun when the primary backend cannot serve (quota, rate limit, unreachable).
+   * Never the same backend as an explicit primary — the parser rejects that.
+   */
+  readonly fallback?: AgentTarget;
   readonly id: SkillId;
   readonly name: string;
   readonly schedule: string | null; // cron expression, null = on-demand only

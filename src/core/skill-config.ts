@@ -48,6 +48,13 @@ const SkillConfigSchema = z
     timeout: z.number().int().positive().optional(),
     backend: z.enum(['claude', 'pi']).optional(),
     model: z.string().optional(),
+    // `fallback: pi` or `fallback: { backend: claude, model: sonnet }`
+    fallback: z
+      .union([
+        z.enum(['claude', 'pi']),
+        z.object({ backend: z.enum(['claude', 'pi']), model: z.string().optional() }).strict(),
+      ])
+      .optional(),
     environment: z.array(z.enum(SKILL_ENVIRONMENT_VARIABLES)).default([]),
     dependsOn: z.string().min(1).nullable().default(null),
   })
@@ -77,6 +84,19 @@ function parseSkillAgent(
 ): Result<SkillAgent, string> {
   if (backend !== undefined) return parseAgentTarget(backend, model);
   return model === undefined ? ok({}) : err(`model: ${MODEL_NEEDS_CLAUDE}`);
+}
+
+function parseFallback(
+  primary: AgentBackendName | undefined,
+  raw: AgentBackendName | { backend: AgentBackendName; model?: string | undefined } | undefined,
+): Result<AgentTarget | undefined, string> {
+  if (raw === undefined) return ok(undefined);
+  const { backend, model } = typeof raw === 'string' ? { backend: raw, model: undefined } : raw;
+  if (backend === primary) {
+    return err(`fallback: must name a different backend than "backend: ${primary}"`);
+  }
+  const target = parseAgentTarget(backend, model);
+  return target.ok ? target : err(`fallback.${target.error}`);
 }
 
 /**
@@ -138,9 +158,14 @@ export function parseSkillConfig(
   if (!agent.ok) {
     return err(`Skill config validation failed in "${filePath}": ${agent.error}`);
   }
+  const fallback = parseFallback(result.data.backend, result.data.fallback);
+  if (!fallback.ok) {
+    return err(`Skill config validation failed in "${filePath}": ${fallback.error}`);
+  }
 
   return ok({
     ...agent.value,
+    ...(fallback.value !== undefined ? { fallback: fallback.value } : {}),
     id: idResult.value,
     name: result.data.name,
     schedule: result.data.schedule,
