@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -85,29 +85,98 @@ export function resolveTranscriptPath(sessionId: string, cwd: string): string | 
 
 // ─── Script resolution ───────────────────────────────────────────────────────
 
-type InstalledPlugins = {
-  readonly plugins: Record<string, ReadonlyArray<{ readonly installPath: string }>>;
-};
+const EXTRACT_SCRIPT = ['hooks', 'scripts', 'extract-and-generate.sh'] as const;
 
-function resolveCortexInstallPath(): string | null {
-  const pluginsPath = join(homedir(), '.claude', 'plugins', 'installed_plugins.json');
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Pure: the checkout directory of a directory-source marketplace, or null when
+ * the marketplace is absent or is not a directory source (github/git sources
+ * have no live checkout to point at).
+ */
+export function marketplaceDirectory(marketplaces: unknown, marketplace: string): string | null {
+  if (!isRecord(marketplaces)) return null;
+  const entry = marketplaces[marketplace];
+  if (!isRecord(entry) || !isRecord(entry.source)) return null;
+  const { source, path } = entry.source;
+  return source === 'directory' && typeof path === 'string' ? path : null;
+}
+
+/**
+ * Pure: the relative source (e.g. `./plugins/cortex`) a marketplace manifest
+ * declares for a plugin, or null when absent or not a relative path string.
+ */
+export function manifestPluginSource(manifest: unknown, plugin: string): string | null {
+  if (!isRecord(manifest) || !Array.isArray(manifest.plugins)) return null;
+  for (const entry of manifest.plugins) {
+    if (isRecord(entry) && entry.name === plugin) {
+      return typeof entry.source === 'string' && entry.source.startsWith('./')
+        ? entry.source
+        : null;
+    }
+  }
+  return null;
+}
+
+function readJson(path: string): unknown {
   try {
-    const data: InstalledPlugins = JSON.parse(readFileSync(pluginsPath, 'utf-8'));
-    return data.plugins['cortex@local']?.[0]?.installPath ?? null;
+    return JSON.parse(readFileSync(path, 'utf-8'));
   } catch {
     return null;
   }
 }
 
 /**
- * Resolve the cortex extract-and-generate.sh script path from
- * Claude's installed_plugins.json. Returns null if not found.
+ * The cache copy Claude recorded at install time. It is a FROZEN snapshot:
+ * it does not follow the dev checkout, so on its own it runs stale code.
  */
-export function resolveCortexExtractScript(): string | null {
-  const installPath = resolveCortexInstallPath();
-  if (installPath === null) return null;
-  const scriptPath = join(installPath, 'hooks', 'scripts', 'extract-and-generate.sh');
-  return existsSync(scriptPath) ? scriptPath : null;
+function resolveCachedCortexRoot(home: string): string | null {
+  const data = readJson(join(home, '.claude', 'plugins', 'installed_plugins.json'));
+  if (!isRecord(data) || !isRecord(data.plugins)) return null;
+  const installs = data.plugins['cortex@local'];
+  const first: unknown = Array.isArray(installs) ? installs[0] : undefined;
+  const installPath = isRecord(first) ? first.installPath : undefined;
+  return typeof installPath === 'string' ? installPath : null;
+}
+
+/**
+ * The live checkout: the `local` directory-source marketplace declares cortex
+ * as a symlink into the dev tree, so following it always yields current code.
+ */
+function resolveLiveCortexRoot(home: string): string | null {
+  const dir = marketplaceDirectory(
+    readJson(join(home, '.claude', 'plugins', 'known_marketplaces.json')),
+    'local',
+  );
+  if (dir === null) return null;
+  const source = manifestPluginSource(
+    readJson(join(dir, '.claude-plugin', 'marketplace.json')),
+    'cortex',
+  );
+  if (source === null) return null;
+  try {
+    return realpathSync(join(dir, source));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the cortex extract-and-generate.sh script path. Prefers the live
+ * checkout over Claude's frozen cache copy (which ran stale engine code, e.g.
+ * missing the stale-embedding backfill fix); falls back to the cache copy only
+ * when the live checkout is unavailable. Returns null if neither has the script.
+ */
+export function resolveCortexExtractScript(home: string = homedir()): string | null {
+  const roots = [resolveLiveCortexRoot(home), resolveCachedCortexRoot(home)];
+  for (const root of roots) {
+    if (root === null) continue;
+    const scriptPath = join(root, ...EXTRACT_SCRIPT);
+    if (existsSync(scriptPath)) return scriptPath;
+  }
+  return null;
 }
 
 // ─── Awaitable extraction (imperative shell) ─────────────────────────────────
