@@ -19,10 +19,10 @@
  */
 
 import {
+  type OpenMeteoResponse,
   buildForecastUrl,
   distillForecast,
   parseDayOffset,
-  type OpenMeteoResponse,
 } from '../src/core/commute-weather.js';
 
 function fail(msg: string): never {

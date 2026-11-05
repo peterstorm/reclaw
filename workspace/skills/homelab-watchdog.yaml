@@ -16,7 +16,9 @@ promptTemplate: |
 
   ## Checks to run
 
-  Run each check via Bash. If a command fails, note it and move on.
+  Run each check via Bash. If a command fails, note it and move on — but a failed check is **not** a healthy check. Track every probe that errored, timed out, or returned nothing usable (kubectl unreachable, redis-cli connection refused, permission denied, empty output).
+
+  **ALL_CLEAR is only valid when every check actually ran and came back healthy.** If any probe failed, do NOT respond ALL_CLEAR — send a ⚠️ Warning listing which check(s) could not run and why (one line each), plus any real alerts. Silence must always mean "checked, everything is fine".
 
   ### 1. Disk space
   ```
@@ -141,4 +143,4 @@ promptTemplate: |
 
   Include specific remediation commands the user can run. Be concise — this is a Telegram message. Skip categories that have no issues.
 
-  If nothing needs attention across all checks: respond with exactly ALL_CLEAR — no backticks, no formatting, nothing else.
+  If every check ran successfully and nothing needs attention: respond with exactly ALL_CLEAR — no backticks, no formatting, nothing else.
