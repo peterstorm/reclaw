@@ -1,10 +1,12 @@
-# Running Coach — Monday Workout Types
+# Running Coach — Quality Workout Types
 
-Read this file on Monday firings only — it is the catalog of available
-quality-day workout formats. Wednesday/Thursday firings prescribe a backup easy
-run and don't need this catalog.
+Read this file on Monday (VO2max / speed) and Thursday (threshold) firings — it is
+the catalog of available quality-day workout formats. Monday draws from types
+1, 4, 5, 6, 8; Thursday draws from types 2, 3, 7 (5 only as a yellow-light
+fallback). Saturday long runs, Tuesday CrossFit and rest-day firings don't need
+this catalog.
 
-The 8 types below cover the spectrum of useful Monday stimuli. Selection
+The 8 types below cover the spectrum of useful quality stimuli. Selection
 logic (limiter bias, rotation, readiness tiebreakers) lives in the main
 skill prompt — this file is purely the catalog.
 

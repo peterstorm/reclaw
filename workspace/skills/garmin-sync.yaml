@@ -275,7 +275,7 @@ promptTemplate: |
     - ACWR impact: flag if this session pushes ACWR above 1.3
 
   - **Recovery implications for running** (informed by workout content):
-    - Hours until the next Monday quality run (calculate from the activity end time)
+    - Hours until the next quality run (Monday VO2max or Thursday threshold, whichever is next) (calculate from the activity end time)
     - If anaerobic TE > 3.0: "Significant anaerobic stress — expect legs to be heavy for 24-36h. Monday's quality run may need volume adjustment."
     - If anaerobic TE ≤ 2.0 and aerobic TE ≤ 3.0: "Moderate session — should not significantly impact Monday's run."
     - If RPE > 7/10 or feel ≤ 2/5: "Subjectively hard — factor into Monday readiness regardless of metrics."
