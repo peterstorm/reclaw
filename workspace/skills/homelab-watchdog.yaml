@@ -4,7 +4,7 @@ permissionProfile: scheduled
 # Pi/vLLM unreachable (desktop off) or out of quota → rerun once on Claude; the message says so.
 fallback: { backend: claude, model: sonnet }
 validityWindowMinutes: 30
-timeout: 300
+timeout: 900
 promptTemplate: |
   {{personality}}
 

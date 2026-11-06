@@ -5,7 +5,7 @@ permissionProfile: scheduled
 fallback: { backend: claude, model: sonnet }
 environment: [GARMIN_EMAIL, GARMIN_PASSWORD]
 validityWindowMinutes: 60
-timeout: 600
+timeout: 1200
 promptTemplate: |
   {{personality}}
 
