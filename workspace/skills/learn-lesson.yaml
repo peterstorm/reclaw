@@ -5,12 +5,6 @@ name: Learn — Morning Lesson
 # See vault: reclaw/skills/learning-loop.md
 schedule: "0 7 * * *"
 permissionProfile: scheduled
-# Claude, not the default Pi backend: Pi depends on the desktop vLLM box, which is often off
-# (pi "Connection error" at most hours, 2026-10-15..18). A daily habit must not be flaky.
-backend: claude
-model: sonnet
-# Claude out of usage / unreachable → rerun on the local GLM (pi); the message says so.
-fallback: pi
 validityWindowMinutes: 180
 timeout: 300
 promptTemplate: |
