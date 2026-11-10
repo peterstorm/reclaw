@@ -39,6 +39,9 @@ User can journal anytime — during the day via chat, or in response to the 9pm 
 ## iCloud Calendar
 Shared "J & P" calendar, synced via vdirsyncer every 15 minutes. For adding events, follow the `calendar-add` skill at `~/.dotfiles/claude/project/meta/skills/calendar-add/SKILL.md`.
 
+## Instagram Ingest
+Instagram reels, posts or whole profiles → vault notes (caption + local Whisper transcript, optional mp4). Follow the `ig-ingest` skill at `~/.dotfiles/claude/project/meta/skills/ig-ingest/SKILL.md` (CLI: `scripts/ig-ingest.ts`; needs `APIFY_TOKEN`). Notes land in `media/instagram/`.
+
 ## Personality
 Defined in `personality.md`. Edit if the user asks to change assistant behavior.
 

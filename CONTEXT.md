@@ -32,3 +32,22 @@ Code: `src/core/{curriculum,master-note,study-log,study-plan,curriculum-moc}.ts`
 | **Build buffer** | Built-but-not-fully-read topics kept ahead of the reader; the builder idles while ≥ `buildBuffer`. | — |
 | **Feynman check** | Weekly explain-it-back on the weakest fully-read topic; logs the gaps found. | A recall round |
 | **Correction** | A claim in an existing vault note/runbook/receipt found wrong while researching a master note; listed in the note and the corrections ledger. | An override |
+
+## Instagram ingest (posts → vault notes)
+
+Code: `src/core/instagram-*.ts`, `src/orchestration/instagram-ingest.ts`,
+`src/infra/{apify-instagram,instagram-media,instagram-vault,whisper-transcriber}.ts`,
+`scripts/ig-ingest.ts` + `scripts/ig-transcribe.py`, skill `ig-ingest`.
+Vault: `media/instagram/<handle>/<shortcode>.md`, `media/instagram/MOC.md`.
+
+| Term | Meaning | Not to be confused with |
+|---|---|---|
+| **Target** | What the user asked to ingest: one *post* (reel, `/p/`, `/tv/`) or a whole *profile*. Parsed from a URL or `@handle`; tracking params are dropped. | A scraper input |
+| **Post** | One Instagram media item as parsed from a scraper row: shortcode, owner, caption, `postedAt`, counts, and `media`. | An Apify dataset row (the wire shape) |
+| **Media** | `video` (signed URLs + duration) or `no-video` (photo / video-less carousel — caption-only note). | The downloaded file |
+| **Shortcode** | The `CODE` in `/p/CODE/`; the note's filename. Branded, path-safe. | A post id |
+| **Transcript** | Speech-to-text of a post: detected language + timestamped segments. Zero segments is legal (no speech). | The caption |
+| **Ingest** | One run: scrape → download → transcribe → write, per post, sequentially. Idempotent: existing notes are skipped unless `--force`. | A Telegram job |
+| **Scratch media** | Throwaway audio downloaded only to transcribe; deleted right after. | Video library |
+| **Video library** | `~/downloads/instagram/<handle>/<shortcode>.mp4` — mp4s kept with `--video`. Deliberately outside the vault. | The vault |
+| **Outcome** | Per-post result: `saved`, `skipped-existing`, or `failed` (stage `download`/`transcribe`/`write`). A failed post writes no note, so a re-run retries exactly it. | A job status |
