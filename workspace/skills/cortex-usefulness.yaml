@@ -73,6 +73,7 @@ promptTemplate: |
   }
 
   const RECALL_RE = /<!-- CORTEX_RECALL_START -->([\s\S]*?)<!-- CORTEX_RECALL_END -->/;
+  const MIN_DEAD_FILES = 3; // 1-2 stray transcripts/day = idle backend, not dead (false alarm 2026-11-10)
   const THRESHOLD = 0.10; // calibrated 2026-05-07 against ~24h of transcripts: catches ~1% of surfaced as 'useful', mostly genuine
 
   // Per-backend envelope readers. Return the recall text, or null if this record
@@ -172,7 +173,7 @@ promptTemplate: |
   // THAT backend. Reported separately because the aggregate hides it: a healthy
   // second backend keeps recall_turns > 0 and the alarm silent.
   const deadBackends = Object.entries(byBackend)
-    .filter(([, s]) => s.files > 0 && s.recall_turns === 0)
+    .filter(([, s]) => s.files >= MIN_DEAD_FILES && s.recall_turns === 0)
     .map(([b]) => b);
 
   const result = {
@@ -196,9 +197,21 @@ promptTemplate: |
 
   ## Step 2: Map summaries to memory IDs
 
-  For each `useful.summary`, look up the matching active memory ID in the cortex DB.
-  Match on exact summary equality. Skip candidates that don't match (the memory may
-  have been archived since the recall).
+  For each `useful.summary`, look up the matching active memory ID. Match on exact
+  summary equality (after HTML-unescaping). Skip candidates that don't match (the
+  memory may have been archived since the recall).
+
+  **Search three stores, not one.** Prompt recall draws from the project DB *and* the
+  harness's global DB, so most surfaced memories live in the latter. Root cause of the
+  2026-09-30 → 2026-11-10 blackout: this step only searched the workspace DB, where
+  none of the surfaced memories exist (it holds ~22 active), so `matched` was always 0
+  and no bump landed for six weeks. Stores, in lookup order: project
+  `{{cwd}}/.memory/cortex.db`, `~/.pi/agent/memory/cortex-global.db`,
+  `~/.claude/memory/cortex-global.db`. `matched.json` holds `{db, id}` pairs so Step 3
+  bumps the row in the DB it came from.
+
+  Surface text can HTML-escape `<`, `>`, `&` (e.g. `&lt;`) while stored summaries
+  hold the raw character; the lookup tries the raw string, then the unescaped one.
 
   Exact equality is correct even for summaries ending in `...`. Verified 2026-08-09:
   those are truncated when *written* to cortex (24 of 423 active memories are stored
@@ -219,19 +232,39 @@ promptTemplate: |
   const RUN_DIR = join(homedir(), '.cache/reclaw/cortex-usefulness');
   const step1 = JSON.parse(readFileSync(join(RUN_DIR, 'step1.json'), 'utf8'));
   const summaries = step1.useful.map(u => u.summary);
-  const db = new Database('{{cwd}}/.memory/cortex.db', { readonly: true });
-  const active = db.prepare(\"SELECT id, summary FROM memories WHERE status = 'active'\").all();
-  const byExact = new Map(active.map(r => [r.summary, r.id]));
+  const DB_PATHS = [
+    '{{cwd}}/.memory/cortex.db',
+    join(homedir(), '.pi/agent/memory/cortex-global.db'),
+    join(homedir(), '.claude/memory/cortex-global.db'),
+  ];
+  const unescape = t => t.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, String.fromCharCode(34)).replace(/&#39;/g, String.fromCharCode(39)).replace(/&amp;/g, '&');
+  const stores = [];
+  for (const path of DB_PATHS) {
+    try {
+      const db = new Database(path, { readonly: true });
+      const active = db.prepare(\"SELECT id, summary FROM memories WHERE status = 'active'\").all();
+      stores.push({ path, byExact: new Map(active.map(r => [r.summary, r.id])) });
+      db.close();
+    } catch { /* store absent for a backend that has never run */ }
+  }
   const matched = [];
+  const seen = new Set();
   let unmatched = 0;
   for (const s of summaries) {
-    const id = byExact.get(s);
-    if (id !== undefined) matched.push(id);
-    else unmatched++;
+    let hit = null;
+    for (const st of stores) {
+      for (const cand of [s, unescape(s)]) {
+        const id = st.byExact.get(cand);
+        if (id !== undefined) { hit = { db: st.path, id }; break; }
+      }
+      if (hit) break;
+    }
+    if (!hit) { unmatched++; continue; }
+    const key = hit.db + '#' + hit.id;
+    if (!seen.has(key)) { seen.add(key); matched.push(hit); }
   }
   writeFileSync(join(RUN_DIR, 'matched.json'), JSON.stringify(matched));
-  console.log(JSON.stringify({ matched: matched.length, unmatched }));
-  db.close();
+  console.log(JSON.stringify({ matched: matched.length, unmatched, stores: stores.map(x => x.path) }));
   "
   ```
 
@@ -249,7 +282,7 @@ promptTemplate: |
   1. **Matcher divergence** (`streak`): `useful > 0` but `matched === 0` — Step 2's
      summary lookup is failing (schema/format drift).
   2. **Recall death** (`recall_dead_streak`): a backend where `files > 0` but
-     `recall_turns === 0` — Step 1 found that backend's transcripts but extracted zero
+     `recall_turns === 0` (and at least 3 transcripts — fewer is an idle backend, not a dead one) — Step 1 found that backend's transcripts but extracted zero
      CORTEX_RECALL blocks from them. This is the dangerous mode: it looks identical to a
      quiet day (`useful: []` → `ALL_CLEAR`), so without this counter a broken recall
      hook / changed block format would silence the skill forever with no alert.
@@ -278,7 +311,7 @@ promptTemplate: |
   const path = join(homedir(), '.cache/reclaw/cortex-usefulness-divergence.json');
   const today = new Date().toISOString().slice(0, 10);
   const step1 = JSON.parse(readFileSync(join(RUN_DIR, 'step1.json'), 'utf8'));
-  // matched.json is absent when Step 2 was skipped for an empty useful list.
+  // matched.json ({db, id} pairs) is absent when Step 2 was skipped for an empty useful list.
   let matchedIds = [];
   try { matchedIds = JSON.parse(readFileSync(join(RUN_DIR, 'matched.json'), 'utf8')); } catch { matchedIds = []; }
   const deadBackends = step1.dead_backends;
@@ -322,7 +355,7 @@ promptTemplate: |
 
   ## Step 3: Bump useful memories
 
-  For each matched ID, increment `access_count += 2` and update `last_accessed_at`.
+  For each matched `{db, id}` pair, increment `access_count += 2` and update `last_accessed_at`.
   +2 is intentionally small: existing ranking weights `log(access+1)/maxLog × 0.15`,
   so 5 successful uses ≈ one full point of ranking weight — meaningful but not
   dominant over confidence + centrality.
@@ -333,17 +366,20 @@ promptTemplate: |
   import { readFileSync } from 'fs';
   import { join } from 'path';
   import { homedir } from 'os';
-  const ids = JSON.parse(readFileSync(join(homedir(), '.cache/reclaw/cortex-usefulness/matched.json'), 'utf8'));
-  const db = new Database('{{cwd}}/.memory/cortex.db');
+  const pairs = JSON.parse(readFileSync(join(homedir(), '.cache/reclaw/cortex-usefulness/matched.json'), 'utf8'));
   const now = new Date().toISOString();
-  const stmt = db.prepare('UPDATE memories SET access_count = access_count + 2, last_accessed_at = ?, updated_at = ? WHERE id = ?');
+  const byDb = new Map();
+  for (const { db, id } of pairs) byDb.set(db, [...(byDb.get(db) || []), id]);
   let count = 0;
-  for (const id of ids) {
-    const result = stmt.run(now, now, id);
-    if (result.changes > 0) count++;
+  for (const [path, ids] of byDb) {
+    const db = new Database(path);
+    const stmt = db.prepare('UPDATE memories SET access_count = access_count + 2, last_accessed_at = ?, updated_at = ? WHERE id = ?');
+    for (const id of ids) {
+      if (stmt.run(now, now, id).changes > 0) count++;
+    }
+    db.close();
   }
   console.log('Bumped', count, 'memories');
-  db.close();
   "
   ```
 
