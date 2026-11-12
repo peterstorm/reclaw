@@ -32,7 +32,11 @@ promptTemplate: |
   "
   ```
 
-  Also check global DB at `~/.pi/agent/memory/cortex-global.db` with the same query.
+  Also check the global DB at `~/.local/share/cortex/global.db` with the same query. (Cortex
+  keeps ONE global DB for every harness there since 2026-11-11; the old
+  `~/.pi/agent/memory/cortex-global.db` and `~/.claude/memory/cortex-global.db` were merged
+  into it and no longer exist. Never open the old paths: a read-write open creates an empty
+  file that cortex then has to merge away.)
 
   (Skill-quality signals no longer live in cortex — they're written to
   `~/.cache/reclaw/skill-quality.jsonl`, which this skill never touches. There is
@@ -141,17 +145,21 @@ promptTemplate: |
   To restore a mistakenly-archived memory: `UPDATE memories SET status='active' WHERE id='<uuid>'`
   (the manifest at `~/.cache/reclaw/prune-log.jsonl` has the id + reason for every archive).
 
-  **Global DB:** repeat Steps 1-3 for `~/.pi/agent/memory/cortex-global.db` (same fetch,
+  **Global DB:** repeat Steps 1-3 for `~/.local/share/cortex/global.db` (same fetch,
   same evaluation, same archive with `db: 'global'` in the manifest). Skip only if the
-  Step 1 global fetch returned zero rows.
+  Step 1 global fetch returned zero rows. This DB is shared by every project and harness
+  on the machine, not just reclaw: archive a global memory only when it is redundant,
+  superseded or wrong, never because it is irrelevant to reclaw.
 
   ## Step 4: Regenerate surface
 
-  Resolve the cortex CLI dynamically (do NOT hardcode a version — the `0.1.0` path breaks
-  silently on the next cortex bump):
+  Use the live cortex checkout, through the local-marketplace symlink Claude Code itself
+  loads the plugin from. Do NOT use `~/.claude/plugins/cache/local/cortex/*`: that is a
+  stale copy from before the shared global DB, and its `generate` reads databases that no
+  longer exist.
 
   ```bash
-  CORTEX_CLI=$(ls -d ~/.claude/plugins/cache/local/cortex/*/engine/src/cli.ts 2>/dev/null | sort -V | tail -1)
+  CORTEX_CLI=~/.dotfiles/.claude/local-marketplace/plugins/cortex/engine/src/cli.ts
   bun "$CORTEX_CLI" generate {{cwd}}
   ```
 

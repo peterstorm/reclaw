@@ -59,7 +59,11 @@ promptTemplate: |
   "
   ```
 
-  Also check global DB at `~/.pi/agent/memory/cortex-global.db` with the same query.
+  Also check the global DB at `~/.local/share/cortex/global.db` with the same query, opened
+  `{ readonly: true }`. (Cortex keeps ONE global DB for every harness there since 2026-11-11;
+  the old `~/.pi/agent/memory/cortex-global.db` and `~/.claude/memory/cortex-global.db` were
+  merged into it and no longer exist. Never open the old paths: a read-write open creates an
+  empty file that cortex then has to merge away.)
 
   Focus on memories tagged as pattern, architecture, decision, gotcha — things with lasting reference value.
 
