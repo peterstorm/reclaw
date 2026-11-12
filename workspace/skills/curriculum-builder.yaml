@@ -2,15 +2,12 @@ name: Curriculum Builder
 # Nightly 02:30: keeps `buildBuffer` (registry setting, default 3) researched master notes ahead
 # of where the user is reading, building the next topic in study order with deep research
 # (vault sources + ≥6 external sources). Idles (ALL_CLEAR) while the buffer is full, so
-# research stays fresh instead of rotting months before it is read. Claude backend: the
-# research needs WebSearch/WebFetch, which the Pi backend does not provide.
+# research stays fresh instead of rotting months before it is read.
 # See vault: reclaw/skills/learning-loop.md
 schedule: "30 2 * * *"
 permissionProfile: scheduled
-backend: claude
-model: opus
-# Deliberately no `fallback:` — on Pi the build would be unresearched. A failed night costs
-# nothing: the buffer holds 3 built topics, and the next night builds.
+# Follows AGENT_BACKEND like every other skill; Pi/vLLM unreachable or out of quota → rerun once on Claude.
+fallback: { backend: claude, model: sonnet }
 validityWindowMinutes: 300
 timeout: 3600
 promptTemplate: |
