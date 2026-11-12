@@ -201,14 +201,17 @@ promptTemplate: |
   summary equality (after HTML-unescaping). Skip candidates that don't match (the
   memory may have been archived since the recall).
 
-  **Search three stores, not one.** Prompt recall draws from the project DB *and* the
-  harness's global DB, so most surfaced memories live in the latter. Root cause of the
+  **Search both stores, not one.** Prompt recall draws from the project DB *and* the
+  global DB, so most surfaced memories live in the latter. Root cause of the
   2026-09-30 → 2026-11-10 blackout: this step only searched the workspace DB, where
   none of the surfaced memories exist (it holds ~22 active), so `matched` was always 0
   and no bump landed for six weeks. Stores, in lookup order: project
-  `{{cwd}}/.memory/cortex.db`, `~/.pi/agent/memory/cortex-global.db`,
-  `~/.claude/memory/cortex-global.db`. `matched.json` holds `{db, id}` pairs so Step 3
-  bumps the row in the DB it came from.
+  `{{cwd}}/.memory/cortex.db`, then the one global DB every harness shares,
+  `~/.local/share/cortex/global.db` (`$XDG_DATA_HOME/cortex/global.db` when that is set).
+  The per-harness files `~/.pi/agent/memory/cortex-global.db` and
+  `~/.claude/memory/cortex-global.db` were merged into it on 2026-11-11 and no longer
+  exist. `matched.json` holds `{db, id}` pairs so Step 3 bumps the row in the DB it came
+  from.
 
   Surface text can HTML-escape `<`, `>`, `&` (e.g. `&lt;`) while stored summaries
   hold the raw character; the lookup tries the raw string, then the unescaped one.
@@ -234,8 +237,7 @@ promptTemplate: |
   const summaries = step1.useful.map(u => u.summary);
   const DB_PATHS = [
     '{{cwd}}/.memory/cortex.db',
-    join(homedir(), '.pi/agent/memory/cortex-global.db'),
-    join(homedir(), '.claude/memory/cortex-global.db'),
+    join(process.env.XDG_DATA_HOME || join(homedir(), '.local/share'), 'cortex/global.db'),
   ];
   const unescape = t => t.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, String.fromCharCode(34)).replace(/&#39;/g, String.fromCharCode(39)).replace(/&amp;/g, '&');
   const stores = [];
@@ -245,7 +247,11 @@ promptTemplate: |
       const active = db.prepare(\"SELECT id, summary FROM memories WHERE status = 'active'\").all();
       stores.push({ path, byExact: new Map(active.map(r => [r.summary, r.id])) });
       db.close();
-    } catch { /* store absent for a backend that has never run */ }
+    } catch (err) {
+      // Said out loud: a store that silently fails to open is how this step
+      // matched nothing for weeks (see above).
+      console.error('store not readable, skipped:', path, String(err));
+    }
   }
   const matched = [];
   const seen = new Set();
