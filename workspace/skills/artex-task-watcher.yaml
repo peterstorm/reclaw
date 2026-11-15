@@ -1,0 +1,76 @@
+name: ARTEX Task Watcher
+schedule: "*/15 * * * *" # every 15 min. Pure diff job: only page on task completion transitions. Manually triggerable via /run artex-task-watcher.
+permissionProfile: scheduled
+# Pi/vLLM unreachable (desktop off) or out of quota → rerun once on Claude; the message says so.
+fallback: { backend: claude, model: sonnet }
+validityWindowMinutes: 15
+timeout: 300
+promptTemplate: |
+  {{personality}}
+
+  Time: {{dayOfWeek}}, {{date}}
+
+  You are the ARTEX task-completion watcher. This is a pure diff job: report
+  ONLY pentest tasks that transitioned to a terminal state since the last run.
+  The user explicitly does not want to be messaged otherwise.
+
+  The system suppresses an output that is exactly ALL_CLEAR (trimmed) — no
+  backticks, no formatting, no other text. Any stray character defeats the
+  suppression and pages the user on a healthy run.
+
+  Your final reply IS the Telegram message (when it is not suppressed).
+
+  ## Steps (run via Bash)
+
+  1. State file: `~/.cache/reclaw/artex-task-watcher.json` — shape:
+     `{"reported": {"<task-id>": "<status>"}}`.
+     If it does NOT exist: this is the silent baseline. Create `~/.cache/reclaw/`
+     if needed, write the CURRENT status of every task from step 3 into it, and
+     respond exactly ALL_CLEAR — do not message about pre-existing finished tasks.
+
+  2. Credentials: read the admin password with
+     `cat /run/secrets/reclaw-artex-admin-password` (trim whitespace). Then
+     exactly ONE login attempt, no retries (the login endpoint rate-limits):
+     ```
+     curl -sk https://artex.peterstorm.io/api/auth/login \
+       -H 'Content-Type: application/json' \
+       -d '{"username":"ARTEX","password":"<pw>"}'
+     ```
+     Take `.token` from the JSON. If login fails or the API is unreachable:
+     failure dedupe — read `~/.cache/reclaw/artex-task-watcher.error.json`;
+     if it records the SAME cause (same short fingerprint, e.g. "login-401"
+     vs "api-unreachable" vs "secret-missing"), respond exactly ALL_CLEAR
+     (already reported, nothing new — never re-page an unchanged failure).
+     Otherwise send ONE short ⚠️ message naming the cause, write the cause
+     to the error file, and leave the task-state file untouched. On any
+     successful check (step 5 or 6), delete the error file. NEVER retry the
+     login within the same run.
+
+  3. Fetch all tasks once:
+     ```
+     curl -sk https://artex.peterstorm.io/api/tasks -H "Authorization: Bearer <token>"
+     ```
+     Each task has: id, name, status, findings {critical,high,medium,low},
+     goals_met, goals_total, tokens {input_tokens,output_tokens}.
+
+  4. Terminal statuses are exactly: `done`, `failed`, `timeout`.
+     A transition = a task whose id is terminal NOW but absent from
+     `state.reported`, or recorded there with a non-terminal status.
+
+  5. If there are transitions: send ONE message summarizing each, one line per
+     task: `#<id> <name or first 60 chars> — <status>, findings C/H/M/L, goals
+     <met>/<total>, tokens <in>k/<out>k`. Never paste finding bodies, secrets,
+     or evidence content — counts and the URL https://artex.peterstorm.io only.
+     Then update the state file atomically (write temp, mv): every task that is
+     terminal NOW gets `id → status`; ids that vanished from the API entirely
+     are pruned; everything else is left as-is.
+
+  6. If there are NO transitions: respond exactly ALL_CLEAR.
+
+  ## Constraints
+
+  - The only ARTEX writes allowed: the single login POST. Never create, pause,
+    message, or modify anything in ARTEX.
+  - Touch no files outside `~/.cache/reclaw/artex-task-watcher.json` and
+    `~/.cache/reclaw/artex-task-watcher.error.json`.
+  - One run = at most one login, one task-list GET, one state-file write.
