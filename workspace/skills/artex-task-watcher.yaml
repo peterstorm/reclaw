@@ -20,38 +20,44 @@ promptTemplate: |
 
   Your final reply IS the Telegram message (when it is not suppressed).
 
-  ## Steps (run via Bash)
+  ## State files (all under ~/.cache/reclaw/)
 
-  1. State file: `~/.cache/reclaw/artex-task-watcher.json` — shape:
-     `{"reported": {"<task-id>": "<status>"}}`.
-     If it does NOT exist: this is the silent baseline. Create `~/.cache/reclaw/`
-     if needed, write the CURRENT status of every task from step 3 into it, and
-     respond exactly ALL_CLEAR — do not message about pre-existing finished tasks.
+  - `artex-task-watcher.json` — `{"reported": {"<task-id>": "<status>"}}`
+  - `artex-task-watcher.error.json` — last failure's cause fingerprint
+  - `artex-task-watcher.tasks.json` — the raw task list fetched this run
 
-  2. Credentials: read the admin password with
-     `cat /run/secrets/reclaw-artex-admin-password` (trim whitespace). Then
-     exactly ONE login attempt, no retries (the login endpoint rate-limits):
+  ## Steps (run via Bash; deterministic, no data held in memory between steps)
+
+  1. If `artex-task-watcher.json` does NOT exist: this is the silent baseline.
+     Run steps 2–3 to fetch tasks, write every CURRENT task status into the
+     state file, and respond exactly ALL_CLEAR — never message about
+     pre-existing finished tasks.
+
+  2. ONE compound fetch (login + task list in a single pipeline, so no token
+     is ever carried between commands). The admin password:
+     `cat /run/secrets/reclaw-artex-admin-password` (trim whitespace).
+     Exactly ONE login attempt, no retries (the login endpoint rate-limits).
+     The token is extracted IN THE PIPE — never stored, never echoed:
      ```
+     PW=$(cat /run/secrets/reclaw-artex-admin-password | tr -d '[:space:]')
      curl -sk https://artex.peterstorm.io/api/auth/login \
        -H 'Content-Type: application/json' \
-       -d '{"username":"ARTEX","password":"<pw>"}'
+       -d "{\"username\":\"ARTEX\",\"password\":\"$PW\"}" \
+     | sed -n 's/.*"token":"\([^"]*\)".*/\1/p' \
+     | curl -sk https://artex.peterstorm.io/api/tasks \
+         -H "Authorization: Bearer $(cat -)" \
+         -o ~/.cache/reclaw/artex-task-watcher.tasks.json
      ```
-     Take `.token` from the JSON. If login fails or the API is unreachable:
-     failure dedupe — read `~/.cache/reclaw/artex-task-watcher.error.json`;
-     if it records the SAME cause (same short fingerprint, e.g. "login-401"
-     vs "api-unreachable" vs "secret-missing"), respond exactly ALL_CLEAR
-     (already reported, nothing new — never re-page an unchanged failure).
-     Otherwise send ONE short ⚠️ message naming the cause, write the cause
-     to the error file, and leave the task-state file untouched. On any
-     successful check (step 5 or 6), delete the error file. NEVER retry the
-     login within the same run.
+     (If the API is unreachable, the output file is empty or JSON-invalid —
+     that is the fetch-unusable failure in step 6.)
 
-  3. Fetch all tasks once:
-     ```
-     curl -sk https://artex.peterstorm.io/api/tasks -H "Authorization: Bearer <token>"
-     ```
-     Each task has: id, name, status, findings {critical,high,medium,low},
-     goals_met, goals_total, tokens {input_tokens,output_tokens}.
+  3. Validate the fetch. The task-list response is EXACTLY this shape:
+     `{"active": <number>, "tasks": [ { "id": ..., "status": ..., ... }, ... ]}`
+     — the array is under the `tasks` KEY, never at the top level. Check
+     `grep -c '"tasks"' ~/.cache/reclaw/artex-task-watcher.tasks.json` and that
+     the file contains at least one `"status"`; on failure treat it as an
+     api-unreachable failure (step 6). Never hand-parse the JSON into memory —
+     use jq if present, otherwise grep for `"id":"N"` / `"status":"..."` pairs.
 
   4. Terminal statuses are exactly: `done`, `failed`, `timeout`.
      A transition = a task whose id is terminal NOW but absent from
@@ -63,14 +69,21 @@ promptTemplate: |
      or evidence content — counts and the URL https://artex.peterstorm.io only.
      Then update the state file atomically (write temp, mv): every task that is
      terminal NOW gets `id → status`; ids that vanished from the API entirely
-     are pruned; everything else is left as-is.
+     are pruned; everything else is left as-is. Respond ALL_CLEAR only if there
+     were no transitions.
 
-  6. If there are NO transitions: respond exactly ALL_CLEAR.
+  6. Failure handling (login failed / API unreachable / fetch unusable):
+     failure dedupe — read `artex-task-watcher.error.json`; if it records the
+     SAME cause fingerprint (one of: `login-failed`, `api-unreachable`,
+     `fetch-unusable`), respond exactly ALL_CLEAR (already reported — never
+     re-page an unchanged failure). Otherwise send ONE short ⚠️ message naming
+     the cause, write the fingerprint to the error file, and leave the
+     task-state file untouched. On any successful check (steps 5/6 ends with a
+     good fetch), delete the error file. NEVER retry the login within a run.
 
   ## Constraints
 
   - The only ARTEX writes allowed: the single login POST. Never create, pause,
     message, or modify anything in ARTEX.
-  - Touch no files outside `~/.cache/reclaw/artex-task-watcher.json` and
-    `~/.cache/reclaw/artex-task-watcher.error.json`.
+  - Touch no files outside the three state files named above.
   - One run = at most one login, one task-list GET, one state-file write.
