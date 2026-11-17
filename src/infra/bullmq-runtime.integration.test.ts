@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { createConnection, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Worker } from 'bullmq';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { makeActivityId, makeDeliveryId } from '../core/activity.js';
 import {
@@ -62,6 +63,32 @@ const reservePort = async (): Promise<number> => {
   );
   return address.port;
 };
+
+const workerConfig = (redisPort: number): AppConfig => ({
+  telegramToken: 'test-token',
+  authorizedUserIds: [123_456],
+  redisHost: '127.0.0.1',
+  redisPort,
+  workspacePath: '/tmp/reclaw-worker-integration',
+  skillsDir: '/tmp/reclaw-worker-integration/skills',
+  personalityPath: '/tmp/reclaw-worker-integration/personality.md',
+  chatTimeoutMs: 120_000,
+  scheduledTimeoutMs: 300_000,
+  latitude: 55.665,
+  longitude: 12.57,
+  timezone: 'Europe/Copenhagen',
+  locationName: 'Copenhagen',
+  agentBackend: 'claude',
+});
+
+const makeTelegram = (): TelegramAdapter => ({
+  start: vi.fn().mockResolvedValue(undefined),
+  stop: vi.fn().mockResolvedValue(undefined),
+  sendMessage: vi.fn().mockResolvedValue(1),
+  editMessage: vi.fn().mockResolvedValue(undefined),
+  sendChunkedMessage: vi.fn().mockResolvedValue([1]),
+  onMessage: vi.fn(),
+});
 
 const closeQueues = async (queues: Queues): Promise<void> => {
   await Promise.all([
@@ -292,30 +319,8 @@ describe('BullMQ runtime with isolated Redis', () => {
     });
     if (!job.ok) throw new Error(job.error);
 
-    const config: AppConfig = {
-      telegramToken: 'test-token',
-      authorizedUserIds: [123_456],
-      redisHost: '127.0.0.1',
-      redisPort: port,
-      workspacePath: '/tmp/reclaw-worker-integration',
-      skillsDir: '/tmp/reclaw-worker-integration/skills',
-      personalityPath: '/tmp/reclaw-worker-integration/personality.md',
-      chatTimeoutMs: 120_000,
-      scheduledTimeoutMs: 300_000,
-      latitude: 55.665,
-      longitude: 12.57,
-      timezone: 'Europe/Copenhagen',
-      locationName: 'Copenhagen',
-      agentBackend: 'claude',
-    };
-    const telegram: TelegramAdapter = {
-      start: vi.fn().mockResolvedValue(undefined),
-      stop: vi.fn().mockResolvedValue(undefined),
-      sendMessage: vi.fn().mockResolvedValue(1),
-      editMessage: vi.fn().mockResolvedValue(undefined),
-      sendChunkedMessage: vi.fn().mockResolvedValue([1]),
-      onMessage: vi.fn(),
-    };
+    const config = workerConfig(port);
+    const telegram = makeTelegram();
     const chatHandler = vi.fn().mockResolvedValue({
       kind: 'failed',
       failure: {
@@ -371,6 +376,62 @@ describe('BullMQ runtime with isolated Redis', () => {
     }
   });
 
+  it('dead-letter store lists, retries and removes failed scheduled jobs exactly once', async () => {
+    const queues = createQueues({ host: '127.0.0.1', port });
+    const scheduledJob = (id: string) => ({
+      kind: 'scheduled',
+      id,
+      skillId: 'learn-recall',
+      triggeredAt: '2026-11-14T09:00:00.000Z',
+      validUntil: '2026-11-14T10:00:00.000Z',
+      trigger: 'cron',
+    });
+    const failing = new Worker(
+      'reclaw-scheduled',
+      async () => {
+        throw new Error('pi 429: rate limited');
+      },
+      { connection: { host: '127.0.0.1', port } },
+    );
+
+    try {
+      for (const id of ['dlq-a', 'dlq-b']) {
+        await queues.scheduled.add(id, scheduledJob(id), { jobId: id, attempts: 1 });
+      }
+      await vi.waitFor(async () => expect(await queues.scheduled.getFailedCount()).toBe(2), {
+        timeout: 3_000,
+      });
+      await failing.close();
+
+      const listed = await queues.deadLetters.listFailed();
+      expect(listed.map((j) => j.jobId).sort()).toEqual(['dlq-a', 'dlq-b']);
+      expect(listed[0]?.failedReason).toBe('pi 429: rate limited');
+      expect(listed[0]?.finishedOn).toEqual(expect.any(Number));
+      expect(listed.find((j) => j.jobId === 'dlq-a')?.data).toEqual(scheduledJob('dlq-a'));
+
+      expect(await queues.deadLetters.retry('dlq-a')).toBe('done');
+      expect(await queues.scheduled.getJobState('dlq-a')).toBe('waiting');
+      expect(await queues.deadLetters.retry('dlq-a')).toBe('gone');
+
+      expect(await queues.deadLetters.remove('dlq-b')).toBe('done');
+      expect(await queues.scheduled.getJob('dlq-b')).toBeUndefined();
+      expect(await queues.deadLetters.remove('dlq-b')).toBe('gone');
+      expect(await queues.deadLetters.retry('never-existed')).toBe('gone');
+
+      expect(await queues.deadLetters.untriagedFailedCounts()).toEqual({
+        chat: await queues.chat.getFailedCount(),
+        reminder: 0,
+        research: 0,
+        podcast: 0,
+        delivery: 0,
+      });
+    } finally {
+      await failing.close();
+      await queues.scheduled.obliterate({ force: true });
+      await closeQueues(queues);
+    }
+  });
+
   it('does not consume queued work until the explicit worker lifecycle gate opens', async () => {
     const updateId = makeTelegramUpdateId(91_338);
     const userId = makeTelegramUserId(123_456);
@@ -386,30 +447,8 @@ describe('BullMQ runtime with isolated Redis', () => {
     });
     if (!job.ok) throw new Error(job.error);
 
-    const config: AppConfig = {
-      telegramToken: 'test-token',
-      authorizedUserIds: [123_456],
-      redisHost: '127.0.0.1',
-      redisPort: port,
-      workspacePath: '/tmp/reclaw-worker-integration',
-      skillsDir: '/tmp/reclaw-worker-integration/skills',
-      personalityPath: '/tmp/reclaw-worker-integration/personality.md',
-      chatTimeoutMs: 120_000,
-      scheduledTimeoutMs: 300_000,
-      latitude: 55.665,
-      longitude: 12.57,
-      timezone: 'Europe/Copenhagen',
-      locationName: 'Copenhagen',
-      agentBackend: 'claude',
-    };
-    const telegram: TelegramAdapter = {
-      start: vi.fn().mockResolvedValue(undefined),
-      stop: vi.fn().mockResolvedValue(undefined),
-      sendMessage: vi.fn().mockResolvedValue(1),
-      editMessage: vi.fn().mockResolvedValue(undefined),
-      sendChunkedMessage: vi.fn().mockResolvedValue([1]),
-      onMessage: vi.fn(),
-    };
+    const config = workerConfig(port);
+    const telegram = makeTelegram();
     const chatHandler = vi.fn().mockResolvedValue({
       kind: 'completed',
       response: 'done',

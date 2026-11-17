@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { fakeDeadLetterStore, rawScheduled } from '../core/__fixtures__/dead-letter.js';
 import {
   type ConversationGeneration,
   type ConversationRevision,
@@ -88,6 +89,7 @@ const makeQueues = (): Queues => ({
   getResearchQueuePosition: vi.fn().mockResolvedValue(1),
   getResearchStatus: vi.fn().mockResolvedValue({ active: null, waiting: 0 }),
   enqueuePodcast: vi.fn().mockResolvedValue(undefined),
+  deadLetters: fakeDeadLetterStore([]),
 });
 
 const makeQuotaTracker = (): QuotaTracker => ({
@@ -207,6 +209,65 @@ describe('routeMessage', () => {
         );
       });
       expect(deps.queues.enqueueReminder).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('/dlq command', () => {
+    const stale = {
+      triggeredAt: '2026-01-01T09:00:00.000Z',
+      validUntil: '2026-01-01T10:00:00.000Z',
+    };
+
+    it('replies with the triage of the scheduled failed set', async () => {
+      const deadLetters = fakeDeadLetterStore([rawScheduled('s1', 'learn-recall', stale, '429')]);
+      const deps = makeDeps({ queues: { ...makeQueues(), deadLetters } });
+      await routeMessage(makeMsg({ text: '/dlq' }), deps);
+
+      expect(deps.telegram.sendMessage).toHaveBeenCalledWith(
+        456,
+        expect.stringContaining('• learn-recall — 0 fresh, 1 stale'),
+      );
+      expect(deadLetters.failedIds()).toEqual(['s1']);
+    });
+
+    it('routes /dlq clear to removal of stale jobs', async () => {
+      const deadLetters = fakeDeadLetterStore([rawScheduled('s1', 'learn-recall', stale)]);
+      const deps = makeDeps({ queues: { ...makeQueues(), deadLetters } });
+      await routeMessage(makeMsg({ text: '/dlq clear' }), deps);
+
+      expect(deadLetters.removed).toEqual(['s1']);
+      expect(deps.telegram.sendMessage).toHaveBeenCalledWith(
+        456,
+        'Cleared 1 stale/unreadable job.',
+      );
+    });
+
+    it('answers an unknown action with usage and touches nothing', async () => {
+      const deadLetters = fakeDeadLetterStore([rawScheduled('s1', 'learn-recall', stale)]);
+      const deps = makeDeps({ queues: { ...makeQueues(), deadLetters } });
+      await routeMessage(makeMsg({ text: '/dlq purge' }), deps);
+
+      expect(deps.telegram.sendMessage).toHaveBeenCalledWith(
+        456,
+        expect.stringContaining('/dlq retry — Retry every fresh failed job'),
+      );
+      expect(deadLetters.removed).toEqual([]);
+      expect(deadLetters.retried).toEqual([]);
+    });
+
+    it('leaves text that only starts with "/dlq" to chat', async () => {
+      const deps = makeDeps();
+      await routeMessage(makeMsg({ text: '/dlqx please' }), deps);
+      expect(deps.queues.enqueueChat).toHaveBeenCalled();
+    });
+
+    it('lists /dlq in /help', async () => {
+      const deps = makeDeps();
+      await routeMessage(makeMsg({ text: '/help' }), deps);
+      expect(deps.telegram.sendMessage).toHaveBeenCalledWith(
+        456,
+        expect.stringContaining('/dlq retry'),
+      );
     });
   });
 

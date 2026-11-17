@@ -1,5 +1,6 @@
 import { Queue } from 'bullmq';
 import type { ActivityResultRepository, DeliveryJob, DeliveryOutbox } from '../core/activity.js';
+import type { DeadLetterStore, RawFailedJob } from '../core/dead-letter.js';
 import { parseRecurringReminderJob, parseResearchJobData } from '../core/job-schemas.js';
 import type { ResearchJobData } from '../core/research-types.js';
 import { stateProgress } from '../core/research-types.js';
@@ -59,6 +60,8 @@ export type Queues = {
   readonly getResearchQueuePosition: () => Promise<number>;
   readonly getResearchStatus: () => Promise<ResearchStatus>;
   readonly enqueuePodcast: (job: PodcastJob) => Promise<void>;
+  /** Failed set of the scheduled queue, for `/dlq` triage. */
+  readonly deadLetters: DeadLetterStore;
 };
 
 // ─── Retry + retention configuration (FR-014, FR-031) ────────────────────────
@@ -333,6 +336,61 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
     };
   };
 
+  // ── Dead letters (`/dlq`) ────────────────────────────────────────────────
+  // The scheduled queue's failed set. A job that left the failed set between
+  // listing and acting (retried, removed, aged out) reports `gone`.
+
+  const failedScheduledJob = async (jobId: string) => {
+    const job = await scheduled.getJob(jobId);
+    return job !== undefined && (await job.isFailed()) ? job : undefined;
+  };
+
+  const deadLetters: DeadLetterStore = {
+    listFailed: async (): Promise<readonly RawFailedJob[]> => {
+      const failed = await scheduled.getFailed(0, -1);
+      return failed.flatMap((job) =>
+        job.id === undefined
+          ? []
+          : [
+              {
+                jobId: job.id,
+                data: job.data as unknown,
+                failedReason: job.failedReason ?? '',
+                finishedOn: job.finishedOn,
+              },
+            ],
+      );
+    },
+    retry: async (jobId) => {
+      const job = await failedScheduledJob(jobId);
+      if (job === undefined) return 'gone';
+      await job.retry('failed');
+      return 'done';
+    },
+    remove: async (jobId) => {
+      const job = await failedScheduledJob(jobId);
+      if (job === undefined) return 'gone';
+      await job.remove();
+      return 'done';
+    },
+    untriagedFailedCounts: async () => {
+      const [chatN, reminderN, researchN, podcastN, deliveryN] = await Promise.all([
+        chat.getFailedCount(),
+        reminder.getFailedCount(),
+        research.getFailedCount(),
+        podcast.getFailedCount(),
+        delivery.getFailedCount(),
+      ]);
+      return {
+        chat: chatN,
+        reminder: reminderN,
+        research: researchN,
+        podcast: podcastN,
+        delivery: deliveryN,
+      };
+    },
+  };
+
   return {
     chat,
     scheduled,
@@ -355,6 +413,7 @@ export function createQueues(redisConnection: { host: string; port: number }): Q
     getResearchQueuePosition,
     getResearchStatus,
     enqueuePodcast,
+    deadLetters,
   } as const;
 }
 

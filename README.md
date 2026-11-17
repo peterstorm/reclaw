@@ -132,6 +132,16 @@ Error: <last error message>
 
 For chat/reminder/research/podcast jobs the message goes to the originating `chatId`; for scheduled jobs it goes to all `authorizedUserIds`.
 
+**Triage from Telegram — `/dlq`.** The scheduled queue's failed set is triaged against each job's validity window, the same `[triggeredAt, validUntil]` window the scheduled handler enforces:
+
+| Kind         | Meaning                                              | Action                     |
+|--------------|------------------------------------------------------|----------------------------|
+| `fresh`      | Still inside its window: a retry would run the skill | `/dlq retry` re-queues it  |
+| `stale`      | Window passed: the handler would discard a retry     | `/dlq clear` removes it    |
+| `unreadable` | Job data no longer parses as a `ScheduledJob`        | `/dlq clear` removes it    |
+
+`/dlq` alone changes nothing: it lists failures grouped by skill (fresh/stale split, last error) plus failed counts for the other queues, which it does not triage. Retry and clear re-read the failed set before acting, so running either twice is safe; a job that left the failed set in between is reported as already gone. Pure triage lives in `src/core/dead-letter.ts`, the orchestrator in `src/orchestration/dlq-command.ts`, the BullMQ adapter (`Queues.deadLetters`) in `src/infra/queue.ts`.
+
 ### Scheduled jobs: dedup, completion markers, catch-up
 
 Scheduled jobs are the trickiest part of the queue layer because cron triggers, restarts, and dependent skills (`dependsOn` in skill YAML) all interact. Reclaw uses **two Redis markers per scheduled job** in addition to the BullMQ job itself:

@@ -5,6 +5,7 @@ import {
   extractPassageToSourceMap,
   resolveAnswerCitations,
 } from '../core/citation-resolver.js';
+import { parseDlqCommand } from '../core/dead-letter.js';
 import { splitMessage } from '../core/message-splitter.js';
 import {
   audioFormatToCode,
@@ -46,6 +47,7 @@ import type {
   TelegramIncomingDisposition,
   TelegramIncomingMessage,
 } from '../infra/telegram.js';
+import { runDlqCommand } from './dlq-command.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -76,6 +78,7 @@ type Command =
   | { readonly kind: 'ask' }
   | { readonly kind: 'status' }
   | { readonly kind: 'run' }
+  | { readonly kind: 'dlq' }
   | { readonly kind: 'help' }
   | { readonly kind: 'chat' };
 
@@ -92,6 +95,7 @@ function parseCommandKind(text: string): Command {
   if (lower.startsWith('/podcast')) return { kind: 'podcast' };
   if (lower.startsWith('/ask')) return { kind: 'ask' };
   if (lower.startsWith('/run')) return { kind: 'run' };
+  if (lower === '/dlq' || lower.startsWith('/dlq ')) return { kind: 'dlq' };
   return { kind: 'chat' };
 }
 
@@ -153,6 +157,7 @@ export async function routeMessage(
     .with({ kind: 'ask' }, () => complete(runAsk(msg, deps)))
     .with({ kind: 'status' }, () => complete(routeStatusCommand(msg, deps)))
     .with({ kind: 'run' }, () => complete(routeRunCommand(msg, deps)))
+    .with({ kind: 'dlq' }, () => complete(routeDlqCommand(msg, deps)))
     .with({ kind: 'chat' }, async () => {
       const jobId = ingressJobId(msg, 'chat');
       const now = new Date().toISOString();
@@ -371,6 +376,9 @@ const HELP_TEXT = [
   '/new — Clear session, start fresh conversation',
   '/status — Queue depths, uptime, redis health',
   '/run <skill-id> — Manually trigger a scheduled skill',
+  '/dlq — Failed scheduled jobs by skill, fresh vs stale',
+  '/dlq retry — Retry fresh failed jobs',
+  '/dlq clear — Remove stale/unreadable failed jobs',
   '',
   '/remind <duration|time> <message> — Set a one-shot reminder',
   '/remind every <interval|day> [at <time>] <message> — Recurring reminder',
@@ -594,6 +602,16 @@ async function routeStatusCommand(msg: IncomingMessage, deps: MessageRouterDeps)
   ];
 
   await deps.telegram.sendMessage(msg.chatId, lines.join('\n'));
+}
+
+// ─── /dlq [retry|clear] — dead-letter triage ─────────────────────────────────
+
+async function routeDlqCommand(msg: IncomingMessage, deps: MessageRouterDeps): Promise<void> {
+  const parsed = parseDlqCommand(msg.text);
+  const reply = parsed.ok
+    ? await runDlqCommand(parsed.value, { store: deps.queues.deadLetters, now: () => new Date() })
+    : parsed.error;
+  await deps.telegram.sendMessage(msg.chatId, reply);
 }
 
 // ─── /run <skill-id> — manual skill trigger ──────────────────────────────────
