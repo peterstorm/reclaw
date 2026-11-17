@@ -422,7 +422,7 @@ describe('routeMessage', () => {
 
     beforeEach(() => {
       vaultDir = mkdtempSync(join(tmpdir(), 'reclaw-ask-'));
-      const hubDir = join(vaultDir, 'reclaw/research', slug);
+      const hubDir = join(vaultDir, 'research/runs', slug);
       mkdirSync(hubDir, { recursive: true });
       writeFileSync(
         join(hubDir, '_index.md'),
@@ -489,7 +489,7 @@ describe('routeMessage', () => {
       try {
         routeMessage(makeMsg({ text: `/ask ${slug} What gets stored?` }), deps);
 
-        const qaPath = join(vaultDir, 'reclaw/research', slug, 'QA', 'What gets stored.md');
+        const qaPath = join(vaultDir, 'research/runs', slug, 'QA', 'What gets stored.md');
         await vi.waitFor(() => {
           expect(existsSync(qaPath)).toBe(true);
         });
@@ -499,7 +499,7 @@ describe('routeMessage', () => {
         expect(qa).toContain('Persisted answer.');
 
         await vi.waitFor(() => {
-          const hub = readFileSync(join(vaultDir, 'reclaw/research', slug, '_index.md'), 'utf8');
+          const hub = readFileSync(join(vaultDir, 'research/runs', slug, '_index.md'), 'utf8');
           expect(hub).toContain('- [[What gets stored]]');
         });
       } finally {

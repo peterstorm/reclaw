@@ -27,11 +27,11 @@ function setupVault(hubBody?: string): Fixture {
   const slugResult = parseTopicSlugReference('demo-topic');
   if (!slugResult.ok) throw new Error(slugResult.error);
   const slug = slugResult.value;
-  const hubVaultPathResult = parseVaultRelativePath(`reclaw/research/${slug}/_index.md`);
+  const hubVaultPathResult = parseVaultRelativePath(`research/runs/${slug}/_index.md`);
   if (!hubVaultPathResult.ok) throw new Error(hubVaultPathResult.error);
   const hubVaultPath = hubVaultPathResult.value;
   const hubPath = join(vault, hubVaultPath);
-  mkdirSync(join(vault, 'reclaw/research', slug), { recursive: true });
+  mkdirSync(join(vault, 'research/runs', slug), { recursive: true });
 
   const defaultBody = [
     '---',
@@ -88,7 +88,7 @@ describe('appendAskAnswer', () => {
 
       expect(result.ok).toBe(true);
       if (!result.ok) return;
-      expect(result.value.qaVaultPath).toBe('reclaw/research/demo-topic/QA/What is the gist.md');
+      expect(result.value.qaVaultPath).toBe('research/runs/demo-topic/QA/What is the gist.md');
       expect(existsSync(result.value.qaAbsPath)).toBe(true);
 
       const qa = readFileSync(result.value.qaAbsPath, 'utf8');
@@ -220,7 +220,7 @@ describe('appendAskAnswer', () => {
   it('rejects a QA directory symlink that escapes the vault', async () => {
     const { vault, lookup, cleanup } = setupVault();
     const outside = mkdtempSync(join(tmpdir(), 'reclaw-qa-outside-'));
-    const qaDir = join(vault, 'reclaw/research/demo-topic/QA');
+    const qaDir = join(vault, 'research/runs/demo-topic/QA');
     symlinkSync(outside, qaDir);
     try {
       const result = await appendAskAnswer({

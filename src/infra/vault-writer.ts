@@ -3,7 +3,7 @@
 // Filesystem I/O adapter for writing Obsidian vault notes.
 // This is the imperative shell over the pure vault-content.ts generators.
 //
-// FR-040: Writes research output to reclaw/research/{topic-slug}/
+// FR-040: Writes research output to research/runs/{topic-slug}/
 // FR-041: Hub note (_index.md) written at the root of the topic folder
 // FR-042: Source notes written to Sources/ subfolder
 // FR-043: Q&A notes written to QA/ subfolder

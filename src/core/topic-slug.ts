@@ -11,6 +11,15 @@ import { type Result, err, ok } from './types.js';
  */
 export type TopicSlug = string & { readonly __brand: 'TopicSlug' };
 
+/**
+ * Vault folder holding one subfolder per research topic (FR-040). A collection
+ * in the vault's placement contract: its MOC lists the runs.
+ */
+export const RESEARCH_BASE = 'research/runs';
+
+/** Where research topics lived before the vault reorganization; still accepted in references. */
+const LEGACY_RESEARCH_BASE = 'reclaw/research';
+
 const MAX_SLUG_LENGTH = 60;
 const TOPIC_SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?$/;
 
@@ -38,9 +47,8 @@ export function parseTopicSlugReference(raw: string): Result<TopicSlug, string> 
   if (normalized.startsWith('/')) return err('Topic slug must not be an absolute path.');
 
   const withoutIndex = normalized.replace(/\/_index(?:\.md)?$/, '');
-  const slug = withoutIndex.startsWith('reclaw/research/')
-    ? withoutIndex.slice('reclaw/research/'.length)
-    : withoutIndex;
+  const base = [RESEARCH_BASE, LEGACY_RESEARCH_BASE].find((b) => withoutIndex.startsWith(`${b}/`));
+  const slug = base === undefined ? withoutIndex : withoutIndex.slice(base.length + 1);
 
   if (slug.includes('/')) return err('Topic slug must identify exactly one research topic.');
   if (slug.length > MAX_SLUG_LENGTH || slug.includes('--') || !TOPIC_SLUG_PATTERN.test(slug)) {

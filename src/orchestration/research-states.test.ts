@@ -130,10 +130,10 @@ function makeMockDeps(overrides: Partial<ResearchDeps> = {}): ResearchDeps {
   const vaultWriter: VaultWriterAdapter = {
     writeNotes: vi
       .fn()
-      .mockResolvedValue({ ok: true, value: '/vault/reclaw/research/ai-agents/_index.md' }),
+      .mockResolvedValue({ ok: true, value: '/vault/research/runs/ai-agents/_index.md' }),
     writeEmergencyNote: vi
       .fn()
-      .mockResolvedValue({ ok: true, value: '/vault/reclaw/research/ai-agents/_emergency.md' }),
+      .mockResolvedValue({ ok: true, value: '/vault/research/runs/ai-agents/_emergency.md' }),
     appendToNote: vi.fn().mockResolvedValue({ ok: true, value: undefined }),
   };
 
@@ -932,7 +932,7 @@ describe('executeState / writing_vault', () => {
 
     expect(event.type).toBe('VAULT_WRITTEN');
     if (event.type === 'VAULT_WRITTEN') {
-      expect(event.hubPath).toBe('/vault/reclaw/research/ai-agents/_index.md');
+      expect(event.hubPath).toBe('/vault/research/runs/ai-agents/_index.md');
     }
     expect(deps.vaultWriter.writeNotes).toHaveBeenCalled();
   });
@@ -989,7 +989,7 @@ describe('executeState / notifying', () => {
       questions: ['Q1?'],
       answers: { 'Q1?': makeMockChatResponse() },
       chatsUsed: 1,
-      hubPath: '/vault/reclaw/research/ai-agents/_index.md',
+      hubPath: '/vault/research/runs/ai-agents/_index.md',
     });
     const deps = makeMockDeps();
 
@@ -1375,7 +1375,7 @@ describe('buildCortexSummary', () => {
         'Q2?': makeMockChatResponse({ citations: [1] }),
       },
       sources: [makeMockSource()],
-      hubPath: '/vault/reclaw/research/ai-agents/_index.md',
+      hubPath: '/vault/research/runs/ai-agents/_index.md',
     });
     const quality = { grade: 'good', warnings: [] };
     const metrics = {
@@ -1391,7 +1391,7 @@ describe('buildCortexSummary', () => {
     expect(summary).toContain('good');
     expect(summary).toContain('2/2');
     expect(summary).toContain('3');
-    expect(summary).toContain('/vault/reclaw/research/ai-agents/_index.md');
+    expect(summary).toContain('/vault/research/runs/ai-agents/_index.md');
   });
 
   it('includes key findings in the summary (FR-062)', () => {

@@ -68,7 +68,7 @@ promptTemplate: |
   ### 3a. Recent fitness notes (general trend window)
 
   ```
-  find ~/dev/notes/remotevault/personal/fitness/ -name "*.md" -not -name "MOC.md" | sort -r | head -7
+  find ~/dev/notes/remotevault/personal/fitness/log/ -name "*.md" -not -name "MOC.md" | sort -r | head -7
   ```
 
   Read the most recent **5–7 notes** to extract daily metrics (sleep, HRV, RHR, VO2 max, training status, training load).
@@ -77,7 +77,7 @@ promptTemplate: |
 
   Grep across the last ~30 days of fitness notes for run analyses (`-newermt` takes a time expression; `-newer` would expect a reference *file*):
   ```
-  find ~/dev/notes/remotevault/personal/fitness/ -name "*.md" -newermt '30 days ago' 2>/dev/null | sort -r | head -30
+  find ~/dev/notes/remotevault/personal/fitness/log/ -name "*.md" -newermt '30 days ago' 2>/dev/null | sort -r | head -30
   ```
   Open the most recent files until you have collected the last **3–5 runs** worth of: distance, avg pace, avg HR, HR zone distribution, pace:HR ratio, training effect, perceived exertion. This is the dataset for the run trend comparison in Step 4.
 
@@ -113,7 +113,7 @@ promptTemplate: |
   Decision logic:
 
   1. Build `fetchedIds` = the set of `activityId` values from the fresh fetch (empty set if none).
-  2. Check whether the target note exists at `~/dev/notes/remotevault/personal/fitness/YYYY/MM/YYYY-MM-DD.md`.
+  2. Check whether the target note exists at `~/dev/notes/remotevault/personal/fitness/log/YYYY/MM/YYYY-MM-DD.md`.
      - **No note** → proceed to Step 4 and write it (`backfilled=false`).
      - **Note exists** → read its `garmin-sync:` marker and parse `notedIds`.
        - If `fetchedIds ⊆ notedIds` (the note already accounts for every fetched activity) →
@@ -129,7 +129,7 @@ promptTemplate: |
 
   ## Step 4 — Write the daily fitness note
 
-  Create the note at: `~/dev/notes/remotevault/personal/fitness/YYYY/MM/YYYY-MM-DD.md`
+  Create the note at: `~/dev/notes/remotevault/personal/fitness/log/YYYY/MM/YYYY-MM-DD.md`
   where YYYY-MM-DD is the **data date** (today, {{date}} — this sync runs at 20:00 and captures the current day).
   Create year/month directories if needed.
 
@@ -139,7 +139,7 @@ promptTemplate: |
   title: "Fitness — YYYY-MM-DD"
   date: YYYY-MM-DD
   tags: [fitness, garmin, daily]
-  up: "[[personal/fitness/MOC|Fitness]]"
+  up: "[[personal/fitness/log/MOC|Fitness Log]]"
   ---
   ```
 
@@ -324,29 +324,34 @@ promptTemplate: |
   This marker is the dedup key from Step 3.5 — without it, late activities can't be backfilled and
   re-runs can't be skipped. Never omit it.
 
-  ## Step 5 — Maintain the Fitness MOC
+  ## Step 5 — Maintain the Fitness Log MOC
 
-  Check if `~/dev/notes/remotevault/personal/fitness/MOC.md` exists.
-  If not, create it:
+  Daily notes live in the `personal/fitness/log/` collection (the vault's placement
+  contract exempts it from per-folder MOCs). Its index is
+  `~/dev/notes/remotevault/personal/fitness/log/MOC.md`. It already exists — never
+  recreate or overwrite it, and keep its `collection: true` frontmatter. Only if it is
+  genuinely missing, create it:
   ```yaml
   ---
-  title: Fitness
-  tags: [moc, fitness, garmin]
-  up: "[[personal/MOC]]"
+  title: Fitness Log
+  date: YYYY-MM-DD
+  tags: [moc]
+  collection: true
+  up: "[[personal/fitness/MOC|Fitness]]"
   ---
   ```
   ```
-  # Fitness
+  # Fitness Log
 
-  Daily fitness tracking from Garmin Connect.
-
-  ## Daily Notes
+  Daily Garmin training logs, written by the `garmin-sync` and `garmin-catchup` skills as `log/YYYY/MM/YYYY-MM-DD.md`. Generated; browse by date.
   ```
 
   The MOC groups daily links under monthly headings so it doesn't grow into one
   unbounded list that other skills' `find | head` re-read in full. Under a
   `## YYYY-MM` heading (create it if this is the first note of the month), append:
-  `- [[personal/fitness/YYYY/MM/YYYY-MM-DD|YYYY-MM-DD]] — [1-line summary]`
+  `- [[personal/fitness/log/YYYY/MM/YYYY-MM-DD|YYYY-MM-DD]] — [1-line summary]`
+
+  Do not add daily links to `personal/fitness/MOC.md`; that is the domain MOC.
 
   The 1-line summary should be like: "8.2k steps, 7h12m sleep (82), 5k run 5:15/km"
 

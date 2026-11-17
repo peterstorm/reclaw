@@ -126,20 +126,26 @@ promptTemplate: |
 
   ## Step 5 — Write vault notes
 
-  **Vault folder structure for placement:**
-  ```
-  ~/dev/notes/remotevault/
-  ├── homelab/          — NixOS, DNS, cloudflare, security
-  ├── languages/        — haskell, nix, scala
-  ├── programming/      — ai, react, general programming concepts
-  ├── reclaw/           — reclaw architecture, decisions, skills
-  ├── business/         — ideas, competitors, resources
-  ├── personal/         — fitness, computer stuff
-  ├── learning/         — courses, structured learning
-  └── work/             — work-related
-  ```
+  **Placement follows the vault's placement contract** (the `obsidian-vault` skill,
+  `~/dev/claude-plugins/obsidian/skills/obsidian-vault/SKILL.md`). Its rules:
+  - A folder holds notes **or** subfolders, never both. No note sits loose at a domain root
+    (`homelab/`, `programming/`, `reclaw/`, …) or anywhere beside subfolders.
+  - Every note folder has a `MOC.md` that lists each of its notes; the MOC is linked from the parent MOC.
+  - A note's `up:` names its own folder's MOC: a note in `homelab/nixos/` has `up: "[[homelab/nixos/MOC|NixOS]]"`.
+  - File names are lowercase-with-dashes. Only a summary of a dated external source (with an
+    http(s) `source:` URL) gets a `YYYY-MM-DD-` prefix; librarian notes never do.
 
-  Place each note in the most appropriate existing folder. Create subfolders only if clearly needed. If uncertain, prefer a broader folder over creating a new narrow one.
+  Choose the place top-down, every time:
+  1. **Domain.** Read `~/dev/notes/remotevault/_index.md` and pick the one domain the note is
+     *about* (a NixOS gotcha found while working on reclaw is about NixOS → `homelab`).
+  2. **Topic.** Read that domain's `MOC.md` and its subfolder MOCs; descend into the narrowest
+     topic folder that genuinely fits.
+  3. **No topic fits:** create a new topic folder with a `MOC.md` (frontmatter + one-line
+     purpose, `up:` the parent MOC) and add a link to it in the parent MOC. A small topic folder
+     is fine; a note at a domain root is not. Never create a new top-level domain — if nothing
+     fits, skip the candidate and mention it in the output.
+  4. Prefer the narrowest fitting topic. "When unsure, use the broader folder" is exactly how
+     the vault filled with stragglers before — don't.
 
   ### For technical knowledge notes:
 
@@ -178,8 +184,21 @@ promptTemplate: |
   [Why — the key trade-off, what was considered, why alternatives were rejected. 2-4 sentences.]
   ```
 
+  `source: librarian` marks provenance; it is not a URL, so it never justifies a date prefix.
+
   ### MOC linking:
-  After creating a note, check if the parent MOC exists. If it does, append a link to the new note. If it doesn't exist, create one with proper frontmatter.
+  After creating a note, add it to its folder's `MOC.md` under the fitting heading with a
+  one-line description: `- [[domain/topic/note-name|Title]] — what it covers`. If you created a
+  new topic folder in step 3, its MOC lists the note and the parent MOC links the new MOC.
+
+  ### Check placement
+  Run the vault checker over every domain you wrote to:
+  ```bash
+  bun ~/dev/claude-plugins/obsidian/scripts/vault.ts check --under <domain>
+  ```
+  It must report nothing for the notes you touched (wrong `up:`, unlisted note, loose note,
+  missing MOC, bad name, broken link). Fix what it reports before Step 6. Violations it lists
+  in notes you did not touch are not yours to fix — vault-lint reports them weekly.
 
   ## Step 6 — Record promotions to a durable log
 

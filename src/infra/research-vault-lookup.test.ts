@@ -18,7 +18,7 @@ describe('findNotebookByTopic', () => {
   beforeAll(async () => {
     vaultRoot = await fs.mkdtemp(path.join(tmpdir(), 'reclaw-test-vault-'));
     outsideRoot = await fs.mkdtemp(path.join(tmpdir(), 'reclaw-test-outside-'));
-    const topicDir = path.join(vaultRoot, 'reclaw', 'research', 'sample-topic');
+    const topicDir = path.join(vaultRoot, 'research', 'runs', 'sample-topic');
     await fs.mkdir(topicDir, { recursive: true });
     await fs.writeFile(
       path.join(topicDir, '_index.md'),
@@ -38,7 +38,7 @@ tags:
     );
 
     // Create a topic without notebook_id (legacy unbackfilled hub)
-    const legacyDir = path.join(vaultRoot, 'reclaw', 'research', 'legacy-topic');
+    const legacyDir = path.join(vaultRoot, 'research', 'runs', 'legacy-topic');
     await fs.mkdir(legacyDir, { recursive: true });
     await fs.writeFile(
       path.join(legacyDir, '_index.md'),
@@ -66,12 +66,12 @@ topic_slug: legacy-topic
       expect(r.value.notebookId).toBe('abc-123');
       expect(r.value.slug).toBe('sample-topic');
       expect(r.value.topic).toBe('Sample Topic');
-      expect(r.value.hubVaultPath).toBe('reclaw/research/sample-topic/_index.md');
+      expect(r.value.hubVaultPath).toBe('research/runs/sample-topic/_index.md');
     }
   });
 
   it('accepts a full vault path slug', async () => {
-    const r = await findNotebookByTopic(vaultRoot, topicSlug('reclaw/research/sample-topic'));
+    const r = await findNotebookByTopic(vaultRoot, topicSlug('research/runs/sample-topic'));
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.value.notebookId).toBe('abc-123');
@@ -103,7 +103,7 @@ topic_slug: legacy-topic
       '---\ntitle: Escaped\nnotebook_id: outside\n---\n',
       'utf8',
     );
-    await fs.symlink(outsideTopic, path.join(vaultRoot, 'reclaw', 'research', 'escaped-topic'));
+    await fs.symlink(outsideTopic, path.join(vaultRoot, 'research', 'runs', 'escaped-topic'));
 
     const result = await findNotebookByTopic(vaultRoot, topicSlug('escaped-topic'));
 

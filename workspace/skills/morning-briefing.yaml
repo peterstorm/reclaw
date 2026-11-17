@@ -87,6 +87,6 @@ promptTemplate: |
 
   **Step 4 — Day overview:** Include:
   - The calendar events from step 3
-  - Any open items from the reclaw todo at ~/dev/notes/remotevault/reclaw/todo.md
+  - Any open items from the reclaw todo at ~/dev/notes/remotevault/reclaw/core/todo.md
 
   Lead with the commute weather. Be concise and actionable — aim to fit the whole briefing in one Telegram message (under ~25 lines).

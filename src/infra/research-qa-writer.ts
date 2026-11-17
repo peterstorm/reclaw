@@ -3,8 +3,8 @@
 // Persists a /ask question/answer pair into the same Obsidian layout the
 // original /research flow produces:
 //
-//   reclaw/research/<slug>/QA/<truncated-question>.md   ← child note
-//   reclaw/research/<slug>/_index.md                    ← hub gets a wikilink
+//   research/runs/<slug>/QA/<truncated-question>.md   ← child note
+//   research/runs/<slug>/_index.md                    ← hub gets a wikilink
 //
 // Reuses buildQANote() so the file format is indistinguishable from canonical
 // research output. Idempotent: re-asking the same question overwrites the QA

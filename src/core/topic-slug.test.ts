@@ -6,8 +6,11 @@ import { generateTopicSlug, parseTopicSlugReference } from './topic-slug.js';
 describe('parseTopicSlugReference', () => {
   it.each([
     ['my-topic', 'my-topic'],
+    ['research/runs/my-topic', 'my-topic'],
+    ['research/runs/my-topic/_index', 'my-topic'],
+    ['research\\runs\\my-topic\\_index.md', 'my-topic'],
+    // References written before the vault moved research to research/runs/
     ['reclaw/research/my-topic', 'my-topic'],
-    ['reclaw/research/my-topic/_index', 'my-topic'],
     ['reclaw\\research\\my-topic\\_index.md', 'my-topic'],
   ])('parses %j as %j', (raw, expected) => {
     expect(parseTopicSlugReference(raw)).toEqual({ ok: true, value: expected });
@@ -16,8 +19,10 @@ describe('parseTopicSlugReference', () => {
   it.each([
     '',
     '../outside',
+    'research/runs/../../outside',
+    '/research/runs/topic',
     'reclaw/research/../../outside',
-    '/reclaw/research/topic',
+    'research/runs/nested/topic',
     'nested/topic',
     'Uppercase',
     'two--hyphens',

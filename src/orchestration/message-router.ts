@@ -395,11 +395,11 @@ const HELP_TEXT = [
   '',
   '/ask <topic-slug> <question>',
   '  One-shot question against an existing research notebook.',
-  '  Slug = leaf folder under reclaw/research/ (e.g. code-execution-with-mcp).',
+  '  Slug = leaf folder under research/runs/ (e.g. code-execution-with-mcp).',
   '',
   '/podcast <vault-path> [--format deep-dive|brief|critique|debate] [--length short|default|long]',
   '  Generate audio podcast from a vault note',
-  '  Vault path: use Obsidian "Copy vault path" (e.g. reclaw/architecture)',
+  '  Vault path: use Obsidian "Copy vault path" (e.g. reclaw/core/architecture)',
   '  Defaults: --format deep-dive --length long',
 ].join('\n');
 

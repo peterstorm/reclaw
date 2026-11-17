@@ -3,7 +3,7 @@
 // Pure functions for generating Obsidian vault note content.
 // No I/O — all functions return {relativePath, content} pairs.
 //
-// FR-040: Research output lives under reclaw/research/{topic-slug}/
+// FR-040: Research output lives under research/runs/{topic-slug}/ (RESEARCH_BASE)
 // FR-041: Hub note (_index.md): title, date, quality, links to sources+QAs
 // FR-042: Source notes: frontmatter with type/url/notebookId/date/topics/up link
 // FR-043: Q&A notes: question heading, resolved answer, cited sources, up link
@@ -15,6 +15,7 @@ import {
   sanitizeTitleForWikilink,
 } from './citation-resolver.js';
 import type { QualityResult, ResearchContext, ResolvedNote, SourceMeta } from './research-types.js';
+import { RESEARCH_BASE } from './topic-slug.js';
 
 // ─── VaultNote ─────────────────────────────────────────────────────────────────
 
@@ -23,7 +24,7 @@ import type { QualityResult, ResearchContext, ResolvedNote, SourceMeta } from '.
  * relativePath is relative to the vault root (e.g. obsidianVaultPath).
  */
 export type VaultNote = {
-  /** Path relative to vault root, e.g. "reclaw/research/ai-agents/Sources/Some Title.md" */
+  /** Path relative to vault root, e.g. "research/runs/ai-agents/Sources/Some Title.md" */
   readonly relativePath: string;
   /** Full markdown content including YAML frontmatter. */
   readonly content: string;
@@ -45,9 +46,6 @@ function sanitizeFilename(title: string): string {
       .replace(/^[.\s]+|[.\s]+$/g, '')
   );
 }
-
-/** Base folder for all research notes relative to vault root. */
-const RESEARCH_BASE = 'reclaw/research';
 
 /** Relative path for the hub note of a given topic slug. */
 function hubRelativePath(topicSlug: string): string {
@@ -121,7 +119,7 @@ topic_slug: ${ctx.topicSlug}${notebookIdLine}
 tags:
   - research
   - ${ctx.topicSlug}
-up: "[[reclaw/research/MOC]]"
+up: "[[research/runs/MOC]]"
 ---
 
 # ${ctx.topic}

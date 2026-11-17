@@ -21,7 +21,7 @@ describe('parseAskCommand', () => {
   });
 
   it('parses a canonical vault path down to its topic slug', () => {
-    const r = parseAskCommand('/ask reclaw/research/my-topic Why?');
+    const r = parseAskCommand('/ask research/runs/my-topic Why?');
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.value.slug).toBe('my-topic');
@@ -31,7 +31,7 @@ describe('parseAskCommand', () => {
 
   it.each([
     '/ask ../outside Why?',
-    '/ask reclaw/research/../../outside Why?',
+    '/ask research/runs/../../outside Why?',
     '/ask nested/arbitrary/topic Why?',
     '/ask /absolute Why?',
   ])('rejects unsafe topic reference: %s', (command) => {

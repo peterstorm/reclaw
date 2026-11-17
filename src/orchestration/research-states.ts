@@ -20,7 +20,7 @@ import { extractPassageToSourceMap, resolveAnswerCitations } from '../core/citat
 import { computeMetrics, evaluateQuality } from '../core/research-quality.js';
 import type { ResearchContext, ResearchEvent, ResearchState } from '../core/research-types.js';
 import type { ArtifactMeta, ResolvedNote } from '../core/research-types.js';
-import { generateTopicSlug } from '../core/topic-slug.js';
+import { RESEARCH_BASE, generateTopicSlug } from '../core/topic-slug.js';
 import { buildAllVaultNotes, buildEmergencyNote } from '../core/vault-content.js';
 import { parseVaultRelativePath } from '../core/vault-path.js';
 import type { NotebookLMAdapter } from '../infra/notebooklm-client.js';
@@ -600,8 +600,8 @@ async function executeWritingVault(
     try {
       const topicSlug = ctx.topicSlug ?? 'untitled';
       const researchDate = ctx.startedAt.split('T')[0] ?? ctx.startedAt;
-      const mocEntry = `\n- [[reclaw/research/${topicSlug}/_index|${ctx.topic}]] — (${researchDate})\n`;
-      const mocRelativePath = parseVaultRelativePath('reclaw/research/MOC.md');
+      const mocEntry = `\n- [[${RESEARCH_BASE}/${topicSlug}/_index|${ctx.topic}]] — (${researchDate})\n`;
+      const mocRelativePath = parseVaultRelativePath(`${RESEARCH_BASE}/MOC.md`);
       if (!mocRelativePath.ok) throw new Error(mocRelativePath.error);
       const workspace = await createVaultWorkspace(deps.vaultBasePath);
       if (!workspace.ok) throw new Error(formatVaultPathError(workspace.error));

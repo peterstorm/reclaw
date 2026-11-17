@@ -62,7 +62,7 @@ promptTemplate: |
   (it *is* accessible; CLAUDE.md documents it).
 
   **Check the backlog:**
-  Read `~/dev/notes/remotevault/reclaw/todo.md` and `~/dev/notes/remotevault/reclaw/ideas.md` for known items.
+  Read `~/dev/notes/remotevault/reclaw/core/todo.md` and `~/dev/notes/remotevault/reclaw/core/ideas.md` for known items.
 
   **Cortex memory:**
   Run `/recall` with queries like "reclaw architecture", "reclaw bug", "reclaw improvement", "feature idea" to surface relevant context.

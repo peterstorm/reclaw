@@ -108,11 +108,11 @@ function makeMockDeps(overrides: Partial<ResearchDeps> = {}): ResearchDeps {
   const vaultWriter: VaultWriterAdapter = {
     writeNotes: vi.fn().mockResolvedValue({
       ok: true,
-      value: '/vault/reclaw/research/ai-agents/_index.md',
+      value: '/vault/research/runs/ai-agents/_index.md',
     }),
     writeEmergencyNote: vi.fn().mockResolvedValue({
       ok: true,
-      value: '/vault/reclaw/research/ai-agents/_emergency.md',
+      value: '/vault/research/runs/ai-agents/_emergency.md',
     }),
     appendToNote: vi.fn().mockResolvedValue({ ok: true, value: undefined }),
   };
@@ -166,7 +166,7 @@ describe('handleResearchJob', () => {
     const result = await handleResearchJob(job, deps);
 
     expect(result.topic).toBe('AI agents');
-    expect(result.hubPath).toBe('/vault/reclaw/research/ai-agents/_index.md');
+    expect(result.hubPath).toBe('/vault/research/runs/ai-agents/_index.md');
   });
 
   it('checkpoints after every state transition (FR-005)', async () => {
@@ -390,7 +390,7 @@ describe('handleResearchJob', () => {
         writeNotes: vi.fn().mockResolvedValue({ ok: false, error: 'Disk full' }),
         writeEmergencyNote: vi.fn().mockResolvedValue({
           ok: true,
-          value: '/vault/reclaw/research/ai-agents/_emergency.md',
+          value: '/vault/research/runs/ai-agents/_emergency.md',
         }),
         appendToNote: vi.fn().mockResolvedValue({ ok: true, value: undefined }),
       },

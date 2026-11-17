@@ -184,12 +184,12 @@ promptTemplate: |
   ### 1b. Yesterday's fitness note (full analysis from garmin-sync)
   Yesterday's note was written by garmin-sync at 20:00. Calculate yesterday's date from {{date}} and read it:
   ```
-  cat ~/dev/notes/remotevault/personal/fitness/$(date -d "{{date}} -1 day" +%Y)/$(date -d "{{date}} -1 day" +%m)/$(date -d "{{date}} -1 day" +%Y-%m-%d).md 2>/dev/null
+  cat ~/dev/notes/remotevault/personal/fitness/log/$(date -d "{{date}} -1 day" +%Y)/$(date -d "{{date}} -1 day" +%m)/$(date -d "{{date}} -1 day" +%Y-%m-%d).md 2>/dev/null
   ```
 
   ### 1c. Recent fitness history (last 7 days)
   ```
-  find ~/dev/notes/remotevault/personal/fitness/ -name "*.md" -not -name "MOC.md" | sort -r | head -7
+  find ~/dev/notes/remotevault/personal/fitness/log/ -name "*.md" -not -name "MOC.md" | sort -r | head -7
   ```
 
   Extract: weekly running volume, last hard workout (type, date, paces, HR), last long run, recovery trajectory, sleep/HRV/RHR trends, illness/injury/fatigue signals.

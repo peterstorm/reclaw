@@ -64,7 +64,7 @@ promptTemplate: |
   Skip the commute weather on weekends — just mention the general weather if interesting (storms, heatwave, etc).
 
   **Open tasks:**
-  Check `~/dev/notes/remotevault/reclaw/todo.md` for any outstanding items worth flagging.
+  Check `~/dev/notes/remotevault/reclaw/core/todo.md` for any outstanding items worth flagging.
 
   ## Part 3 — Journal Prompt
 

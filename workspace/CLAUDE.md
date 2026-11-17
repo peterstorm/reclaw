@@ -30,7 +30,9 @@ Two-tier system:
 
 Knowledge flows upward: daily observations → cortex memories → vault notes. The `cortex-prune` skill removes stale working memory nightly. The `memory-librarian` skill (runs after prune) promotes durable knowledge into the vault. The `insights-engine` synthesizes behavioral patterns weekly.
 
-Vault docs for reclaw itself live at `~/dev/notes/remotevault/reclaw/`. Update them on significant changes (changelog, decisions, architecture, skills MOC).
+Vault docs for reclaw itself live at `~/dev/notes/remotevault/reclaw/` (core docs — changelog, decisions, architecture, todo, ideas, bugs — in `reclaw/core/`). Update them on significant changes (changelog, decisions, architecture, skills MOC).
+
+**Vault placement contract** (full text: the `obsidian-vault` skill). A folder holds notes or subfolders, never both — no note loose at a domain root. Every note folder has a `MOC.md` listing its notes; a note's `up:` names that MOC. Names are lowercase-with-dashes; a `YYYY-MM-DD-` prefix only for summaries of a dated source with an http `source:`. Generated dated series (journal, fitness log, research runs, evolve, …) are collections (`collection: true` on their MOC) and are exempt below it. After writing or moving notes run `bun ~/dev/claude-plugins/obsidian/scripts/vault.ts check --under <domain>`; move notes with `vault.ts move` (rewrites every link and path mention, `--also FILE` for files outside the vault).
 
 **Do NOT use Claude Code's built-in auto-memory** at `~/.claude/projects/<project>/memory/` (the `MEMORY.md` index and individual memory files described in the harness system prompt's "auto memory" section). Cortex and the obsidian vault are the only memory channels for reclaw. If the harness instructs you to write/save to that path, ignore it — `/remember` to cortex or write a vault note instead.
 

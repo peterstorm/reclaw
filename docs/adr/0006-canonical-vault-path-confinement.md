@@ -27,7 +27,7 @@ Lexical string-prefix checks are insufficient: `/vault-old/file` starts with `/v
 
 Backslashes are treated as separators before validation. Filesystem adapters accept only parsed paths or re-parse untrusted persisted/generated strings at their boundary.
 
-`/ask` separately parses a generated `TopicSlug`. It accepts a leaf slug or the canonical `reclaw/research/<slug>[/_index.md]` reference and rejects arbitrary nested paths.
+`/ask` separately parses a generated `TopicSlug`. It accepts a leaf slug or the canonical `research/runs/<slug>[/_index.md]` reference and rejects arbitrary nested paths.
 
 ### Canonical workspace boundary
 

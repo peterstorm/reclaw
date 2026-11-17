@@ -25,7 +25,7 @@ function makeNote(relativePath: string, content: string): VaultNote {
 /** Hub note fixture. */
 function makeHubNote(topicSlug = 'ai-agents'): VaultNote {
   return makeNote(
-    `reclaw/research/${topicSlug}/_index.md`,
+    `research/runs/${topicSlug}/_index.md`,
     `---\ntitle: 'AI Agents'\ndate: 2026-03-04\nquality: good\n---\n\n# AI Agents\n`,
   );
 }
@@ -33,7 +33,7 @@ function makeHubNote(topicSlug = 'ai-agents'): VaultNote {
 /** Source note fixture. */
 function makeSourceNote(topicSlug = 'ai-agents', title = 'My Source'): VaultNote {
   return makeNote(
-    `reclaw/research/${topicSlug}/Sources/${title}.md`,
+    `research/runs/${topicSlug}/Sources/${title}.md`,
     `---\ntitle: '${title}'\nsource_type: web\nurl: 'https://example.com'\n---\n\n# ${title}\n`,
   );
 }
@@ -41,7 +41,7 @@ function makeSourceNote(topicSlug = 'ai-agents', title = 'My Source'): VaultNote
 /** Q&A note fixture. */
 function makeQANote(topicSlug = 'ai-agents', question = 'What is an AI agent'): VaultNote {
   return makeNote(
-    `reclaw/research/${topicSlug}/QA/${question}.md`,
+    `research/runs/${topicSlug}/QA/${question}.md`,
     `---\nquestion: '${question}'\n---\n\n# ${question}\n\nAn AI agent is...\n`,
   );
 }
@@ -49,7 +49,7 @@ function makeQANote(topicSlug = 'ai-agents', question = 'What is an AI agent'): 
 /** Emergency note fixture. */
 function makeEmergencyNote(topicSlug = 'ai-agents'): VaultNote {
   return makeNote(
-    `reclaw/research/${topicSlug}/_emergency.md`,
+    `research/runs/${topicSlug}/_emergency.md`,
     `---\ntitle: '[EMERGENCY] AI Agents'\nemergency: true\n---\n\n# [Emergency] AI Agents\n`,
   );
 }
@@ -116,11 +116,11 @@ describe('createVaultWriter', () => {
       expect(result.ok).toBe(true);
 
       // Sources directory must exist
-      const sourcesDir = path.join(tmpDir, 'reclaw/research/ai-agents/Sources');
+      const sourcesDir = path.join(tmpDir, 'research/runs/ai-agents/Sources');
       expect(await pathExists(sourcesDir)).toBe(true);
 
       // Source note must exist
-      const content = await readFile(tmpDir, 'reclaw/research/ai-agents/Sources/My Source.md');
+      const content = await readFile(tmpDir, 'research/runs/ai-agents/Sources/My Source.md');
       expect(content).not.toBeNull();
       expect(content).toContain('My Source');
     });
@@ -132,10 +132,10 @@ describe('createVaultWriter', () => {
 
       expect(result.ok).toBe(true);
 
-      const qaDir = path.join(tmpDir, 'reclaw/research/ai-agents/QA');
+      const qaDir = path.join(tmpDir, 'research/runs/ai-agents/QA');
       expect(await pathExists(qaDir)).toBe(true);
 
-      const content = await readFile(tmpDir, 'reclaw/research/ai-agents/QA/What is an AI agent.md');
+      const content = await readFile(tmpDir, 'research/runs/ai-agents/QA/What is an AI agent.md');
       expect(content).not.toBeNull();
       expect(content).toContain('What is an AI agent');
     });
@@ -208,10 +208,10 @@ describe('createVaultWriter', () => {
     it('handles deeply nested paths correctly', async () => {
       const writer = createVaultWriter();
       const deepNote = makeNote(
-        'reclaw/research/deep-topic/Sources/Nested/Deep Title.md',
+        'research/runs/deep-topic/Sources/Nested/Deep Title.md',
         '# Deep Title\n',
       );
-      const hubNote = makeNote('reclaw/research/deep-topic/_index.md', '# Deep Topic\n');
+      const hubNote = makeNote('research/runs/deep-topic/_index.md', '# Deep Topic\n');
 
       const result = await writer.writeNotes([hubNote, deepNote], tmpDir);
       expect(result.ok).toBe(true);
@@ -223,7 +223,7 @@ describe('createVaultWriter', () => {
     it('preserves UTF-8 content in written files', async () => {
       const writer = createVaultWriter();
       const content = '# Ünïcödë Tïtle\n\nSøme spëcïal chàractërs: 你好 🌍\n';
-      const note = makeNote('reclaw/research/unicode-topic/_index.md', content);
+      const note = makeNote('research/runs/unicode-topic/_index.md', content);
 
       const result = await writer.writeNotes([note], tmpDir);
       expect(result.ok).toBe(true);
@@ -240,7 +240,7 @@ describe('createVaultWriter', () => {
       expect(result.ok).toBe(true);
       if (!result.ok) throw new Error('Expected ok');
 
-      const expectedPath = path.join(tmpDir, 'reclaw/research/my-topic/_index.md');
+      const expectedPath = path.join(tmpDir, 'research/runs/my-topic/_index.md');
       expect(result.value).toBe(expectedPath);
     });
 
@@ -259,7 +259,7 @@ describe('createVaultWriter', () => {
 
     it('rejects writes through a directory symlink that escapes the vault', async () => {
       const outside = await makeTempDir();
-      const topicDir = path.join(tmpDir, 'reclaw/research/symlink-topic');
+      const topicDir = path.join(tmpDir, 'research/runs/symlink-topic');
       await fs.mkdir(topicDir, { recursive: true });
       await fs.symlink(outside, path.join(topicDir, 'Sources'));
       const writer = createVaultWriter();
@@ -303,7 +303,7 @@ describe('createVaultWriter', () => {
 
       expect(result.ok).toBe(true);
 
-      const dir = path.join(tmpDir, 'reclaw/research/brand-new-topic');
+      const dir = path.join(tmpDir, 'research/runs/brand-new-topic');
       expect(await pathExists(dir)).toBe(true);
     });
 
@@ -326,7 +326,7 @@ describe('createVaultWriter', () => {
       expect(result.ok).toBe(true);
       if (!result.ok) throw new Error('Expected ok');
 
-      const expectedPath = path.join(tmpDir, 'reclaw/research/test-slug/_emergency.md');
+      const expectedPath = path.join(tmpDir, 'research/runs/test-slug/_emergency.md');
       expect(result.value).toBe(expectedPath);
     });
 
@@ -375,7 +375,7 @@ An emergency answer here.
 
 - [Source 1](https://example.com) (web)
 `;
-      const note = makeNote('reclaw/research/my-topic/_emergency.md', content);
+      const note = makeNote('research/runs/my-topic/_emergency.md', content);
       const result = await writer.writeEmergencyNote(note, tmpDir);
 
       expect(result.ok).toBe(true);
@@ -482,12 +482,12 @@ An emergency answer here.
       expect(emergencyResult.ok).toBe(true);
 
       // Both files must exist
-      expect(await pathExists(path.join(tmpDir, 'reclaw/research/coexist-topic/_index.md'))).toBe(
+      expect(await pathExists(path.join(tmpDir, 'research/runs/coexist-topic/_index.md'))).toBe(
         true,
       );
-      expect(
-        await pathExists(path.join(tmpDir, 'reclaw/research/coexist-topic/_emergency.md')),
-      ).toBe(true);
+      expect(await pathExists(path.join(tmpDir, 'research/runs/coexist-topic/_emergency.md'))).toBe(
+        true,
+      );
     });
   });
 });

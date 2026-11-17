@@ -42,7 +42,7 @@ promptTemplate: |
 
   Build `fetchedIds` = the set of `activityId` values in the fresh fetch.
 
-  Read yesterday's note at `~/dev/notes/remotevault/personal/fitness/<YYYY>/<MM>/<yesterday>.md` and
+  Read yesterday's note at `~/dev/notes/remotevault/personal/fitness/log/<YYYY>/<MM>/<yesterday>.md` and
   parse the dedup marker on its last line:
   ```
   <!-- garmin-sync: activityIds=[...]; lastSynced=...; backfilled=... -->

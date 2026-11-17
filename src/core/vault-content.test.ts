@@ -89,9 +89,9 @@ const poorQuality: QualityResult = {
 
 describe('buildHubNote', () => {
   describe('FR-041: hub note structure', () => {
-    it('returns a VaultNote with relativePath under reclaw/research/{slug}/_index.md', () => {
+    it('returns a VaultNote with relativePath under research/runs/{slug}/_index.md', () => {
       const note = buildHubNote(makeContext(), goodQuality);
-      expect(note.relativePath).toBe('reclaw/research/artificial-intelligence/_index.md');
+      expect(note.relativePath).toBe('research/runs/artificial-intelligence/_index.md');
     });
 
     it('contains the topic title in frontmatter', () => {
@@ -169,13 +169,13 @@ describe('buildHubNote', () => {
 describe('buildSourceNote', () => {
   const source = defined(sources[0]);
   const topicSlug = makeTopicSlug('artificial-intelligence');
-  const hubPath = 'reclaw/research/artificial-intelligence/_index.md';
+  const hubPath = 'research/runs/artificial-intelligence/_index.md';
   const passageAnchors = '## Passage 1';
   const researchDate = '2026-03-04';
   const notebookId = 'notebook-abc';
 
   describe('FR-042: source note frontmatter', () => {
-    it('returns a VaultNote with relativePath under reclaw/research/{slug}/Sources/', () => {
+    it('returns a VaultNote with relativePath under research/runs/{slug}/Sources/', () => {
       const note = buildSourceNote(
         source,
         topicSlug,
@@ -185,7 +185,7 @@ describe('buildSourceNote', () => {
         notebookId,
       );
       expect(note.relativePath).toBe(
-        'reclaw/research/artificial-intelligence/Sources/First Article.md',
+        'research/runs/artificial-intelligence/Sources/First Article.md',
       );
     });
 
@@ -371,12 +371,12 @@ describe('buildQANote', () => {
   const resolvedAnswer = 'AI is the simulation of human intelligence [[First Article#Passage 1]].';
   const citedSources = [defined(sources[0])];
   const topicSlug = makeTopicSlug('artificial-intelligence');
-  const hubPath = 'reclaw/research/artificial-intelligence/_index.md';
+  const hubPath = 'research/runs/artificial-intelligence/_index.md';
 
   describe('FR-043: Q&A note structure', () => {
-    it('returns a VaultNote with relativePath under reclaw/research/{slug}/QA/', () => {
+    it('returns a VaultNote with relativePath under research/runs/{slug}/QA/', () => {
       const note = buildQANote(question, resolvedAnswer, citedSources, topicSlug, hubPath);
-      expect(note.relativePath).toMatch(/^reclaw\/research\/artificial-intelligence\/QA\//);
+      expect(note.relativePath).toMatch(/^research\/runs\/artificial-intelligence\/QA\//);
     });
 
     it('contains question as a heading', () => {
@@ -451,7 +451,7 @@ describe('buildQANote', () => {
 describe('buildEmergencyNote', () => {
   it('returns a VaultNote with relativePath ending in _emergency.md', () => {
     const note = buildEmergencyNote(makeContext());
-    expect(note.relativePath).toBe('reclaw/research/artificial-intelligence/_emergency.md');
+    expect(note.relativePath).toBe('research/runs/artificial-intelligence/_emergency.md');
   });
 
   it('marks the note as emergency in frontmatter', () => {
@@ -516,10 +516,10 @@ describe('buildAllVaultNotes', () => {
     expect(notes.length).toBeGreaterThan(0);
   });
 
-  it('FR-040: all note paths are under reclaw/research/{slug}/', () => {
+  it('FR-040: all note paths are under research/runs/{slug}/', () => {
     const notes = buildAllVaultNotes(makeContext(), goodQuality);
     for (const note of notes) {
-      expect(note.relativePath).toMatch(/^reclaw\/research\/artificial-intelligence\//);
+      expect(note.relativePath).toMatch(/^research\/runs\/artificial-intelligence\//);
     }
   });
 

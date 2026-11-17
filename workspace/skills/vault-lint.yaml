@@ -22,7 +22,11 @@ promptTemplate: |
   - `memory-librarian` (cortex → vault writes)
 
   Vault-lint catches what those don't: **claims that disagree, claims that have
-  aged out, and concepts that should have a dedicated page but don't.**
+  aged out, and concepts that should have a dedicated page but don't** — plus
+  a deterministic sweep for **notes that break the placement contract** (the
+  `obsidian-vault` skill: one level per folder, an MOC per note folder, `up:`
+  naming that MOC, every note listed in it, lowercase names, required
+  frontmatter, path links that resolve).
 
   CRITICAL: This is an automated scheduled job. There is NO user present. Do
   NOT ask questions or request confirmation. Do NOT write to the vault. Execute
@@ -56,7 +60,8 @@ promptTemplate: |
   ```
 
   Cap the list at the 30 most-recently-modified notes. If 0 frontier notes,
-  respond with exactly ALL_CLEAR — no backticks, no formatting, nothing else.
+  skip Checks 1–3 and go straight to Check 4 (placement covers the whole
+  vault, not just the frontier).
 
   ## Step 2 — Pull suppression list
 
@@ -108,7 +113,7 @@ promptTemplate: |
   3. For each matching note: read just the lines around the match (use grep -C
      2 or Read with offset/limit). Compare the claim to what the other note
      asserts about the same entity.
-  4. If they contradict → check `/tmp/vault-lint-suppress.json` for an existing
+  4. If they contradict → check the Step 2 suppression set for an existing
      `{<frontier-note>, contradiction}` pair. Skip if present and conflict
      hasn't changed. Otherwise record finding: `<frontier-note> :: <other-note>
      :: <claim summary> :: <conflict summary>`.
@@ -133,7 +138,7 @@ promptTemplate: |
   - Notes with both `date:` and `updated:` frontmatter where `updated > date +
     30 days`
 
-  Before recording a finding, consult `/tmp/vault-lint-suppress.json` for
+  Before recording a finding, consult the Step 2 suppression set for
   `{<old-note>, outdated}` and skip if already reported in the last 4 weeks
   with the same supersession evidence.
 
@@ -159,16 +164,41 @@ promptTemplate: |
      - A file's `title:` frontmatter or first H1 matches the entity
      - A file's `aliases:` array contains the entity
   4. If no dedicated page exists → before recording, check
-     `/tmp/vault-lint-suppress.json` for `{<entity>, missing-concept}` and
+     the Step 2 suppression set for `{<entity>, missing-concept}` and
      skip if already reported in the last 4 weeks. Otherwise record finding:
      `<entity> mentioned in N notes, no dedicated page`. Suggest the best
-     folder based on the dominant mention context.
+     topic folder (never a domain root) based on the dominant mention context.
 
   Cap at 5 findings.
 
+  ## Step 5b — Check 4: Placement
+
+  Run the vault checker over the whole vault. It is deterministic and
+  read-only:
+  ```bash
+  bun ~/dev/claude-plugins/obsidian/scripts/vault.ts check --json > /tmp/vault-lint-placement.json 2>&1; echo "exit=$?"
+  cat /tmp/vault-lint-placement.json
+  ```
+  Exit 0 with `"total": 0` means the vault is clean. Exit 1 means violations;
+  anything else (no JSON) is a tool failure — report it in the digest as
+  `Placement check failed: <first error line>` rather than skipping silently.
+
+  Each violation has a `rule` and a subject (`note`, or `folder` for
+  `missing-moc`): `loose-note`, `missing-moc`, `wrong-up` (with `expected` /
+  `actual`), `unlisted` (with `moc`), `bad-name` (`format` / `date-prefix`),
+  `frontmatter`, `broken-link` (with `target`).
+
+  Placement findings are **not** suppressed by Step 2: they are mechanical and
+  stay until fixed, so report them every week. Group by rule, list at most 5
+  subjects per rule, and give the total. Name the likely writer where it is
+  obvious from the path (`personal/fitness/log/` → garmin-sync,
+  `research/runs/` → /research, a fresh note with `source: librarian` →
+  memory-librarian) — a writer that keeps producing violations is the real
+  bug.
+
   ## Step 6 — Compose digest
 
-  If all three checks produce zero findings, respond with exactly `ALL_CLEAR`.
+  If all four checks produce zero findings, respond with exactly `ALL_CLEAR`.
 
   Otherwise, send a Telegram-friendly digest. Keep it dense — the user reads
   this on a phone:
@@ -191,7 +221,12 @@ promptTemplate: |
       Suggested folder: <path>
     • ...
 
-  Review with: /obsidian-vault
+  Placement (N violations)
+    • loose-note (2): programming/foo.md, homelab/bar.md — likely memory-librarian
+    • unlisted (1): homelab/nixos/baz.md (not in homelab/nixos/MOC.md)
+    • ...
+
+  Review with: /obsidian-vault · fix placement with /obsidian:check-vault
   ```
 
   Omit any section with zero findings. Total digest should fit on one phone
@@ -202,7 +237,8 @@ promptTemplate: |
 
   ## Step 7 — Record findings to the durable suppression log
 
-  For each finding included in the digest, append one line to
+  For each Check 1–3 finding included in the digest (not placement — see
+  Step 5b), append one line to
   `~/.cache/reclaw/vault-lint-findings.jsonl`. This is the suppression list Step 2
   reads next week — it must be durable (not cortex, not `/tmp`):
 

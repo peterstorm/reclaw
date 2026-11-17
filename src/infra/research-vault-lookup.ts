@@ -4,7 +4,7 @@
 // hub note's YAML frontmatter. Used by /ask to find the notebook to query.
 
 import { promises as fs } from 'node:fs';
-import type { TopicSlug } from '../core/topic-slug.js';
+import { RESEARCH_BASE, type TopicSlug } from '../core/topic-slug.js';
 import { err, ok } from '../core/types.js';
 import type { Result } from '../core/types.js';
 import {
@@ -21,8 +21,6 @@ export type NotebookLookup = {
   readonly slug: TopicSlug;
   readonly topic: string;
 };
-
-const RESEARCH_BASE = 'reclaw/research';
 
 /**
  * Read the root-confined hub note for a parsed topic slug and return its
