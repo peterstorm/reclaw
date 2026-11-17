@@ -79,6 +79,7 @@ const workerConfig = (redisPort: number): AppConfig => ({
   timezone: 'Europe/Copenhagen',
   locationName: 'Copenhagen',
   agentBackend: 'claude',
+  agentContainment: { kind: 'none' },
 });
 
 const makeTelegram = (): TelegramAdapter => ({

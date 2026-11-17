@@ -1,11 +1,20 @@
 /**
  * Shared subprocess runner for agent backends.
  *
- * Owns the full subprocess lifecycle: spawn, stdin delivery, timeout enforcement,
- * stdout collection/streaming, and result parsing. Backend-agnostic — delegates
- * arg building, env cleaning, and output parsing to the AgentBackend interface.
+ * Owns the full subprocess lifecycle: containment, spawn, stdin delivery,
+ * timeout enforcement, teardown, stdout collection/streaming, and result
+ * parsing. Backend-agnostic — delegates arg building, env cleaning, and output
+ * parsing to the AgentBackend interface.
  */
 
+import { randomUUID } from 'node:crypto';
+import {
+  type AgentRunId,
+  NO_CONTAINMENT,
+  agentScopeUnit,
+  containAgentInvocation,
+  parseAgentRunId,
+} from '../../core/agent-containment.js';
 import { buildAgentProcessEnvironment } from '../../core/agent-environment.js';
 import {
   type AgentFailure,
@@ -14,6 +23,7 @@ import {
   formatAgentFailure,
   normalizeAgentFailureDetail,
 } from '../../core/agent-failure.js';
+import { type Result, err, ok } from '../../core/types.js';
 import type { AgentBackend, AgentOptions, AgentResult, OnStreamChunk, SpawnFn } from './types.js';
 
 // ─── Default Spawn ────────────────────────────────────────────────────────────
@@ -68,17 +78,78 @@ function buildExitDetail(backend: AgentBackend, stderrText: string, rawStdout: s
   return '(no diagnostic output on stderr or stdout)';
 }
 
-// ─── Non-Streaming Runner ─────────────────────────────────────────────────────
+// ─── Run Lifecycle ────────────────────────────────────────────────────────────
+
+type SpawnOptions = Parameters<SpawnFn>[1];
+
+function mintRunId(): AgentRunId {
+  const raw = randomUUID();
+  const runId = parseAgentRunId(raw);
+  // randomUUID() is specified to return a lowercase v4 UUID.
+  if (runId === null) throw new Error(`randomUUID returned a non-UUID: ${raw}`);
+  return runId;
+}
 
 /**
- * Execute an agent subprocess, collect stdout, and return an AgentResult.
- *
- * FR-101: Returns success data or one typed AgentFailure.
- * FR-105: Timeout enforcement — kills subprocess after timeoutMs.
- * FR-108: Identical return shape regardless of backend.
- * FR-113: Prompt delivered via stdin.
+ * Run a teardown command to completion. Teardown follows a failure that is
+ * already being reported, so its own failure is logged, never thrown: the
+ * scope's RuntimeMaxSec= and BindsTo= remain as backstops, and the log names
+ * the command so an operator can finish the job by hand.
  */
-export async function runAgent(backend: AgentBackend, options: AgentOptions): Promise<AgentResult> {
+async function runTeardown(
+  spawnFn: SpawnFn,
+  argv: readonly string[],
+  spawnOptions: SpawnOptions,
+): Promise<void> {
+  const command = argv.join(' ');
+  let proc: ReturnType<SpawnFn>;
+  try {
+    proc = spawnFn([...argv], spawnOptions);
+  } catch (spawnErr) {
+    console.error(`[runner] teardown could not start (${command}): ${boundedDetail(spawnErr)}`);
+    return;
+  }
+  proc.stdin.end();
+  const [stderrText, , exitCode] = await Promise.all([
+    new Response(proc.stderr).text().catch(() => ''),
+    new Response(proc.stdout).text().catch(() => ''),
+    proc.exited,
+  ]);
+  if (exitCode !== 0) {
+    console.error(
+      `[runner] teardown failed (${command}) exit=${exitCode}: ${stderrText.trim().slice(0, 400)}`,
+    );
+  }
+}
+
+/** A started agent run: its process plus the controls both runners share. */
+type StartedRun = {
+  readonly proc: ReturnType<SpawnFn>;
+  /** Everything the process wrote to stderr; drained concurrently from the start. */
+  readonly stderr: Promise<string>;
+  readonly startMs: number;
+  /** True once the deadline fired; teardown has started by then. */
+  readonly timedOut: () => boolean;
+  /** Disarm the deadline once stdout has ended. */
+  readonly clearDeadline: () => void;
+  /**
+   * Kill every process the run started — under `systemd-scope` that includes
+   * descendants that detached with setsid/nohup. Idempotent: every call
+   * returns the same promise, which resolves when teardown has finished.
+   */
+  readonly terminate: () => Promise<void>;
+};
+
+/**
+ * Contain, spawn and arm one agent run: build argv and environment, wrap them
+ * in the configured containment, spawn, deliver the prompt and start the
+ * deadline. A failure before the run is live comes back as an AgentFailure,
+ * with anything already started torn down.
+ */
+async function startRun(
+  backend: AgentBackend,
+  options: AgentOptions,
+): Promise<Result<StartedRun, AgentFailure>> {
   const { prompt, cwd, allowedTools, timeoutMs, env, resumeSessionId, modelSelection, _spawn } =
     options;
 
@@ -99,18 +170,43 @@ export async function runAgent(backend: AgentBackend, options: AgentOptions): Pr
     ),
   );
 
+  const containment = options.containment ?? NO_CONTAINMENT;
+  const runId = mintRunId();
+  const invocation = containAgentInvocation(containment, runId, args);
+  const spawnOptions: SpawnOptions = {
+    cwd,
+    stdin: 'pipe',
+    stdout: 'pipe',
+    stderr: 'pipe',
+    env: processEnv,
+  };
+
   const startMs = Date.now();
 
   let proc: ReturnType<SpawnFn>;
   try {
-    proc = spawnFn(args, { cwd, stdin: 'pipe', stdout: 'pipe', stderr: 'pipe', env: processEnv });
+    proc = spawnFn([...invocation.argv], spawnOptions);
   } catch (spawnErr) {
-    return failed(spawnFailure(backend.name, spawnErr));
+    return err(spawnFailure(backend.name, spawnErr));
+  }
+  if (containment.kind === 'systemd-scope') {
+    console.info(`[runner] ${backend.name} run in ${agentScopeUnit(runId)}`);
   }
 
+  let teardown: Promise<void> | null = null;
+  const terminate = (): Promise<void> => {
+    teardown ??= (async () => {
+      proc.kill();
+      if (invocation.teardownArgv !== null) {
+        await runTeardown(spawnFn, invocation.teardownArgv, spawnOptions);
+      }
+    })();
+    return teardown;
+  };
+
   // Drain stderr concurrently to prevent pipe deadlocks
-  const stderrPromise: Promise<string> = new Response(proc.stderr).text().catch((err) => {
-    console.warn(`[runner] stderr drain failed: ${err}`);
+  const stderr: Promise<string> = new Response(proc.stderr).text().catch((drainErr) => {
+    console.warn(`[runner] stderr drain failed: ${drainErr}`);
     return '';
   });
 
@@ -119,37 +215,65 @@ export async function runAgent(backend: AgentBackend, options: AgentOptions): Pr
     proc.stdin.write(new TextEncoder().encode(prompt));
     proc.stdin.end();
   } catch (stdinErr) {
-    proc.kill();
-    return failed({ kind: 'input-write', backend: backend.name, detail: boundedDetail(stdinErr) });
+    await terminate();
+    return err({ kind: 'input-write', backend: backend.name, detail: boundedDetail(stdinErr) });
   }
 
-  // Timeout enforcement
+  // Timeout enforcement. terminate() never rejects, so the floating call is safe;
+  // the runner awaits the same promise before it reports the timeout.
   let timedOut = false;
   const timeoutId = setTimeout(() => {
     timedOut = true;
-    proc.kill();
+    void terminate();
   }, timeoutMs);
+
+  return ok({
+    proc,
+    stderr,
+    startMs,
+    timedOut: () => timedOut,
+    clearDeadline: () => clearTimeout(timeoutId),
+    terminate,
+  });
+}
+
+// ─── Non-Streaming Runner ─────────────────────────────────────────────────────
+
+/**
+ * Execute an agent subprocess, collect stdout, and return an AgentResult.
+ *
+ * FR-101: Returns success data or one typed AgentFailure.
+ * FR-105: Timeout enforcement — kills the run (its whole scope when contained)
+ *         after timeoutMs.
+ * FR-108: Identical return shape regardless of backend.
+ * FR-113: Prompt delivered via stdin.
+ */
+export async function runAgent(backend: AgentBackend, options: AgentOptions): Promise<AgentResult> {
+  const started = await startRun(backend, options);
+  if (!started.ok) return failed(started.error);
+  const run = started.value;
 
   // Collect stdout
   let rawOutput: string;
   try {
-    rawOutput = await new Response(proc.stdout).text();
+    rawOutput = await new Response(run.proc.stdout).text();
   } catch (stdoutErr) {
-    clearTimeout(timeoutId);
-    proc.kill();
+    run.clearDeadline();
+    await run.terminate();
     return failed({ kind: 'output-read', backend: backend.name, detail: boundedDetail(stdoutErr) });
   }
 
-  const exitCode = await proc.exited;
-  clearTimeout(timeoutId);
-  const durationMs = Date.now() - startMs;
+  const exitCode = await run.proc.exited;
+  run.clearDeadline();
+  const durationMs = Date.now() - run.startMs;
 
-  if (timedOut) {
-    return failed({ kind: 'timeout', backend: backend.name, timeoutMs });
+  if (run.timedOut()) {
+    await run.terminate();
+    return failed({ kind: 'timeout', backend: backend.name, timeoutMs: options.timeoutMs });
   }
 
   if (exitCode !== 0) {
-    const stderrText = await stderrPromise;
+    const stderrText = await run.stderr;
     return failed(
       classifyAgentExit(backend.name, exitCode, buildExitDetail(backend, stderrText, rawOutput)),
     );
@@ -192,56 +316,11 @@ export async function runAgentStreaming(
   options: AgentOptions,
   onChunk: OnStreamChunk,
 ): Promise<AgentResult> {
-  const { prompt, cwd, allowedTools, timeoutMs, env, resumeSessionId, modelSelection, _spawn } =
-    options;
-
-  const spawnFn: SpawnFn = _spawn ?? getDefaultSpawn();
-  const args = backend.buildArgs({
-    ...(resumeSessionId ? { resumeSessionId } : {}),
-    allowedTools,
-    ...(modelSelection ? { modelSelection } : {}),
-  });
-  const processEnv = backend.cleanEnv(
-    buildAgentProcessEnvironment(
-      process.env,
-      {
-        backend: backend.name,
-        ...(modelSelection?.provider ? { provider: modelSelection.provider } : {}),
-      },
-      env,
-    ),
-  );
-
-  const startMs = Date.now();
-
-  let proc: ReturnType<SpawnFn>;
-  try {
-    proc = spawnFn(args, { cwd, stdin: 'pipe', stdout: 'pipe', stderr: 'pipe', env: processEnv });
-  } catch (spawnErr) {
-    return failed(spawnFailure(backend.name, spawnErr));
-  }
-
-  // Drain stderr concurrently
-  const stderrPromise: Promise<string> = new Response(proc.stderr).text().catch((err) => {
-    console.warn(`[runner] stderr drain failed: ${err}`);
-    return '';
-  });
-
-  // Write prompt to stdin and close
-  try {
-    proc.stdin.write(new TextEncoder().encode(prompt));
-    proc.stdin.end();
-  } catch (stdinErr) {
-    proc.kill();
-    return failed({ kind: 'input-write', backend: backend.name, detail: boundedDetail(stdinErr) });
-  }
-
-  // Timeout enforcement
-  let timedOut = false;
-  const timeoutId = setTimeout(() => {
-    timedOut = true;
-    proc.kill();
-  }, timeoutMs);
+  const started = await startRun(backend, options);
+  if (!started.ok) return failed(started.error);
+  const run = started.value;
+  const timeout = (): AgentResult =>
+    failed({ kind: 'timeout', backend: backend.name, timeoutMs: options.timeoutMs });
 
   // Streaming accumulators. The global text accumulator backs the exit-0
   // protocol fallback; thinking is never read globally (the consumer renders
@@ -303,7 +382,7 @@ export async function runAgentStreaming(
 
   // Read stdout line by line
   try {
-    const reader = proc.stdout.getReader();
+    const reader = run.proc.stdout.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
 
@@ -327,24 +406,23 @@ export async function runAgentStreaming(
       processLine(buffer);
     }
   } catch (readErr) {
-    clearTimeout(timeoutId);
-    proc.kill();
-    if (timedOut) {
-      return failed({ kind: 'timeout', backend: backend.name, timeoutMs });
-    }
+    run.clearDeadline();
+    await run.terminate();
+    if (run.timedOut()) return timeout();
     return failed({ kind: 'output-read', backend: backend.name, detail: boundedDetail(readErr) });
   }
 
-  const exitCode = await proc.exited;
-  clearTimeout(timeoutId);
-  const durationMs = Date.now() - startMs;
+  const exitCode = await run.proc.exited;
+  run.clearDeadline();
+  const durationMs = Date.now() - run.startMs;
 
-  if (timedOut) {
-    return failed({ kind: 'timeout', backend: backend.name, timeoutMs });
+  if (run.timedOut()) {
+    await run.terminate();
+    return timeout();
   }
 
   if (exitCode !== 0) {
-    const stderrText = await stderrPromise;
+    const stderrText = await run.stderr;
     return failed(
       classifyAgentExit(
         backend.name,

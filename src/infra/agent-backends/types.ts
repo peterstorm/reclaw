@@ -6,6 +6,7 @@
  * allowing consumers to remain agnostic to the underlying CLI tool.
  */
 
+import type { AgentContainment } from '../../core/agent-containment.js';
 import type { AgentFailure } from '../../core/agent-failure.js';
 import type { AgentModelSelection } from '../../core/model-selection.js';
 import type { StreamChunk } from '../../core/stream-state.js';
@@ -44,6 +45,12 @@ export type AgentOptions = {
   readonly resumeSessionId?: string;
   readonly modelSelection?: AgentModelSelection;
   readonly backend?: AgentBackendName;
+  /**
+   * Where the run's process tree lives and how it is killed. Defaults to
+   * `none` (signal the agent process only). Production sets `systemd-scope`,
+   * so a timeout reaps everything the run started. See core/agent-containment.
+   */
+  readonly containment?: AgentContainment;
   readonly _spawn?: SpawnFn;
 };
 

@@ -33,6 +33,20 @@ Code: `src/core/{curriculum,master-note,study-log,study-plan,curriculum-moc}.ts`
 | **Feynman check** | Weekly explain-it-back on the weakest fully-read topic; logs the gaps found. | A recall round |
 | **Correction** | A claim in an existing vault note/runbook/receipt found wrong while researching a master note; listed in the note and the corrections ledger. | An override |
 
+## Agent runs (process containment)
+
+Code: `src/core/agent-containment.ts`, `src/infra/agent-backends/runner.ts`,
+`scripts/verify-agent-containment.ts`. Decision: `docs/adr/0013-agent-run-containment.md`.
+Host side: `~/.dotfiles/roles/reclaw/default.nix` (agents slice, worker caps).
+
+| Term | Meaning | Not to be confused with |
+|---|---|---|
+| **Agent run** | One `claude -p` / `pi` subprocess started by the runner for a chat turn, scheduled skill or research step, plus every process it starts. Identified by a run id (lowercase UUID). | A session (the conversation it resumes) or a BullMQ job (which may make several runs) |
+| **Containment** | Where an agent run's process tree lives and how it is killed: `none` (signal the agent only) or `systemd-scope`. | The agent environment allowlist (what the run may *read*) |
+| **Run scope** | The transient unit `reclaw-agent-<run id>.scope` holding one contained run. Bound to `reclaw.service`, capped by RuntimeMaxSec. | `reclaw.service` (the bot) |
+| **Agents slice** | `reclaw-agents.slice`: parent of every run scope; owns the shared memory ceiling. | The service's own cgroup |
+| **Teardown** | Ending a run's whole process tree: signal the agent, then `systemctl --user stop` its run scope. Done on timeout and on stdin/stdout failure; never after a normal finish, so background work survives the turn. | Killing the agent PID |
+
 ## Instagram ingest (posts → vault notes)
 
 Code: `src/core/instagram-*.ts`, `src/orchestration/instagram-ingest.ts`,

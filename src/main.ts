@@ -171,18 +171,27 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
         }
       : {};
   console.info(`[main] Agent backend: ${defaultBackend.name}`);
+  const containment = config.agentContainment;
+  console.info(
+    containment.kind === 'systemd-scope'
+      ? `[main] Agent containment: systemd scope per run in ${containment.slice} (bindsTo=${containment.bindsTo ?? 'none'}, runtimeMaxSec=${containment.runtimeMaxSec})`
+      : '[main] Agent containment: none — a timed-out run only signals the agent process',
+  );
 
   // Resolve the backend first, then the model for THAT backend — the Pi defaults must never
   // reach a Claude run (a per-skill `backend: claude` would otherwise get `--model <vLLM id>`).
+  // Every agent run (chat, scheduled, research) passes through here, so this is
+  // also where each run gets the service's containment.
   const forBackend =
     (defaults: ServiceModelSelections) =>
     (opts: AgentOptions): [AgentBackend, AgentOptions] => {
       const backend = opts.backend ?? config.agentBackend;
       const { modelSelection: requested, ...rest } = opts;
       const modelSelection = resolveModelSelection(backend, requested, defaults);
+      const contained = { ...rest, containment };
       return [
         resolveBackend({ agentBackend: backend }),
-        modelSelection ? { ...rest, modelSelection } : rest,
+        modelSelection ? { ...contained, modelSelection } : contained,
       ];
     };
 

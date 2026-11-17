@@ -1,6 +1,11 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
+import {
+  NO_CONTAINMENT,
+  agentContainmentSchema,
+  rawAgentContainment,
+} from '../core/agent-containment.js';
 import { type Result, err, ok } from '../core/types.js';
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
@@ -35,6 +40,9 @@ export const AppConfigSchema = z.object({
   piProvider: z.string().min(1).optional(),
   piModel: z.string().min(1).optional(),
   piScheduledModel: z.string().min(1).optional(),
+  // Where each agent run's process tree lives (RECLAW_AGENT_CONTAINMENT and
+  // friends). `systemd-scope` in production; see core/agent-containment.ts.
+  agentContainment: agentContainmentSchema.default(NO_CONTAINMENT),
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;
@@ -140,6 +148,16 @@ export function parseEnvToRaw(env: Record<string, string | undefined>): {
     piProvider: parseOptionalString(env.RECLAW_PI_PROVIDER),
     piModel: parseOptionalString(env.RECLAW_PI_MODEL),
     piScheduledModel: parseOptionalString(env.RECLAW_PI_SCHEDULED_MODEL),
+    agentContainment: rawAgentContainment({
+      mode: parseOptionalString(env.RECLAW_AGENT_CONTAINMENT),
+      slice: parseOptionalString(env.RECLAW_AGENT_SLICE),
+      bindsTo: parseOptionalString(env.RECLAW_AGENT_BINDS_TO),
+      runtimeMaxSec: parseNumericEnv(
+        'RECLAW_AGENT_RUNTIME_MAX_SEC',
+        env.RECLAW_AGENT_RUNTIME_MAX_SEC,
+        errors,
+      ),
+    }),
   };
   return { raw, errors };
 }
