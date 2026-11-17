@@ -24,10 +24,25 @@ export type WhisperModel = (typeof WHISPER_MODELS)[number];
 export const DEFAULT_WHISPER_MODEL: WhisperModel = 'small';
 export const DEFAULT_PROFILE_LIMIT = 20;
 const MAX_PROFILE_LIMIT = 200;
+/** A saved dataset costs nothing to re-read, so it is ingested whole up to this many posts. */
+export const MAX_DATASET_POSTS = 10_000;
+
+/**
+ * Where the posts come from: a fresh Apify scrape of the target, or the dataset JSON saved
+ * from an earlier Apify run (its media URLs stay valid for about two days). Re-reading a
+ * dataset spends no Apify credit, so the profile limit's cost cap does not apply to it.
+ */
+export type PostSource =
+  | { readonly kind: 'scrape' }
+  | { readonly kind: 'dataset'; readonly path: string };
 
 export type IngestRequest = Readonly<{
   target: InstagramTarget;
-  /** Posts to fetch: 1 for a single post, up to {@link MAX_PROFILE_LIMIT} for a profile. */
+  source: PostSource;
+  /**
+   * Posts to ingest: 1 for a single post; for a profile up to {@link MAX_PROFILE_LIMIT} when
+   * scraping, up to {@link MAX_DATASET_POSTS} (default: all) from a dataset.
+   */
   limit: number;
   /** Keep the mp4 on disk (outside the vault) instead of transcribing from scratch audio. */
   keepVideo: boolean;
@@ -39,7 +54,7 @@ export type IngestRequest = Readonly<{
 }>;
 
 export const INGEST_USAGE =
-  'Usage: ig-ingest <instagram-url|@handle> [--limit N (profiles only)] [--video] [--force] [--no-screen-text] [--model tiny|base|small|medium|large-v3]';
+  'Usage: ig-ingest <instagram-url|@handle> [--limit N (profiles only)] [--from-dataset FILE] [--video] [--force] [--no-screen-text] [--model tiny|base|small|medium|large-v3]';
 
 export function parseWhisperModel(raw: string): Result<WhisperModel, string> {
   const model = WHISPER_MODELS.find((m) => m === raw);
@@ -50,6 +65,7 @@ export function parseWhisperModel(raw: string): Result<WhisperModel, string> {
 
 type Flags = {
   limit: number | null;
+  dataset: string | null;
   keepVideo: boolean;
   force: boolean;
   model: WhisperModel;
@@ -64,6 +80,7 @@ export function parseIngestArgs(
   const positional: string[] = [];
   const flags: Flags = {
     limit: null,
+    dataset: null,
     keepVideo: false,
     force: false,
     model: defaultModel,
@@ -75,15 +92,18 @@ export function parseIngestArgs(
     if (arg === '--video') flags.keepVideo = true;
     else if (arg === '--force') flags.force = true;
     else if (arg === '--no-screen-text') flags.readScreenText = false;
-    else if (arg === '--limit' || arg === '--model') {
+    else if (arg === '--limit' || arg === '--model' || arg === '--from-dataset') {
       const value = args[++i];
       if (value === undefined) return err(`${arg} needs a value. ${INGEST_USAGE}`);
       if (arg === '--limit') {
         const limit = Number(value);
-        if (!Number.isInteger(limit) || limit < 1 || limit > MAX_PROFILE_LIMIT) {
-          return err(`--limit must be an integer from 1 to ${MAX_PROFILE_LIMIT}, got "${value}".`);
+        if (!Number.isInteger(limit) || limit < 1) {
+          return err(`--limit must be a positive integer, got "${value}".`);
         }
         flags.limit = limit;
+      } else if (arg === '--from-dataset') {
+        if (value.trim().length === 0) return err('--from-dataset needs a file path.');
+        flags.dataset = value;
       } else {
         const model = parseWhisperModel(value);
         if (!model.ok) return model;
@@ -101,10 +121,28 @@ export function parseIngestArgs(
   if (target.value.kind === 'post' && flags.limit !== null) {
     return err('--limit only applies to profiles; a post URL is always one post.');
   }
+  if (target.value.kind === 'post' && flags.dataset !== null) {
+    return err('--from-dataset ingests a saved profile dataset; give the @handle, not a post URL.');
+  }
+
+  const source: PostSource =
+    flags.dataset === null ? { kind: 'scrape' } : { kind: 'dataset', path: flags.dataset };
+  const [maxLimit, defaultLimit] =
+    source.kind === 'scrape'
+      ? [MAX_PROFILE_LIMIT, DEFAULT_PROFILE_LIMIT]
+      : [MAX_DATASET_POSTS, MAX_DATASET_POSTS];
+  if (flags.limit !== null && flags.limit > maxLimit) {
+    return err(
+      source.kind === 'scrape'
+        ? `--limit must be from 1 to ${MAX_PROFILE_LIMIT} when scraping (each post costs Apify credit), got ${flags.limit}.`
+        : `--limit must be from 1 to ${MAX_DATASET_POSTS} for a dataset, got ${flags.limit}.`,
+    );
+  }
 
   return ok({
     target: target.value,
-    limit: target.value.kind === 'post' ? 1 : (flags.limit ?? DEFAULT_PROFILE_LIMIT),
+    source,
+    limit: target.value.kind === 'post' ? 1 : (flags.limit ?? defaultLimit),
     keepVideo: flags.keepVideo,
     force: flags.force,
     model: flags.model,

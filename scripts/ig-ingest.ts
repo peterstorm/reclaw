@@ -6,14 +6,19 @@
  * the pure core (`src/core/instagram-*.ts`) behind `src/orchestration/instagram-ingest.ts`;
  * this file only wires adapters from the environment.
  *
- * Usage: bun scripts/ig-ingest.ts <instagram-url|@handle> [--limit N] [--video] [--force]
- *                                  [--no-screen-text] [--model tiny|base|small|medium|large-v3]
+ * Usage: bun scripts/ig-ingest.ts <instagram-url|@handle> [--limit N] [--from-dataset FILE]
+ *                                  [--video] [--force] [--no-screen-text]
+ *                                  [--model tiny|base|small|medium|large-v3]
+ *
+ * --from-dataset re-reads a profile's saved Apify dataset (items JSON) instead of scraping:
+ * no credit spent, no Apify token needed. Use it within ~2 days of the scrape, while the
+ * signed media URLs in it are still valid.
  *
  * Prints one JSON report on stdout and progress on stderr. Exit 1 if nothing could be saved
  * or any post failed; re-running is safe (existing notes are skipped).
  *
  * Env:
- *   APIFY_TOKEN           Apify API token. When unset, read from APIFY_TOKEN_FILE.
+ *   APIFY_TOKEN           Apify API token (scrapes only). When unset, read from APIFY_TOKEN_FILE.
  *   APIFY_TOKEN_FILE      default /run/secrets/reclaw-apify-token (sops-nix). Reclaw's agent
  *                         sessions do not inherit service secrets, so chat runs use this file.
  *   RECLAW_VAULT_ROOT     vault location (default ~/dev/notes/remotevault)
@@ -32,6 +37,7 @@ import {
   summarizeReport,
 } from '../src/core/instagram-ingest.js';
 import { createApifyInstagramScraper } from '../src/infra/apify-instagram.js';
+import { createDatasetFileScraper } from '../src/infra/instagram-dataset-file.js';
 import { createMediaFetcher } from '../src/infra/instagram-media.js';
 import { fsInstagramVault } from '../src/infra/instagram-vault.js';
 import { createTesseractTextReader } from '../src/infra/tesseract-text-reader.js';
@@ -60,18 +66,26 @@ const request = parseIngestArgs(args, defaultModel.value);
 if (!request.ok) fail(request.error);
 
 const DEFAULT_TOKEN_FILE = '/run/secrets/reclaw-apify-token';
-const tokenFile = process.env.APIFY_TOKEN_FILE ?? DEFAULT_TOKEN_FILE;
-const token =
-  process.env.APIFY_TOKEN?.trim() ||
-  (await readFile(tokenFile, 'utf8').then(
-    (t) => t.trim(),
-    () => '',
-  ));
-if (token.length === 0) {
-  fail(
-    `No Apify token: APIFY_TOKEN is unset and ${tokenFile} is unreadable (create one at https://console.apify.com/settings/integrations).`,
-  );
+
+async function apifyScraper() {
+  const tokenFile = process.env.APIFY_TOKEN_FILE ?? DEFAULT_TOKEN_FILE;
+  const token =
+    process.env.APIFY_TOKEN?.trim() ||
+    (await readFile(tokenFile, 'utf8').then(
+      (t) => t.trim(),
+      () => '',
+    ));
+  if (token.length === 0) {
+    fail(
+      `No Apify token: APIFY_TOKEN is unset and ${tokenFile} is unreadable (create one at https://console.apify.com/settings/integrations).`,
+    );
+  }
+  return createApifyInstagramScraper({ token });
 }
+
+const source = request.value.source;
+const scrape =
+  source.kind === 'dataset' ? createDatasetFileScraper(source.path) : await apifyScraper();
 
 const media = createMediaFetcher({
   libraryDir: process.env.RECLAW_IG_VIDEO_DIR ?? join(homedir(), 'downloads/instagram'),
@@ -84,7 +98,7 @@ const reader = createTesseractTextReader();
 const progress = (message: string) => process.stderr.write(`ig-ingest: ${message}\n`);
 
 const result = await ingestInstagram(request.value, {
-  scrape: createApifyInstagramScraper({ token }),
+  scrape,
   fetchMedia: media.fetchMedia,
   discardScratch: media.discardScratch,
   transcribe: async (path, model) => {

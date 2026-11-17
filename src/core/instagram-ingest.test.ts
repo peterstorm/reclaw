@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_PROFILE_LIMIT,
   type IngestReport,
+  MAX_DATASET_POSTS,
   parseIngestArgs,
   planMedia,
   scrapeBudgetUsd,
@@ -42,6 +43,17 @@ describe('parseIngestArgs', () => {
     expect(r).toMatchObject({ limit: 5, keepVideo: true, force: true, model: 'medium' });
   });
 
+  it('scrapes unless told to read a saved dataset', () => {
+    expect(parsed(['@someone']).source).toEqual({ kind: 'scrape' });
+  });
+
+  it('reads a saved dataset whole by default, beyond the scrape cap', () => {
+    const r = parsed(['@someone', '--from-dataset', '/tmp/items.json']);
+    expect(r.source).toEqual({ kind: 'dataset', path: '/tmp/items.json' });
+    expect(r.limit).toBe(MAX_DATASET_POSTS);
+    expect(parsed(['@someone', '--from-dataset', 'f.json', '--limit', '250']).limit).toBe(250);
+  });
+
   it('uses the injected default model', () => {
     const r = parseIngestArgs(['@someone'], 'medium');
     expect(r.ok && r.value.model).toBe('medium');
@@ -51,9 +63,13 @@ describe('parseIngestArgs', () => {
     [[], /usage/i],
     [['@a', '@b'], /usage/i],
     [['@someone', '--limit'], /needs a value/],
-    [['@someone', '--limit', '0'], /1 to 200/],
-    [['@someone', '--limit', '201'], /1 to 200/],
+    [['@someone', '--limit', '0'], /positive integer/],
+    [['@someone', '--limit', '201'], /1 to 200 when scraping/],
     [['@someone', '--limit', 'ten'], /integer/],
+    [['@someone', '--from-dataset', 'f.json', '--limit', '10001'], /1 to 10000 for a dataset/],
+    [['@someone', '--from-dataset'], /needs a value/],
+    [['@someone', '--from-dataset', ' '], /needs a file path/],
+    [['https://www.instagram.com/p/Db4K_XVyZOB/', '--from-dataset', 'f.json'], /@handle/],
     [['@someone', '--model', 'huge'], /Invalid model/],
     [['@someone', '--wat'], /Unknown option/],
     [['https://www.instagram.com/p/Db4K_XVyZOB/', '--limit', '3'], /only applies to profiles/],
