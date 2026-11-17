@@ -58,6 +58,15 @@ describe('buildAgentProcessEnvironment', () => {
     });
   });
 
+  it('passes the host’s test-runner worker caps through to agent sessions', () => {
+    const result = buildAgentProcessEnvironment(
+      { VITEST_MAX_FORKS: '4', VITEST_MAX_THREADS: '4', VITEST_POOL_ID: '1' },
+      { backend: 'claude' },
+    );
+
+    expect(result).toEqual({ VITEST_MAX_FORKS: '4', VITEST_MAX_THREADS: '4' });
+  });
+
   it('passes only Claude authentication values to the Claude backend', () => {
     const result = buildAgentProcessEnvironment(
       {

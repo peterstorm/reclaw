@@ -50,6 +50,12 @@ const RUNTIME_ENVIRONMENT_KEYS = [
   'NO_PROXY',
   'PLAYWRIGHT_BROWSERS_PATH',
   'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD',
+  // Worker caps vitest reads from the environment. Without them vitest forks
+  // one worker per core minus one (15 on the homelab, ~400 MB each) — the
+  // workload that filled the cgroup on 2026-11-17. The host sets them on the
+  // service so agent test runs stay inside the agents slice's memory budget.
+  'VITEST_MAX_FORKS',
+  'VITEST_MAX_THREADS',
   'PI_CODING_AGENT_DIR',
   'PI_CODING_AGENT_SESSION_DIR',
   'PI_PACKAGE_DIR',

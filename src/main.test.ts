@@ -26,6 +26,7 @@ const mockConfig: AppConfig = {
   timezone: 'Europe/Copenhagen',
   locationName: 'Copenhagen',
   agentBackend: 'claude' as const,
+  agentContainment: { kind: 'none' as const },
 };
 const AUTHORIZED_USER_ID = mockConfig.authorizedUserIds[0];
 if (AUTHORIZED_USER_ID === undefined) throw new Error('Test config requires an authorized user');

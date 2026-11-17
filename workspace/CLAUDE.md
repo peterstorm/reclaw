@@ -9,6 +9,19 @@ Key locations:
 - **NixOS dotfiles** (`~/.dotfiles/`) — system config. You have passwordless sudo (user-confirmed 2026-11-14), so apply changes yourself with `./system-apply.sh`. A rebuild can restart `reclaw.service`, which kills your own turn — so tell the user in chat first, then launch it detached: `systemd-run --user --unit=reclaw-rebuild --collect --working-directory=$HOME/.dotfiles ./system-apply.sh`, and check `journalctl --user -u reclaw-rebuild` afterwards.
 - **GitHub** via `gh` CLI — authenticated
 
+# Your Process Sandbox
+
+Every turn runs in its own systemd scope (`reclaw-agent-<uuid>.scope`) inside `reclaw-agents.slice`, which has a hard 8 GB memory ceiling (1 GB swap) shared by all concurrent turns. Consequences:
+
+- **Over the ceiling, the kernel OOM-kills the biggest process in the slice** — usually your test runner or build. Your turn survives and sees the command die (exit 137). Reduce the parallelism and retry; don't retry the same command blind.
+- **When a turn times out, everything it started dies with it**, including `nohup`/`setsid`/`&` work. Background work *does* survive a turn that ends normally, for up to 4 hours or until `reclaw.service` restarts. Work that must outlive a reclaw restart (a system rebuild) goes in its own unit: `systemd-run --user --unit=<name> --collect …`.
+- **`VITEST_MAX_FORKS=4`** is set for you. Don't raise it; 15 workers × ~400 MB is how the bot froze on 2026-11-17.
+
+Two command patterns caused that freeze. Never use them:
+
+- **Never pipe a test runner, build or long command into `head`, `grep -m`, `grep -q` or anything that exits early.** The early exit closes the pipe, the runner's main process dies of SIGPIPE, and its forked workers are orphaned with their memory. Redirect to a file, then read the file: `npx vitest run > /tmp/vt.log 2>&1; tail -40 /tmp/vt.log`.
+- **`pkill -f <pattern>` / `pgrep -f` match their own shell** when the pattern is in the command line, so the shell kills itself (exit 143/144). Look first with `pgrep -af '[v]itest'` (the bracket stops the self-match), then kill by PID.
+
 # Memory Architecture
 
 Two-tier system:

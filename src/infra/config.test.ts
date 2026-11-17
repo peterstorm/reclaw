@@ -337,3 +337,51 @@ describe('AGENT_BACKEND config', () => {
     }
   });
 });
+
+describe('agent containment config', () => {
+  it('is off unless RECLAW_AGENT_CONTAINMENT selects it', () => {
+    const result = loadConfig(VALID_ENV);
+    expect(result.ok && result.value.agentContainment).toEqual({ kind: 'none' });
+  });
+
+  it('parses the production systemd-scope setup', () => {
+    const result = loadConfig({
+      ...VALID_ENV,
+      RECLAW_AGENT_CONTAINMENT: 'systemd-scope',
+      RECLAW_AGENT_SLICE: 'reclaw-agents.slice',
+      RECLAW_AGENT_BINDS_TO: 'reclaw.service',
+      RECLAW_AGENT_RUNTIME_MAX_SEC: '14400',
+    });
+    expect(result.ok && result.value.agentContainment).toEqual({
+      kind: 'systemd-scope',
+      slice: 'reclaw-agents.slice',
+      bindsTo: 'reclaw.service',
+      runtimeMaxSec: 14400,
+    });
+  });
+
+  it('refuses to start on an unknown containment mode instead of running uncontained', () => {
+    const result = loadConfig({ ...VALID_ENV, RECLAW_AGENT_CONTAINMENT: 'cgroups' });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('agentContainment');
+  });
+
+  it('refuses a malformed slice name', () => {
+    const result = loadConfig({
+      ...VALID_ENV,
+      RECLAW_AGENT_CONTAINMENT: 'systemd-scope',
+      RECLAW_AGENT_SLICE: 'reclaw agents',
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it('reports a non-integer lifetime by its env name', () => {
+    const result = loadConfig({
+      ...VALID_ENV,
+      RECLAW_AGENT_CONTAINMENT: 'systemd-scope',
+      RECLAW_AGENT_RUNTIME_MAX_SEC: '4h',
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('RECLAW_AGENT_RUNTIME_MAX_SEC');
+  });
+});

@@ -141,7 +141,6 @@
     "src/infra/agent-backends/runner.ts::delta.type"
   ],
   "duplicateBlockBaseline": [
-    "src/infra/agent-backends/runner.ts::src/infra/agent-backends/runner.ts@696e63e0",
     "src/infra/telegram.ts::src/infra/telegram.ts@efea554f",
     "src/main.test.ts::src/orchestration/message-router.test.ts@47772a04",
     "src/orchestration/message-router.test.ts::src/main.test.ts@47772a04",
@@ -236,7 +235,6 @@
     "docs/architecture-review-2026-08-14.md::runStateMachine",
     "docs/architecture-review-2026-08-14.md::runStateMachine",
     "docs/architecture-review-2026-08-14.md::spawn-failed",
-    "docs/architecture-review-2026-08-14.md::telegramDelivery",
-    "docs/architecture-review-2026-08-14.md::timed-out"
+    "docs/architecture-review-2026-08-14.md::telegramDelivery"
   ]
 }

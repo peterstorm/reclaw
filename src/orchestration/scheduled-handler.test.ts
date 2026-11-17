@@ -16,8 +16,8 @@ import type {
   ConversationGeneration,
   ConversationRevision,
 } from '../core/types.js';
+import { makeAppConfig as makeConfig } from '../infra/__fixtures__/app-config.js';
 import type { AgentResult } from '../infra/agent-backends/index.js';
-import type { AppConfig } from '../infra/config.js';
 import type { SessionStore } from '../infra/session-store.js';
 import type { TelegramAdapter } from '../infra/telegram.js';
 import { type ScheduledDeps, handleScheduledJob } from './scheduled-handler.js';
@@ -56,24 +56,6 @@ const makeSkillConfig = (overrides: Partial<SkillConfig> = {}): SkillConfig => (
 const makeRegistry = (skills: SkillConfig[] = [makeSkillConfig()]): SkillRegistry => {
   return new Map(skills.map((s) => [s.id, s]));
 };
-
-const makeConfig = (overrides: Record<string, unknown> = {}): AppConfig => ({
-  telegramToken: 'tok',
-  authorizedUserIds: [123],
-  redisHost: 'localhost',
-  redisPort: 6379,
-  workspacePath: '/workspace',
-  skillsDir: '/workspace/skills',
-  personalityPath: '/workspace/personality.md',
-  chatTimeoutMs: 3_600_000,
-  scheduledTimeoutMs: 300_000,
-  latitude: 55.665,
-  longitude: 12.57,
-  timezone: 'Europe/Copenhagen',
-  locationName: 'Copenhagen',
-  agentBackend: 'claude' as const,
-  ...overrides,
-});
 
 let nextMsgId = 500;
 const makeTelegram = (): TelegramAdapter => {
