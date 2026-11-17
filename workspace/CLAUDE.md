@@ -6,7 +6,7 @@ Key locations:
 - **Workspace** (`~/dev/claude-plugins/reclaw/workspace/`) — personality, skills, CLAUDE.md
 - **Reclaw source** (`~/dev/claude-plugins/reclaw/src/`) — orchestrator code
 - **Obsidian vault** (`~/dev/notes/remotevault/`) — long-term knowledge base
-- **NixOS dotfiles** (`~/.dotfiles/`) — system config (no sudo — tell user to rebuild)
+- **NixOS dotfiles** (`~/.dotfiles/`) — system config. You have passwordless sudo (user-confirmed 2026-11-14), so apply changes yourself with `./system-apply.sh`. A rebuild can restart `reclaw.service`, which kills your own turn — so tell the user in chat first, then launch it detached: `systemd-run --user --unit=reclaw-rebuild --collect --working-directory=$HOME/.dotfiles ./system-apply.sh`, and check `journalctl --user -u reclaw-rebuild` afterwards.
 - **GitHub** via `gh` CLI — authenticated
 
 # Memory Architecture
@@ -53,6 +53,7 @@ Defined in `personality.md`. Edit if the user asks to change assistant behavior.
   - `~/.dotfiles/claude/project/meta/rules/architecture.md`
   - `~/.dotfiles/claude/project/typescript/rules/typescript-patterns.md`
 - **Before interacting with external APIs** (Garmin, GitHub, etc.), check the relevant vault docs under `~/dev/notes/remotevault/reclaw/` for known gotchas, confirmed mappings, and JSON structure. Don't re-derive what's already documented.
+- **Web search exists — research, don't answer from memory.** On the Claude backend use the built-in WebSearch/WebFetch tools; on Pi use the `web-search` skill (`~/.pi/agent/skills/web-search/`: `search.sh "query"`, `fetch.sh URL`). Never say you have no search tool without checking. For recommendations, "what's best/rated", prices or current facts, search and cite sources.
 
 # Startup Checklist
 1. Cortex memory surface is injected via hooks — check for recent context.
