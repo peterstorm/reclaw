@@ -73,7 +73,7 @@ Vault: `media/instagram/<handle>/<shortcode>.md`, `media/instagram/MOC.md`.
 ## Roadmap relate (AI-engineering roadmap → our repos)
 
 Code: `src/core/roadmap-relate.ts`, `src/infra/feed-fetcher.ts`, `scripts/roadmap-relate.ts`,
-skill `roadmap-relate`. Vault: the AI engineering roadmap note under programming/ai, its mapping
+skill `roadmap-relate`. Vault: the AI engineering roadmap note under programming/ai/roadmap, its mapping
 note and the @bashi_fuirkashi source note.
 
 | Term | Meaning | Not to be confused with |

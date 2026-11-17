@@ -177,8 +177,8 @@ promptTemplate: |
   updated: {{date}}
   tags: [ai-engineering, roadmap, gap-analysis, portfolio, generated]
   aliases: [roadmap vs repos]
-  up: "[[programming/ai/MOC|AI Engineering]]"
-  source: "[[programming/ai/ai-engineering-roadmap|AI engineering roadmap]]"
+  up: "[[programming/ai/roadmap/MOC|AI Engineering Roadmap]]"
+  source: "[[programming/ai/roadmap/ai-engineering-roadmap|AI engineering roadmap]]"
   ---
   # AI engineering roadmap vs our repos
 
@@ -201,7 +201,7 @@ promptTemplate: |
   ## Biggest gaps → next builds
   The 3–5 highest-value ❌/🟡 items (consensus-weighted), each with the repo it best fits and the
   smallest credible slice to close it. Link
-  [[programming/ai/ai-engineering-gap-analysis-chatbot-fugue-loom-cortex]] for the earlier
+  [[programming/ai/roadmap/ai-engineering-gap-analysis-chatbot-fugue-loom-cortex]] for the earlier
   hand-written analysis where relevant.
   ```
 
@@ -219,8 +219,8 @@ promptTemplate: |
     their source;
   - mapped (if it ran): why (first mapping / roadmap changed / which repos moved), the status
     changes since last time, and the top 2–3 gaps;
-  - links: [[programming/ai/ai-engineering-roadmap]] and
-    [[programming/ai/ai-engineering-roadmap-vs-our-repos]];
+  - links: [[programming/ai/roadmap/ai-engineering-roadmap]] and
+    [[programming/ai/roadmap/ai-engineering-roadmap-vs-our-repos]];
   - any repo or feed that could not be fetched or read, and any step that failed (with the
     error).
   If a step failed, do not run its mark command — the next run retries it.

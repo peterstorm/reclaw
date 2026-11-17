@@ -54,10 +54,10 @@ const STATE_FILE =
 const PLAN_FILE = STATE_FILE.replace(/\.json$/, '-plan.json');
 
 /** The generic roadmap: what is mapped onto the repos, and whose hash triggers a remap. */
-const ROADMAP_NOTE = 'programming/ai/ai-engineering-roadmap.md';
+const ROADMAP_NOTE = 'programming/ai/roadmap/ai-engineering-roadmap.md';
 /** One source of the roadmap: the @bashi_fuirkashi extract, which the reels are folded into. */
-const REEL_NOTE = 'programming/ai/bashi-fuirkashi-ai-engineering-roadmap.md';
-const MAPPING_NOTE = 'programming/ai/ai-engineering-roadmap-vs-our-repos.md';
+const REEL_NOTE = 'programming/ai/roadmap/bashi-fuirkashi-ai-engineering-roadmap.md';
+const MAPPING_NOTE = 'programming/ai/roadmap/ai-engineering-roadmap-vs-our-repos.md';
 const REELS_DIR = 'media/instagram/bashi_fuirkashi';
 
 /** The sections this skill owns; everything outside their markers is hand-curated. */
