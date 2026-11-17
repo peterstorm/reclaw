@@ -76,16 +76,35 @@ const SECTIONS: Readonly<Record<'reels' | 'signals', MarkedSection & { note: str
 
 /** The roadmap's sources that publish feeds (each verified to serve one, 2026-11-17). */
 const SOURCE_FEEDS: readonly Feed[] = [
+  // Core role: evals, RAG, production, the market.
   { source: 'Hamel Husain', url: 'https://hamel.dev/index.xml' },
   { source: 'Eugene Yan', url: 'https://eugeneyan.com/rss/' },
   { source: 'Chip Huyen', url: 'https://huyenchip.com/feed.xml' },
   { source: 'Alexey Grigorev (AI Shipping)', url: 'https://aishippingblog.com/feed' },
   { source: 'DataTalks.Club', url: 'https://datatalks.club/feed.xml' },
   { source: 'Jason Liu', url: 'https://jxnl.co/feed_rss_created.xml' },
-  { source: 'Sebastian Raschka', url: 'https://magazine.sebastianraschka.com/feed' },
-  { source: 'Lilian Weng', url: 'https://lilianweng.github.io/index.xml' },
   { source: 'Latent Space', url: 'https://www.latent.space/feed' },
   { source: 'Simon Willison', url: 'https://simonwillison.net/atom/everything/' },
+  // Harness engineering and agentic coding. Anthropic publishes no feed; this is a public
+  // third-party mirror of anthropic.com/engineering.
+  {
+    source: 'Anthropic Engineering (mirror)',
+    url: 'https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_anthropic_engineering.xml',
+  },
+  { source: 'Martin Fowler', url: 'https://martinfowler.com/feed.atom' },
+  // Memory (Letta and Mem0 publish no feed; Zep is a vendor).
+  { source: 'Zep', url: 'https://www.getzep.com/blog/rss.xml' },
+  { source: 'Lilian Weng', url: 'https://lilianweng.github.io/index.xml' },
+  // Self-improvement, AI R&D automation, measurement.
+  { source: 'METR', url: 'https://metr.org/feed.xml' },
+  { source: 'Epoch AI', url: 'https://epoch.ai/atom.xml' },
+  { source: 'AI Futures Project', url: 'https://blog.aifutures.org/feed' },
+  // Reasoning and post-training.
+  { source: 'Interconnects (Nathan Lambert)', url: 'https://www.interconnects.ai/feed' },
+  { source: 'Sebastian Raschka', url: 'https://magazine.sebastianraschka.com/feed' },
+  // Security and protocols.
+  { source: 'OWASP GenAI', url: 'https://genai.owasp.org/feed/' },
+  { source: 'MCP blog', url: 'https://blog.modelcontextprotocol.io/index.xml' },
 ];
 const SOURCE_ITEMS_PER_FEED = 12;
 

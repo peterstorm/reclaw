@@ -19,7 +19,10 @@ promptTemplate: |
   never pause.
 
   The roadmap (`roadmapNote`) is a synthesis of many sources — curricula, job-posting analyses,
-  practitioner writing, one Instagram account — so no single voice defines it. Its body is
+  practitioner writing, research papers and benchmarks, one Instagram account — so no single
+  voice defines it. Stages 0–7 are the core role; stages 8–11 (harness engineering, agent
+  memory, self-improving systems, AI R&D automation / recursive self-improvement) are where the
+  field is moving. Its body is
   hand-curated; you own exactly two marked sections:
   - `<!-- roadmap-relate:signals:start -->` … `:end -->` in the roadmap: **new signals** from
     any source since the body was last curated;
@@ -89,15 +92,24 @@ promptTemplate: |
 
   Output JSON: `items` (`source, title, link, date, summary`) the source feeds published since
   then, and feed `errors`. Most items are news or off-topic (model launches, funding, tool
-  releases): skip them. Open with WebFetch only items whose title or summary suggests a
-  **practice, pattern, skill, eval method, architecture, project idea or hiring evidence** an AI
-  engineer should learn — at most 8. Then use WebSearch for evidence the feeds can't carry, at
-  most 4 searches: new **AI-engineer job-posting analyses** (skill frequencies with sample size),
-  new posts on Anthropic's engineering blog (`anthropic.com/engineering`), and changes to the
-  roadmap.sh AI-engineer roadmap. Only sources dated after `plan.sweep.since` count.
+  releases, product announcements): skip them. Open with WebFetch only items whose title or
+  summary suggests a **practice, pattern, skill, eval method, architecture, measurement, project
+  idea or hiring evidence** an AI engineer should learn — at most 10, spread across stages rather
+  than all from one prolific feed. Then use WebSearch for evidence the feeds can't carry, at
+  most 4 searches:
+  - new **AI-engineer job-posting analyses** (skill frequencies with sample size);
+  - changes to the roadmap.sh AI-engineer roadmap;
+  - **one frontier topic**: whichever of stages 8–11 has the fewest signals in the signals
+    section (ties: the lowest stage number) — new papers, benchmarks or serious practitioner
+    write-ups on it (e.g. harness ablations, memory benchmarks, self-improvement results,
+    METR/Epoch measurements).
+  Only sources dated after `plan.sweep.since` count. Prefer primary sources (the paper, the
+  lab's post, the spec) over coverage of them.
 
   A sweep finding needs a URL you actually read. A job-posting statistic needs its sample (N,
-  region, date). Opinion from one practitioner is a signal, not a consensus; say whose it is.
+  region, date); a benchmark result needs its benchmark and baseline. Opinion from one
+  practitioner is a signal, not a consensus; say whose it is. Vendor claims about their own
+  product (Zep, Temporal, LangChain…) are marked `(vendor)`.
 
   ## Step 4 — Update the roadmap's signals (if Step 2 or 3 found anything new to the roadmap)
 
@@ -147,7 +159,10 @@ promptTemplate: |
   partial** (exists but not the production form the roadmap describes — say what's missing) or
   **❌ missing**, with evidence: a `repo:path` (and symbol) for every ✅/🟡. No evidence → not
   ✅. Don't count docs, plans or TODOs as implementation. Weight the gaps by the roadmap's
-  consensus column: a ❌ on a ●●● item matters more than one on a ○ item.
+  consensus column: a ❌ on a ●●● item matters more than one on a ○ item. Stage 11 (AI R&D
+  automation / recursive self-improvement) is literacy, not a build skill: leave it out of the
+  matrix. Stages 8–10 are where these repos are most likely ahead of the market (harness
+  constraints, memory extraction and decay, self-improvement loops) — look hard there.
 
   Write the mapping note with the Write tool (it is fully generated each time — overwrite it):
 
