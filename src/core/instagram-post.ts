@@ -4,22 +4,33 @@ import { type Result, err, ok } from './types.js';
 
 // ─── Domain ───────────────────────────────────────────────────────────────────
 
-/** What can be transcribed. Photos and carousels without a video are `no-video`. */
+/**
+ * What a post shows. Signed CDN URLs expire within ~2 days, so media must be fetched in the
+ * same run as the scrape. The scraper exposes a carousel's images but not its videos, so a
+ * post without a top-level video is read as `images`.
+ */
 export type PostMedia =
   | {
       readonly kind: 'video';
-      /** Signed CDN URL — expires within ~2 days, so it must be fetched in the same run. */
       readonly videoUrl: string;
       readonly audioUrl: string | null;
       readonly durationSeconds: number | null;
     }
-  | { readonly kind: 'no-video' };
+  /** A photo, or each image of a carousel in post order. */
+  | { readonly kind: 'images'; readonly imageUrls: readonly [string, ...string[]] }
+  | { readonly kind: 'no-media' };
 
 export type InstagramPost = Readonly<{
   shortCode: ShortCode;
   url: string;
   owner: InstagramUsername;
   caption: string;
+  /**
+   * The post's alt text minus Instagram's `Photo by X on <date>.` boilerplate: either the
+   * author's own, or Instagram's automatic `May be an image of … text that says '…'`.
+   * Null when nothing is left.
+   */
+  altText: string | null;
   /** ISO-8601 instant the post was published. */
   postedAt: string;
   hashtags: readonly string[];
@@ -60,7 +71,40 @@ const ItemSchema = z.object({
   videoUrl: nonEmptyUrl,
   audioUrl: nonEmptyUrl,
   videoDuration: z.number().positive().nullish(),
+  alt: z.string().nullish(),
+  /** Photo: the image. Video: its cover. */
+  displayUrl: nonEmptyUrl,
+  /** Carousel images in order (may repeat one). */
+  images: z.array(z.string()).nullish(),
 });
+
+type Item = z.infer<typeof ItemSchema>;
+
+/** Instagram's alt boilerplate: `Photo by Jane Doe on March 30, 2026.` / `Video shared by …`. */
+const ALT_BOILERPLATE = /^(?:Photo|Video)\b[^.]*? on [A-Z][a-z]+ \d{1,2}, \d{4}\.\s*/;
+
+/** The informative part of a post's alt text, or null when it is only boilerplate. */
+export function parseAltText(alt: string | null | undefined): string | null {
+  const text = (alt ?? '').replace(ALT_BOILERPLATE, '').replace(/\s+/g, ' ').trim();
+  return text.length === 0 ? null : text;
+}
+
+const mediaOf = (item: Item): PostMedia => {
+  if (item.videoUrl !== null) {
+    return {
+      kind: 'video',
+      videoUrl: item.videoUrl,
+      audioUrl: item.audioUrl,
+      durationSeconds: item.videoDuration ?? null,
+    };
+  }
+  const carousel = (item.images ?? []).filter((url) => url.length > 0);
+  const urls = carousel.length > 0 ? carousel : item.displayUrl === null ? [] : [item.displayUrl];
+  const [first, ...rest] = [...new Set(urls)];
+  return first === undefined
+    ? { kind: 'no-media' }
+    : { kind: 'images', imageUrls: [first, ...rest] };
+};
 
 /** The scraper reports per-URL failures as `{ error, errorDescription }` dataset rows. */
 const ScraperErrorSchema = z.object({
@@ -95,19 +139,12 @@ export function parseInstagramPost(raw: unknown): Result<InstagramPost, string> 
     url: item.url ?? `https://www.instagram.com/p/${shortCode.value}/`,
     owner: owner.value,
     caption: item.caption ?? '',
+    altText: parseAltText(item.alt),
     postedAt: new Date(item.timestamp).toISOString(),
     hashtags: item.hashtags ?? [],
     likes: item.likesCount,
     comments: item.commentsCount,
-    media:
-      item.videoUrl === null
-        ? { kind: 'no-video' }
-        : {
-            kind: 'video',
-            videoUrl: item.videoUrl,
-            audioUrl: item.audioUrl,
-            durationSeconds: item.videoDuration ?? null,
-          },
+    media: mediaOf(item),
   });
 }
 

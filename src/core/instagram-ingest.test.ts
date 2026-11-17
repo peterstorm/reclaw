@@ -17,10 +17,20 @@ const parsed = (args: string[]) => {
 };
 
 describe('parseIngestArgs', () => {
-  it('defaults a post URL to one post, no video, small model', () => {
+  it('defaults a post URL to one post, no video, small model, reading on-screen text', () => {
     const r = parsed(['https://www.instagram.com/reel/Db4K_XVyZOB/']);
-    expect(r).toMatchObject({ limit: 1, keepVideo: false, force: false, model: 'small' });
+    expect(r).toMatchObject({
+      limit: 1,
+      keepVideo: false,
+      force: false,
+      model: 'small',
+      readScreenText: true,
+    });
     expect(r.target.kind).toBe('post');
+  });
+
+  it('turns on-screen text reading off with --no-screen-text', () => {
+    expect(parsed(['@someone', '--no-screen-text']).readScreenText).toBe(false);
   });
 
   it('defaults a profile to the standard limit', () => {
@@ -59,15 +69,23 @@ describe('planMedia', () => {
   const media = { kind: 'video', videoUrl: 'V', audioUrl: 'A', durationSeconds: 1 } as const;
 
   it('keeps the video when asked', () => {
-    expect(planMedia(media, true)).toEqual({ kind: 'keep-video', url: 'V' });
+    expect(planMedia(media, true, true)).toEqual({ kind: 'keep-video', url: 'V' });
+    expect(planMedia(media, true, false)).toEqual({ kind: 'keep-video', url: 'V' });
   });
 
-  it('prefers the smaller audio track for scratch transcription', () => {
-    expect(planMedia(media, false)).toEqual({ kind: 'scratch', url: 'A' });
+  it('needs the picture to read on-screen text', () => {
+    expect(planMedia(media, false, true)).toEqual({ kind: 'scratch', url: 'V' });
+  });
+
+  it('takes the smaller audio track when only transcribing', () => {
+    expect(planMedia(media, false, false)).toEqual({ kind: 'scratch', url: 'A' });
   });
 
   it('falls back to the video when there is no audio URL', () => {
-    expect(planMedia({ ...media, audioUrl: null }, false)).toEqual({ kind: 'scratch', url: 'V' });
+    expect(planMedia({ ...media, audioUrl: null }, false, false)).toEqual({
+      kind: 'scratch',
+      url: 'V',
+    });
   });
 });
 
@@ -95,6 +113,7 @@ describe('summarizeReport', () => {
           shortCode: code('AAAAA'),
           notePath: path,
           transcribed: true,
+          textRead: true,
           videoPath: null,
         },
         {
@@ -102,6 +121,7 @@ describe('summarizeReport', () => {
           shortCode: code('BBBBB'),
           notePath: path,
           transcribed: false,
+          textRead: false,
           videoPath: null,
         },
         { kind: 'skipped-existing', shortCode: code('CCCCC'), notePath: path },
@@ -113,6 +133,7 @@ describe('summarizeReport', () => {
     expect(summarizeReport(report)).toEqual({
       saved: 2,
       transcribed: 1,
+      textRead: 1,
       skippedExisting: 1,
       failed: 1,
       rejected: 1,

@@ -1,6 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import { rawSidecarItem, rawVideoItem } from './__fixtures__/instagram.js';
-import { parseInstagramPost, partitionPosts } from './instagram-post.js';
+import { parseAltText, parseInstagramPost, partitionPosts } from './instagram-post.js';
+
+describe('parseAltText', () => {
+  it.each([
+    [null, null],
+    ['', null],
+    ['Photo by Jane Doe on March 30, 2026.', null],
+    ['Photo shared by Jane on May 1, 2026. May be an image of text.', 'May be an image of text.'],
+    ['A hand-written description by the author.', 'A hand-written description by the author.'],
+  ])('%j → %j', (alt, expected) => {
+    expect(parseAltText(alt)).toBe(expected);
+  });
+});
 
 describe('parseInstagramPost', () => {
   it('parses a video row into a video post', () => {
@@ -17,9 +29,38 @@ describe('parseInstagramPost', () => {
     });
   });
 
-  it('parses a carousel without a video as no-video', () => {
+  it('parses a carousel into its images in order, without repeats', () => {
     const r = parseInstagramPost(rawSidecarItem());
-    expect(r.ok && r.value.media).toEqual({ kind: 'no-video' });
+    expect(r.ok && r.value.media).toEqual({
+      kind: 'images',
+      imageUrls: ['https://cdn.example/1.jpg', 'https://cdn.example/2.jpg'],
+    });
+  });
+
+  it('parses a single photo from its display URL', () => {
+    const r = parseInstagramPost(rawSidecarItem({ images: [] }));
+    expect(r.ok && r.value.media).toEqual({
+      kind: 'images',
+      imageUrls: ['https://cdn.example/1.jpg'],
+    });
+  });
+
+  it('marks a post with no media URLs at all as no-media', () => {
+    const r = parseInstagramPost(rawSidecarItem({ images: null, displayUrl: '' }));
+    expect(r.ok && r.value.media).toEqual({ kind: 'no-media' });
+  });
+
+  it('keeps only the informative part of the alt text', () => {
+    const r = parseInstagramPost(
+      rawVideoItem({
+        alt: "Video by Bashiri Smith on July 22, 2026. May be a meme of text that says 'The right order to learn RAG'.",
+      }),
+    );
+    expect(r.ok && r.value.altText).toBe(
+      "May be a meme of text that says 'The right order to learn RAG'.",
+    );
+    const boilerplateOnly = parseInstagramPost(rawSidecarItem());
+    expect(boilerplateOnly.ok && boilerplateOnly.value.altText).toBeNull();
   });
 
   it('treats hidden (-1) counts and a missing caption as unknown/empty', () => {

@@ -33,7 +33,7 @@ export function createMediaFetcher(config: MediaFetcherConfig) {
       return path.join(dir, `${to.shortCode}.mp4`);
     }
     const dir = await fs.mkdtemp(path.join(config.scratchDir ?? tmpdir(), 'ig-media-'));
-    return path.join(dir, 'media.mp4');
+    return path.join(dir, `media.${to.format}`);
   };
 
   const fetchMedia = async (url: string, to: MediaTarget): Promise<Result<string, string>> => {

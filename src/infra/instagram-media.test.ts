@@ -48,18 +48,38 @@ describe('createMediaFetcher', () => {
       scratchDir: root,
       fetchFn: respond('AUDIO'),
     });
-    const result = await fetchMedia('https://cdn.example/a.mp4', { kind: 'scratch' });
+    const result = await fetchMedia('https://cdn.example/a.mp4', {
+      kind: 'scratch',
+      format: 'mp4',
+    });
     if (!result.ok) throw new Error(result.error);
     expect(await fs.readFile(result.value, 'utf8')).toBe('AUDIO');
+    expect(result.value.endsWith('media.mp4')).toBe(true);
 
     await discardScratch(result.value);
     await expect(fs.stat(result.value)).rejects.toThrow();
     await expect(fs.stat(join(result.value, '..'))).rejects.toThrow();
   });
 
+  it('names scratch images by their format', async () => {
+    const { fetchMedia } = createMediaFetcher({
+      libraryDir: root,
+      scratchDir: root,
+      fetchFn: respond('JPEG'),
+    });
+    const result = await fetchMedia('https://cdn.example/1.jpg', {
+      kind: 'scratch',
+      format: 'jpg',
+    });
+    expect(result.ok && result.value.endsWith('media.jpg')).toBe(true);
+  });
+
   it('explains expired signed URLs (403)', async () => {
     const { fetchMedia } = createMediaFetcher({ libraryDir: root, fetchFn: respond('no', 403) });
-    const result = await fetchMedia('https://cdn.example/v.mp4', { kind: 'scratch' });
+    const result = await fetchMedia('https://cdn.example/v.mp4', {
+      kind: 'scratch',
+      format: 'mp4',
+    });
     expect(result).toEqual({
       ok: false,
       error: 'Media download returned HTTP 403 (signed URL expired?)',
@@ -73,7 +93,9 @@ describe('createMediaFetcher', () => {
         throw new Error('should not be called');
       },
     });
-    expect(await fetchMedia('http://cdn.example/v.mp4', { kind: 'scratch' })).toEqual({
+    expect(
+      await fetchMedia('http://cdn.example/v.mp4', { kind: 'scratch', format: 'mp4' }),
+    ).toEqual({
       ok: false,
       error: 'Refusing non-https media URL.',
     });
@@ -86,7 +108,10 @@ describe('createMediaFetcher', () => {
         throw new Error('ECONNRESET');
       },
     });
-    const result = await fetchMedia('https://cdn.example/v.mp4', { kind: 'scratch' });
+    const result = await fetchMedia('https://cdn.example/v.mp4', {
+      kind: 'scratch',
+      format: 'mp4',
+    });
     expect(result).toEqual({ ok: false, error: 'Media request failed: ECONNRESET' });
   });
 });

@@ -1,5 +1,7 @@
+import { match } from 'ts-pattern';
 import type { InstagramPost } from './instagram-post.js';
-import { type Transcript, transcriptLines } from './instagram-transcript.js';
+import type { ImageText, VideoText } from './instagram-screen-text.js';
+import { type Transcript, formatTimestamp, transcriptLines } from './instagram-transcript.js';
 import { type VaultRelativePath, parseVaultRelativePath } from './vault-path.js';
 
 // ─── Layout ───────────────────────────────────────────────────────────────────
@@ -7,15 +9,26 @@ import { type VaultRelativePath, parseVaultRelativePath } from './vault-path.js'
 export const INSTAGRAM_MOC_PATH = 'media/instagram/MOC.md' as VaultRelativePath;
 const INSTAGRAM_MOC_LINK = 'media/instagram/MOC';
 
-/** What went into a note beyond the caption. `no-video` = photo or video-less carousel. */
+/** Text read from the pictures — or not attempted (`--no-screen-text`). */
+export type TextReading<T> =
+  | { readonly kind: 'read'; readonly text: T }
+  | { readonly kind: 'skipped' };
+
+/** What went into a note beyond the caption, by what the post shows. */
 export type NoteBody =
   | {
-      readonly kind: 'transcribed';
+      readonly kind: 'video';
       readonly transcript: Transcript;
+      readonly screenText: TextReading<VideoText>;
       /** Absolute path of the kept video file, or null when video was not requested. */
       readonly videoPath: string | null;
     }
-  | { readonly kind: 'no-video' };
+  | {
+      readonly kind: 'images';
+      readonly imageCount: number;
+      readonly imageText: TextReading<ImageText>;
+    }
+  | { readonly kind: 'no-media' };
 
 export type NoteInput = Readonly<{
   post: InstagramPost;
@@ -61,12 +74,19 @@ const yamlString = (value: string): string => JSON.stringify(value);
 
 const dateOf = (iso: string): string => iso.slice(0, 10);
 
+/** Tags by what the post shows; a new body kind must choose its tags. */
+const TAGS: Readonly<Record<NoteBody['kind'], string>> = {
+  video: 'instagram, video',
+  images: 'instagram, image',
+  'no-media': 'instagram',
+};
+
 const frontmatter = ({ post, body, ingestedOn }: NoteInput): string => {
   const lines = [
     '---',
     `title: ${yamlString(instagramNoteTitle(post))}`,
     `date: ${dateOf(post.postedAt)}`,
-    `tags: [instagram, ${body.kind === 'transcribed' ? 'video' : 'image'}]`,
+    `tags: [${TAGS[body.kind]}]`,
     'aliases: []',
     `up: "[[${INSTAGRAM_MOC_LINK}|Instagram]]"`,
     `source: ${yamlString(post.url)}`,
@@ -75,7 +95,7 @@ const frontmatter = ({ post, body, ingestedOn }: NoteInput): string => {
     `posted: ${post.postedAt}`,
     `ingested: ${ingestedOn}`,
   ];
-  if (body.kind === 'transcribed') {
+  if (body.kind === 'video') {
     lines.push(`language: ${body.transcript.language}`);
     if (post.media.kind === 'video' && post.media.durationSeconds !== null) {
       lines.push(`duration: ${Math.round(post.media.durationSeconds)}`);
@@ -103,6 +123,44 @@ const transcriptSection = (transcript: Transcript): string => {
     : `## Transcript\n\n${lines.join('\n')}`;
 };
 
+/** OCR text as a list item: a leading `#`, `>` or `-` must not turn into Markdown structure. */
+const ocrItem = (text: string): string => `- ${text.replace(/^([#>*+-])/, '\\$1')}`;
+
+const screenTextSection = (text: VideoText): string => {
+  const n = text.subtitleLinesOmitted;
+  const omitted =
+    n === 0 ? [] : ['', `_${n} subtitle line${n === 1 ? '' : 's'} repeating the speech left out._`];
+  const lines =
+    text.lines.length === 0
+      ? ['_No on-screen text found._']
+      : text.lines.map((l) => `[${formatTimestamp(l.atSeconds)}] ${l.text}`);
+  return ['## On-screen text', '', ...lines, ...omitted].join('\n');
+};
+
+const imageTextSection = (text: ImageText, imageCount: number): string => {
+  if (text.images.length === 0) return '## Text in images\n\n_No text found in the images._';
+  const blocks = text.images.map((image) => {
+    const items = image.lines.map(ocrItem).join('\n');
+    return imageCount === 1 ? items : `**Image ${image.imageNumber}**\n\n${items}`;
+  });
+  return `## Text in images\n\n${blocks.join('\n\n')}`;
+};
+
+const altTextSection = (altText: string | null): readonly string[] =>
+  altText === null ? [] : [`## Alt text\n\n${altText}`];
+
+const bodySections = (body: NoteBody): readonly string[] =>
+  match(body)
+    .with({ kind: 'video' }, (b) => [
+      transcriptSection(b.transcript),
+      ...(b.screenText.kind === 'read' ? [screenTextSection(b.screenText.text)] : []),
+    ])
+    .with({ kind: 'images' }, (b) =>
+      b.imageText.kind === 'read' ? [imageTextSection(b.imageText.text, b.imageCount)] : [],
+    )
+    .with({ kind: 'no-media' }, () => ['_No media found in this post._'])
+    .exhaustive();
+
 /** Render the full Markdown note. Pure: same input, same note. */
 export function renderInstagramNote(input: NoteInput): string {
   const { post, body } = input;
@@ -111,7 +169,8 @@ export function renderInstagramNote(input: NoteInput): string {
     `# ${instagramNoteTitle(post)}`,
     statsLine(post),
     `## Caption\n\n${post.caption.trim().length > 0 ? post.caption.trim() : '_No caption._'}`,
-    body.kind === 'transcribed' ? transcriptSection(body.transcript) : '_No video in this post._',
+    ...altTextSection(post.altText),
+    ...bodySections(body),
   ];
   return `${sections.join('\n\n')}\n`;
 }
@@ -128,7 +187,7 @@ const MOC_HEADER = [
   '---',
   '# Instagram',
   '',
-  'Posts and reels ingested by `scripts/ig-ingest.ts` (caption + local Whisper transcript).',
+  'Posts and reels ingested by `scripts/ig-ingest.ts` (caption, local Whisper transcript, on-screen text).',
   '',
 ].join('\n');
 
@@ -192,9 +251,10 @@ export function ingestChangelogBullet(posts: readonly InstagramPost[]): string |
   if (first === undefined) return null;
   if (posts.length === 1) {
     const target = noteLinkTarget(instagramNotePath(first));
+    const isVideo = first.media.kind === 'video';
     return `- **added** [[${target}]] to \`media/instagram/${first.owner}/\` — Instagram ${
-      first.media.kind === 'video' ? 'video' : 'post'
-    } by @${first.owner}, caption${first.media.kind === 'video' ? ' + Whisper transcript' : ''}`;
+      isVideo ? 'video' : 'post'
+    } by @${first.owner}, caption${isVideo ? ' + Whisper transcript' : ''}`;
   }
   const owners = [...new Set(posts.map((p) => `@${p.owner}`))].join(', ');
   return `- **added** ${posts.length} Instagram posts by ${owners} to [[${INSTAGRAM_MOC_LINK}]] — captions + Whisper transcripts`;

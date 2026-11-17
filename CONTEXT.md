@@ -36,18 +36,22 @@ Code: `src/core/{curriculum,master-note,study-log,study-plan,curriculum-moc}.ts`
 ## Instagram ingest (posts → vault notes)
 
 Code: `src/core/instagram-*.ts`, `src/orchestration/instagram-ingest.ts`,
-`src/infra/{apify-instagram,instagram-media,instagram-vault,whisper-transcriber}.ts`,
+`src/infra/{apify-instagram,instagram-media,instagram-vault,whisper-transcriber,tesseract-text-reader}.ts`,
 `scripts/ig-ingest.ts` + `scripts/ig-transcribe.py`, skill `ig-ingest`.
 Vault: `media/instagram/<handle>/<shortcode>.md`, `media/instagram/MOC.md`.
 
 | Term | Meaning | Not to be confused with |
 |---|---|---|
 | **Target** | What the user asked to ingest: one *post* (reel, `/p/`, `/tv/`) or a whole *profile*. Parsed from a URL or `@handle`; tracking params are dropped. | A scraper input |
-| **Post** | One Instagram media item as parsed from a scraper row: shortcode, owner, caption, `postedAt`, counts, and `media`. | An Apify dataset row (the wire shape) |
-| **Media** | `video` (signed URLs + duration) or `no-video` (photo / video-less carousel — caption-only note). | The downloaded file |
+| **Post** | One Instagram media item as parsed from a scraper row: shortcode, owner, caption, alt text, `postedAt`, counts, and `media`. | An Apify dataset row (the wire shape) |
+| **Media** | `video` (signed URLs + duration), `images` (the photo, or every carousel image, in order — at least one) or `no-media` (caption-only note). | The downloaded file |
+| **Alt text** | Instagram's own description of what a post shows (the `alt` field), minus its "Photo by … on <date>." preamble. Absent on most reels. | On-screen text |
 | **Shortcode** | The `CODE` in `/p/CODE/`; the note's filename. Branded, path-safe. | A post id |
-| **Transcript** | Speech-to-text of a post: detected language + timestamped segments. Zero segments is legal (no speech). | The caption |
-| **Ingest** | One run: scrape → download → transcribe → write, per post, sequentially. Idempotent: existing notes are skipped unless `--force`. | A Telegram job |
-| **Scratch media** | Throwaway audio downloaded only to transcribe; deleted right after. | Video library |
+| **Transcript** | Speech-to-text of a post: detected language + timestamped segments. Zero segments is legal (no speech, or no audio track). | The caption |
+| **Screen text** (on-screen text) | Text burned into a video — titles, lists, overlays — read by OCR from sampled frames, each distinct line once at its first appearance. Burned-in subtitles that repeat the speech are counted, not listed. | The transcript; image text |
+| **Image text** | Text read by OCR from each image of a photo post or carousel, numbered in post order. | Alt text |
+| **Frame sampling** | One frame a second, thinned to at most 120 frames for long videos. | — |
+| **Ingest** | One run: scrape → download → transcribe → read text → write, per post, sequentially. Idempotent: existing notes are skipped unless `--force`. `--no-screen-text` skips reading text. | A Telegram job |
+| **Scratch media** | Throwaway video, audio or images downloaded only to transcribe or read; deleted right after. Audio only when text is not being read. | Video library |
 | **Video library** | `~/downloads/instagram/<handle>/<shortcode>.mp4` — mp4s kept with `--video`. Deliberately outside the vault. | The vault |
-| **Outcome** | Per-post result: `saved`, `skipped-existing`, or `failed` (stage `download`/`transcribe`/`write`). A failed post writes no note, so a re-run retries exactly it. | A job status |
+| **Outcome** | Per-post result: `saved`, `skipped-existing`, or `failed` (stage `download`/`transcribe`/`read-text`/`write`). A failed post writes no note, so a re-run retries exactly it. | A job status |

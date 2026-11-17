@@ -35,12 +35,15 @@ describe('instagramNoteTitle', () => {
   });
 });
 
+const skipped = { kind: 'skipped' } as const;
+
 describe('renderInstagramNote', () => {
   const rendered = renderInstagramNote({
     post: videoPost(),
     body: {
-      kind: 'transcribed',
+      kind: 'video',
       transcript: sampleTranscript,
+      screenText: skipped,
       videoPath: '/home/u/downloads/instagram/x.mp4',
     },
     ingestedOn: '2026-11-09',
@@ -71,7 +74,7 @@ describe('renderInstagramNote', () => {
   it('omits the video field when no video was kept', () => {
     const note = renderInstagramNote({
       post: videoPost(),
-      body: { kind: 'transcribed', transcript: sampleTranscript, videoPath: null },
+      body: { kind: 'video', transcript: sampleTranscript, screenText: skipped, videoPath: null },
       ingestedOn: '2026-11-09',
     });
     expect(note).not.toContain('video:');
@@ -80,28 +83,132 @@ describe('renderInstagramNote', () => {
   it('says so when there is no speech', () => {
     const note = renderInstagramNote({
       post: videoPost(),
-      body: { kind: 'transcribed', transcript: { language: 'en', segments: [] }, videoPath: null },
+      body: {
+        kind: 'video',
+        transcript: { language: 'und', segments: [] },
+        screenText: skipped,
+        videoPath: null,
+      },
       ingestedOn: '2026-11-09',
     });
     expect(note).toContain('_No speech detected._');
   });
 
-  it('renders a caption-only note for posts without video', () => {
+  it('lists on-screen text after the transcript and notes left-out subtitles', () => {
+    const note = renderInstagramNote({
+      post: videoPost(),
+      body: {
+        kind: 'video',
+        transcript: sampleTranscript,
+        screenText: {
+          kind: 'read',
+          text: {
+            lines: [
+              { atSeconds: 0, text: 'The right order to learn RAG' },
+              { atSeconds: 65, text: 'Step 2: chunking' },
+            ],
+            subtitleLinesOmitted: 3,
+          },
+        },
+        videoPath: null,
+      },
+      ingestedOn: '2026-11-09',
+    });
+    expect(note).toContain(
+      '## On-screen text\n\n[0:00] The right order to learn RAG\n[1:05] Step 2: chunking\n\n_3 subtitle lines repeating the speech left out._',
+    );
+    expect(note.indexOf('## Transcript')).toBeLessThan(note.indexOf('## On-screen text'));
+  });
+
+  it('says so when a video shows no text, and omits the section when reading was skipped', () => {
+    const read = renderInstagramNote({
+      post: videoPost(),
+      body: {
+        kind: 'video',
+        transcript: sampleTranscript,
+        screenText: { kind: 'read', text: { lines: [], subtitleLinesOmitted: 0 } },
+        videoPath: null,
+      },
+      ingestedOn: '2026-11-09',
+    });
+    expect(read).toContain('## On-screen text\n\n_No on-screen text found._');
+    expect(read).not.toContain('subtitle');
+    expect(rendered).not.toContain('## On-screen text');
+  });
+
+  it('renders text per image for a carousel, as list items that cannot become headings', () => {
     const note = renderInstagramNote({
       post: photoPost(),
-      body: { kind: 'no-video' },
+      body: {
+        kind: 'images',
+        imageCount: 3,
+        imageText: {
+          kind: 'read',
+          text: {
+            images: [
+              { imageNumber: 1, lines: ['# not a heading', 'Why AI engineering?'] },
+              { imageNumber: 3, lines: ['1. High Demand'] },
+            ],
+          },
+        },
+      },
       ingestedOn: '2026-11-09',
     });
     expect(note).toContain('tags: [instagram, image]');
-    expect(note).toContain('_No video in this post._');
+    expect(note).toContain(
+      '## Text in images\n\n**Image 1**\n\n- \\# not a heading\n- Why AI engineering?\n\n**Image 3**\n\n- 1. High Demand',
+    );
     expect(note).not.toContain('## Transcript');
     expect(note).not.toContain('language:');
+  });
+
+  it('renders a single photo without image numbering', () => {
+    const note = renderInstagramNote({
+      post: photoPost(),
+      body: {
+        kind: 'images',
+        imageCount: 1,
+        imageText: { kind: 'read', text: { images: [{ imageNumber: 1, lines: ['Hello'] }] } },
+      },
+      ingestedOn: '2026-11-09',
+    });
+    expect(note).toContain('## Text in images\n\n- Hello');
+    expect(note).not.toContain('**Image');
+  });
+
+  it('says so when the images hold no text', () => {
+    const note = renderInstagramNote({
+      post: photoPost(),
+      body: { kind: 'images', imageCount: 2, imageText: { kind: 'read', text: { images: [] } } },
+      ingestedOn: '2026-11-09',
+    });
+    expect(note).toContain('_No text found in the images._');
+  });
+
+  it('includes the alt text when the post has one', () => {
+    const note = renderInstagramNote({
+      post: photoPost({ altText: "May be an image of text that says 'Hire me'." }),
+      body: { kind: 'images', imageCount: 1, imageText: skipped },
+      ingestedOn: '2026-11-09',
+    });
+    expect(note).toContain("## Alt text\n\nMay be an image of text that says 'Hire me'.");
+    expect(rendered).not.toContain('## Alt text');
+  });
+
+  it('renders a caption-only note for posts without media', () => {
+    const note = renderInstagramNote({
+      post: photoPost({ media: { kind: 'no-media' } }),
+      body: { kind: 'no-media' },
+      ingestedOn: '2026-11-09',
+    });
+    expect(note).toContain('tags: [instagram]');
+    expect(note).toContain('_No media found in this post._');
   });
 
   it('escapes YAML-hostile titles', () => {
     const note = renderInstagramNote({
       post: videoPost({ caption: 'Tip: "quotes" & colons: here' }),
-      body: { kind: 'no-video' },
+      body: { kind: 'no-media' },
       ingestedOn: '2026-11-09',
     });
     expect(note).toContain('title: "Tip: \\"quotes\\" & colons: here"');
@@ -109,10 +216,14 @@ describe('renderInstagramNote', () => {
 
   it('is deterministic (property)', () => {
     fc.assert(
-      fc.property(fc.string(), (caption) => {
+      fc.property(fc.string(), fc.array(fc.string()), (caption, lines) => {
         const input = {
           post: videoPost({ caption }),
-          body: { kind: 'no-video' } as const,
+          body: {
+            kind: 'images',
+            imageCount: 1,
+            imageText: { kind: 'read', text: { images: [{ imageNumber: 1, lines }] } },
+          } as const,
           ingestedOn: '2026-11-09',
         };
         expect(renderInstagramNote(input)).toBe(renderInstagramNote(input));

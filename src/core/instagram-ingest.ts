@@ -1,4 +1,10 @@
 import type { PostMedia, RejectedItem } from './instagram-post.js';
+import type {
+  FrameReading,
+  FrameSampling,
+  ImageReading,
+  OcrLanguage,
+} from './instagram-screen-text.js';
 import {
   type InstagramTarget,
   type InstagramUsername,
@@ -28,10 +34,12 @@ export type IngestRequest = Readonly<{
   /** Overwrite notes that already exist. */
   force: boolean;
   model: WhisperModel;
+  /** Read text shown in videos and images (OCR). Off = audio-only download, faster runs. */
+  readScreenText: boolean;
 }>;
 
 export const INGEST_USAGE =
-  'Usage: ig-ingest <instagram-url|@handle> [--limit N (profiles only)] [--video] [--force] [--model tiny|base|small|medium|large-v3]';
+  'Usage: ig-ingest <instagram-url|@handle> [--limit N (profiles only)] [--video] [--force] [--no-screen-text] [--model tiny|base|small|medium|large-v3]';
 
 export function parseWhisperModel(raw: string): Result<WhisperModel, string> {
   const model = WHISPER_MODELS.find((m) => m === raw);
@@ -45,6 +53,7 @@ type Flags = {
   keepVideo: boolean;
   force: boolean;
   model: WhisperModel;
+  readScreenText: boolean;
 };
 
 /** Parse CLI arguments into a request. `defaultModel` lets the shell inject an env override. */
@@ -53,12 +62,19 @@ export function parseIngestArgs(
   defaultModel: WhisperModel = DEFAULT_WHISPER_MODEL,
 ): Result<IngestRequest, string> {
   const positional: string[] = [];
-  const flags: Flags = { limit: null, keepVideo: false, force: false, model: defaultModel };
+  const flags: Flags = {
+    limit: null,
+    keepVideo: false,
+    force: false,
+    model: defaultModel,
+    readScreenText: true,
+  };
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i] as string;
     if (arg === '--video') flags.keepVideo = true;
     else if (arg === '--force') flags.force = true;
+    else if (arg === '--no-screen-text') flags.readScreenText = false;
     else if (arg === '--limit' || arg === '--model') {
       const value = args[++i];
       if (value === undefined) return err(`${arg} needs a value. ${INGEST_USAGE}`);
@@ -92,6 +108,7 @@ export function parseIngestArgs(
     keepVideo: flags.keepVideo,
     force: flags.force,
     model: flags.model,
+    readScreenText: flags.readScreenText,
   });
 }
 
@@ -101,23 +118,30 @@ export function parseIngestArgs(
 export const scrapeBudgetUsd = (limit: number): number => Math.max(0.05, limit * 0.01);
 
 export type MediaPlan =
-  /** Download the mp4 into the video library and transcribe it from there. */
+  /** Download the mp4 into the video library and read it from there. */
   | { readonly kind: 'keep-video'; readonly url: string }
-  /** Download the (much smaller) audio track to scratch, transcribe, delete. */
+  /** Download to scratch, read, delete. */
   | { readonly kind: 'scratch'; readonly url: string };
 
+/**
+ * Where a video's media comes from. Reading on-screen text needs the picture, so scratch
+ * downloads take the video then; transcription alone takes the much smaller audio track.
+ */
 export function planMedia(
   media: Extract<PostMedia, { kind: 'video' }>,
   keepVideo: boolean,
+  readScreenText: boolean,
 ): MediaPlan {
-  return keepVideo
-    ? { kind: 'keep-video', url: media.videoUrl }
-    : { kind: 'scratch', url: media.audioUrl ?? media.videoUrl };
+  if (keepVideo) return { kind: 'keep-video', url: media.videoUrl };
+  return {
+    kind: 'scratch',
+    url: readScreenText ? media.videoUrl : (media.audioUrl ?? media.videoUrl),
+  };
 }
 
 // ─── Outcomes ─────────────────────────────────────────────────────────────────
 
-type FailureStage = 'download' | 'transcribe' | 'write';
+type FailureStage = 'download' | 'transcribe' | 'read-text' | 'write';
 
 /** Why building a note's body failed — everything before the vault write. */
 export type NoteBodyFailure = Readonly<{
@@ -131,6 +155,8 @@ export type PostOutcome =
       readonly shortCode: ShortCode;
       readonly notePath: VaultRelativePath;
       readonly transcribed: boolean;
+      /** On-screen / in-image text was read (whether or not any was found). */
+      readonly textRead: boolean;
       readonly videoPath: string | null;
     }
   | {
@@ -157,6 +183,7 @@ export type IngestReport = Readonly<{
 export type IngestSummary = Readonly<{
   saved: number;
   transcribed: number;
+  textRead: number;
   skippedExisting: number;
   failed: number;
   rejected: number;
@@ -167,6 +194,7 @@ export function summarizeReport(report: IngestReport): IngestSummary {
   return {
     saved: saved.length,
     transcribed: saved.filter((o) => o.transcribed).length,
+    textRead: saved.filter((o) => o.textRead).length,
     skippedExisting: report.outcomes.filter((o) => o.kind === 'skipped-existing').length,
     failed: report.outcomes.filter((o) => o.kind === 'failed').length,
     rejected: report.rejected.length,
@@ -175,10 +203,25 @@ export function summarizeReport(report: IngestReport): IngestSummary {
 
 // ─── Ports (owned by the domain, implemented in infra/) ───────────────────────
 
-/** Where a downloaded file should land. */
+/** Where a downloaded file should land. Kept files are always videos. */
 export type MediaTarget =
   | { readonly kind: 'library'; readonly owner: InstagramUsername; readonly shortCode: ShortCode }
-  | { readonly kind: 'scratch' };
+  | { readonly kind: 'scratch'; readonly format: 'mp4' | 'jpg' };
+
+/** Reads text out of pictures (OCR). Each method reads a whole batch in one go. */
+export type TextReader = Readonly<{
+  /** Sample frames of a local video and read each one. */
+  video: (
+    path: string,
+    sampling: FrameSampling,
+    languages: readonly OcrLanguage[],
+  ) => Promise<Result<readonly FrameReading[], string>>;
+  /** Read local images; one reading per path, in order. */
+  images: (
+    paths: readonly string[],
+    languages: readonly OcrLanguage[],
+  ) => Promise<Result<readonly ImageReading[], string>>;
+}>;
 
 /** Narrow vault capability: exactly what ingest needs, in vault-relative terms. */
 export type InstagramVault = Readonly<{
@@ -198,6 +241,7 @@ export type InstagramIngestPorts = Readonly<{
   fetchMedia: (url: string, to: MediaTarget) => Promise<Result<string, string>>;
   discardScratch: (path: string) => Promise<void>;
   transcribe: (mediaPath: string, model: WhisperModel) => Promise<Result<Transcript, string>>;
+  readText: TextReader;
   vault: InstagramVault;
   /** `YYYY-MM-DD`. */
   today: () => string;
