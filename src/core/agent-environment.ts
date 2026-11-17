@@ -27,6 +27,12 @@ const RUNTIME_ENVIRONMENT_KEYS = [
   'XDG_DATA_HOME',
   'XDG_CONFIG_DIRS',
   'XDG_DATA_DIRS',
+  // The user's systemd manager bus. Without these, `systemctl --user` and
+  // `journalctl --user` fail in agent sessions ("Failed to connect to user scope
+  // bus"), breaking homelab-watchdog's service checks and reclaw self-restarts.
+  // Not a credential: agents run as the same uid and can reach the bus socket anyway.
+  'XDG_RUNTIME_DIR',
+  'DBUS_SESSION_BUS_ADDRESS',
   'NIX_PATH',
   'NIX_PROFILES',
   'NIX_USER_PROFILE_DIR',

@@ -42,6 +42,22 @@ describe('buildAgentProcessEnvironment', () => {
     });
   });
 
+  it('keeps the user systemd bus so agents can run systemctl --user', () => {
+    const result = buildAgentProcessEnvironment(
+      {
+        XDG_RUNTIME_DIR: '/run/user/1000',
+        DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus',
+        SSH_AUTH_SOCK: '/run/user/1000/ssh-agent',
+      },
+      { backend: 'claude' },
+    );
+
+    expect(result).toEqual({
+      XDG_RUNTIME_DIR: '/run/user/1000',
+      DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus',
+    });
+  });
+
   it('passes only Claude authentication values to the Claude backend', () => {
     const result = buildAgentProcessEnvironment(
       {
