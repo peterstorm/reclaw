@@ -56,3 +56,17 @@ export function resolveModelSelection(
   const selection = { ...serviceDefaults[backend], ...requested };
   return Object.keys(selection).length > 0 ? selection : undefined;
 }
+
+/**
+ * The service defaults for scheduled runs: Pi's model replaced by `scheduledPiModel` (the
+ * provider and every other backend are untouched). Unset means scheduled runs share the chat
+ * defaults. Chat keeps `serviceDefaults` as is.
+ */
+export function scheduledModelSelections(
+  serviceDefaults: ServiceModelSelections,
+  scheduledPiModel: string | undefined,
+): ServiceModelSelections {
+  return scheduledPiModel === undefined
+    ? serviceDefaults
+    : { ...serviceDefaults, pi: { ...serviceDefaults.pi, model: scheduledPiModel } };
+}

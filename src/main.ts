@@ -1,6 +1,10 @@
 import { formatAgentFailure } from './core/agent-failure.js';
 import { createAsyncMutex } from './core/async-mutex.js';
-import { type ServiceModelSelections, resolveModelSelection } from './core/model-selection.js';
+import {
+  type ServiceModelSelections,
+  resolveModelSelection,
+  scheduledModelSelections,
+} from './core/model-selection.js';
 import { makeTelegramUserId } from './core/types.js';
 import type { Result, ScheduledJob } from './core/types.js';
 import type {
@@ -170,25 +174,35 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
 
   // Resolve the backend first, then the model for THAT backend — the Pi defaults must never
   // reach a Claude run (a per-skill `backend: claude` would otherwise get `--model <vLLM id>`).
-  const forBackend = (opts: AgentOptions): [AgentBackend, AgentOptions] => {
-    const backend = opts.backend ?? config.agentBackend;
-    const { modelSelection: requested, ...rest } = opts;
-    const modelSelection = resolveModelSelection(backend, requested, serviceModelSelections);
-    return [
-      resolveBackend({ agentBackend: backend }),
-      modelSelection ? { ...rest, modelSelection } : rest,
-    ];
-  };
+  const forBackend =
+    (defaults: ServiceModelSelections) =>
+    (opts: AgentOptions): [AgentBackend, AgentOptions] => {
+      const backend = opts.backend ?? config.agentBackend;
+      const { modelSelection: requested, ...rest } = opts;
+      const modelSelection = resolveModelSelection(backend, requested, defaults);
+      return [
+        resolveBackend({ agentBackend: backend }),
+        modelSelection ? { ...rest, modelSelection } : rest,
+      ];
+    };
 
   const runClaudeFn: (options: AgentOptions) => Promise<AgentResult> =
-    injected.runClaudeFn ?? ((opts) => runAgent(...forBackend(opts)));
+    injected.runClaudeFn ?? ((opts) => runAgent(...forBackend(serviceModelSelections)(opts)));
+
+  // Scheduled skills may run on a cheaper/faster Pi model than chat (RECLAW_PI_SCHEDULED_MODEL).
+  const scheduledSelections = scheduledModelSelections(
+    serviceModelSelections,
+    config.piScheduledModel,
+  );
+  const runScheduledFn: (options: AgentOptions) => Promise<AgentResult> =
+    injected.runClaudeFn ?? ((opts) => runAgent(...forBackend(scheduledSelections)(opts)));
 
   const runClaudeStreamingFn: (
     options: AgentOptions,
     onChunk: OnStreamChunk,
   ) => Promise<AgentResult> =
     injected.runClaudeStreamingFn ??
-    ((opts, onChunk) => runAgentStreaming(...forBackend(opts), onChunk));
+    ((opts, onChunk) => runAgentStreaming(...forBackend(serviceModelSelections)(opts), onChunk));
 
   // ── 1b. Resolve cortex extraction (always-on, no config needed) ──────────
   const { resolveCortexExtractScript, createCortexExtractor } = await import(
@@ -388,7 +402,7 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
       }),
     scheduledHandler: (job) =>
       handleScheduledJobFn(job, {
-        runClaude: runClaudeFn,
+        runClaude: runScheduledFn,
         telegram,
         skillRegistry: skillWatcher.getRegistry(),
         config,

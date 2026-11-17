@@ -34,6 +34,7 @@ export const AppConfigSchema = z.object({
   agentBackend: z.enum(['claude', 'pi']).default('claude'),
   piProvider: z.string().min(1).optional(),
   piModel: z.string().min(1).optional(),
+  piScheduledModel: z.string().min(1).optional(),
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;
@@ -138,6 +139,7 @@ export function parseEnvToRaw(env: Record<string, string | undefined>): {
     agentBackend: env.AGENT_BACKEND || undefined,
     piProvider: parseOptionalString(env.RECLAW_PI_PROVIDER),
     piModel: parseOptionalString(env.RECLAW_PI_MODEL),
+    piScheduledModel: parseOptionalString(env.RECLAW_PI_SCHEDULED_MODEL),
   };
   return { raw, errors };
 }

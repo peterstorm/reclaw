@@ -1,8 +1,40 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { makeClaudeModel, resolveModelSelection } from './model-selection.js';
+import {
+  makeClaudeModel,
+  resolveModelSelection,
+  scheduledModelSelections,
+} from './model-selection.js';
 
 const PI_DEFAULTS = { pi: { provider: 'desktop-vllm', model: 'glm-5.3-flash-qad2-tp2-v15:low' } };
+
+describe('scheduledModelSelections', () => {
+  it('replaces only the Pi model, keeping the provider', () => {
+    expect(scheduledModelSelections(PI_DEFAULTS, 'claude-sonnet-5.5:medium')).toEqual({
+      pi: { provider: 'desktop-vllm', model: 'claude-sonnet-5.5:medium' },
+    });
+  });
+
+  it('is the chat defaults when no scheduled model is set', () => {
+    expect(scheduledModelSelections(PI_DEFAULTS, undefined)).toBe(PI_DEFAULTS);
+  });
+
+  it('sets a Pi model even when no chat default exists', () => {
+    expect(scheduledModelSelections({}, 'm')).toEqual({ pi: { model: 'm' } });
+  });
+
+  it('never touches the chat defaults and never reaches a Claude run', () => {
+    fc.assert(
+      fc.property(fc.string({ minLength: 1 }), (model) => {
+        const scheduled = scheduledModelSelections(PI_DEFAULTS, model);
+        expect(PI_DEFAULTS.pi.model).toBe('glm-5.3-flash-qad2-tp2-v15:low');
+        expect(resolveModelSelection('pi', undefined, scheduled)?.model).toBe(model);
+        expect(resolveModelSelection('pi', undefined, scheduled)?.provider).toBe('desktop-vllm');
+        expect(resolveModelSelection('claude', undefined, scheduled)).toBeUndefined();
+      }),
+    );
+  });
+});
 
 describe('resolveModelSelection', () => {
   it('applies the Pi service default to Pi runs', () => {

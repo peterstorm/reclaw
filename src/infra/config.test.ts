@@ -278,6 +278,13 @@ describe('loadConfig', () => {
     }
   });
 
+  it('parses the optional scheduled Pi model, blank meaning unset', () => {
+    const set = loadConfig({ ...VALID_ENV, RECLAW_PI_SCHEDULED_MODEL: 'claude-sonnet-5.5:medium' });
+    const blank = loadConfig({ ...VALID_ENV, RECLAW_PI_SCHEDULED_MODEL: '  ' });
+    expect(set.ok && set.value.piScheduledModel).toBe('claude-sonnet-5.5:medium');
+    expect(blank.ok && blank.value.piScheduledModel).toBeUndefined();
+  });
+
   it('leaves Pi provider and model undefined when unset or blank', () => {
     const result = loadConfig({ ...VALID_ENV, RECLAW_PI_PROVIDER: '   ', RECLAW_PI_MODEL: '' });
     expect(result.ok).toBe(true);

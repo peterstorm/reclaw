@@ -509,6 +509,7 @@ All config is env-driven (no config file). See `src/infra/config.ts` for the Zod
 | `AGENT_BACKEND`                 | `claude`               | Agent subprocess backend: `claude` or `pi`             |
 | `RECLAW_PI_PROVIDER`            | unset                  | Optional Pi `--provider`; unset means use Pi defaults  |
 | `RECLAW_PI_MODEL`               | unset                  | Optional Pi `--model` (Pi runs only); unset means use Pi defaults |
+| `RECLAW_PI_SCHEDULED_MODEL`     | unset                  | Optional Pi `--model` for **scheduled skills only** (chat keeps `RECLAW_PI_MODEL`); provider shared; unset means scheduled runs use `RECLAW_PI_MODEL` |
 | `LATITUDE` / `LONGITUDE` / `TIMEZONE` / `LOCATION_NAME` | Copenhagen defaults | Weather, sun-time skills        |
 
 Pi model override example for trying DeepSeek v4 Flash through reclaw:
