@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { defined } from './__fixtures__/defined.js';
 import {
   citedSourceIndicesOf,
   extractPassageToSourceMap,
@@ -229,7 +230,7 @@ describe('resolveAnswerCitations', () => {
       // The wikilink is [[SanitizedTitle#Passage N]]
       // Extract just the title part (before the # anchor separator)
       const inner = resolvedText.slice(2, resolvedText.length - 2); // strip outer [[ and ]]
-      const titlePart = inner.split('#')[0]!;
+      const titlePart = defined(inner.split('#')[0]);
       // Title part should not contain wikilink-invalid characters
       expect(titlePart).not.toMatch(/[[\]|#^]/);
     });
@@ -360,10 +361,10 @@ describe('extractPassageToSourceMap', () => {
     const rawData: unknown[] = [
       'text',
       [
-        [null, null, null, null, null, [[[sources[0]!.id]]]], // valid
+        [null, null, null, null, null, [[[defined(sources[0]).id]]]], // valid
         'not-an-object', // invalid
         42, // invalid
-        [null, null, null, null, null, [[[sources[2]!.id]]]], // valid
+        [null, null, null, null, null, [[[defined(sources[2]).id]]]], // valid
       ],
     ];
     const map = extractPassageToSourceMap(rawData, sources);

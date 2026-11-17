@@ -91,16 +91,17 @@ export function distillForecast(
   dayOffset: number,
 ): Result<Forecast, string> {
   const h = response.hourly;
-  if (!h?.time || h.time.length === 0) return err('no hourly data in response');
+  const times = h?.time;
+  if (!h || !times || times.length === 0) return err('no hourly data in response');
 
   // The forecast is indexed by local time strings like "2026-07-16T07:00".
   // Target day is the (dayOffset)-th distinct date in the series.
-  const dates = [...new Set(h.time.map((t) => t.slice(0, 10)))].sort();
+  const dates = [...new Set(times.map((t) => t.slice(0, 10)))].sort();
   const targetDate = dates[dayOffset];
   if (!targetDate) return err(`no forecast for dayOffset ${dayOffset}`);
 
   const hours: Hour[] = COMMUTE_HOURS.flatMap((hm) => {
-    const idx = h.time!.indexOf(`${targetDate}T${hm}`);
+    const idx = times.indexOf(`${targetDate}T${hm}`);
     if (idx < 0) return [];
     return [
       {

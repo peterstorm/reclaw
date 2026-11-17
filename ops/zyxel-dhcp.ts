@@ -341,8 +341,7 @@ async function main() {
       const result = await dalWrite('wlan', c, sessionKey, 'PUT');
       if (typeof result.sessionkey === 'string' && result.sessionkey !== '')
         sessionKey = result.sessionkey;
-      const shown = { ...result };
-      delete (shown as Record<string, unknown>).sessionkey;
+      const { sessionkey: _, ...shown } = result;
       process.stdout.write(
         `# wlan Index ${String(c.Index)} -> ${String(c.SSID)}: ${JSON.stringify(shown)}\n`,
       );

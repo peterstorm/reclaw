@@ -103,11 +103,17 @@ export function deriveZones(fiveKPace: Pace): ZoneTable {
 
 // ─── VDOT Lookup ─────────────────────────────────────────────────────────────
 
+interface VdotEntry {
+  readonly vo2max: number;
+  readonly fiveKSeconds: number;
+}
+
 /**
  * Jack Daniels VDOT table: VO2Max → estimated 5K time in seconds.
  * Values for the range typically seen in recreational-to-competitive runners.
+ * Ascending by vo2max; the tuple type guarantees the table is non-empty.
  */
-const VDOT_TABLE: ReadonlyArray<{ readonly vo2max: number; readonly fiveKSeconds: number }> = [
+const VDOT_TABLE: readonly [VdotEntry, ...VdotEntry[]] = [
   { vo2max: 40, fiveKSeconds: 1770 }, // 29:30
   { vo2max: 41, fiveKSeconds: 1722 }, // 28:42
   { vo2max: 42, fiveKSeconds: 1674 }, // 27:54
@@ -130,20 +136,25 @@ const VDOT_TABLE: ReadonlyArray<{ readonly vo2max: number; readonly fiveKSeconds
  * Returns estimated 5K pace (per km).
  */
 export function estimateFromVo2Max(vo2max: number): Pace | null {
-  if (vo2max < VDOT_TABLE[0]!.vo2max || vo2max > VDOT_TABLE[VDOT_TABLE.length - 1]!.vo2max) {
+  const [first, ...rest] = VDOT_TABLE;
+  // A one-entry table's last entry is its first.
+  const last = rest.at(-1) ?? first;
+  if (vo2max < first.vo2max || vo2max > last.vo2max) {
     return null; // out of table range
   }
 
   // Find surrounding entries for interpolation
-  let lower = VDOT_TABLE[0]!;
-  let upper = VDOT_TABLE[VDOT_TABLE.length - 1]!;
+  let lower = first;
+  let upper = last;
 
-  for (let i = 0; i < VDOT_TABLE.length - 1; i++) {
-    if (vo2max >= VDOT_TABLE[i]!.vo2max && vo2max <= VDOT_TABLE[i + 1]!.vo2max) {
-      lower = VDOT_TABLE[i]!;
-      upper = VDOT_TABLE[i + 1]!;
+  let previous = first;
+  for (const next of rest) {
+    if (vo2max >= previous.vo2max && vo2max <= next.vo2max) {
+      lower = previous;
+      upper = next;
       break;
     }
+    previous = next;
   }
 
   // Linear interpolation

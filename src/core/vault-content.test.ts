@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { defined } from './__fixtures__/defined.js';
 import { resolveAnswerCitations } from './citation-resolver.js';
+import { requiredGroup } from './regex-group.js';
 import type {
   ChatResponse,
   QualityResult,
@@ -165,7 +167,7 @@ describe('buildHubNote', () => {
 // ─── buildSourceNote ──────────────────────────────────────────────────────────
 
 describe('buildSourceNote', () => {
-  const source = sources[0]!;
+  const source = defined(sources[0]);
   const topicSlug = makeTopicSlug('artificial-intelligence');
   const hubPath = 'reclaw/research/artificial-intelligence/_index.md';
   const passageAnchors = '## Passage 1';
@@ -341,7 +343,7 @@ describe('buildSourceNote', () => {
 
   describe('youtube source type', () => {
     it('sets source_type to youtube for YouTube sources', () => {
-      const ytSource = sources[1]!;
+      const ytSource = defined(sources[1]);
       const note = buildSourceNote(ytSource, topicSlug, hubPath, '', researchDate, notebookId);
       expect(note.content).toContain('source_type: youtube');
     });
@@ -367,7 +369,7 @@ describe('buildSourceNote', () => {
 describe('buildQANote', () => {
   const question = 'What is artificial intelligence?';
   const resolvedAnswer = 'AI is the simulation of human intelligence [[First Article#Passage 1]].';
-  const citedSources = [sources[0]!];
+  const citedSources = [defined(sources[0])];
   const topicSlug = makeTopicSlug('artificial-intelligence');
   const hubPath = 'reclaw/research/artificial-intelligence/_index.md';
 
@@ -437,7 +439,7 @@ describe('buildQANote', () => {
       const longQuestion = `${'A'.repeat(60)} and more text`;
       const note = buildQANote(longQuestion, resolvedAnswer, citedSources, topicSlug, hubPath);
       const parts = note.relativePath.split('/');
-      const filename = parts[parts.length - 1]!;
+      const filename = defined(parts.at(-1));
       // Filename without .md extension should be <= 50 chars
       expect(filename.replace(/\.md$/, '').length).toBeLessThanOrEqual(50);
     });
@@ -590,7 +592,7 @@ describe('buildAllVaultNotes', () => {
       for (const wikilink of wikilinkMatches) {
         // Extract the note title from the wikilink (before #)
         const inner = wikilink.slice(2, wikilink.length - 2);
-        const titlePart = inner.split('#')[0]!.trim();
+        const titlePart = defined(inner.split('#')[0]).trim();
         if (titlePart.endsWith('/_index')) continue; // hub note link
         // Check that a source note exists with this title in its path
         const matchingSource = sourceNotes.find((sn) => sn.relativePath.includes(titlePart));
@@ -609,7 +611,7 @@ describe('buildAllVaultNotes', () => {
     const firstSourceNote = notes.find((n) => n.relativePath.includes('Sources/First Article.md'));
     expect(firstSourceNote).toBeDefined();
     // Source at index 0 is cited by [1]
-    expect(firstSourceNote!.content).toContain('## Passage 1');
+    expect(defined(firstSourceNote).content).toContain('## Passage 1');
   });
 
   // Regression: source notes used to derive their anchors as `sourceIndex + 1`,
@@ -648,10 +650,12 @@ describe('buildAllVaultNotes', () => {
     expect(firstNote).toBeDefined();
 
     // The passage number, not the source position.
-    expect(youtubeNote!.content).toContain('## Passage 15');
-    expect(youtubeNote!.content).not.toContain('## Passage 2');
-    expect(firstNote!.content).toContain('## Passage 3');
-    expect(firstNote!.content).not.toContain('## Passage 1');
+    const youtubeContent = defined(youtubeNote).content;
+    const firstContent = defined(firstNote).content;
+    expect(youtubeContent).toContain('## Passage 15');
+    expect(youtubeContent).not.toContain('## Passage 2');
+    expect(firstContent).toContain('## Passage 3');
+    expect(firstContent).not.toContain('## Passage 1');
   });
 
   it('every generated passage wikilink resolves to a heading in its source note', () => {
@@ -684,12 +688,15 @@ describe('buildAllVaultNotes', () => {
     ]);
     expect(links.length).toBe(3);
 
-    for (const [, title, passage] of links) {
+    for (const link of links) {
+      const title = requiredGroup(link, 1);
+      const passage = requiredGroup(link, 2);
       const target = sourceNotes.find((sn) => sn.relativePath.includes(`Sources/${title}.md`));
-      expect(target, `no source note for "${title!}"`).toBeDefined();
-      expect(target!.content, `missing anchor for [[${title!}#Passage ${passage!}]]`).toContain(
-        `## Passage ${passage!}`,
-      );
+      expect(target, `no source note for "${title}"`).toBeDefined();
+      expect(
+        defined(target).content,
+        `missing anchor for [[${title}#Passage ${passage}]]`,
+      ).toContain(`## Passage ${passage}`);
     }
   });
 

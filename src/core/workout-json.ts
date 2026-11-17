@@ -102,11 +102,10 @@ export function validateWorkoutJson(json: unknown): Result<void, string[]> {
     validateSteps(seg.workoutSteps as unknown[], `segment[${si}]`, errors, stepOrders);
 
     // Check step order is sequential
-    for (let i = 1; i < stepOrders.length; i++) {
-      if (stepOrders[i]! <= stepOrders[i - 1]!) {
-        errors.push(
-          `Step order not sequential: ${stepOrders[i - 1]} → ${stepOrders[i]} in ${`segment[${si}]`}`,
-        );
+    for (const [i, current] of stepOrders.entries()) {
+      const previous = stepOrders[i - 1]; // undefined only for the first step
+      if (previous !== undefined && current <= previous) {
+        errors.push(`Step order not sequential: ${previous} → ${current} in ${`segment[${si}]`}`);
       }
     }
   }

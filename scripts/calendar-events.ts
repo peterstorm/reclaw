@@ -145,7 +145,7 @@ async function main(): Promise<void> {
   let files: string[];
   try {
     files = (await readdir(CALENDAR_DIR)).filter((f) => f.endsWith('.ics'));
-  } catch (e) {
+  } catch {
     console.error(`[ERROR] Cannot read calendar directory: ${CALENDAR_DIR}`);
     console.log('[]');
     process.exit(0);

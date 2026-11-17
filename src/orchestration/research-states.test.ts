@@ -1352,13 +1352,11 @@ describe('executeState / adding_sources (Claude-discovered URLs)', () => {
   it('handles undefined claudeDiscoveredUrls for legacy checkpoints', async () => {
     const state: ResearchState = { kind: 'adding_sources' };
     // Simulate a legacy checkpoint without claudeDiscoveredUrls
-    const ctx = makeMockContext({
+    // Omit the field to simulate legacy data
+    const { claudeDiscoveredUrls: _, ...legacyCtx } = makeMockContext({
       notebookId: 'nb-001',
       sourceHints: ['https://example.com/blog'],
-    }) as ResearchContext;
-    // Remove the field to simulate legacy data
-    const legacyCtx = { ...ctx } as Record<string, unknown>;
-    delete legacyCtx.claudeDiscoveredUrls;
+    });
     const deps = makeMockDeps();
 
     const event = await executeState(state, legacyCtx as ResearchContext, deps);

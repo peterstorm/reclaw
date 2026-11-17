@@ -12,6 +12,7 @@
 
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
+import { requiredGroup } from '../src/core/regex-group.js';
 
 const VAULT = process.env.OBSIDIAN_VAULT_PATH;
 if (!VAULT) {
@@ -34,7 +35,7 @@ async function readNotebookIdFromSources(sourcesDir: string): Promise<string | n
     if (!name.endsWith('.md')) continue;
     const text = await fs.readFile(path.join(sourcesDir, name), 'utf8');
     const m = text.match(NOTEBOOK_ID_RE);
-    if (m) return m[1]!.trim();
+    if (m) return requiredGroup(m, 1).trim();
   }
   return null;
 }

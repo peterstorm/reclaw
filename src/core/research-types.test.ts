@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { defined } from './__fixtures__/defined.js';
 import { isTerminal, makeResearchJobData, stateProgress } from './research-types.js';
 import type { ResearchState } from './research-types.js';
 
@@ -273,7 +274,7 @@ describe('stateProgress', () => {
     ];
     const progresses = states.map(stateProgress);
     for (let i = 1; i < progresses.length; i++) {
-      expect(progresses[i]).toBeGreaterThan(progresses[i - 1]!);
+      expect(progresses[i]).toBeGreaterThan(defined(progresses[i - 1]));
     }
   });
 

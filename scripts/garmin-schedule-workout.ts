@@ -18,7 +18,7 @@
 import { existsSync } from 'node:fs';
 import { chmod } from 'node:fs/promises';
 import { join } from 'node:path';
-import { GarminConnect } from '@gooin/garmin-connect';
+import { GarminConnect, type GarminWorkoutUploadPayload } from '@gooin/garmin-connect';
 
 // --- Auth (same pattern as garmin-fetch.ts) ---
 
@@ -103,17 +103,16 @@ async function main(): Promise<void> {
 
   // Create the workout
   console.error(`[INFO] Creating workout: ${workout.workoutName}...`);
-  const created = (await client.addWorkout(workout as any)) as any;
+  // The stdin JSON is forwarded to Garmin verbatim: only workoutName and
+  // workoutSegments are checked above, and Garmin's API validates the rest.
+  const created = await client.addWorkout(workout as unknown as GarminWorkoutUploadPayload);
   const workoutId = created.workoutId;
   console.error(`[INFO] Workout created with ID: ${workoutId}`);
 
   // Schedule it to the target date
   const targetDate = new Date(`${dateArg}T00:00:00`);
   console.error(`[INFO] Scheduling workout ${workoutId} for ${dateArg}...`);
-  const scheduled = (await client.scheduleWorkout(
-    { workoutId: String(workoutId) },
-    targetDate,
-  )) as any;
+  const scheduled = await client.scheduleWorkout({ workoutId: String(workoutId) }, targetDate);
   console.error('[INFO] Workout scheduled successfully');
 
   // Export tokens (they may have refreshed)

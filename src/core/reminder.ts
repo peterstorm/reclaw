@@ -1,4 +1,5 @@
 import * as chrono from 'chrono-node';
+import { requiredGroup } from './regex-group.js';
 import { type Result, err, ok } from './types.js';
 
 // ─── Duration Parsing ─────────────────────────────────────────────────────────
@@ -53,7 +54,7 @@ export function parseAbsoluteTime(input: string, now: Date = new Date()): Result
     return err(`Invalid time format: "${input}".`);
   }
 
-  let hours = Number.parseInt(match[1]!, 10);
+  let hours = Number.parseInt(requiredGroup(match, 1), 10);
   const minutes = Number.parseInt(match[2] ?? '0', 10);
   const meridiem = match[3] as 'am' | 'pm' | undefined;
 
@@ -108,11 +109,11 @@ export function parseSemanticDate(
 ): Result<{ delayMs: number; text: string }, string> {
   const results = chrono.parse(input, now, { forwardDate: true });
 
-  if (results.length === 0) {
+  const [parsed] = results;
+  if (parsed === undefined) {
     return err(`Could not find a date/time in: "${input}".`);
   }
 
-  const parsed = results[0]!;
   const target = parsed.start.date();
   const delayMs = target.getTime() - now.getTime();
 
@@ -156,7 +157,7 @@ export function isRemindListCommand(input: string): boolean {
 /** Check if the input is a /remind cancel command. Returns the scheduler ID or null. */
 export function parseRemindCancelCommand(input: string): string | null {
   const match = /^\/remind\s+cancel\s+(\S+)\s*$/i.exec(input.trim());
-  return match ? match[1]! : null;
+  return match ? requiredGroup(match, 1) : null;
 }
 
 // ─── Recurring Reminder Parsing ───────────────────────────────────────────────
@@ -224,10 +225,11 @@ const TIME_KEYWORDS: Record<string, { hour: number; minute: number }> = {
 function parseCronRecurring(input: string): Result<RecurringParsed, string> {
   const trimmed = input.trim();
   const words = trimmed.split(/\s+/);
-  if (words.length < 2) return err('Not a cron pattern.');
+  const [dayWord] = words;
+  if (words.length < 2 || dayWord === undefined) return err('Not a cron pattern.');
 
   // Match day spec (first word)
-  const dayKey = words[0]!.toLowerCase();
+  const dayKey = dayWord.toLowerCase();
   const dayOfWeek = DAY_MAP[dayKey];
   if (dayOfWeek === undefined) return err('Not a cron pattern.');
 
@@ -237,11 +239,13 @@ function parseCronRecurring(input: string): Result<RecurringParsed, string> {
   let hasExplicitTime = false;
 
   // Try to match time: "at <time>" or a time keyword
-  if (idx < words.length && words[idx]!.toLowerCase() === 'at') {
+  // `words[idx]` is undefined exactly when idx is past the end.
+  const timeWord = words[idx]?.toLowerCase();
+  if (timeWord === 'at') {
     idx++;
-    if (idx >= words.length) return err('Expected a time after "at".');
+    const timeStr = words[idx]?.toLowerCase();
+    if (timeStr === undefined) return err('Expected a time after "at".');
 
-    const timeStr = words[idx]!.toLowerCase();
     const timeKw = TIME_KEYWORDS[timeStr];
     if (timeKw) {
       hour = timeKw.hour;
@@ -260,9 +264,9 @@ function parseCronRecurring(input: string): Result<RecurringParsed, string> {
         return err(`Invalid time: "${words[idx]}".`);
       }
     }
-  } else if (idx < words.length) {
+  } else if (timeWord !== undefined) {
     // Check if next word is a time keyword without "at"
-    const timeKw = TIME_KEYWORDS[words[idx]!.toLowerCase()];
+    const timeKw = TIME_KEYWORDS[timeWord];
     if (timeKw) {
       hour = timeKw.hour;
       minute = timeKw.minute;
@@ -272,7 +276,7 @@ function parseCronRecurring(input: string): Result<RecurringParsed, string> {
   }
 
   // Strip optional "to" separator
-  if (idx < words.length && words[idx]!.toLowerCase() === 'to') {
+  if (words[idx]?.toLowerCase() === 'to') {
     idx++;
   }
 
@@ -299,7 +303,7 @@ function parseClockTime(input: string): Result<{ hour: number; minute: number },
   const match = pattern.exec(input.toLowerCase());
   if (!match) return err('Invalid clock time.');
 
-  let hour = Number.parseInt(match[1]!, 10);
+  let hour = Number.parseInt(requiredGroup(match, 1), 10);
   const minute = Number.parseInt(match[2] ?? '0', 10);
   const meridiem = match[3] as 'am' | 'pm' | undefined;
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { splitHtml, splitMessage } from './message-splitter.js';
+import { requiredGroup } from './regex-group.js';
 
 // ─── Core invariant helpers ───────────────────────────────────────────────────
 
@@ -211,9 +212,11 @@ describe('splitHtml', () => {
 
     for (const chunk of result) {
       const openTags = [...chunk.matchAll(/<([a-z]+)(?:\s[^>]*)?>/gi)].map((m) =>
-        m[1]!.toLowerCase(),
+        requiredGroup(m, 1).toLowerCase(),
       );
-      const closeTags = [...chunk.matchAll(/<\/([a-z]+)>/gi)].map((m) => m[1]!.toLowerCase());
+      const closeTags = [...chunk.matchAll(/<\/([a-z]+)>/gi)].map((m) =>
+        requiredGroup(m, 1).toLowerCase(),
+      );
       // Every open tag should have a matching close
       for (const tag of openTags) {
         expect(closeTags).toContain(tag);

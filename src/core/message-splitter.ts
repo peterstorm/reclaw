@@ -10,6 +10,8 @@
 // Strategy: try to break at paragraph boundaries (\n\n), then sentence
 // boundaries (. ! ?), then word boundaries, then hard-cut as last resort.
 
+import { requiredGroup } from './regex-group.js';
+
 const DEFAULT_MAX_LENGTH = 4096;
 
 /**
@@ -114,13 +116,13 @@ function getUnclosedTags(html: string): readonly OpenTag[] {
   // biome-ignore lint/suspicious/noAssignInExpressions: standard regex loop
   while ((m = re.exec(html)) !== null) {
     const isClosing = m[1] === '/';
-    const name = m[2]!.toLowerCase();
+    const name = requiredGroup(m, 2).toLowerCase();
 
     if (isClosing) {
       const idx = stack.findLastIndex((t) => t.name === name);
       if (idx !== -1) stack.splice(idx, 1);
     } else {
-      stack.push({ name, full: m[0]! });
+      stack.push({ name, full: m[0] });
     }
   }
 

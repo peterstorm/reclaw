@@ -390,8 +390,7 @@ export function buildAllVaultNotes(
   // [[Source Title#Passage N]] link always finds a matching `## Passage N`
   // heading — including when N is a NotebookLM passage number unrelated to the
   // source's position in the list.
-  for (let i = 0; i < ctx.sources.length; i++) {
-    const source = ctx.sources[i]!;
+  for (const [i, source] of ctx.sources.entries()) {
     const passageNumbers = [...(anchorsBySource.get(i) ?? [])];
     const anchors = generatePassageAnchors(source, passageNumbers);
     notes.push(
@@ -407,8 +406,9 @@ export function buildAllVaultNotes(
   }
 
   // ── 3. Q&A notes ─────────────────────────────────────────────────────────────
-  for (const [question] of Object.entries(ctx.answers)) {
-    const resolved = resolvedAnswers.get(question)!;
+  // resolvedAnswers holds one entry per answer, in ctx.answers order (Map keeps
+  // insertion order), so iterating it visits exactly the answered questions.
+  for (const [question, resolved] of resolvedAnswers) {
     const citedSources = [...resolved.citedPassagesBySource.keys()]
       .sort((a, b) => a - b)
       .map((idx) => ctx.sources[idx])

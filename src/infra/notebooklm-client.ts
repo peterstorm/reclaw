@@ -20,6 +20,7 @@ import {
   NotebookLMNetworkError,
   NotebookLMParseError,
 } from 'notebooklm-kit';
+import { requiredGroup } from '../core/regex-group.js';
 import type { ChatResponse, SourceMeta, WebSource } from '../core/research-types.js';
 import type { Result } from '../core/types.js';
 import { NOTEBOOKLM_WEB_ORIGIN } from './notebooklm-web.js';
@@ -209,7 +210,7 @@ export function isRetriableError(error: unknown): boolean {
   // HTTP status codes embedded in message text
   const match = msg.match(/\b(4\d{2}|5\d{2})\b/);
   if (match) {
-    const code = Number.parseInt(match[1]!, 10);
+    const code = Number.parseInt(requiredGroup(match, 1), 10);
     return code === 429 || code >= 500;
   }
 

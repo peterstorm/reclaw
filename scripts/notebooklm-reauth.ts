@@ -165,10 +165,13 @@ async function main(): Promise<void> {
     });
     await page.waitForTimeout(3_000);
 
-    const authToken = await page.evaluate(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      () => (window as any).WIZ_global_data?.SNlM0e || null,
-    );
+    // Runs in the page, where Google's bootstrap object is untyped: narrow it there.
+    const authToken = await page.evaluate((): string | null => {
+      const data: unknown = Reflect.get(globalThis, 'WIZ_global_data');
+      if (typeof data !== 'object' || data === null) return null;
+      const token: unknown = Reflect.get(data, 'SNlM0e');
+      return typeof token === 'string' && token !== '' ? token : null;
+    });
     if (!authToken) throw new Error('SNlM0e auth token not found on NotebookLM page');
 
     const cookies = await ctx.cookies([

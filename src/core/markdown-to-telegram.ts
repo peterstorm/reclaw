@@ -5,6 +5,8 @@
 //
 // Pure function — no I/O, no side effects.
 
+import { requiredGroup } from './regex-group.js';
+
 /** Escape HTML special characters in plain text. */
 function escapeHtml(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -40,7 +42,7 @@ export function markdownToTelegramHtml(md: string): string {
     }
     // Emit code block as <pre><code>
     const lang = match[1];
-    const code = escapeHtml(match[2]!);
+    const code = escapeHtml(requiredGroup(match, 2));
     if (lang) {
       parts.push(`<pre><code class="language-${lang}">${code}</code></pre>`);
     } else {
@@ -70,7 +72,7 @@ function convertInlineMarkdown(text: string): string {
     if (m.index > lastIdx) {
       segments.push(convertFormattedText(text.slice(lastIdx, m.index)));
     }
-    segments.push(`<code>${escapeHtml(m[1]!)}</code>`);
+    segments.push(`<code>${escapeHtml(requiredGroup(m, 1))}</code>`);
     lastIdx = m.index + m[0].length;
   }
 

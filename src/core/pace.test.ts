@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { defined } from './__fixtures__/defined.js';
 import {
   deriveZones,
   estimateFromVo2Max,
@@ -188,8 +189,8 @@ describe('deriveZones', () => {
       zones.recovery,
     ];
     for (let i = 0; i < zoneOrder.length - 1; i++) {
-      expect(paceToSeconds(zoneOrder[i]!.max)).toBeLessThanOrEqual(
-        paceToSeconds(zoneOrder[i + 1]!.min),
+      expect(paceToSeconds(defined(zoneOrder[i]).max)).toBeLessThanOrEqual(
+        paceToSeconds(defined(zoneOrder[i + 1]).min),
       );
     }
   });
@@ -207,20 +208,20 @@ describe('estimateFromVo2Max', () => {
   it('VO2Max 46 gives ~4:50/km (24:10 5K)', () => {
     const pace = estimateFromVo2Max(46);
     expect(pace).not.toBeNull();
-    const seconds = pace!.minutes * 60 + pace!.seconds;
+    const seconds = paceToSeconds(defined(pace));
     // 24:12 / 5 = 290s = 4:50/km
     expect(seconds).toBeGreaterThanOrEqual(285);
     expect(seconds).toBeLessThanOrEqual(295);
   });
 
   it('VO2Max 50 is faster than VO2Max 46', () => {
-    const p46 = estimateFromVo2Max(46)!;
-    const p50 = estimateFromVo2Max(50)!;
+    const p46 = defined(estimateFromVo2Max(46));
+    const p50 = defined(estimateFromVo2Max(50));
     expect(paceToSeconds(p50)).toBeLessThan(paceToSeconds(p46));
   });
 
   it('VO2Max 40 gives ~5:54/km (29:30 5K)', () => {
-    const pace = estimateFromVo2Max(40)!;
+    const pace = defined(estimateFromVo2Max(40));
     const seconds = paceToSeconds(pace);
     // 29:30 / 5 = 354s = 5:54
     expect(seconds).toBeGreaterThanOrEqual(350);
@@ -236,9 +237,9 @@ describe('estimateFromVo2Max', () => {
   });
 
   it('interpolates between table entries', () => {
-    const p45 = estimateFromVo2Max(45)!;
-    const p46 = estimateFromVo2Max(46)!;
-    const p455 = estimateFromVo2Max(45.5)!;
+    const p45 = defined(estimateFromVo2Max(45));
+    const p46 = defined(estimateFromVo2Max(46));
+    const p455 = defined(estimateFromVo2Max(45.5));
     // 45.5 should be between 45 and 46
     expect(paceToSeconds(p455)).toBeLessThan(paceToSeconds(p45));
     expect(paceToSeconds(p455)).toBeGreaterThan(paceToSeconds(p46));

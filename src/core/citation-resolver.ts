@@ -97,8 +97,8 @@ export function extractPassageToSourceMap(
   }
 
   const sourceIdToIndex = new Map<string, number>();
-  for (let i = 0; i < sources.length; i++) {
-    sourceIdToIndex.set(sources[i]!.id, i);
+  for (const [i, source] of sources.entries()) {
+    sourceIdToIndex.set(source.id, i);
   }
 
   const passages: unknown[] = rawData[1];
@@ -192,9 +192,11 @@ function expandCitationGroup(inner: string): readonly number[] {
 
   for (const segment of segments) {
     const rangeParts = segment.split(/\s*[-–]\s*/);
-    if (rangeParts.length === 2) {
-      const start = Number.parseInt(rangeParts[0]!, 10);
-      const end = Number.parseInt(rangeParts[1]!, 10);
+    // With exactly two parts both ends are present; the guards only tell the compiler.
+    const [startDigits, endDigits] = rangeParts;
+    if (rangeParts.length === 2 && startDigits !== undefined && endDigits !== undefined) {
+      const start = Number.parseInt(startDigits, 10);
+      const end = Number.parseInt(endDigits, 10);
       if (!Number.isNaN(start) && !Number.isNaN(end) && end >= start && end - start < 100) {
         for (let i = start; i <= end; i++) {
           numbers.push(i);

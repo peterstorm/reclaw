@@ -7,6 +7,7 @@ import {
   NotebookLMParseError,
 } from 'notebooklm-kit';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { defined } from '../core/__fixtures__/defined.js';
 import {
   type AdapterError,
   FALLBACK_BL,
@@ -240,14 +241,12 @@ describe('isRetriableError — extended string heuristics', () => {
   });
 
   it('returns true for duck-typed isRetryable() returning true', () => {
-    const err = new Error('custom error');
-    (err as any).isRetryable = () => true;
+    const err = Object.assign(new Error('custom error'), { isRetryable: () => true });
     expect(isRetriableError(err)).toBe(true);
   });
 
   it('returns false for duck-typed isRetryable() returning false', () => {
-    const err = new Error('custom error');
-    (err as any).isRetryable = () => false;
+    const err = Object.assign(new Error('custom error'), { isRetryable: () => false });
     expect(isRetriableError(err)).toBe(false);
   });
 });
@@ -262,14 +261,13 @@ describe('fetchCurrentBuildLabel', () => {
   });
 
   it('extracts bl from the canonical NotebookLM page', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      text: () =>
-        Promise.resolve(
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(
+        new Response(
           '<script>var cfg = {"bl":"boq_labs-tailwind-frontend_20260327.15_p0"}</script>',
         ),
-    });
-    globalThis.fetch = fetchMock as any;
+      );
 
     const bl = await fetchCurrentBuildLabel();
     expect(bl).toBe('boq_labs-tailwind-frontend_20260327.15_p0');
@@ -280,27 +278,23 @@ describe('fetchCurrentBuildLabel', () => {
   });
 
   it('returns fallback when page does not contain bl pattern', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      text: () => Promise.resolve('<html><body>No build label here</body></html>'),
-    }) as any;
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('<html><body>No build label here</body></html>'),
+    );
 
     const bl = await fetchCurrentBuildLabel();
     expect(bl).toBe(FALLBACK_BL);
   });
 
   it('returns fallback when fetch fails', async () => {
-    globalThis.fetch = vi.fn().mockRejectedValue(new Error('Network error')) as any;
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Network error'));
 
     const bl = await fetchCurrentBuildLabel();
     expect(bl).toBe(FALLBACK_BL);
   });
 
   it('returns fallback when response is not ok', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 403,
-    }) as any;
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 403 }));
 
     const bl = await fetchCurrentBuildLabel();
     expect(bl).toBe(FALLBACK_BL);
@@ -433,7 +427,7 @@ describe('NotebookLMAdapter (mock)', () => {
       const result = await adapter.searchWeb('nb-1', 'AI agents');
       expect(result.ok).toBe(true);
       if (result.ok) {
-        const source = result.value.webSources[0]!;
+        const source = defined(result.value.webSources[0]);
         expect(typeof source.title).toBe('string');
         expect(typeof source.url).toBe('string');
       }
@@ -605,7 +599,7 @@ describe('NotebookLMAdapter (mock)', () => {
       const result = await adapter.listSources('nb-1');
       expect(result.ok).toBe(true);
       if (result.ok) {
-        const source = result.value[0]!;
+        const source = defined(result.value[0]);
         expect(typeof source.id).toBe('string');
         expect(typeof source.title).toBe('string');
         expect(typeof source.url).toBe('string');

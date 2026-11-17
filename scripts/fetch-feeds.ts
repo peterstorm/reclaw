@@ -146,15 +146,17 @@ async function main(): Promise<void> {
   const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
   const seen = loadSeen();
 
-  const results = await Promise.all(FEEDS.map((f) => fetchFeed(f, 25_000)));
+  // Each result carries its feed, so the pairing never depends on array indices.
+  const results = await Promise.all(
+    FEEDS.map(async (feed) => ({ feed, result: await fetchFeed(feed, 25_000) })),
+  );
 
   const items: FeedItem[] = [];
   const errors: { source: string; error: string }[] = [];
-  results.forEach((r, i) => {
-    const feed = FEEDS[i]!;
+  for (const { feed, result: r } of results) {
     if (r.error) errors.push({ source: feed.source, error: r.error });
     items.push(...selectRecentUnseen(r.items, { cutoffMs, seen, maxPerFeed }));
-  });
+  }
 
   // If every feed failed, `count: 0` would otherwise look like a quiet news day.
   // Surface total failure to stderr so it's distinguishable in logs (still exit 0

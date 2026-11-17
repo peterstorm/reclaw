@@ -7,6 +7,7 @@
 // No I/O. No mocks. Pure data in, pure data out.
 
 import { describe, expect, it } from 'vitest';
+import { defined } from './__fixtures__/defined.js';
 import { MAX_RETRIES, transition } from './research-machine.js';
 import type {
   ChatResponse,
@@ -1092,7 +1093,7 @@ describe('property: retry count monotonically increases under repeated errors', 
   it('retry count increases on each retriable error until exhausted', () => {
     const stateKey = 'adding_sources';
     const state: ResearchState = { kind: stateKey };
-    const maxRetries = MAX_RETRIES[stateKey]!;
+    const maxRetries = defined(MAX_RETRIES[stateKey]);
 
     let ctx = makeContext();
     const retryCounts: number[] = [];
@@ -1107,14 +1108,14 @@ describe('property: retry count monotonically increases under repeated errors', 
 
     // Should be [1, 2] for adding_sources (max=2)
     for (let i = 1; i < retryCounts.length; i++) {
-      expect(retryCounts[i]!).toBeGreaterThan(retryCounts[i - 1]!);
+      expect(defined(retryCounts[i])).toBeGreaterThan(defined(retryCounts[i - 1]));
     }
   });
 
   it('retry count equals maxRetries at exhaustion', () => {
     const stateKey = 'writing_vault';
     const state: ResearchState = { kind: stateKey };
-    const maxRetries = MAX_RETRIES[stateKey]!; // 3
+    const maxRetries = defined(MAX_RETRIES[stateKey]); // 3
 
     let ctx = makeContext();
     for (let i = 0; i < maxRetries; i++) {

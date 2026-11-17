@@ -14,7 +14,12 @@
 
 import { MAX_RETRIES, transition } from '../core/research-machine.js';
 import { isTerminal, stateProgress } from '../core/research-types.js';
-import type { ResearchContext, ResearchJobData, TraceEvent } from '../core/research-types.js';
+import type {
+  ResearchContext,
+  ResearchEvent,
+  ResearchJobData,
+  TraceEvent,
+} from '../core/research-types.js';
 import { executeState } from './research-states.js';
 import type { ResearchDeps } from './research-states.js';
 
@@ -102,7 +107,7 @@ export async function handleResearchJob(
     const startTime = Date.now();
 
     // FR-080, FR-082: execute the state and record timing
-    let event;
+    let event: ResearchEvent;
     let outcome: TraceEvent['outcome'] = 'success';
     let detail = '';
 
