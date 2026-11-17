@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { fakeVault, notePath, renderNote, renderRegistry } from '../core/__fixtures__/learning.js';
 import { REGISTRY_PATH } from '../core/curriculum.js';
-import type { LearningVault } from '../orchestration/learn-command.js';
+import type { LearningVault } from '../core/learning-vault-port.js';
 import { fsLearningVault } from './learning-vault.js';
 
 const registry = renderRegistry([{ slug: 'a' }]);

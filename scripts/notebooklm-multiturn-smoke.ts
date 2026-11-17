@@ -28,6 +28,18 @@ function preview(text: string, n = 600): string {
   return trimmed.length <= n ? trimmed : `${trimmed.slice(0, n)}…`;
 }
 
+/** Token + cookies win; Google login is the fallback; neither means no auth. */
+function pickAuth(
+  authToken: string | undefined,
+  cookies: string | undefined,
+  email: string | undefined,
+  password: string | undefined,
+) {
+  if (authToken && cookies) return { authToken, cookies };
+  if (email && password) return { auth: { email, password, headless: true } };
+  return null;
+}
+
 async function main(): Promise<void> {
   const [, , notebookIdArg, q1Arg, q2Arg] = process.argv;
   if (!notebookIdArg) {
@@ -50,12 +62,7 @@ async function main(): Promise<void> {
     bl = FALLBACK_BL;
   }
 
-  const authOpts =
-    authToken && cookies
-      ? { authToken, cookies }
-      : email && password
-        ? { auth: { email, password, headless: true } }
-        : null;
+  const authOpts = pickAuth(authToken, cookies, email, password);
   if (authOpts === null) {
     console.error('Need NOTEBOOKLM_AUTH_TOKEN+NOTEBOOKLM_COOKIES or GOOGLE_EMAIL+GOOGLE_PASSWORD');
     process.exit(1);

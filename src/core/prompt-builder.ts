@@ -92,6 +92,18 @@ export function buildPrompt(template: string, context: PromptContext): string {
   });
 }
 
+/** The request text for a message that is only attachments: documents, then uploads, then photos. */
+function attachmentOnlyText(
+  documents: readonly string[],
+  uploads: readonly StoredUpload[],
+): string {
+  if (documents.length > 0)
+    return 'The user sent a document. Read its extracted text and help with it.';
+  if (uploads.length > 0)
+    return 'The user uploaded a file. It is stored permanently on the homelab.';
+  return 'The user sent a photo. Please analyze it.';
+}
+
 /**
  * Build a chat prompt: personality as system context + userMessage as the
  * request. Returns one backend-neutral prompt for the selected agent subprocess.
@@ -117,13 +129,7 @@ export function buildChatPrompt(
   let userPart: string;
   if (hasAttachments) {
     const textPart =
-      trimmedMessage.length > 0
-        ? trimmedMessage
-        : documents.length > 0
-          ? 'The user sent a document. Read its extracted text and help with it.'
-          : uploads.length > 0
-            ? 'The user uploaded a file. It is stored permanently on the homelab.'
-            : 'The user sent a photo. Please analyze it.';
+      trimmedMessage.length > 0 ? trimmedMessage : attachmentOnlyText(documents, uploads);
     const references = [
       ...images.map((path) => `[See image: ${path}]`),
       ...documents.map(

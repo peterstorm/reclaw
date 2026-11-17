@@ -240,7 +240,10 @@ async function routeRemindCommand(msg: IncomingMessage, deps: MessageRouterDeps)
     return;
   }
 
-  const parseResult = parseRemindCommand(msg.text);
+  // One clock reading for the parse and the confirmation, so "at 14:30" and the
+  // echoed time can never straddle a minute boundary.
+  const now = new Date();
+  const parseResult = parseRemindCommand(msg.text, now);
   if (!parseResult.ok) {
     await deps.telegram.sendMessage(msg.chatId, parseResult.error);
     return;
@@ -269,7 +272,7 @@ async function routeRemindCommand(msg: IncomingMessage, deps: MessageRouterDeps)
     }
 
     await deps.queues.enqueueRecurringReminder(recurringResult.value);
-    await deps.telegram.sendMessage(msg.chatId, formatReminderConfirmation(parseResult.value));
+    await deps.telegram.sendMessage(msg.chatId, formatReminderConfirmation(parseResult.value, now));
     return;
   }
 
@@ -288,7 +291,7 @@ async function routeRemindCommand(msg: IncomingMessage, deps: MessageRouterDeps)
   }
 
   await deps.queues.enqueueReminder(reminderResult.value);
-  await deps.telegram.sendMessage(msg.chatId, formatReminderConfirmation(parseResult.value));
+  await deps.telegram.sendMessage(msg.chatId, formatReminderConfirmation(parseResult.value, now));
 }
 
 // ─── /research-status ────────────────────────────────────────────────────────
@@ -335,6 +338,7 @@ async function routeResearchCommand(msg: IncomingMessage, deps: MessageRouterDep
   const { prompt, sourceHints, generateAudio, generateVideo } = researchParseResult.value;
   const researchJobDataResult = makeResearchJobData({
     prompt,
+    now: new Date(),
     sourceHints,
     chatId: msg.chatId,
     generateAudio,

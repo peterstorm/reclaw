@@ -8,6 +8,7 @@ import type { ResearchState } from './research-types.js';
 describe('makeResearchJobData', () => {
   it('creates a valid job data with initial state deriving_topic', () => {
     const result = makeResearchJobData({
+      now: new Date('2026-03-05T10:00:00.000Z'),
       prompt: 'Research large language models',
       sourceHints: [],
       chatId: 123456,
@@ -20,6 +21,7 @@ describe('makeResearchJobData', () => {
 
   it('initial context has empty topic and null topicSlug', () => {
     const result = makeResearchJobData({
+      now: new Date('2026-03-05T10:00:00.000Z'),
       prompt: 'Research neural networks',
       sourceHints: [],
       chatId: 1,
@@ -32,6 +34,7 @@ describe('makeResearchJobData', () => {
 
   it('stores prompt on job data and context', () => {
     const result = makeResearchJobData({
+      now: new Date('2026-03-05T10:00:00.000Z'),
       prompt: 'Climate Change',
       sourceHints: [],
       chatId: 1,
@@ -45,6 +48,7 @@ describe('makeResearchJobData', () => {
   it('stores sourceHints on both job data and context', () => {
     const hints = ['https://example.com', 'https://other.com'];
     const result = makeResearchJobData({
+      now: new Date('2026-03-05T10:00:00.000Z'),
       prompt: 'Some topic',
       sourceHints: hints,
       chatId: 1,
@@ -57,6 +61,7 @@ describe('makeResearchJobData', () => {
 
   it('stores chatId on both job data and context', () => {
     const result = makeResearchJobData({
+      now: new Date('2026-03-05T10:00:00.000Z'),
       prompt: 'Some topic',
       sourceHints: [],
       chatId: 987654,
@@ -69,6 +74,7 @@ describe('makeResearchJobData', () => {
 
   it('initializes context with empty collections', () => {
     const result = makeResearchJobData({
+      now: new Date('2026-03-05T10:00:00.000Z'),
       prompt: 'Some topic',
       sourceHints: [],
       chatId: 1,
@@ -93,6 +99,7 @@ describe('makeResearchJobData', () => {
 
   it('sets startedAt as ISO 8601 timestamp', () => {
     const result = makeResearchJobData({
+      now: new Date('2026-03-05T10:00:00.000Z'),
       prompt: 'Some topic',
       sourceHints: [],
       chatId: 1,
@@ -108,6 +115,7 @@ describe('makeResearchJobData', () => {
 
   it('rejects empty prompt', () => {
     const result = makeResearchJobData({
+      now: new Date('2026-03-05T10:00:00.000Z'),
       prompt: '',
       sourceHints: [],
       chatId: 1,
@@ -117,6 +125,7 @@ describe('makeResearchJobData', () => {
 
   it('rejects whitespace-only prompt', () => {
     const result = makeResearchJobData({
+      now: new Date('2026-03-05T10:00:00.000Z'),
       prompt: '   ',
       sourceHints: [],
       chatId: 1,
@@ -126,6 +135,7 @@ describe('makeResearchJobData', () => {
 
   it('accepts chatId of zero (integer, may represent edge cases)', () => {
     const result = makeResearchJobData({
+      now: new Date('2026-03-05T10:00:00.000Z'),
       prompt: 'Valid topic',
       sourceHints: [],
       chatId: 0,
@@ -136,6 +146,7 @@ describe('makeResearchJobData', () => {
 
   it('accepts negative chatId (Telegram group chats have negative IDs)', () => {
     const result = makeResearchJobData({
+      now: new Date('2026-03-05T10:00:00.000Z'),
       prompt: 'Valid topic',
       sourceHints: [],
       chatId: -1001234567890,
@@ -146,6 +157,7 @@ describe('makeResearchJobData', () => {
 
   it('rejects float chatId', () => {
     const result = makeResearchJobData({
+      now: new Date('2026-03-05T10:00:00.000Z'),
       prompt: 'Valid topic',
       sourceHints: [],
       chatId: 1.5,
@@ -155,6 +167,7 @@ describe('makeResearchJobData', () => {
 
   it('provides an error message on failure', () => {
     const result = makeResearchJobData({
+      now: new Date('2026-03-05T10:00:00.000Z'),
       prompt: '',
       sourceHints: [],
       chatId: 1,

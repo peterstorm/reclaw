@@ -316,7 +316,7 @@ export async function fetchCurrentBuildLabel(): Promise<string> {
     const html = await response.text();
     const match = html.match(/boq_labs-tailwind-frontend_\d{8}\.\d+_p\d+/);
     if (match) {
-      console.log(`[notebooklm:bl] Detected build label: ${match[0]}`);
+      console.info(`[notebooklm:bl] Detected build label: ${match[0]}`);
       return match[0];
     }
     console.warn('[notebooklm:bl] Build label not found in HTML, using fallback');
@@ -339,7 +339,7 @@ export async function fetchCurrentBuildLabel(): Promise<string> {
 export async function createNotebookLMAdapter(
   credentials: NotebookLMCredentials,
 ): Promise<NotebookLMAdapter> {
-  console.log(`[notebooklm] Creating adapter with auth method: ${credentials.kind}`);
+  console.info(`[notebooklm] Creating adapter with auth method: ${credentials.kind}`);
 
   // Fetch the current build label from NotebookLM page (falls back to FALLBACK_BL)
   const bl = await fetchCurrentBuildLabel();
@@ -352,7 +352,7 @@ export async function createNotebookLMAdapter(
     urlParams: { bl },
   });
 
-  console.log('[notebooklm] Calling sdk.connect()...');
+  console.info('[notebooklm] Calling sdk.connect()...');
   const connectStart = Date.now();
   await Promise.race([
     sdk.connect(),
@@ -372,13 +372,13 @@ export async function createNotebookLMAdapter(
       ),
     ),
   ]);
-  console.log(`[notebooklm] sdk.connect() succeeded in ${Date.now() - connectStart}ms`);
+  console.info(`[notebooklm] sdk.connect() succeeded in ${Date.now() - connectStart}ms`);
 
   // Health check: verify auth by listing notebooks (fast, lightweight call)
-  console.log('[notebooklm] Running auth health check (notebooks.list)...');
+  console.info('[notebooklm] Running auth health check (notebooks.list)...');
   try {
     await sdk.notebooks.list();
-    console.log('[notebooklm] Auth health check passed — adapter ready');
+    console.info('[notebooklm] Auth health check passed — adapter ready');
   } catch (healthErr) {
     const msg = healthErr instanceof Error ? healthErr.message : String(healthErr);
     console.error(`[notebooklm] Auth health check FAILED: ${msg}`);

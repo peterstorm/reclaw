@@ -36,12 +36,13 @@ export type ApifyScraperConfig = Readonly<{
 
 type RunStatus = 'pending' | 'succeeded' | 'failed';
 
-const classifyRunStatus = (status: string): RunStatus =>
-  status === 'SUCCEEDED'
-    ? 'succeeded'
-    : status === 'READY' || status === 'RUNNING' || status === 'ABORTING'
-      ? 'pending'
-      : 'failed';
+const PENDING_STATUSES: ReadonlySet<string> = new Set(['READY', 'RUNNING', 'ABORTING']);
+
+/** Apify's run status, folded to what the poll loop needs; any other status is terminal failure. */
+const classifyRunStatus = (status: string): RunStatus => {
+  if (status === 'SUCCEEDED') return 'succeeded';
+  return PENDING_STATUSES.has(status) ? 'pending' : 'failed';
+};
 
 export function createApifyInstagramScraper(
   config: ApifyScraperConfig,

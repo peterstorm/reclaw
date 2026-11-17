@@ -14,10 +14,8 @@ export function createAsyncMutex(): AsyncMutex {
   let tail: Promise<void> = Promise.resolve();
 
   const acquire = (): Promise<() => void> => {
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
+    const { promise: gate, resolve } = Promise.withResolvers<void>();
+    const release = (): void => resolve();
 
     // Wait for the previous holder to release, then hand back our release fn.
     const ticket = tail.then(() => release);

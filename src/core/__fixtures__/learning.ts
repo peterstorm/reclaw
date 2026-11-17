@@ -1,8 +1,8 @@
 // Test fixtures for the learning loop: render registries and master notes from small
 // models, so tests state intent ("2 lessons, 3 cards each") instead of pasting markdown.
 
-import type { LearningVault } from '../../orchestration/learn-command.js';
 import { CURRICULUM_ROOT, REGISTRY_PATH } from '../curriculum.js';
+import type { LearningVault } from '../learning-vault-port.js';
 
 export type TopicSpec = Readonly<{
   slug: string;

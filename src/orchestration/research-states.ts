@@ -248,7 +248,7 @@ async function executeSearchingSources(
       notebookLMResult.value.webSources,
       ctx.sourceHints,
     );
-    console.log(
+    console.info(
       `[research:searching] Claude web search found ${claudeSearchResult.value.length} URLs, ${claudeUrls.length} after dedup`,
     );
   } else {
@@ -548,7 +548,7 @@ async function executeResolvingCitations(ctx: ResearchContext): Promise<Research
 
   for (const [question, response] of Object.entries(ctx.answers)) {
     const passageMap = extractPassageToSourceMap(response.rawData, ctx.sources);
-    console.log(
+    console.info(
       `[research:citations] Resolving: "${question.slice(0, 60)}..." — ${passageMap.size} passage→source mappings`,
     );
     const { resolvedText, citedPassagesBySource } = resolveAnswerCitations(
@@ -556,7 +556,7 @@ async function executeResolvingCitations(ctx: ResearchContext): Promise<Research
       ctx.sources,
       passageMap,
     );
-    console.log(
+    console.info(
       `[research:citations] -> cited source indices: [${[...citedPassagesBySource.keys()].join(', ')}]`,
     );
     resolvedNotes.push({
@@ -586,7 +586,7 @@ async function executeWritingVault(
   ctx: ResearchContext,
   deps: ResearchDeps,
 ): Promise<ResearchEvent> {
-  const metrics = computeMetrics(ctx);
+  const metrics = computeMetrics(ctx, Date.now());
   const quality = evaluateQuality(ctx, metrics);
 
   // Build all vault notes (pure), passing pre-resolved notes to skip re-resolution
@@ -618,7 +618,7 @@ async function executeWritingVault(
       // Only append if this topic isn't already in the MOC
       if (!mocContent.includes(topicSlug)) {
         await fs.writeFile(mocPath.value, updatedMoc, 'utf8');
-        console.log(`[research:vault] Added ${topicSlug} to Research MOC`);
+        console.info(`[research:vault] Added ${topicSlug} to Research MOC`);
       }
     } catch (mocErr) {
       console.warn('[research:vault] Failed to update Research MOC:', mocErr);
@@ -763,7 +763,7 @@ async function executeGeneratingArtifacts(
  * FR-062: Summary includes topic, grade, key findings, citation stats, hub link.
  */
 async function executeNotifying(ctx: ResearchContext, deps: ResearchDeps): Promise<ResearchEvent> {
-  const metrics = computeMetrics(ctx);
+  const metrics = computeMetrics(ctx, Date.now());
   const quality = evaluateQuality(ctx, metrics);
 
   // Get remaining quota for the summary

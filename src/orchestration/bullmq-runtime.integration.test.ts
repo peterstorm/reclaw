@@ -15,11 +15,11 @@ import {
   makeTelegramUpdateId,
   makeTelegramUserId,
 } from '../core/types.js';
-import { type Workers, createWorkers } from '../orchestration/worker.js';
-import type { AppConfig } from './config.js';
-import { type Queues, createQueues } from './queue.js';
-import { createSessionStore } from './session-store.js';
-import type { TelegramAdapter } from './telegram.js';
+import type { AppConfig } from '../infra/config.js';
+import { type Queues, createQueues } from '../infra/queue.js';
+import { createSessionStore } from '../infra/session-store.js';
+import type { TelegramAdapter } from '../infra/telegram.js';
+import { type Workers, createWorkers } from './worker.js';
 
 const makeChatJob = (params: Omit<Parameters<typeof makeChatJobCore>[0], 'conversation'>) =>
   makeChatJobCore({

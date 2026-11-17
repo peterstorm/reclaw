@@ -8,9 +8,10 @@
 
 import type { AgentFailure } from '../../core/agent-failure.js';
 import type { AgentModelSelection } from '../../core/model-selection.js';
+import type { StreamChunk } from '../../core/stream-state.js';
 import type { AgentBackendName } from '../../core/types.js';
 
-export type { AgentModelSelection };
+export type { AgentModelSelection, StreamChunk };
 
 // ─── Subprocess Spawn ─────────────────────────────────────────────────────────
 
@@ -61,18 +62,6 @@ export type StreamDelta =
   | { readonly type: 'thinking'; readonly thinking: string }
   | { readonly type: 'text'; readonly text: string }
   | { readonly type: 'block_start'; readonly blockType: 'thinking' | 'text' };
-
-/**
- * One stream step, as observed by the consumer.
- *
- * The runner owns phase tracking and per-block accumulators; the chunk is a
- * discriminated union so the off-phase field is unrepresentable — a consumer
- * cannot read the wrong accumulator, and the phase/field correlation is a
- * type-level invariant instead of a comment-level convention.
- */
-export type StreamChunk =
-  | { readonly phase: 'thinking'; readonly thinking: string }
-  | { readonly phase: 'text'; readonly text: string };
 
 /**
  * Streaming callback, invoked once per stream delta and block start.

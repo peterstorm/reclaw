@@ -250,6 +250,8 @@ const STATE_ORDER: ReadonlyArray<ResearchState['kind']> = [
  */
 export function makeResearchJobData(params: {
   prompt: string;
+  /** When the job was accepted; the shell supplies the clock. */
+  now: Date;
   sourceHints: readonly string[];
   chatId: number;
   generateAudio?: boolean;
@@ -262,7 +264,7 @@ export function makeResearchJobData(params: {
     return err(`chatId must be an integer, got: ${params.chatId}`);
   }
 
-  const startedAt = new Date().toISOString();
+  const startedAt = params.now.toISOString();
 
   const context: ResearchContext = {
     topic: '',

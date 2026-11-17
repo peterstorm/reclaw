@@ -14,6 +14,7 @@ import {
   notePathFor,
   parseCurriculum,
 } from '../core/curriculum.js';
+import type { LearningVault } from '../core/learning-vault-port.js';
 import { type MasterNote, parseMasterNote } from '../core/master-note.js';
 import {
   GRADES,
@@ -37,17 +38,6 @@ import {
   summarize,
 } from '../core/study-plan.js';
 import { type Result, err, ok } from '../core/types.js';
-
-/** Port: the vault files the learning loop reads and the one log it appends to. */
-export type LearningVault = Readonly<{
-  readRegistry: () => Promise<string>;
-  /** Vault-relative path → contents, or null when the file does not exist. */
-  readNote: (path: string) => Promise<string | null>;
-  readLog: () => Promise<string>;
-  appendLog: (lines: readonly string[]) => Promise<void>;
-  /** For `validate --sources`: vault-relative, absolute, or `~/` path. */
-  sourceExists: (path: string) => Promise<boolean>;
-}>;
 
 export const LEARN_USAGE = `usage: learn <command>
   status                                   progress summary

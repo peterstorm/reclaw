@@ -401,7 +401,7 @@ describe('parseRemindCancelCommand', () => {
 
 describe('parseRemindCommand recurring', () => {
   it('parses /remind every 1d take vitamins', () => {
-    const r = parseRemindCommand('/remind every 1d take vitamins');
+    const r = parseRemindCommand('/remind every 1d take vitamins', new Date('2026-03-01T10:00:00'));
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.value.kind).toBe('recurring');
@@ -413,7 +413,7 @@ describe('parseRemindCommand recurring', () => {
   });
 
   it('parses /remind every 2h drink water', () => {
-    const r = parseRemindCommand('/remind every 2h drink water');
+    const r = parseRemindCommand('/remind every 2h drink water', new Date('2026-03-01T10:00:00'));
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.value.kind).toBe('recurring');
@@ -424,17 +424,20 @@ describe('parseRemindCommand recurring', () => {
   });
 
   it('rejects interval less than 1 minute', () => {
-    const r = parseRemindCommand('/remind every 30s stretch');
+    const r = parseRemindCommand('/remind every 30s stretch', new Date('2026-03-01T10:00:00'));
     expect(r.ok).toBe(false);
   });
 
   it('rejects missing message after every', () => {
-    const r = parseRemindCommand('/remind every 1d');
+    const r = parseRemindCommand('/remind every 1d', new Date('2026-03-01T10:00:00'));
     expect(r.ok).toBe(false);
   });
 
   it('does not conflict with "every" in message text of duration reminders', () => {
-    const r = parseRemindCommand('/remind 30m every day check email');
+    const r = parseRemindCommand(
+      '/remind 30m every day check email',
+      new Date('2026-03-01T10:00:00'),
+    );
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.value.kind).toBe('duration');
@@ -443,7 +446,10 @@ describe('parseRemindCommand recurring', () => {
   });
 
   it('parses /remind every Sunday at noon to water plants as cron-recurring', () => {
-    const r = parseRemindCommand('/remind every Sunday at noon to water plants');
+    const r = parseRemindCommand(
+      '/remind every Sunday at noon to water plants',
+      new Date('2026-03-01T10:00:00'),
+    );
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.value.kind).toBe('cron-recurring');
@@ -455,7 +461,10 @@ describe('parseRemindCommand recurring', () => {
   });
 
   it('parses /remind every weekday at 9am check email as cron-recurring', () => {
-    const r = parseRemindCommand('/remind every weekday at 9am check email');
+    const r = parseRemindCommand(
+      '/remind every weekday at 9am check email',
+      new Date('2026-03-01T10:00:00'),
+    );
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.value.kind).toBe('cron-recurring');

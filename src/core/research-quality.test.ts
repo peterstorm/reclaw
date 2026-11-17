@@ -60,7 +60,7 @@ function makeContext(overrides: Partial<ResearchContext> = {}): ResearchContext 
 describe('computeMetrics — basic field mapping', () => {
   it('returns questionsAsked equal to questions array length', () => {
     const ctx = makeContext({ questions: ['Q1', 'Q2', 'Q3'] });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     expect(metrics.questionsAsked).toBe(3);
   });
 
@@ -72,7 +72,7 @@ describe('computeMetrics — basic field mapping', () => {
         Q2: makeChatResponse('Answer 2', [2]),
       },
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     expect(metrics.questionsAnswered).toBe(2);
   });
 
@@ -81,7 +81,7 @@ describe('computeMetrics — basic field mapping', () => {
       questions: ['Q1', 'Q2', 'Q3'],
       skippedQuestions: ['Q3'],
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     expect(metrics.questionsSkipped).toBe(1);
   });
 
@@ -89,13 +89,13 @@ describe('computeMetrics — basic field mapping', () => {
     const ctx = makeContext({
       sources: [makeSource('s1', 'Source 1'), makeSource('s2', 'Source 2')],
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     expect(metrics.sourcesIngested).toBe(2);
   });
 
   it('returns chatsUsed from context.chatsUsed', () => {
     const ctx = makeContext({ chatsUsed: 7 });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     expect(metrics.chatsUsed).toBe(7);
   });
 
@@ -109,7 +109,7 @@ describe('computeMetrics — basic field mapping', () => {
 
   it('returns durationMs of 0 for invalid startedAt', () => {
     const ctx = makeContext({ startedAt: 'not-a-date' });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     expect(metrics.durationMs).toBe(0);
   });
 });
@@ -125,13 +125,13 @@ describe('computeMetrics — citation counting', () => {
         Q2: makeChatResponse('Answer 2', [3]),
       },
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     expect(metrics.totalCitations).toBe(3);
   });
 
   it('returns totalCitations of 0 when no answers', () => {
     const ctx = makeContext({ answers: {} });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     expect(metrics.totalCitations).toBe(0);
   });
 
@@ -140,7 +140,7 @@ describe('computeMetrics — citation counting', () => {
       questions: ['Q1'],
       answers: { Q1: makeChatResponse('Answer', []) },
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     expect(metrics.totalCitations).toBe(0);
   });
 
@@ -150,7 +150,7 @@ describe('computeMetrics — citation counting', () => {
       questions: ['Q1'],
       answers: { Q1: makeChatResponse('Answer', [1, 1, 2]) },
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     expect(metrics.totalCitations).toBe(3);
   });
 
@@ -162,14 +162,14 @@ describe('computeMetrics — citation counting', () => {
         Q2: makeChatResponse('Answer 2', [4]),
       },
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     // 4 citations / 2 answers = 2.0
     expect(metrics.avgCitationsPerAnswer).toBe(2);
   });
 
   it('returns avgCitationsPerAnswer of 0 when no questions answered', () => {
     const ctx = makeContext({ answers: {} });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     expect(metrics.avgCitationsPerAnswer).toBe(0);
   });
 });
@@ -185,7 +185,7 @@ describe('computeMetrics — sourcesCited', () => {
         Q2: makeChatResponse('Answer 2', [2, 3]), // source 2 is shared
       },
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     // Sources 1, 2, 3 were cited — 3 unique
     expect(metrics.sourcesCited).toBe(3);
   });
@@ -195,7 +195,7 @@ describe('computeMetrics — sourcesCited', () => {
       questions: ['Q1'],
       answers: { Q1: makeChatResponse('Answer', []) },
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     expect(metrics.sourcesCited).toBe(0);
   });
 
@@ -204,7 +204,7 @@ describe('computeMetrics — sourcesCited', () => {
       questions: ['Q1'],
       answers: { Q1: makeChatResponse('Answer', [1, 1, 1]) },
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     expect(metrics.sourcesCited).toBe(1);
   });
 
@@ -217,7 +217,7 @@ describe('computeMetrics — sourcesCited', () => {
         Q3: makeChatResponse('A3', [1]),
       },
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     expect(metrics.sourcesCited).toBe(1);
   });
 });
@@ -236,7 +236,7 @@ describe('evaluateQuality — grade "good"', () => {
       },
       sources: [makeSource('s1', 'S1'), makeSource('s2', 'S2'), makeSource('s3', 'S3')],
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     const result = evaluateQuality(ctx, metrics);
     expect(result.grade).toBe('good');
     expect(result.warnings).toHaveLength(0);
@@ -254,7 +254,7 @@ describe('evaluateQuality — grade "good"', () => {
       },
       sources: [makeSource('s1', 'S1'), makeSource('s2', 'S2'), makeSource('s3', 'S3')],
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     const result = evaluateQuality(ctx, metrics);
     expect(result.warnings).toEqual([]);
   });
@@ -290,7 +290,7 @@ describe('evaluateQuality — grade "partial"', () => {
       },
       sources: [makeSource('s1', 'S1'), makeSource('s2', 'S2'), makeSource('s3', 'S3')],
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     const result = evaluateQuality(ctx, metrics);
     expect(result.grade).toBe('partial');
     expect(result.warnings).toHaveLength(1);
@@ -305,7 +305,7 @@ describe('evaluateQuality — grade "partial"', () => {
       },
       sources: [makeSource('s1', 'S1'), makeSource('s2', 'S2'), makeSource('s3', 'S3')],
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     const result = evaluateQuality(ctx, metrics);
     expect(result.grade).toBe('partial');
     expect(result.warnings).toHaveLength(1);
@@ -321,7 +321,7 @@ describe('evaluateQuality — grade "partial"', () => {
       },
       sources: [makeSource('s1', 'S1'), makeSource('s2', 'S2')],
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     const result = evaluateQuality(ctx, metrics);
     expect(result.grade).toBe('partial');
     expect(result.warnings).toHaveLength(1);
@@ -341,7 +341,7 @@ describe('evaluateQuality — grade "partial"', () => {
       },
       sources: fiveSources,
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     // 5 sources available (> 3), only 1 unique source cited (<= 1)
     // Also avg citations per answer = 10/5 = 2 >= 1 so no citation density warning
     expect(metrics.sourcesIngested).toBe(5);
@@ -364,7 +364,7 @@ describe('evaluateQuality — grade "poor"', () => {
       },
       sources: [makeSource('s1', 'S1')],
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     const result = evaluateQuality(ctx, metrics);
     expect(result.grade).toBe('poor');
     expect(result.warnings.length).toBeGreaterThanOrEqual(2);
@@ -381,7 +381,7 @@ describe('evaluateQuality — grade "poor"', () => {
       },
       sources: fiveSources,
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     const result = evaluateQuality(ctx, metrics);
     expect(result.grade).toBe('poor');
     expect(result.warnings).toHaveLength(3);
@@ -417,7 +417,7 @@ describe('evaluateQuality — completeness warning rule', () => {
       },
       sources: [makeSource('s1', 'S1'), makeSource('s2', 'S2')],
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     // 1 of 2 = 50% — at threshold, should NOT warn
     const result = evaluateQuality(ctx, metrics);
     const hasCompletenessWarning = result.warnings.some((w) =>
@@ -434,7 +434,7 @@ describe('evaluateQuality — completeness warning rule', () => {
       },
       sources: [makeSource('s1', 'S1'), makeSource('s2', 'S2')],
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     // 1 of 3 = 33% < 50% -> warning
     const result = evaluateQuality(ctx, metrics);
     const hasCompletenessWarning = result.warnings.some((w) =>
@@ -445,7 +445,7 @@ describe('evaluateQuality — completeness warning rule', () => {
 
   it('does not warn about completeness when no questions were asked', () => {
     const ctx = makeContext({ questions: [], answers: {} });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     const result = evaluateQuality(ctx, metrics);
     const hasCompletenessWarning = result.warnings.some((w) =>
       w.toLowerCase().includes('completeness'),
@@ -463,7 +463,7 @@ describe('evaluateQuality — completeness warning rule', () => {
       },
       sources: [makeSource('s1', 'S1')],
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     const result = evaluateQuality(ctx, metrics);
     const hasCompletenessWarning = result.warnings.some((w) =>
       w.toLowerCase().includes('completeness'),
@@ -479,7 +479,7 @@ describe('evaluateQuality — completeness warning rule', () => {
       },
       sources: [],
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     const result = evaluateQuality(ctx, metrics);
     const completenessWarning = result.warnings.find((w) =>
       w.toLowerCase().includes('completeness'),
@@ -502,7 +502,7 @@ describe('evaluateQuality — citation density warning rule', () => {
       },
       sources: [],
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     const result = evaluateQuality(ctx, metrics);
     const hasDensityWarning = result.warnings.some((w) =>
       w.toLowerCase().includes('citation density'),
@@ -519,7 +519,7 @@ describe('evaluateQuality — citation density warning rule', () => {
       },
       sources: [makeSource('s1', 'S1')],
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     // 1 citation / 2 answers = 0.5 < 1 -> warning
     expect(metrics.avgCitationsPerAnswer).toBe(0.5);
     const result = evaluateQuality(ctx, metrics);
@@ -538,7 +538,7 @@ describe('evaluateQuality — citation density warning rule', () => {
       },
       sources: [makeSource('s1', 'S1'), makeSource('s2', 'S2')],
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     // 2 citations / 2 answers = 1.0 >= 1 -> no warning
     expect(metrics.avgCitationsPerAnswer).toBe(1);
     const result = evaluateQuality(ctx, metrics);
@@ -556,7 +556,7 @@ describe('evaluateQuality — citation density warning rule', () => {
       },
       sources: [makeSource('s1', 'S1'), makeSource('s2', 'S2'), makeSource('s3', 'S3')],
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     expect(metrics.avgCitationsPerAnswer).toBe(3);
     const result = evaluateQuality(ctx, metrics);
     const hasDensityWarning = result.warnings.some((w) =>
@@ -568,7 +568,7 @@ describe('evaluateQuality — citation density warning rule', () => {
   it('does not warn about citation density when no questions were answered', () => {
     // No answers at all — can't compute density, should not warn
     const ctx = makeContext({ questions: ['Q1'], answers: {} });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     expect(metrics.avgCitationsPerAnswer).toBe(0);
     const result = evaluateQuality(ctx, metrics);
     const hasDensityWarning = result.warnings.some((w) =>
@@ -588,7 +588,7 @@ describe('evaluateQuality — source diversity warning rule', () => {
       answers: { Q1: makeChatResponse('A1', []) }, // no citations -> 0 sources cited
       sources: fourSources,
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     expect(metrics.sourcesIngested).toBe(4);
     expect(metrics.sourcesCited).toBe(0);
     const result = evaluateQuality(ctx, metrics);
@@ -606,7 +606,7 @@ describe('evaluateQuality — source diversity warning rule', () => {
       },
       sources: fiveSources,
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     expect(metrics.sourcesIngested).toBe(5);
     expect(metrics.sourcesCited).toBe(1);
     const result = evaluateQuality(ctx, metrics);
@@ -623,7 +623,7 @@ describe('evaluateQuality — source diversity warning rule', () => {
       },
       sources: fiveSources,
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     expect(metrics.sourcesIngested).toBe(5);
     expect(metrics.sourcesCited).toBe(2);
     const result = evaluateQuality(ctx, metrics);
@@ -640,7 +640,7 @@ describe('evaluateQuality — source diversity warning rule', () => {
       },
       sources: threeSources,
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     expect(metrics.sourcesIngested).toBe(3);
     expect(metrics.sourcesCited).toBe(1);
     const result = evaluateQuality(ctx, metrics);
@@ -654,7 +654,7 @@ describe('evaluateQuality — source diversity warning rule', () => {
       answers: { Q1: makeChatResponse('A1', []) },
       sources: [],
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     expect(metrics.sourcesIngested).toBe(0);
     const result = evaluateQuality(ctx, metrics);
     const hasDiversityWarning = result.warnings.some((w) => w.toLowerCase().includes('diversity'));
@@ -668,7 +668,7 @@ describe('evaluateQuality — source diversity warning rule', () => {
       answers: { Q1: makeChatResponse('A1', []) },
       sources: sixSources,
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     const result = evaluateQuality(ctx, metrics);
     const diversityWarning = result.warnings.find((w) => w.toLowerCase().includes('diversity'));
     expect(diversityWarning).toBeDefined();
@@ -688,7 +688,7 @@ describe('evaluateQuality — determinism', () => {
       },
       sources: [makeSource('s1', 'S1'), makeSource('s2', 'S2'), makeSource('s3', 'S3')],
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     const result1 = evaluateQuality(ctx, metrics);
     const result2 = evaluateQuality(ctx, metrics);
     expect(result1.grade).toBe(result2.grade);
@@ -710,7 +710,7 @@ describe('evaluateQuality — determinism', () => {
       }),
     ];
     for (const ctx of contexts) {
-      const metrics = computeMetrics(ctx);
+      const metrics = computeMetrics(ctx, Date.now());
       const result = evaluateQuality(ctx, metrics);
       expect(['good', 'partial', 'poor']).toContain(result.grade);
     }
@@ -729,7 +729,7 @@ describe('evaluateQuality — determinism', () => {
       }),
     ];
     for (const ctx of contexts) {
-      const metrics = computeMetrics(ctx);
+      const metrics = computeMetrics(ctx, Date.now());
       const result = evaluateQuality(ctx, metrics);
       if (result.grade === 'good') {
         expect(result.warnings).toHaveLength(0);
@@ -750,7 +750,7 @@ describe('evaluateQuality — immutability', () => {
       sources: [makeSource('s1', 'S1')],
     });
     const ctxBefore = JSON.stringify(ctx);
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     evaluateQuality(ctx, metrics);
     expect(JSON.stringify(ctx)).toBe(ctxBefore);
   });
@@ -761,7 +761,7 @@ describe('evaluateQuality — immutability', () => {
       answers: { Q1: makeChatResponse('A1', [1]) },
       sources: [makeSource('s1', 'S1')],
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     const metricsBefore = JSON.stringify(metrics);
     evaluateQuality(ctx, metrics);
     expect(JSON.stringify(metrics)).toBe(metricsBefore);
@@ -773,7 +773,7 @@ describe('evaluateQuality — immutability', () => {
       answers: { Q1: makeChatResponse('A1', []) },
       sources: [],
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     const result1 = evaluateQuality(ctx, metrics);
     // TypeScript readonly prevents direct mutation, but we verify via second call
     const result2 = evaluateQuality(ctx, metrics);
@@ -798,7 +798,7 @@ describe('SC-006 citation density goal', () => {
       },
       sources: [1, 2, 3, 4].map((i) => makeSource(`s${i}`, `S${i}`)),
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     expect(metrics.avgCitationsPerAnswer).toBe(2);
     const result = evaluateQuality(ctx, metrics);
     const hasDensityWarning = result.warnings.some((w) =>
@@ -821,7 +821,7 @@ describe('US6 quality grade thresholds', () => {
       },
       sources: [makeSource('s1', 'S1'), makeSource('s2', 'S2'), makeSource('s3', 'S3')],
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     const result = evaluateQuality(ctx, metrics);
     expect(result.grade).toBe('good');
     expect(result.warnings).toHaveLength(0);
@@ -836,7 +836,7 @@ describe('US6 quality grade thresholds', () => {
       },
       sources: [makeSource('s1', 'S1'), makeSource('s2', 'S2')],
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     const result = evaluateQuality(ctx, metrics);
     expect(result.grade).toBe('partial');
     expect(result.warnings.length).toBeGreaterThanOrEqual(1);
@@ -851,7 +851,7 @@ describe('US6 quality grade thresholds', () => {
       },
       sources: [],
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     const result = evaluateQuality(ctx, metrics);
     expect(result.grade).toBe('poor');
     expect(result.warnings.length).toBeGreaterThanOrEqual(2);
@@ -863,7 +863,7 @@ describe('US6 quality grade thresholds', () => {
 describe('computeMetrics — edge cases', () => {
   it('handles context with no questions and no answers gracefully', () => {
     const ctx = makeContext({ questions: [], answers: {}, sources: [] });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     expect(metrics.questionsAsked).toBe(0);
     expect(metrics.questionsAnswered).toBe(0);
     expect(metrics.questionsSkipped).toBe(0);
@@ -889,7 +889,7 @@ describe('computeMetrics — edge cases', () => {
       answers: fiveAnswers,
       sources: tenSources,
     });
-    const metrics = computeMetrics(ctx);
+    const metrics = computeMetrics(ctx, Date.now());
     expect(metrics.questionsAsked).toBe(5);
     expect(metrics.questionsAnswered).toBe(5);
     expect(metrics.totalCitations).toBe(15);

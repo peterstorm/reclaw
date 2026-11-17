@@ -56,7 +56,7 @@ const SOURCE_DIVERSITY_CITED_MAX = 1;
  * - avgCitationsPerAnswer: totalCitations / questionsAnswered (0 if none answered)
  * - sourcesCited: count of unique source indices cited across all answers
  */
-export function computeMetrics(ctx: ResearchContext, now: number = Date.now()): ResearchMetrics {
+export function computeMetrics(ctx: ResearchContext, now: number): ResearchMetrics {
   const questionsAsked = ctx.questions.length;
   const questionsAnswered = Object.keys(ctx.answers).length;
   const questionsSkipped = ctx.skippedQuestions.length;

@@ -43,7 +43,7 @@ export function parseDuration(input: string): Result<number, string> {
  * Supports: "14:30", "2:30pm", "2:30PM", "3pm", "15:00", "9am"
  * If the time has already passed today, schedules for tomorrow.
  */
-export function parseAbsoluteTime(input: string, now: Date = new Date()): Result<number, string> {
+export function parseAbsoluteTime(input: string, now: Date): Result<number, string> {
   const trimmed = input.trim().toLowerCase();
 
   // Match patterns: "14:30", "2:30pm", "3pm", "9am", "12:00am"
@@ -91,7 +91,7 @@ export function parseAbsoluteTime(input: string, now: Date = new Date()): Result
 /**
  * Format a ms delay as an absolute clock time string (HH:MM).
  */
-export function formatAbsoluteTime(delayMs: number, now: Date = new Date()): string {
+export function formatAbsoluteTime(delayMs: number, now: Date): string {
   const target = new Date(now.getTime() + delayMs);
   return target.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 }
@@ -105,7 +105,7 @@ export function formatAbsoluteTime(delayMs: number, now: Date = new Date()): str
  */
 export function parseSemanticDate(
   input: string,
-  now: Date = new Date(),
+  now: Date,
 ): Result<{ delayMs: number; text: string }, string> {
   const results = chrono.parse(input, now, { forwardDate: true });
 
@@ -136,7 +136,7 @@ export function parseSemanticDate(
 /**
  * Format a ms delay as a date+time string for semantic date confirmations.
  */
-export function formatSemanticDate(delayMs: number, now: Date = new Date()): string {
+export function formatSemanticDate(delayMs: number, now: Date): string {
   const target = new Date(now.getTime() + delayMs);
   return target.toLocaleDateString('en-GB', {
     weekday: 'long',
@@ -382,10 +382,7 @@ export type ParsedReminder =
  *   "/remind tomorrow at 3pm call dentist"
  *   "/remind next friday deploy release"
  */
-export function parseRemindCommand(
-  input: string,
-  now: Date = new Date(),
-): Result<ParsedReminder, string> {
+export function parseRemindCommand(input: string, now: Date): Result<ParsedReminder, string> {
   const trimmed = input.trim();
 
   // Strip the /remind prefix
@@ -484,7 +481,7 @@ export function formatReminderList(reminders: readonly ReminderListEntry[]): str
 /**
  * Build a confirmation message for a successfully enqueued reminder.
  */
-export function formatReminderConfirmation(parsed: ParsedReminder): string {
+export function formatReminderConfirmation(parsed: ParsedReminder, now: Date): string {
   if (parsed.kind === 'cron-recurring') {
     return `Got it — I'll remind you ${parsed.cronDescription} to: ${parsed.text}`;
   }
@@ -495,9 +492,9 @@ export function formatReminderConfirmation(parsed: ParsedReminder): string {
     return `Got it — I'll remind you in ${formatDuration(parsed.delayMs)}.`;
   }
   if (parsed.kind === 'absolute') {
-    return `Got it — I'll remind you at ${formatAbsoluteTime(parsed.delayMs)}.`;
+    return `Got it — I'll remind you at ${formatAbsoluteTime(parsed.delayMs, now)}.`;
   }
-  return `Got it — I'll remind you on ${formatSemanticDate(parsed.delayMs)}.`;
+  return `Got it — I'll remind you on ${formatSemanticDate(parsed.delayMs, now)}.`;
 }
 
 // ─── Human-readable duration formatting ───────────────────────────────────────

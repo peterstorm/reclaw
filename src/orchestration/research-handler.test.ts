@@ -31,6 +31,7 @@ import type { ResearchDeps } from './research-states.js';
 
 function makeInitialJobData(): ResearchJobData {
   const result = makeResearchJobData({
+    now: new Date('2026-03-05T10:00:00.000Z'),
     prompt: 'AI agents',
     sourceHints: [],
     chatId: 12345,

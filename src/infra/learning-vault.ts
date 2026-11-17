@@ -8,7 +8,7 @@ import { access, appendFile, mkdir, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import { REGISTRY_PATH, STUDY_LOG_PATH } from '../core/curriculum.js';
-import type { LearningVault } from '../orchestration/learn-command.js';
+import type { LearningVault } from '../core/learning-vault-port.js';
 
 const readIfExists = async (path: string): Promise<string | null> => {
   try {
@@ -24,12 +24,10 @@ export const DEFAULT_VAULT_ROOT = join(homedir(), 'dev/notes/remotevault');
 export function fsLearningVault(vaultRoot: string): LearningVault {
   const inVault = (relative: string) => join(vaultRoot, relative);
   const logPath = inVault(STUDY_LOG_PATH);
-  const resolveSource = (path: string) =>
-    path.startsWith('~/')
-      ? join(homedir(), path.slice(2))
-      : isAbsolute(path)
-        ? path
-        : inVault(path);
+  const resolveSource = (path: string): string => {
+    if (path.startsWith('~/')) return join(homedir(), path.slice(2));
+    return isAbsolute(path) ? path : inVault(path);
+  };
 
   return {
     readRegistry: async () => {

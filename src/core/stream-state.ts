@@ -1,4 +1,17 @@
-import type { StreamChunk } from '../infra/agent-backends/index.js';
+// ─── Stream Chunk ─────────────────────────────────────────────────────────────
+
+/**
+ * One stream step, as observed by the consumer.
+ *
+ * The runner owns phase tracking and per-block accumulators; the chunk is a
+ * discriminated union so the off-phase field is unrepresentable — a consumer
+ * cannot read the wrong accumulator, and the phase/field correlation is a
+ * type-level invariant instead of a comment-level convention. Defined here, in
+ * the core that consumes it; the agent-backend adapters produce it.
+ */
+export type StreamChunk =
+  | { readonly phase: 'thinking'; readonly thinking: string }
+  | { readonly phase: 'text'; readonly text: string };
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 

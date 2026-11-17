@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import type { StreamChunk } from '../infra/agent-backends/index.js';
+import type { StreamChunk } from './stream-state.js';
 import {
   STATUS_TAIL_CHARS,
   STATUS_THROTTLE_MS,
