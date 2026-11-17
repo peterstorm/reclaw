@@ -3,14 +3,17 @@ import { describe, expect, it } from 'vitest';
 import {
   EMPTY_STATE,
   FOLD_BATCH,
+  type MarkedSection,
   type Reel,
   type RelateFacts,
   type RelateState,
   markFolded,
   markMapped,
+  markSwept,
   parseRelateState,
   pendingReels,
   planRelate,
+  replaceSection,
 } from './roadmap-relate.js';
 
 const reel = (shortCode: string, day = 1): Reel => ({
@@ -29,9 +32,12 @@ const facts = (over: Partial<RelateFacts> = {}): RelateFacts => ({
   ...over,
 });
 
-/** State as left by a mapping on `at` of the default facts. */
+/**
+ * State as left by a mapping on `at` of the default facts, with a sweep just before the default
+ * `now` so these tests see only folding and mapping.
+ */
 const mappedOn = (at: string, state: RelateState = EMPTY_STATE): RelateState =>
-  markMapped(state, facts({ now: at }));
+  markSwept(markMapped(state, facts({ now: at })), facts({ now: '2026-11-19T00:00:00.000Z' }));
 
 const reelsArb = fc.uniqueArray(
   fc.record({
@@ -67,25 +73,35 @@ describe('planRelate', () => {
   it('maps at once the first time, even with a fold backlog', () => {
     const many = Array.from({ length: FOLD_BATCH + 5 }, (_, i) => reel(`code${i}x`, (i % 28) + 1));
     const plan = planRelate(EMPTY_STATE, facts({ reels: many }));
-    expect(plan).toMatchObject({ kind: 'work', pendingAfter: 5, remap: { kind: 'never-mapped' } });
+    expect(plan).toMatchObject({
+      kind: 'work',
+      pendingAfter: 5,
+      sweep: null,
+      remap: { kind: 'never-mapped' },
+    });
     if (plan.kind === 'work') expect(plan.fold).toHaveLength(FOLD_BATCH);
   });
 
-  it('folds oldest first and defers remapping while a backlog remains', () => {
+  it('folds oldest first and defers remapping and sweeping while a backlog remains', () => {
     const many = Array.from({ length: FOLD_BATCH + 1 }, (_, i) => reel(`code${i}x`, (i % 28) + 1));
-    const plan = planRelate(mappedOn('2026-11-19T00:00:00.000Z'), facts({ reels: many }));
-    expect(plan).toMatchObject({ kind: 'work', pendingAfter: 1, remap: null });
+    const neverSwept = { ...mappedOn('2026-11-19T00:00:00.000Z'), swept: null };
+    const plan = planRelate(neverSwept, facts({ reels: many, roadmapHash: 'h2' }));
+    expect(plan).toMatchObject({ kind: 'work', pendingAfter: 1, sweep: null, remap: null });
   });
 
-  it('remaps on the run that drains the backlog', () => {
-    const plan = planRelate(
-      mappedOn('2026-11-19T00:00:00.000Z'),
-      facts({ reels: [reel('lastone')] }),
-    );
-    expect(plan).toMatchObject({
+  it('remaps on the run that drains the backlog when the backlog changed the roadmap', () => {
+    const mapped = mappedOn('2026-11-19T00:00:00.000Z');
+    const last = [reel('lastone')];
+    expect(planRelate(mapped, facts({ reels: last, roadmapHash: 'h2' }))).toMatchObject({
       kind: 'work',
       pendingAfter: 0,
       remap: { kind: 'roadmap-changed' },
+    });
+    // Reels that only enrich the source note leave the roadmap, and so the mapping, alone.
+    expect(planRelate(mapped, facts({ reels: last }))).toMatchObject({
+      kind: 'work',
+      fold: last,
+      remap: null,
     });
   });
 
@@ -121,6 +137,56 @@ describe('planRelate', () => {
     expect(planRelate(mappedOn('2026-11-01T00:00:00.000Z'), added)).toMatchObject({
       remap: { kind: 'repos-moved', repos: [{ name: 'cortex', from: null, to: 'c1' }] },
     });
+  });
+
+  it('sweeps the last fortnight the first time, without remapping for it', () => {
+    const neverSwept = { ...mappedOn('2026-11-19T00:00:00.000Z'), swept: null };
+    expect(planRelate(neverSwept, facts())).toEqual({
+      kind: 'work',
+      fold: [],
+      pendingAfter: 0,
+      sweep: { since: '2026-11-06T05:30:00.000Z' },
+      remap: null,
+    });
+  });
+
+  it('sweeps weekly, each window starting where the last one was planned', () => {
+    const sweptOn = (at: string) =>
+      markSwept(mappedOn('2026-11-19T00:00:00.000Z'), facts({ now: at }));
+    expect(planRelate(sweptOn('2026-11-14T05:30:00.001Z'), facts())).toEqual({
+      kind: 'nothing-to-do',
+    });
+    expect(planRelate(sweptOn('2026-11-13T05:30:00.000Z'), facts())).toMatchObject({
+      kind: 'work',
+      sweep: { since: '2026-11-13T05:30:00.000Z' },
+    });
+  });
+
+  it('sweeps once a week has passed, each window starting where the last ended (property)', () => {
+    const start = Date.parse('2026-01-01T00:00:00.000Z');
+    const week = 7 * 24 * 60 * 60_000;
+    fc.assert(
+      fc.property(
+        fc.array(fc.integer({ min: 1, max: 9 * 24 * 60 }), { minLength: 1, maxLength: 40 }),
+        (gapsMinutes) => {
+          let state: RelateState = { ...EMPTY_STATE, swept: new Date(start).toISOString() };
+          let covered = start;
+          let at = start;
+          for (const gap of gapsMinutes) {
+            at += gap * 60_000;
+            const now = facts({ now: new Date(at).toISOString() });
+            const plan = planRelate(state, now);
+            const sweep = plan.kind === 'work' ? plan.sweep : null;
+            expect(sweep !== null).toBe(at - covered >= week);
+            if (sweep !== null) {
+              expect(Date.parse(sweep.since)).toBe(covered);
+              covered = at;
+              state = markSwept(state, now);
+            }
+          }
+        },
+      ),
+    );
   });
 
   it('never folds a reel twice and always makes progress (property)', () => {
@@ -161,10 +227,44 @@ describe('markFolded', () => {
   });
 });
 
+describe('replaceSection', () => {
+  const section: MarkedSection = { start: '<!-- s:start -->', end: '<!-- s:end -->' };
+  const textArb = fc.string().filter((s) => !s.includes('<!-- s:'));
+
+  it('swaps only the marked span, and twice is the same as once (property)', () => {
+    fc.assert(
+      fc.property(textArb, textArb, textArb, textArb, (before, old, after, body) => {
+        const note = `${before}${section.start}${old}${section.end}${after}`;
+        const once = replaceSection(note, section, body);
+        expect(once).toEqual({
+          ok: true,
+          value: `${before}${section.start}\n${body.trim()}\n${section.end}${after}`,
+        });
+        if (once.ok) expect(replaceSection(once.value, section, body)).toEqual(once);
+      }),
+    );
+  });
+
+  it.each([
+    ['no markers', 'just text', 'body'],
+    ['end before start', `${section.end} x ${section.start}`, 'body'],
+    ['a forged marker in the body', `${section.start}${section.end}`, section.end],
+  ])('refuses %s', (_, note, body) => {
+    expect(replaceSection(note, section, body).ok).toBe(false);
+  });
+});
+
 describe('parseRelateState', () => {
   it('round-trips a state through JSON', () => {
     const state = markFolded(mappedOn('2026-11-19T00:00:00.000Z'), ['abcde']);
     expect(parseRelateState(JSON.parse(JSON.stringify(state)))).toEqual({ ok: true, value: state });
+  });
+
+  it('reads state from before the source sweep as never swept', () => {
+    expect(parseRelateState({ foldedReels: ['abcde'], mapped: null })).toEqual({
+      ok: true,
+      value: { foldedReels: ['abcde'], mapped: null, swept: null },
+    });
   });
 
   it.each([

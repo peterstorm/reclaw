@@ -2,15 +2,18 @@
 
 /**
  * roadmap-relate (I/O shell) — bookkeeping for the `roadmap-relate` skill, which keeps the
- * bashi_fuirkashi roadmap note current with the ingested reels and maps it onto our repos.
+ * generic AI-engineering roadmap current from its sources and maps it onto our repos.
  * Every decision is `src/core/roadmap-relate.ts`; this file gathers facts and persists state.
  *
- *   bun scripts/roadmap-relate.ts plan               fetch repos, decide this run's work (JSON)
- *   bun scripts/roadmap-relate.ts digest CODE...     what those reels add beyond their captions
- *   bun scripts/roadmap-relate.ts mark-folded CODE... record reels as folded into the roadmap
- *   bun scripts/roadmap-relate.ts mark-mapped        record the mapping (heads from the last plan)
- *   bun scripts/roadmap-relate.ts set-section FILE   replace the roadmap's reel-findings section
- *                                                   (between its markers) with FILE's contents
+ *   bun scripts/roadmap-relate.ts plan                fetch repos, decide this run's work (JSON)
+ *   bun scripts/roadmap-relate.ts digest CODE...      what those reels add beyond their captions
+ *   bun scripts/roadmap-relate.ts mark-folded CODE... record reels as folded
+ *   bun scripts/roadmap-relate.ts sources SINCE       what the source feeds published since SINCE
+ *   bun scripts/roadmap-relate.ts mark-swept          record the sweep (as of the last plan)
+ *   bun scripts/roadmap-relate.ts mark-mapped         record the mapping (heads from the last plan)
+ *   bun scripts/roadmap-relate.ts set-section reels|signals FILE
+ *        replace a skill-owned section (between its markers) with FILE's contents:
+ *        `reels` in the bashi_fuirkashi source note, `signals` in the roadmap
  *
  * Repos are read at their default branch (`origin/HEAD`) after a best-effort `git fetch`; the
  * script never checks out, stashes or resets — other sessions work in those checkouts.
@@ -25,18 +28,23 @@ import { promises as fs } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
+import { selectRecentUnseen, sortNewestFirst } from '../src/core/feed-parser.js';
 import {
   EMPTY_STATE,
+  type MarkedSection,
   type Reel,
   type RelateFacts,
   type RelateState,
   type RepoHead,
   markFolded,
   markMapped,
+  markSwept,
   parseRelateFacts,
   parseRelateState,
   planRelate,
+  replaceSection,
 } from '../src/core/roadmap-relate.js';
+import { type Feed, fetchFeeds } from '../src/infra/feed-fetcher.js';
 
 const run = promisify(execFile);
 
@@ -45,12 +53,41 @@ const STATE_FILE =
   process.env.RECLAW_ROADMAP_STATE ?? join(homedir(), '.cache/reclaw/roadmap-relate.json');
 const PLAN_FILE = STATE_FILE.replace(/\.json$/, '-plan.json');
 
-export const ROADMAP_NOTE = 'programming/ai/bashi-fuirkashi-ai-engineering-roadmap.md';
-export const MAPPING_NOTE = 'programming/ai/bashi-roadmap-vs-our-repos.md';
+/** The generic roadmap: what is mapped onto the repos, and whose hash triggers a remap. */
+const ROADMAP_NOTE = 'programming/ai/ai-engineering-roadmap.md';
+/** One source of the roadmap: the @bashi_fuirkashi extract, which the reels are folded into. */
+const REEL_NOTE = 'programming/ai/bashi-fuirkashi-ai-engineering-roadmap.md';
+const MAPPING_NOTE = 'programming/ai/ai-engineering-roadmap-vs-our-repos.md';
 const REELS_DIR = 'media/instagram/bashi_fuirkashi';
-/** The roadmap section this skill owns; everything outside the markers is left alone. */
-const SECTION_START = '<!-- roadmap-relate:reels:start -->';
-const SECTION_END = '<!-- roadmap-relate:reels:end -->';
+
+/** The sections this skill owns; everything outside their markers is hand-curated. */
+const SECTIONS: Readonly<Record<'reels' | 'signals', MarkedSection & { note: string }>> = {
+  reels: {
+    note: REEL_NOTE,
+    start: '<!-- roadmap-relate:reels:start -->',
+    end: '<!-- roadmap-relate:reels:end -->',
+  },
+  signals: {
+    note: ROADMAP_NOTE,
+    start: '<!-- roadmap-relate:signals:start -->',
+    end: '<!-- roadmap-relate:signals:end -->',
+  },
+};
+
+/** The roadmap's sources that publish feeds (each verified to serve one, 2026-11-17). */
+const SOURCE_FEEDS: readonly Feed[] = [
+  { source: 'Hamel Husain', url: 'https://hamel.dev/index.xml' },
+  { source: 'Eugene Yan', url: 'https://eugeneyan.com/rss/' },
+  { source: 'Chip Huyen', url: 'https://huyenchip.com/feed.xml' },
+  { source: 'Alexey Grigorev (AI Shipping)', url: 'https://aishippingblog.com/feed' },
+  { source: 'DataTalks.Club', url: 'https://datatalks.club/feed.xml' },
+  { source: 'Jason Liu', url: 'https://jxnl.co/feed_rss_created.xml' },
+  { source: 'Sebastian Raschka', url: 'https://magazine.sebastianraschka.com/feed' },
+  { source: 'Lilian Weng', url: 'https://lilianweng.github.io/index.xml' },
+  { source: 'Latent Space', url: 'https://www.latent.space/feed' },
+  { source: 'Simon Willison', url: 'https://simonwillison.net/atom/everything/' },
+];
+const SOURCE_ITEMS_PER_FEED = 12;
 
 /** The repos the roadmap is related to. */
 const REPOS: readonly Readonly<{ name: string; path: string; what: string }>[] = [
@@ -157,12 +194,25 @@ async function loadState(): Promise<RelateState> {
   return parsed.value;
 }
 
-async function save(file: string, value: unknown) {
-  await fs.mkdir(dirname(file), { recursive: true });
-  const tmp = `${file}.tmp`;
-  await fs.writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`);
-  await fs.rename(tmp, file);
+/** The facts the last `plan` saved; the mark-* commands record against them. */
+async function plannedFacts(): Promise<RelateFacts> {
+  const planned = await fs
+    .readFile(PLAN_FILE, 'utf8')
+    .catch(() => fail('no plan to mark; run plan first'));
+  const raw: unknown = JSON.parse(planned);
+  const facts = parseRelateFacts(raw);
+  if (!facts.ok) fail(facts.error);
+  return facts.value;
 }
+
+async function writeAtomically(file: string, text: string) {
+  await fs.mkdir(dirname(file), { recursive: true });
+  await fs.writeFile(`${file}.tmp`, text);
+  await fs.rename(`${file}.tmp`, file);
+}
+
+const save = (file: string, value: unknown) =>
+  writeAtomically(file, `${JSON.stringify(value, null, 2)}\n`);
 
 // ─── Digest: what a reel says beyond its caption ──────────────────────────────
 
@@ -204,10 +254,12 @@ if (command === 'plan') {
     plan: planRelate(state, facts),
     repos,
     roadmapNote: join(VAULT, ROADMAP_NOTE),
+    reelNote: join(VAULT, REEL_NOTE),
     mappingNote: join(VAULT, MAPPING_NOTE),
     reelsDir: join(VAULT, REELS_DIR),
     reelsTotal: found.length,
     foldedTotal: state.foldedReels.length,
+    lastSwept: state.swept,
   });
 } else if (command === 'digest') {
   if (rest.length === 0) fail('digest needs shortcodes');
@@ -226,36 +278,56 @@ if (command === 'plan') {
     folded: next.foldedReels.length,
     added: next.foldedReels.length - state.foldedReels.length,
   });
+} else if (command === 'sources') {
+  const [since] = rest;
+  const cutoffMs = Date.parse(since ?? '');
+  if (Number.isNaN(cutoffMs)) fail('sources needs an ISO timestamp (plan.sweep.since)');
+  const results = await fetchFeeds(SOURCE_FEEDS, {
+    timeoutMs: 25_000,
+    userAgent: 'reclaw-roadmap-relate/1.0',
+  });
+  // An undated item would come back every week; a sweep reads dated posts only.
+  const items = results.flatMap(({ items: fetched }) =>
+    selectRecentUnseen(
+      fetched.filter((i) => i.date !== null),
+      { cutoffMs, seen: new Set(), maxPerFeed: SOURCE_ITEMS_PER_FEED },
+    ),
+  );
+  say({
+    since,
+    count: items.length,
+    errors: results.flatMap(({ feed, error }) =>
+      error === null ? [] : [{ source: feed.source, error }],
+    ),
+    items: sortNewestFirst(items),
+  });
+} else if (command === 'mark-swept') {
+  const next = markSwept(await loadState(), await plannedFacts());
+  await save(STATE_FILE, next);
+  say({ swept: next.swept });
 } else if (command === 'mark-mapped') {
-  const planned = await fs
-    .readFile(PLAN_FILE, 'utf8')
-    .catch(() => fail('no plan to mark; run plan first'));
-  const raw: unknown = JSON.parse(planned);
-  const facts = parseRelateFacts(raw);
-  if (!facts.ok) fail(facts.error);
-  // The mapping was made from the roadmap as it is now (after this run's folding), against the
-  // repo heads the plan fetched.
-  const next = markMapped(await loadState(), { ...facts.value, roadmapHash: await roadmapHash() });
+  const facts = await plannedFacts();
+  // The mapping was made from the roadmap as it is now (after this run's folding and sweeping),
+  // against the repo heads the plan fetched.
+  const next = markMapped(await loadState(), { ...facts, roadmapHash: await roadmapHash() });
   await save(STATE_FILE, next);
   say({ mapped: next.mapped });
 } else if (command === 'set-section') {
-  const [file] = rest;
+  const [name, file] = rest;
+  if (name !== 'reels' && name !== 'signals') fail('set-section needs reels|signals FILE');
   if (file === undefined) fail('set-section needs a file');
-  const body = (await fs.readFile(file, 'utf8')).trim();
-  const path = join(VAULT, ROADMAP_NOTE);
-  const note = await fs.readFile(path, 'utf8');
-  const start = note.indexOf(SECTION_START);
-  const end = note.indexOf(SECTION_END);
-  if (start === -1 || end < start)
-    fail(`${ROADMAP_NOTE} lacks the ${SECTION_START} … ${SECTION_END} markers`);
-  if (body.includes(SECTION_START) || body.includes(SECTION_END))
-    fail('section text must not contain the markers');
-  const updated = `${note.slice(0, start + SECTION_START.length)}\n${body}\n${note.slice(end)}`;
-  await fs.writeFile(`${path}.tmp`, updated);
-  await fs.rename(`${path}.tmp`, path);
-  say({ section: 'reel findings', chars: body.length });
+  const section = SECTIONS[name];
+  const path = join(VAULT, section.note);
+  const updated = replaceSection(
+    await fs.readFile(path, 'utf8'),
+    section,
+    await fs.readFile(file, 'utf8'),
+  );
+  if (!updated.ok) fail(`${section.note}: ${updated.error}`);
+  await writeAtomically(path, updated.value);
+  say({ section: name, note: section.note });
 } else {
   fail(
-    'usage: roadmap-relate.ts plan | digest CODE... | mark-folded CODE... | mark-mapped | set-section FILE',
+    'usage: roadmap-relate.ts plan | digest CODE... | mark-folded CODE... | sources SINCE | mark-swept | mark-mapped | set-section reels|signals FILE',
   );
 }

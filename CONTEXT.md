@@ -69,3 +69,22 @@ Vault: `media/instagram/<handle>/<shortcode>.md`, `media/instagram/MOC.md`.
 | **Scratch media** | Throwaway video, audio or images downloaded only to transcribe or read; deleted right after. Audio only when text is not being read. | Video library |
 | **Video library** | `~/downloads/instagram/<handle>/<shortcode>.mp4` — mp4s kept with `--video`. Deliberately outside the vault. | The vault |
 | **Outcome** | Per-post result: `saved`, `skipped-existing`, or `failed` (stage `download`/`transcribe`/`read-text`/`write`). A failed post writes no note, so a re-run retries exactly it. | A job status |
+
+## Roadmap relate (AI-engineering roadmap → our repos)
+
+Code: `src/core/roadmap-relate.ts`, `src/infra/feed-fetcher.ts`, `scripts/roadmap-relate.ts`,
+skill `roadmap-relate`. Vault: the AI engineering roadmap note under programming/ai, its mapping
+note and the @bashi_fuirkashi source note.
+
+| Term | Meaning | Not to be confused with |
+|---|---|---|
+| **Roadmap** | The generic AI-engineering roadmap note: a hand-curated synthesis of many sources with a consensus marker per item. The only note that is mapped, and the one whose hash triggers a remap. | A source note |
+| **Source** | One input to the roadmap: a curriculum, a job-posting analysis, a practitioner, or a social account. Has a key (CH, AG, BF, …) in the roadmap's Sources table. | A feed (one way some sources are read) |
+| **Source note** | A note extracting one source in depth. Today only the @bashi_fuirkashi extract, which reels are folded into. | The roadmap |
+| **Consensus** | How many *kinds* of source back an item: ●●● three or more, ●● two, ● one kind, ○ a single source. | Popularity or posting share |
+| **Marked section** | The span between `<!-- roadmap-relate:<name>:start -->` and `:end -->` that the skill owns; everything outside is by hand. `reels` lives in the source note, `signals` in the roadmap. | A heading |
+| **Signal** | A finding new to the roadmap, from a reel or a sweep, waiting in the `signals` section until a curator folds it into the body. | A reel finding (new to the source note only) |
+| **Reel fold** | Reading up to 40 unfolded reels' transcripts and on-screen text into the source note's `reels` section. Recorded by `mark-folded`. | Ingest (which writes the reel notes) |
+| **Source sweep** | Weekly: reading what the source feeds published in the sweep window, plus targeted searches, into signals. Recorded by `mark-swept`. | The tech digest (the same feed fetcher, a different purpose) |
+| **Sweep window** | `[since, plan time)`: `since` is the last sweep's plan time, or 14 days back for the first. Consecutive windows leave no gap. | — |
+| **Mapping** | The generated have / partial / missing note relating the roadmap to the repos at their default branch. Recorded by `mark-mapped` with the roadmap hash and repo heads. | The hand-written gap analysis |

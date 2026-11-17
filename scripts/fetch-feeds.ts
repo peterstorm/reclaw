@@ -28,13 +28,11 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
   type FeedItem,
-  parseFeed,
   parseNumericArg,
   selectRecentUnseen,
   sortNewestFirst,
 } from '../src/core/feed-parser.js';
-
-type Feed = { readonly source: string; readonly url: string };
+import { type Feed, fetchFeeds } from '../src/infra/feed-fetcher.js';
 
 const FEEDS: readonly Feed[] = [
   { source: 'Hacker News', url: 'https://news.ycombinator.com/rss' },
@@ -92,29 +90,6 @@ function markSeen(urls: readonly string[]): void {
   );
 }
 
-// ─── Fetch (I/O) ───────────────────────────────────────────────────────────────
-
-async function fetchFeed(
-  feed: Feed,
-  timeoutMs: number,
-): Promise<{ items: FeedItem[]; error?: string }> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(feed.url, {
-      signal: controller.signal,
-      headers: { 'user-agent': 'reclaw-tech-digest/1.0 (+https://dotslash.dev)' },
-    });
-    if (!res.ok) return { items: [], error: `HTTP ${res.status}` };
-    const xml = await res.text();
-    return { items: parseFeed(feed.source, xml) };
-  } catch (e) {
-    return { items: [], error: e instanceof Error ? e.message : String(e) };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 // ─── Main ──────────────────────────────────────────────────────────────────────
 
 function arg(name: string): string | undefined {
@@ -146,16 +121,16 @@ async function main(): Promise<void> {
   const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
   const seen = loadSeen();
 
-  // Each result carries its feed, so the pairing never depends on array indices.
-  const results = await Promise.all(
-    FEEDS.map(async (feed) => ({ feed, result: await fetchFeed(feed, 25_000) })),
-  );
+  const results = await fetchFeeds(FEEDS, {
+    timeoutMs: 25_000,
+    userAgent: 'reclaw-tech-digest/1.0 (+https://dotslash.dev)',
+  });
 
   const items: FeedItem[] = [];
   const errors: { source: string; error: string }[] = [];
-  for (const { feed, result: r } of results) {
-    if (r.error) errors.push({ source: feed.source, error: r.error });
-    items.push(...selectRecentUnseen(r.items, { cutoffMs, seen, maxPerFeed }));
+  for (const { feed, items: fetched, error } of results) {
+    if (error !== null) errors.push({ source: feed.source, error });
+    items.push(...selectRecentUnseen(fetched, { cutoffMs, seen, maxPerFeed }));
   }
 
   // If every feed failed, `count: 0` would otherwise look like a quiet news day.

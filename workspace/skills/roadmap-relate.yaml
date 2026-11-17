@@ -1,7 +1,8 @@
 name: Roadmap Relate
 # Nightly. Most nights the plan says nothing-to-do and the run ends at once (ALL_CLEAR).
 # Work happens when new @bashi_fuirkashi reels were ingested (folded 40 per night, oldest first),
-# when the roadmap note changed, or when a repo moved and the last mapping is a week old.
+# weekly when the other roadmap sources are swept, when the roadmap note changed, or when a repo
+# moved and the last mapping is a week old.
 schedule: "0 22 * * *"
 permissionProfile: scheduled
 # Pi/vLLM unreachable (desktop off) or out of quota → rerun once on Claude; the message says so.
@@ -13,11 +14,21 @@ promptTemplate: |
 
   Today is {{dayOfWeek}}, {{date}}.
 
-  You keep the bashi_fuirkashi AI-engineering roadmap note current and relate it to the user's
-  own repos. This is an automated scheduled job: no user is present, ask nothing, never pause.
+  You keep the user's generic AI-engineering roadmap current from its sources and relate it to
+  the user's own repos. This is an automated scheduled job: no user is present, ask nothing,
+  never pause.
 
-  A helper does all bookkeeping — which reels are new, whether the repos moved, what was
-  already done. Never track that yourself and never edit its state file.
+  The roadmap (`roadmapNote`) is a synthesis of many sources — curricula, job-posting analyses,
+  practitioner writing, one Instagram account — so no single voice defines it. Its body is
+  hand-curated; you own exactly two marked sections:
+  - `<!-- roadmap-relate:signals:start -->` … `:end -->` in the roadmap: **new signals** from
+    any source since the body was last curated;
+  - `<!-- roadmap-relate:reels:start -->` … `:end -->` in the @bashi_fuirkashi source note
+    (`reelNote`): what that account's reels say beyond their captions.
+  Never change anything outside those markers; install them only with `set-section`.
+
+  A helper does all bookkeeping — which reels are new, when the sources were last swept, whether
+  the repos moved. Never track that yourself and never edit its state file.
 
   ## Step 1 — Plan
 
@@ -26,56 +37,99 @@ promptTemplate: |
   ```
 
   Output JSON: `plan` (`{kind: "nothing-to-do"}` or `{kind: "work", fold: [{shortCode, postedAt}],
-  pendingAfter, remap: null | {kind: "never-mapped" | "roadmap-changed" | "repos-moved", repos?}}`),
-  `repos` (`name, path, what, ref, sha, committedAt, fetchError`), `roadmapNote`, `mappingNote`,
-  `reelsDir`.
+  pendingAfter, sweep: null | {since}, remap: null | {kind: "never-mapped" | "roadmap-changed" |
+  "repos-moved", repos?}}`), `repos` (`name, path, what, ref, sha, committedAt, fetchError`),
+  `roadmapNote`, `reelNote`, `mappingNote`, `reelsDir`.
 
   If `plan.kind` is `nothing-to-do`, reply with exactly ALL_CLEAR — nothing else — and stop.
 
-  ## Step 2 — Fold new reels (only if `plan.fold` is non-empty)
+  Read the roadmap note (`roadmapNote`) in full now, including its signals section and its
+  `## Sources` list. A finding is **new** only if neither the body nor the signals section
+  already says it.
 
-  The roadmap was written from captions. Reels add what captions don't: the spoken transcript,
-  text on screen, text in images. Get exactly that for this batch:
+  ## Step 2 — Fold new reels (only if `plan.fold` is non-empty)
 
   ```
   bun {{scriptsDir}}/roadmap-relate.ts digest <shortCode> <shortCode> …   # all of plan.fold
   ```
 
-  Read the roadmap note (`roadmapNote`) in full, including the section between
-  `<!-- roadmap-relate:reels:start -->` and `<!-- roadmap-relate:reels:end -->` — that section is
-  yours; everything else in the note is hand-curated and you must not change it.
+  That prints, per reel, the spoken transcript, text on screen and text in images. Read the
+  source note (`reelNote`) in full, including its reels section.
 
-  Decide what in this batch is **substantive and not already in the note**: a concrete technique,
-  definition, metric, architecture, project spec, resource (book/course/paper/repo — URLs only if
-  they appear verbatim), interview question or job-search tactic. Most reels are hooks and calls
-  to action ("comment X"); skip those. OCR text is noisy (`Iearn` = learn, `Al` = AI): use it for
-  what it clearly says, never quote garbled strings. Never invent; when unsure, leave it out.
+  Keep what is **substantive and not already in the source note**: a concrete technique,
+  definition, metric, architecture, project spec, resource (book/course/paper/repo — URLs only
+  if they appear verbatim), interview question or job-search tactic. Most reels are hooks and
+  calls to action ("comment X"); skip those. OCR text is noisy (`Iearn` = learn, `Al` = AI): use
+  it for what it clearly says, never quote garbled strings. Never invent; when unsure, leave it
+  out.
 
-  Write the **whole new section body** (the existing section's content merged with this batch's
-  findings, deduplicated, grouped under the same headings the note uses: RAG and retrieval;
-  Knowledge architecture; Agents and orchestration; AI-assisted development; LLMOps, evaluation
-  and deployment; Cost, latency and caching; Safety; ML foundations; Projects; Resources;
-  Interview; Job search) to a temp file, then install it:
+  Write the **whole new reels section** (existing content merged with this batch, deduplicated,
+  grouped under the headings that note uses) to a temp file and install it:
 
   ```
-  bun {{scriptsDir}}/roadmap-relate.ts set-section /tmp/roadmap-reels-section.md
+  bun {{scriptsDir}}/roadmap-relate.ts set-section reels /tmp/roadmap-reels-section.md
   ```
 
-  Section format: start with `## From the reels — transcripts and on-screen text` and one line
-  `_Maintained by the roadmap-relate skill; last folded {{date}}; N reels read so far._`; cite
-  every item with its reel as `[[media/instagram/bashi_fuirkashi/<code>|<code>]]`. Then record
-  the batch — all of `plan.fold`, including reels that added nothing:
+  Reels section format: start with `## From the reels — transcripts and on-screen text` and one
+  line `_Maintained by the roadmap-relate skill; last folded {{date}}; N reels read so far._`;
+  cite every item as `[[media/instagram/bashi_fuirkashi/<code>|<code>]]`. Then record the batch
+  — all of `plan.fold`, including reels that added nothing:
 
   ```
   bun {{scriptsDir}}/roadmap-relate.ts mark-folded <shortCode> <shortCode> …
   ```
 
-  ## Step 3 — Map the roadmap onto our repos (only if `plan.remap` is not null)
+  Keep this batch's findings for Step 4: those that are new **to the roadmap** are signals.
+
+  ## Step 3 — Sweep the other sources (only if `plan.sweep` is not null)
+
+  ```
+  bun {{scriptsDir}}/roadmap-relate.ts sources <plan.sweep.since>
+  ```
+
+  Output JSON: `items` (`source, title, link, date, summary`) the source feeds published since
+  then, and feed `errors`. Most items are news or off-topic (model launches, funding, tool
+  releases): skip them. Open with WebFetch only items whose title or summary suggests a
+  **practice, pattern, skill, eval method, architecture, project idea or hiring evidence** an AI
+  engineer should learn — at most 8. Then use WebSearch for evidence the feeds can't carry, at
+  most 4 searches: new **AI-engineer job-posting analyses** (skill frequencies with sample size),
+  new posts on Anthropic's engineering blog (`anthropic.com/engineering`), and changes to the
+  roadmap.sh AI-engineer roadmap. Only sources dated after `plan.sweep.since` count.
+
+  A sweep finding needs a URL you actually read. A job-posting statistic needs its sample (N,
+  region, date). Opinion from one practitioner is a signal, not a consensus; say whose it is.
+
+  ## Step 4 — Update the roadmap's signals (if Step 2 or 3 found anything new to the roadmap)
+
+  Write the **whole new signals section** — the existing signals plus this run's, deduplicated —
+  and install it:
+
+  ```
+  bun {{scriptsDir}}/roadmap-relate.ts set-section signals /tmp/roadmap-signals-section.md
+  ```
+
+  Format: start with `## New signals since the last curation` and one line
+  `_Maintained by the roadmap-relate skill; last updated {{date}}. Fold these into the body when
+  curating, then delete them here._`. Group under the roadmap's stage headings. Each signal is one
+  line: the claim, then its source in brackets — a URL for web sources, the
+  `[[media/instagram/bashi_fuirkashi/<code>|<code>]]` link for reels — and, when it changes the
+  picture, `↑` (stronger than the roadmap says), `↓` (weaker) or `new`. If two or more
+  independent sources now agree on something the body marks as single-source, say so. Keep the
+  section under ~60 lines: drop the oldest, weakest signals first.
+
+  If nothing was new, leave the section alone. Then, if `plan.sweep` was not null, record the
+  sweep — also when it found nothing, but not if `sources` itself failed:
+
+  ```
+  bun {{scriptsDir}}/roadmap-relate.ts mark-swept
+  ```
+
+  ## Step 5 — Map the roadmap onto our repos (only if `plan.remap` is not null)
 
   Read the roadmap note again (it may have just changed) and the current mapping note
   (`mappingNote`) if it exists — you will report what changed against it.
 
-  For each roadmap theme, find out what each repo in `repos` actually has **at its default
+  For each roadmap stage, find out what each repo in `repos` actually has **at its default
   branch** — `ref` (e.g. `origin/main`), commit `sha`. Read code with git against that ref only:
 
   ```
@@ -89,31 +143,25 @@ promptTemplate: |
   sessions are working in them. Also read each repo's README / CONTEXT.md / docs at `<ref>`.
   A repo with `sha: null` could not be read: mark its column "not read" and say why.
 
-  Judge each item as **✅ have** (implemented and used), **🟡 partial** (exists but not the
-  production form the roadmap describes — say what's missing) or **❌ missing**, with evidence:
-  a `repo:path` (and symbol) for every ✅/🟡. No evidence → not ✅. Don't count docs, plans or
-  TODOs as implementation. Cover at least: hybrid retrieval & reranking, relevance thresholds /
-  dynamic K, citation verification, retrieval eval metrics, doc lifecycle/versioning, knowledge
-  graph, CAG / caching tiers, semantic cache, agent patterns (ReAct, planning, reflection,
-  routing, multi-agent), graph/state orchestration, HITL, tool permissions & budgets/loop
-  limits, MCP, eval harness & LLM-as-judge, evals in CI / regression gates, tracing &
-  observability, prompt/dataset versioning, staged rollout, gateway/fallback/routing, cost
-  tracking, rate limits/queues, prompt-injection & red-teaming, PII/DLP, structured outputs,
-  serving/inference, fine-tuning, AI-assisted development (coding agents, specs).
+  Judge each roadmap item (body and signals) as **✅ have** (implemented and used), **🟡
+  partial** (exists but not the production form the roadmap describes — say what's missing) or
+  **❌ missing**, with evidence: a `repo:path` (and symbol) for every ✅/🟡. No evidence → not
+  ✅. Don't count docs, plans or TODOs as implementation. Weight the gaps by the roadmap's
+  consensus column: a ❌ on a ●●● item matters more than one on a ○ item.
 
   Write the mapping note with the Write tool (it is fully generated each time — overwrite it):
 
   ```
   ---
-  title: "bashi_fuirkashi roadmap vs our repos"
+  title: "AI engineering roadmap vs our repos"
   date: <first mapping date, keep it from the existing note>
   updated: {{date}}
   tags: [ai-engineering, roadmap, gap-analysis, portfolio, generated]
   aliases: [roadmap vs repos]
   up: "[[programming/ai/MOC|AI Engineering]]"
-  source: "[[programming/ai/bashi-fuirkashi-ai-engineering-roadmap|bashi_fuirkashi roadmap]]"
+  source: "[[programming/ai/ai-engineering-roadmap|AI engineering roadmap]]"
   ---
-  # bashi_fuirkashi roadmap vs our repos
+  # AI engineering roadmap vs our repos
 
   _Generated by the roadmap-relate skill on {{date}} from each repo's default branch. Re-run
   automatically when the roadmap changes or weekly when repos move. Hand edits are overwritten._
@@ -125,16 +173,17 @@ promptTemplate: |
   (items whose status changed, with the commit/area that changed it; "first mapping" if none)
 
   ## Matrix
-  One table per roadmap theme: | Item | loom | fugue | reclaw | chatbot | cortex | — cells are
-  status + evidence path, short.
+  One table per roadmap stage: | Item | Consensus | loom | fugue | reclaw | chatbot | cortex | —
+  cells are status + evidence path, short.
 
   ## Strongest proof points
   The 5–8 items where a repo is already portfolio-grade, with where to look.
 
   ## Biggest gaps → next builds
-  The 3–5 highest-value ❌/🟡 items, each with the repo it best fits and the smallest credible
-  slice to close it. Link [[programming/ai/ai-engineering-gap-analysis-chatbot-fugue-loom-cortex]]
-  for the earlier hand-written analysis where relevant.
+  The 3–5 highest-value ❌/🟡 items (consensus-weighted), each with the repo it best fits and the
+  smallest credible slice to close it. Link
+  [[programming/ai/ai-engineering-gap-analysis-chatbot-fugue-loom-cortex]] for the earlier
+  hand-written analysis where relevant.
   ```
 
   Then record the mapping:
@@ -143,14 +192,16 @@ promptTemplate: |
   bun {{scriptsDir}}/roadmap-relate.ts mark-mapped
   ```
 
-  ## Step 4 — Final message (this is the ONLY message the user sees)
+  ## Step 6 — Final message (this is the ONLY message the user sees)
 
   Short, self-contained, no preamble:
-  - folded: N reels read (M with something new), `pendingAfter` still queued — the 2–4 most
-    useful new items in one line each;
+  - folded: N reels read (M with something new), `pendingAfter` still queued;
+  - swept (if it ran): sources read, the 2–4 most useful new signals in one line each with
+    their source;
   - mapped (if it ran): why (first mapping / roadmap changed / which repos moved), the status
     changes since last time, and the top 2–3 gaps;
-  - links: [[programming/ai/bashi-fuirkashi-ai-engineering-roadmap]] and
-    [[programming/ai/bashi-roadmap-vs-our-repos]];
-  - any repo that could not be fetched or read, and any step that failed (with the error).
+  - links: [[programming/ai/ai-engineering-roadmap]] and
+    [[programming/ai/ai-engineering-roadmap-vs-our-repos]];
+  - any repo or feed that could not be fetched or read, and any step that failed (with the
+    error).
   If a step failed, do not run its mark command — the next run retries it.
