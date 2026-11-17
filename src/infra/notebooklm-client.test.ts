@@ -1,20 +1,20 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
-import {
-  type NotebookLMAdapter,
-  type AdapterError,
-  mapSourceType,
-  isRetriableError,
-  fetchCurrentBuildLabel,
-  FALLBACK_BL,
-} from './notebooklm-client.js';
 import {
   APIError,
-  NotebookLMNetworkError,
-  NotebookLMAuthError,
-  NotebookLMParseError,
-  ErrorType,
   type ErrorCode,
+  ErrorType,
+  NotebookLMAuthError,
+  NotebookLMNetworkError,
+  NotebookLMParseError,
 } from 'notebooklm-kit';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  type AdapterError,
+  FALLBACK_BL,
+  type NotebookLMAdapter,
+  fetchCurrentBuildLabel,
+  isRetriableError,
+  mapSourceType,
+} from './notebooklm-client.js';
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────
 //
@@ -264,9 +264,10 @@ describe('fetchCurrentBuildLabel', () => {
   it('extracts bl from the canonical NotebookLM page', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
-      text: () => Promise.resolve(
-        '<script>var cfg = {"bl":"boq_labs-tailwind-frontend_20260327.15_p0"}</script>',
-      ),
+      text: () =>
+        Promise.resolve(
+          '<script>var cfg = {"bl":"boq_labs-tailwind-frontend_20260327.15_p0"}</script>',
+        ),
     });
     globalThis.fetch = fetchMock as any;
 
@@ -312,7 +313,10 @@ type MockAdapterOverrides = Partial<NotebookLMAdapter>;
 
 function createMockAdapter(overrides: MockAdapterOverrides = {}): NotebookLMAdapter {
   return {
-    createNotebook: async (title) => ({ ok: true, value: `nb-${title.toLowerCase().replace(/\s+/g, '-')}` }),
+    createNotebook: async (title) => ({
+      ok: true,
+      value: `nb-${title.toLowerCase().replace(/\s+/g, '-')}`,
+    }),
     searchWeb: async (_notebookId, query) => ({
       ok: true,
       value: {
@@ -327,9 +331,15 @@ function createMockAdapter(overrides: MockAdapterOverrides = {}): NotebookLMAdap
       ok: true,
       value: sources.slice(0, limit).map((_, i) => `src-id-${i}`),
     }),
-    addSourceUrl: async (_notebookId, url) => ({ ok: true, value: `url-src-${url.split('/').pop()}` }),
+    addSourceUrl: async (_notebookId, url) => ({
+      ok: true,
+      value: `url-src-${url.split('/').pop()}`,
+    }),
     addSourceText: async (_notebookId, title) => ({ ok: true, value: `text-src-${title}` }),
-    addYouTubeSource: async (_notebookId, url) => ({ ok: true, value: `yt-src-${url.split('=').pop()}` }),
+    addYouTubeSource: async (_notebookId, url) => ({
+      ok: true,
+      value: `yt-src-${url.split('=').pop()}`,
+    }),
     waitForProcessing: async () => ({ ok: true, value: undefined }),
     chat: async (_notebookId, question) => ({
       ok: true,
@@ -343,13 +353,21 @@ function createMockAdapter(overrides: MockAdapterOverrides = {}): NotebookLMAdap
       ok: true,
       value: [
         { id: 'src-1', title: 'Source 1', url: 'https://example.com/1', sourceType: 'web' },
-        { id: 'src-2', title: 'YouTube Video', url: 'https://youtube.com/watch?v=abc', sourceType: 'youtube' },
+        {
+          id: 'src-2',
+          title: 'YouTube Video',
+          url: 'https://youtube.com/watch?v=abc',
+          sourceType: 'youtube',
+        },
       ],
     }),
     createAudioOverview: async () => ({ ok: true, value: 'audio-001' }),
     createVideoOverview: async () => ({ ok: true, value: 'video-001' }),
     waitForArtifact: async () => ({ ok: true, value: 'ready' as const }),
-    shareNotebook: async () => ({ ok: true, value: 'https://notebooklm.google.com/notebook/shared-123' }),
+    shareNotebook: async () => ({
+      ok: true,
+      value: 'https://notebooklm.google.com/notebook/shared-123',
+    }),
     dispose: async () => undefined,
     ...overrides,
   };
@@ -495,7 +513,10 @@ describe('NotebookLMAdapter (mock)', () => {
 
     it('returns error on failure', async () => {
       const adapter = createMockAdapter({
-        addYouTubeSource: async () => ({ ok: false, error: adapterError('YouTube source failed', false) }),
+        addYouTubeSource: async () => ({
+          ok: false,
+          error: adapterError('YouTube source failed', false),
+        }),
       });
       const result = await adapter.addYouTubeSource('nb-1', 'https://youtube.com/watch?v=bad');
       expect(result.ok).toBe(false);

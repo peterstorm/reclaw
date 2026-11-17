@@ -13,7 +13,7 @@
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 
-const VAULT = process.env['OBSIDIAN_VAULT_PATH'];
+const VAULT = process.env.OBSIDIAN_VAULT_PATH;
 if (!VAULT) {
   console.error('Set OBSIDIAN_VAULT_PATH (or run via reclaw-env).');
   process.exit(1);
@@ -42,10 +42,7 @@ async function readNotebookIdFromSources(sourcesDir: string): Promise<string | n
 function injectNotebookIdIntoFrontmatter(hubText: string, notebookId: string): string {
   // Insert `notebook_id: 'X'` right before the closing `---`
   // of the first frontmatter block. Preserves line endings.
-  return hubText.replace(
-    /^(---\n[\s\S]*?)(\n---\n)/,
-    `$1\nnotebook_id: '${notebookId}'$2`,
-  );
+  return hubText.replace(/^(---\n[\s\S]*?)(\n---\n)/, `$1\nnotebook_id: '${notebookId}'$2`);
 }
 
 async function main(): Promise<void> {

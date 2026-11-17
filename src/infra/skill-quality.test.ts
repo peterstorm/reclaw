@@ -1,10 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createSkillQualityRecorder } from './skill-quality.js';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { SkillQualitySignal } from '../core/skill-quality.js';
 import type { SkillId } from '../core/types.js';
+import { createSkillQualityRecorder } from './skill-quality.js';
 
 const baseSignal = (overrides: Partial<SkillQualitySignal> = {}): SkillQualitySignal => ({
   skillId: 'morning-briefing' as SkillId,
@@ -20,7 +20,11 @@ const baseSignal = (overrides: Partial<SkillQualitySignal> = {}): SkillQualitySi
  * The recorder is fire-and-forget (returns void, appends on a detached
  * microtask), so poll the file until it reaches the expected line count.
  */
-async function readLinesWhenReady(path: string, expectedLines: number, timeoutMs = 2000): Promise<string[]> {
+async function readLinesWhenReady(
+  path: string,
+  expectedLines: number,
+  timeoutMs = 2000,
+): Promise<string[]> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     try {

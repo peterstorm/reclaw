@@ -195,14 +195,14 @@ function expandCitationGroup(inner: string): readonly number[] {
     if (rangeParts.length === 2) {
       const start = Number.parseInt(rangeParts[0]!, 10);
       const end = Number.parseInt(rangeParts[1]!, 10);
-      if (!isNaN(start) && !isNaN(end) && end >= start && end - start < 100) {
+      if (!Number.isNaN(start) && !Number.isNaN(end) && end >= start && end - start < 100) {
         for (let i = start; i <= end; i++) {
           numbers.push(i);
         }
       }
     } else {
       const n = Number.parseInt(segment, 10);
-      if (!isNaN(n)) {
+      if (!Number.isNaN(n)) {
         numbers.push(n);
       }
     }

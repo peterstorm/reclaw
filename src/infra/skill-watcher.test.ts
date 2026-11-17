@@ -1,15 +1,18 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createSkillWatcher } from './skill-watcher.js';
 import type { SkillRegistry } from '../core/types.js';
+import { createSkillWatcher } from './skill-watcher.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /** Create a unique temp directory for each test. */
 function makeTempDir(): string {
-  const dir = join(tmpdir(), `skill-watcher-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const dir = join(
+    tmpdir(),
+    `skill-watcher-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  );
   mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -148,7 +151,9 @@ describe('createSkillWatcher', () => {
 
     const watcher = createSkillWatcher(tempDir);
     const sizes: number[] = [];
-    watcher.onRegistryChange((registry) => { sizes.push(registry.size); });
+    watcher.onRegistryChange((registry) => {
+      sizes.push(registry.size);
+    });
     watcher.start();
 
     try {
@@ -165,7 +170,9 @@ describe('createSkillWatcher', () => {
 
     const watcher = createSkillWatcher(tempDir);
     let notified = false;
-    watcher.onRegistryChange(() => { notified = true; });
+    watcher.onRegistryChange(() => {
+      notified = true;
+    });
     watcher.start();
 
     try {
@@ -181,7 +188,9 @@ describe('createSkillWatcher', () => {
 
     const watcher = createSkillWatcher(tempDir);
     const sizes: number[] = [];
-    watcher.onRegistryChange((registry) => { sizes.push(registry.size); });
+    watcher.onRegistryChange((registry) => {
+      sizes.push(registry.size);
+    });
     watcher.start();
 
     try {
@@ -261,7 +270,9 @@ describe('createSkillWatcher', () => {
     try {
       await waitForSkillCount(watcher.getRegistry, 1);
 
-      const before = watcher.getRegistry().get('morning-briefing' as import('../core/types.js').SkillId);
+      const before = watcher
+        .getRegistry()
+        .get('morning-briefing' as import('../core/types.js').SkillId);
       expect(before?.name).toBe('Morning Briefing');
 
       // Modify file
@@ -270,12 +281,16 @@ describe('createSkillWatcher', () => {
       // Wait for update
       const start = Date.now();
       while (Date.now() - start < 3000) {
-        const skill = watcher.getRegistry().get('morning-briefing' as import('../core/types.js').SkillId);
+        const skill = watcher
+          .getRegistry()
+          .get('morning-briefing' as import('../core/types.js').SkillId);
         if (skill?.name === 'Morning Briefing Updated') break;
         await wait(50);
       }
 
-      const after = watcher.getRegistry().get('morning-briefing' as import('../core/types.js').SkillId);
+      const after = watcher
+        .getRegistry()
+        .get('morning-briefing' as import('../core/types.js').SkillId);
       expect(after?.name).toBe('Morning Briefing Updated');
       expect(after?.validityWindowMinutes).toBe(60);
     } finally {
@@ -425,7 +440,9 @@ timeout: 300
       await wait(1000);
 
       expect(watcher.getRegistry().size).toBe(1);
-      const skill = watcher.getRegistry().get('morning-briefing' as import('../core/types.js').SkillId);
+      const skill = watcher
+        .getRegistry()
+        .get('morning-briefing' as import('../core/types.js').SkillId);
       expect(skill).toBeDefined();
     } finally {
       await watcher.stop();

@@ -63,11 +63,7 @@ export function buildForecastUrl(
   timezone: string,
   dayOffset: number,
 ): string {
-  return (
-    `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
-    `&hourly=temperature_2m,apparent_temperature,precipitation_probability,precipitation,wind_speed_10m,wind_gusts_10m,weather_code` +
-    `&timezone=${encodeURIComponent(timezone)}&forecast_days=${dayOffset + 1}`
-  );
+  return `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&hourly=temperature_2m,apparent_temperature,precipitation_probability,precipitation,wind_speed_10m,wind_gusts_10m,weather_code&timezone=${encodeURIComponent(timezone)}&forecast_days=${dayOffset + 1}`;
 }
 
 /** Compact one-liner built from the worst case across the commute hours. */

@@ -87,11 +87,11 @@ export function createQuotaTracker(
     const key = getKey();
     const raw = await redisClient.get(key);
     if (raw === null) return 0;
-    const value = parseInt(raw, 10);
+    const value = Number.parseInt(raw, 10);
     return Number.isNaN(value) ? 0 : Math.max(0, value);
   };
 
-  const increment = async (count: number = 1): Promise<void> => {
+  const increment = async (count = 1): Promise<void> => {
     if (count <= 0) return;
     const key = getKey();
     // Use INCRBY for a single atomic increment — avoids the non-atomic

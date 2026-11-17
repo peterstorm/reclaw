@@ -15,10 +15,10 @@
  * Requires: GARMIN_EMAIL and GARMIN_PASSWORD env vars
  */
 
-import { GarminConnect } from "@gooin/garmin-connect";
-import { existsSync } from "node:fs";
-import { chmod } from "node:fs/promises";
-import { join } from "node:path";
+import { existsSync } from 'node:fs';
+import { chmod } from 'node:fs/promises';
+import { join } from 'node:path';
+import { GarminConnect } from '@gooin/garmin-connect';
 
 // --- Auth (same pattern as garmin-fetch.ts) ---
 
@@ -27,35 +27,35 @@ async function authenticate(): Promise<GarminConnect> {
   const password = process.env.GARMIN_PASSWORD;
 
   if (!email || !password) {
-    console.error("[FATAL] GARMIN_EMAIL and GARMIN_PASSWORD env vars required");
+    console.error('[FATAL] GARMIN_EMAIL and GARMIN_PASSWORD env vars required');
     process.exit(1);
   }
 
-  const tokenDir = join(process.env.HOME ?? "/home/peterstorm", ".cache", "garmin");
+  const tokenDir = join(process.env.HOME ?? '/home/peterstorm', '.cache', 'garmin');
   const client = new GarminConnect({ username: email, password: password });
 
-  const hasTokens = existsSync(join(tokenDir, "oauth2_token.json"));
+  const hasTokens = existsSync(join(tokenDir, 'oauth2_token.json'));
   if (hasTokens) {
-    console.error("[INFO] Loading cached tokens...");
+    console.error('[INFO] Loading cached tokens...');
     try {
       await client.loadTokenByFile(tokenDir);
       await client.getUserProfile();
-      console.error("[INFO] Cached tokens valid");
+      console.error('[INFO] Cached tokens valid');
     } catch {
-      console.error("[INFO] Cached tokens expired, logging in fresh...");
+      console.error('[INFO] Cached tokens expired, logging in fresh...');
       await client.login(email, password);
       await client.exportTokenToFile(tokenDir);
-      await chmod(join(tokenDir, "oauth1_token.json"), 0o600);
-      await chmod(join(tokenDir, "oauth2_token.json"), 0o600);
-      console.error("[INFO] Login successful, tokens cached");
+      await chmod(join(tokenDir, 'oauth1_token.json'), 0o600);
+      await chmod(join(tokenDir, 'oauth2_token.json'), 0o600);
+      console.error('[INFO] Login successful, tokens cached');
     }
   } else {
-    console.error("[INFO] No cached tokens, logging in...");
+    console.error('[INFO] No cached tokens, logging in...');
     await client.login(email, password);
     await client.exportTokenToFile(tokenDir);
-    await chmod(join(tokenDir, "oauth1_token.json"), 0o600);
-    await chmod(join(tokenDir, "oauth2_token.json"), 0o600);
-    console.error("[INFO] Login successful, tokens cached");
+    await chmod(join(tokenDir, 'oauth1_token.json'), 0o600);
+    await chmod(join(tokenDir, 'oauth2_token.json'), 0o600);
+    console.error('[INFO] Login successful, tokens cached');
   }
 
   return client;
@@ -79,10 +79,10 @@ async function main(): Promise<void> {
     if (done) break;
     chunks.push(decoder.decode(value, { stream: true }));
   }
-  const stdinText = chunks.join("");
+  const stdinText = chunks.join('');
 
   if (!stdinText.trim()) {
-    console.error("[FATAL] No workout JSON provided on stdin");
+    console.error('[FATAL] No workout JSON provided on stdin');
     process.exit(1);
   }
 
@@ -95,7 +95,7 @@ async function main(): Promise<void> {
   }
 
   if (!workout.workoutName || !workout.workoutSegments) {
-    console.error("[FATAL] Workout JSON must include workoutName and workoutSegments");
+    console.error('[FATAL] Workout JSON must include workoutName and workoutSegments');
     process.exit(1);
   }
 
@@ -103,21 +103,24 @@ async function main(): Promise<void> {
 
   // Create the workout
   console.error(`[INFO] Creating workout: ${workout.workoutName}...`);
-  const created = await client.addWorkout(workout as any) as any;
+  const created = (await client.addWorkout(workout as any)) as any;
   const workoutId = created.workoutId;
   console.error(`[INFO] Workout created with ID: ${workoutId}`);
 
   // Schedule it to the target date
-  const targetDate = new Date(dateArg + "T00:00:00");
+  const targetDate = new Date(`${dateArg}T00:00:00`);
   console.error(`[INFO] Scheduling workout ${workoutId} for ${dateArg}...`);
-  const scheduled = await client.scheduleWorkout({ workoutId: String(workoutId) }, targetDate) as any;
-  console.error(`[INFO] Workout scheduled successfully`);
+  const scheduled = (await client.scheduleWorkout(
+    { workoutId: String(workoutId) },
+    targetDate,
+  )) as any;
+  console.error('[INFO] Workout scheduled successfully');
 
   // Export tokens (they may have refreshed)
-  const tokenDir = join(process.env.HOME ?? "/home/peterstorm", ".cache", "garmin");
+  const tokenDir = join(process.env.HOME ?? '/home/peterstorm', '.cache', 'garmin');
   await client.exportTokenToFile(tokenDir);
-  await chmod(join(tokenDir, "oauth1_token.json"), 0o600);
-  await chmod(join(tokenDir, "oauth2_token.json"), 0o600);
+  await chmod(join(tokenDir, 'oauth1_token.json'), 0o600);
+  await chmod(join(tokenDir, 'oauth2_token.json'), 0o600);
 
   // Output result to stdout
   const result = {

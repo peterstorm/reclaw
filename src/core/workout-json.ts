@@ -72,34 +72,34 @@ export function validateWorkoutJson(json: unknown): Result<void, string[]> {
   const w = json as Record<string, unknown>;
 
   // Top-level fields
-  if (typeof w['workoutName'] !== 'string' || w['workoutName'].length === 0) {
+  if (typeof w.workoutName !== 'string' || w.workoutName.length === 0) {
     errors.push('workoutName must be a non-empty string');
   }
 
-  if (typeof w['sportType'] !== 'object' || w['sportType'] === null) {
+  if (typeof w.sportType !== 'object' || w.sportType === null) {
     errors.push('sportType must be an object');
   } else {
-    const st = w['sportType'] as Record<string, unknown>;
-    if (st['sportTypeKey'] !== 'running') {
-      errors.push(`sportType.sportTypeKey must be "running", got "${String(st['sportTypeKey'])}"`);
+    const st = w.sportType as Record<string, unknown>;
+    if (st.sportTypeKey !== 'running') {
+      errors.push(`sportType.sportTypeKey must be "running", got "${String(st.sportTypeKey)}"`);
     }
   }
 
-  if (!Array.isArray(w['workoutSegments']) || w['workoutSegments'].length === 0) {
+  if (!Array.isArray(w.workoutSegments) || w.workoutSegments.length === 0) {
     errors.push('workoutSegments must be a non-empty array');
     return { ok: false, error: errors };
   }
 
   // Validate segments
-  for (const [si, segment] of (w['workoutSegments'] as unknown[]).entries()) {
+  for (const [si, segment] of (w.workoutSegments as unknown[]).entries()) {
     const seg = segment as Record<string, unknown>;
-    if (!Array.isArray(seg['workoutSteps']) || seg['workoutSteps'].length === 0) {
+    if (!Array.isArray(seg.workoutSteps) || seg.workoutSteps.length === 0) {
       errors.push(`Segment ${si}: workoutSteps must be a non-empty array`);
       continue;
     }
 
     const stepOrders: number[] = [];
-    validateSteps(seg['workoutSteps'] as unknown[], `segment[${si}]`, errors, stepOrders);
+    validateSteps(seg.workoutSteps as unknown[], `segment[${si}]`, errors, stepOrders);
 
     // Check step order is sequential
     for (let i = 1; i < stepOrders.length; i++) {
@@ -124,12 +124,12 @@ function validateSteps(
     const s = step as Record<string, unknown>;
     const stepPath = `${path}.step[${i}]`;
 
-    if (s['type'] === 'ExecutableStepDTO') {
+    if (s.type === 'ExecutableStepDTO') {
       validateExecutableStep(s, stepPath, errors, stepOrders);
-    } else if (s['type'] === 'RepeatGroupDTO') {
+    } else if (s.type === 'RepeatGroupDTO') {
       validateRepeatGroup(s, stepPath, errors, stepOrders);
     } else {
-      errors.push(`${stepPath}: unknown step type "${String(s['type'])}"`);
+      errors.push(`${stepPath}: unknown step type "${String(s.type)}"`);
     }
   }
 }
@@ -141,42 +141,42 @@ function validateExecutableStep(
   stepOrders: number[],
 ): void {
   // stepOrder
-  if (typeof s['stepOrder'] !== 'number' || s['stepOrder'] < 1) {
+  if (typeof s.stepOrder !== 'number' || s.stepOrder < 1) {
     errors.push(`${path}: stepOrder must be a positive number`);
   } else {
-    stepOrders.push(s['stepOrder'] as number);
+    stepOrders.push(s.stepOrder as number);
   }
 
   // stepType
-  const st = s['stepType'] as Record<string, unknown> | undefined;
+  const st = s.stepType as Record<string, unknown> | undefined;
   if (!st) {
     errors.push(`${path}: stepType is required`);
   } else {
-    if (!VALID_STEP_TYPE_IDS.has(st['stepTypeId'] as number)) {
-      errors.push(`${path}: invalid stepTypeId ${String(st['stepTypeId'])}`);
+    if (!VALID_STEP_TYPE_IDS.has(st.stepTypeId as number)) {
+      errors.push(`${path}: invalid stepTypeId ${String(st.stepTypeId)}`);
     }
-    if (!VALID_STEP_TYPE_KEYS.has(st['stepTypeKey'] as string)) {
-      errors.push(`${path}: invalid stepTypeKey "${String(st['stepTypeKey'])}"`);
+    if (!VALID_STEP_TYPE_KEYS.has(st.stepTypeKey as string)) {
+      errors.push(`${path}: invalid stepTypeKey "${String(st.stepTypeKey)}"`);
     }
   }
 
   // endCondition
-  const ec = s['endCondition'] as Record<string, unknown> | undefined;
+  const ec = s.endCondition as Record<string, unknown> | undefined;
   if (!ec) {
     errors.push(`${path}: endCondition is required`);
-  } else if (!VALID_CONDITION_TYPE_IDS.has(ec['conditionTypeId'] as number)) {
-    errors.push(`${path}: invalid conditionTypeId ${String(ec['conditionTypeId'])}`);
+  } else if (!VALID_CONDITION_TYPE_IDS.has(ec.conditionTypeId as number)) {
+    errors.push(`${path}: invalid conditionTypeId ${String(ec.conditionTypeId)}`);
   }
 
   // Cooldown with lap.button must have null endConditionValue
-  if (ec && ec['conditionTypeKey'] === 'lap.button' && s['endConditionValue'] !== null) {
+  if (ec && ec.conditionTypeKey === 'lap.button' && s.endConditionValue !== null) {
     errors.push(`${path}: cooldown with lap.button must have endConditionValue: null`);
   }
 
   // Distance steps need preferredEndConditionUnit
-  if (ec && ec['conditionTypeKey'] === 'distance') {
-    const unit = s['preferredEndConditionUnit'] as Record<string, unknown> | null;
-    if (!unit || unit['unitKey'] !== 'kilometer') {
+  if (ec && ec.conditionTypeKey === 'distance') {
+    const unit = s.preferredEndConditionUnit as Record<string, unknown> | null;
+    if (!unit || unit.unitKey !== 'kilometer') {
       errors.push(
         `${path}: distance steps must have preferredEndConditionUnit with unitKey "kilometer"`,
       );
@@ -184,19 +184,19 @@ function validateExecutableStep(
   }
 
   // Rest steps must have targetType: null
-  if (st && st['stepTypeKey'] === 'rest' && s['targetType'] !== null) {
+  if (st && st.stepTypeKey === 'rest' && s.targetType !== null) {
     errors.push(`${path}: rest steps must have targetType: null`);
   }
 
   // Pace-targeted steps need both values
-  const tt = s['targetType'] as Record<string, unknown> | null;
-  if (tt && tt['workoutTargetTypeKey'] === 'pace.zone') {
-    if (typeof s['targetValueOne'] !== 'number' || typeof s['targetValueTwo'] !== 'number') {
+  const tt = s.targetType as Record<string, unknown> | null;
+  if (tt && tt.workoutTargetTypeKey === 'pace.zone') {
+    if (typeof s.targetValueOne !== 'number' || typeof s.targetValueTwo !== 'number') {
       errors.push(`${path}: pace.zone targets require numeric targetValueOne and targetValueTwo`);
-    } else if ((s['targetValueOne'] as number) <= (s['targetValueTwo'] as number)) {
+    } else if ((s.targetValueOne as number) <= (s.targetValueTwo as number)) {
       // targetValueOne (fast) should be > targetValueTwo (slow) in m/s
       errors.push(
-        `${path}: targetValueOne (fast, ${s['targetValueOne']}) must be > targetValueTwo (slow, ${s['targetValueTwo']})`,
+        `${path}: targetValueOne (fast, ${s.targetValueOne}) must be > targetValueTwo (slow, ${s.targetValueTwo})`,
       );
     }
   }
@@ -208,40 +208,40 @@ function validateRepeatGroup(
   errors: string[],
   stepOrders: number[],
 ): void {
-  if (typeof s['stepOrder'] !== 'number' || s['stepOrder'] < 1) {
+  if (typeof s.stepOrder !== 'number' || s.stepOrder < 1) {
     errors.push(`${path}: stepOrder must be a positive number`);
   } else {
-    stepOrders.push(s['stepOrder'] as number);
+    stepOrders.push(s.stepOrder as number);
   }
 
-  const st = s['stepType'] as Record<string, unknown> | undefined;
-  if (!st || st['stepTypeKey'] !== 'repeat' || st['stepTypeId'] !== 6) {
+  const st = s.stepType as Record<string, unknown> | undefined;
+  if (!st || st.stepTypeKey !== 'repeat' || st.stepTypeId !== 6) {
     errors.push(`${path}: RepeatGroupDTO must have stepType repeat (id=6)`);
   }
 
-  if (typeof s['numberOfIterations'] !== 'number' || s['numberOfIterations'] < 1) {
+  if (typeof s.numberOfIterations !== 'number' || s.numberOfIterations < 1) {
     errors.push(`${path}: numberOfIterations must be a positive number`);
   }
 
-  const ec = s['endCondition'] as Record<string, unknown> | undefined;
-  if (!ec || ec['conditionTypeKey'] !== 'iterations') {
+  const ec = s.endCondition as Record<string, unknown> | undefined;
+  if (!ec || ec.conditionTypeKey !== 'iterations') {
     errors.push(`${path}: RepeatGroupDTO must have endCondition "iterations"`);
   }
 
-  if (s['numberOfIterations'] !== s['endConditionValue']) {
+  if (s.numberOfIterations !== s.endConditionValue) {
     errors.push(
-      `${path}: numberOfIterations (${s['numberOfIterations']}) must match endConditionValue (${s['endConditionValue']})`,
+      `${path}: numberOfIterations (${s.numberOfIterations}) must match endConditionValue (${s.endConditionValue})`,
     );
   }
 
-  const children = s['workoutSteps'] as unknown[] | undefined;
+  const children = s.workoutSteps as unknown[] | undefined;
   if (!Array.isArray(children) || children.length === 0) {
     errors.push(`${path}: RepeatGroupDTO must have non-empty workoutSteps`);
   } else {
     // Validate children share the same childStepId
     const childIds = new Set<unknown>();
     for (const child of children) {
-      childIds.add((child as Record<string, unknown>)['childStepId']);
+      childIds.add((child as Record<string, unknown>).childStepId);
     }
     if (childIds.size > 1) {
       errors.push(`${path}: all children must share the same childStepId`);

@@ -19,7 +19,8 @@ const args = process.argv.slice(2);
 // `--answer -` reads the learner's answer from stdin, so skills can pass free text through a
 // quoted heredoc instead of shell-quoting it ($, backticks and quotes stay literal).
 const answerAt = args.indexOf('--answer');
-if (answerAt !== -1 && args[answerAt + 1] === '-') args[answerAt + 1] = (await Bun.stdin.text()).trim();
+if (answerAt !== -1 && args[answerAt + 1] === '-')
+  args[answerAt + 1] = (await Bun.stdin.text()).trim();
 
 const vault = fsLearningVault(process.env.RECLAW_VAULT_ROOT ?? DEFAULT_VAULT_ROOT);
 const result = await runLearnCommand(args, vault, new Date());

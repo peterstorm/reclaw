@@ -1,4 +1,10 @@
-import { jobResultOk, jobResultErr, type ReminderJob, type RecurringReminderJob, type JobResult } from '../core/types.js';
+import {
+  type JobResult,
+  type RecurringReminderJob,
+  type ReminderJob,
+  jobResultErr,
+  jobResultOk,
+} from '../core/types.js';
 import type { TelegramAdapter } from '../infra/telegram.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -28,7 +34,10 @@ export async function handleReminderJob(job: ReminderJob, deps: ReminderDeps): P
  * Process a recurring reminder job. Distinct emoji so the user can
  * visually differentiate from one-shot reminders.
  */
-export async function handleRecurringReminderJob(job: RecurringReminderJob, deps: ReminderDeps): Promise<JobResult> {
+export async function handleRecurringReminderJob(
+  job: RecurringReminderJob,
+  deps: ReminderDeps,
+): Promise<JobResult> {
   const message = `\u{1F501} Recurring: ${job.text}`;
   try {
     await deps.telegram.sendMessage(job.chatId, message);
@@ -37,7 +46,10 @@ export async function handleRecurringReminderJob(job: RecurringReminderJob, deps
     // fires anyway. Retrying risks double-delivery (send succeeds but ack is
     // lost, or stall-induced re-run). Log and report success to prevent BullMQ
     // from retrying the job.
-    console.error(`[reminder] Recurring send failed for chatId=${job.chatId}, jobId=${job.id}:`, err);
+    console.error(
+      `[reminder] Recurring send failed for chatId=${job.chatId}, jobId=${job.id}:`,
+      err,
+    );
     return jobResultErr(`delivery failed: ${err instanceof Error ? err.message : String(err)}`);
   }
   return jobResultOk(message);

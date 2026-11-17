@@ -14,14 +14,14 @@
 //         or GOOGLE_EMAIL + GOOGLE_PASSWORD for auto browser login (no 2FA).
 
 import {
-  NotebookLMClient,
   APIError,
-  NotebookLMNetworkError,
   NotebookLMAuthError,
+  NotebookLMClient,
+  NotebookLMNetworkError,
   NotebookLMParseError,
 } from 'notebooklm-kit';
+import type { ChatResponse, SourceMeta, WebSource } from '../core/research-types.js';
 import type { Result } from '../core/types.js';
-import type { SourceMeta, ChatResponse, WebSource } from '../core/research-types.js';
 import { NOTEBOOKLM_WEB_ORIGIN } from './notebooklm-web.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -86,7 +86,10 @@ export type NotebookLMAdapter = {
    * Add a YouTube URL as a source.
    * FR-014: support YouTube URLs.
    */
-  readonly addYouTubeSource: (notebookId: string, url: string) => Promise<Result<string, AdapterError>>;
+  readonly addYouTubeSource: (
+    notebookId: string,
+    url: string,
+  ) => Promise<Result<string, AdapterError>>;
 
   /**
    * Poll until all sources finish processing or timeout is reached.
@@ -98,10 +101,15 @@ export type NotebookLMAdapter = {
   ) => Promise<Result<void, AdapterError>>;
 
   /** Chat with the notebook. Returns text + citations. FR-024. */
-  readonly chat: (notebookId: string, question: string) => Promise<Result<ChatResponse, AdapterError>>;
+  readonly chat: (
+    notebookId: string,
+    question: string,
+  ) => Promise<Result<ChatResponse, AdapterError>>;
 
   /** List all sources in the notebook. */
-  readonly listSources: (notebookId: string) => Promise<Result<readonly SourceMeta[], AdapterError>>;
+  readonly listSources: (
+    notebookId: string,
+  ) => Promise<Result<readonly SourceMeta[], AdapterError>>;
 
   /** Create an audio overview artifact. Returns the artifact ID. */
   readonly createAudioOverview: (
@@ -174,7 +182,10 @@ export function isRetriableError(error: unknown): boolean {
   }
 
   // Layer 3: Duck-type fallback for future SDK versions or other libraries
-  if ('isRetryable' in error && typeof (error as Record<string, unknown>).isRetryable === 'function') {
+  if (
+    'isRetryable' in error &&
+    typeof (error as Record<string, unknown>).isRetryable === 'function'
+  ) {
     return (error as { isRetryable: () => boolean }).isRetryable();
   }
 
@@ -182,9 +193,15 @@ export function isRetriableError(error: unknown): boolean {
   const msg = error.message.toLowerCase();
 
   if (
-    msg.includes('network') || msg.includes('econnrefused') || msg.includes('etimedout') ||
-    msg.includes('econnreset') || msg.includes('socket hang up') || msg.includes('epipe') ||
-    msg.includes('enotfound') || msg.includes('timed out') || msg.includes('fetch failed')
+    msg.includes('network') ||
+    msg.includes('econnrefused') ||
+    msg.includes('etimedout') ||
+    msg.includes('econnreset') ||
+    msg.includes('socket hang up') ||
+    msg.includes('epipe') ||
+    msg.includes('enotfound') ||
+    msg.includes('timed out') ||
+    msg.includes('fetch failed')
   ) {
     return true;
   }
@@ -192,7 +209,7 @@ export function isRetriableError(error: unknown): boolean {
   // HTTP status codes embedded in message text
   const match = msg.match(/\b(4\d{2}|5\d{2})\b/);
   if (match) {
-    const code = parseInt(match[1]!, 10);
+    const code = Number.parseInt(match[1]!, 10);
     return code === 429 || code >= 500;
   }
 
@@ -214,7 +231,11 @@ async function safeCall<T>(fn: () => Promise<T>): Promise<Result<T, AdapterError
       if ('httpStatus' in err) extras.httpStatus = (err as Record<string, unknown>).httpStatus;
       if ('rawResponse' in err) extras.rawResponse = (err as Record<string, unknown>).rawResponse;
     }
-    console.error('[notebooklm:safeCall] SDK error:', message, Object.keys(extras).length > 0 ? extras : '');
+    console.error(
+      '[notebooklm:safeCall] SDK error:',
+      message,
+      Object.keys(extras).length > 0 ? extras : '',
+    );
     return { ok: false, error: { message, retriable: isRetriableError(err) } };
   }
 }
@@ -232,29 +253,23 @@ async function pollUntilReady(
     if (status.allReady) return;
     const remaining = deadline - Date.now();
     if (remaining <= 0) break;
-    await new Promise<void>((resolve) =>
-      setTimeout(resolve, Math.min(pollIntervalMs, remaining)),
-    );
+    await new Promise<void>((resolve) => setTimeout(resolve, Math.min(pollIntervalMs, remaining)));
   }
 
   // FR-016: report which sources are still pending so the error is actionable.
   let pendingDetail = '';
   try {
     const sources = await sdk.sources.list(notebookId);
-    const pending = sources.filter(
-      (s) => {
-        const status = (s as unknown as Record<string, unknown>).status as string | undefined;
-        return status !== 'COMPLETE' && status !== 'ready';
-      },
-    );
+    const pending = sources.filter((s) => {
+      const status = (s as unknown as Record<string, unknown>).status as string | undefined;
+      return status !== 'COMPLETE' && status !== 'ready';
+    });
     if (pending.length > 0) {
       const descriptions = pending
-        .map(
-          (s) => {
-            const rec = s as unknown as Record<string, unknown>;
-            return `"${(rec.title as string | undefined) ?? (rec.url as string | undefined) ?? s.sourceId}"`;
-          },
-        )
+        .map((s) => {
+          const rec = s as unknown as Record<string, unknown>;
+          return `"${(rec.title as string | undefined) ?? (rec.url as string | undefined) ?? s.sourceId}"`;
+        })
         .join(', ');
       pendingDetail = ` Unprocessed sources (${pending.length}): ${descriptions}.`;
     }
@@ -262,9 +277,7 @@ async function pollUntilReady(
     console.warn('[notebooklm:processing] diagnostic list sources failed:', err);
   }
 
-  throw new Error(
-    `Sources did not finish processing within ${timeoutMs}ms.${pendingDetail}`,
-  );
+  throw new Error(`Sources did not finish processing within ${timeoutMs}ms.${pendingDetail}`);
 }
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
@@ -291,7 +304,7 @@ export async function fetchCurrentBuildLabel(): Promise<string> {
     const response = await fetch(`${NOTEBOOKLM_WEB_ORIGIN}/`, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
-        'Accept': 'text/html',
+        Accept: 'text/html',
       },
       redirect: 'follow',
     });
@@ -343,12 +356,19 @@ export async function createNotebookLMAdapter(
   await Promise.race([
     sdk.connect(),
     new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(
-        `sdk.connect() timed out after ${CONNECT_TIMEOUT_MS}ms — ` +
-        (credentials.kind === 'google'
-          ? 'Google auto-login likely blocked by captcha. Switch to token auth (NOTEBOOKLM_AUTH_TOKEN + NOTEBOOKLM_COOKIES).'
-          : 'token auth failed to connect.'),
-      )), CONNECT_TIMEOUT_MS),
+      setTimeout(
+        () =>
+          reject(
+            new Error(
+              `sdk.connect() timed out after ${CONNECT_TIMEOUT_MS}ms — ${
+                credentials.kind === 'google'
+                  ? 'Google auto-login likely blocked by captcha. Switch to token auth (NOTEBOOKLM_AUTH_TOKEN + NOTEBOOKLM_COOKIES).'
+                  : 'token auth failed to connect.'
+              }`,
+            ),
+          ),
+        CONNECT_TIMEOUT_MS,
+      ),
     ),
   ]);
   console.log(`[notebooklm] sdk.connect() succeeded in ${Date.now() - connectStart}ms`);
@@ -372,7 +392,10 @@ export async function createNotebookLMAdapter(
     if (!result.ok) return result;
     const notebookId: string = result.value.projectId;
     if (!notebookId) {
-      return { ok: false, error: { message: 'NotebookLM did not return a projectId', retriable: false } };
+      return {
+        ok: false,
+        error: { message: 'NotebookLM did not return a projectId', retriable: false },
+      };
     }
     return { ok: true, value: notebookId };
   };
@@ -383,9 +406,7 @@ export async function createNotebookLMAdapter(
     notebookId: string,
     query: string,
   ): Promise<Result<{ sessionId: string; webSources: WebSource[] }, AdapterError>> => {
-    const result = await safeCall(() =>
-      sdk.sources.searchWebAndWait(notebookId, { query }),
-    );
+    const result = await safeCall(() => sdk.sources.searchWebAndWait(notebookId, { query }));
     if (!result.ok) return result;
     const { sessionId, web } = result.value;
     const webSources: WebSource[] = web.map((s) => ({
@@ -417,9 +438,7 @@ export async function createNotebookLMAdapter(
     notebookId: string,
     url: string,
   ): Promise<Result<string, AdapterError>> => {
-    const result = await safeCall(() =>
-      sdk.sources.addFromURL(notebookId, { url }),
-    );
+    const result = await safeCall(() => sdk.sources.addFromURL(notebookId, { url }));
     return result;
   };
 
@@ -430,20 +449,22 @@ export async function createNotebookLMAdapter(
     title: string,
     content: string,
   ): Promise<Result<string, AdapterError>> => {
-    const result = await safeCall(() =>
-      sdk.sources.addFromText(notebookId, { title, content }),
-    );
+    const result = await safeCall(() => sdk.sources.addFromText(notebookId, { title, content }));
     if (!result.ok) return result;
     // SDK returns plain string (sourceId) for small texts, or AddSourceResult for chunked uploads
     const val = result.value;
-    const sourceId = typeof val === 'string'
-      ? val
-      : (val as { sourceId?: string; allSourceIds?: string[]; sourceIds?: string[] }).sourceId
-        ?? (val as { allSourceIds?: string[] }).allSourceIds?.[0]
-        ?? (val as { sourceIds?: string[] }).sourceIds?.[0]
-        ?? '';
+    const sourceId =
+      typeof val === 'string'
+        ? val
+        : ((val as { sourceId?: string; allSourceIds?: string[]; sourceIds?: string[] }).sourceId ??
+          (val as { allSourceIds?: string[] }).allSourceIds?.[0] ??
+          (val as { sourceIds?: string[] }).sourceIds?.[0] ??
+          '');
     if (!sourceId) {
-      return { ok: false, error: { message: 'addFromText returned no sourceId', retriable: false } };
+      return {
+        ok: false,
+        error: { message: 'addFromText returned no sourceId', retriable: false },
+      };
     }
     return { ok: true, value: sourceId };
   };
@@ -454,9 +475,7 @@ export async function createNotebookLMAdapter(
     notebookId: string,
     url: string,
   ): Promise<Result<string, AdapterError>> => {
-    const result = await safeCall(() =>
-      sdk.sources.addYouTube(notebookId, { urlOrId: url }),
-    );
+    const result = await safeCall(() => sdk.sources.addYouTube(notebookId, { urlOrId: url }));
     return result;
   };
 
@@ -512,13 +531,14 @@ export async function createNotebookLMAdapter(
     const customization = { format: 0, ...options?.customization };
     const createOpts: Record<string, unknown> = { customization };
     if (options?.instructions) createOpts.instructions = options.instructions;
-    const result = await safeCall(() =>
-      sdk.artifacts.audio.create(notebookId, createOpts),
-    );
+    const result = await safeCall(() => sdk.artifacts.audio.create(notebookId, createOpts));
     if (!result.ok) return result;
     const audioId: string = (result.value as { audioId?: string }).audioId ?? '';
     if (!audioId) {
-      return { ok: false, error: { message: 'Audio creation returned no audioId', retriable: false } };
+      return {
+        ok: false,
+        error: { message: 'Audio creation returned no audioId', retriable: false },
+      };
     }
     return { ok: true, value: audioId };
   };
@@ -531,13 +551,14 @@ export async function createNotebookLMAdapter(
   ): Promise<Result<string, AdapterError>> => {
     const videoOpts: Record<string, unknown> = {};
     if (options?.instructions) videoOpts.instructions = options.instructions;
-    const result = await safeCall(() =>
-      sdk.artifacts.video.create(notebookId, videoOpts),
-    );
+    const result = await safeCall(() => sdk.artifacts.video.create(notebookId, videoOpts));
     if (!result.ok) return result;
     const videoId: string = (result.value as { videoId?: string }).videoId ?? '';
     if (!videoId) {
-      return { ok: false, error: { message: 'Video creation returned no videoId', retriable: false } };
+      return {
+        ok: false,
+        error: { message: 'Video creation returned no videoId', retriable: false },
+      };
     }
     return { ok: true, value: videoId };
   };
@@ -569,11 +590,9 @@ export async function createNotebookLMAdapter(
 
   // ─── shareNotebook ────────────────────────────────────────────────────────
 
-  const shareNotebook = async (
-    notebookId: string,
-  ): Promise<Result<string, AdapterError>> => {
-    const result = await safeCall(() =>
-      sdk.artifacts.share(notebookId, { accessType: 1 }), // anyone with link
+  const shareNotebook = async (notebookId: string): Promise<Result<string, AdapterError>> => {
+    const result = await safeCall(
+      () => sdk.artifacts.share(notebookId, { accessType: 1 }), // anyone with link
     );
     if (!result.ok) return result;
     const shareUrl: string = (result.value as { shareUrl?: string }).shareUrl ?? '';

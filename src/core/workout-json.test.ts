@@ -212,7 +212,7 @@ describe('validateWorkoutJson — top-level fields', () => {
 
   it('rejects missing workoutName', () => {
     const w = easyRun();
-    delete w['workoutName'];
+    delete w.workoutName;
     const r = validateWorkoutJson(w);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.some((e) => e.includes('workoutName'))).toBe(true);
@@ -220,14 +220,14 @@ describe('validateWorkoutJson — top-level fields', () => {
 
   it('rejects empty workoutName', () => {
     const w = easyRun();
-    w['workoutName'] = '';
+    w.workoutName = '';
     const r = validateWorkoutJson(w);
     expect(r.ok).toBe(false);
   });
 
   it('rejects non-running sportType', () => {
     const w = easyRun();
-    w['sportType'] = { sportTypeId: 2, sportTypeKey: 'cycling', displayOrder: 2 };
+    w.sportType = { sportTypeId: 2, sportTypeKey: 'cycling', displayOrder: 2 };
     const r = validateWorkoutJson(w);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.some((e) => e.includes('running'))).toBe(true);
@@ -235,7 +235,7 @@ describe('validateWorkoutJson — top-level fields', () => {
 
   it('rejects empty workoutSegments', () => {
     const w = easyRun();
-    w['workoutSegments'] = [];
+    w.workoutSegments = [];
     const r = validateWorkoutJson(w);
     expect(r.ok).toBe(false);
   });
@@ -246,7 +246,7 @@ describe('validateWorkoutJson — top-level fields', () => {
 describe('validateWorkoutJson — step validation', () => {
   it('rejects unknown step type', () => {
     const w = easyRun();
-    (w['workoutSegments'] as Array<Record<string, unknown>>)[0]!['workoutSteps'] = [
+    (w.workoutSegments as Array<Record<string, unknown>>)[0]!.workoutSteps = [
       {
         type: 'UnknownDTO',
         stepOrder: 1,
@@ -259,10 +259,10 @@ describe('validateWorkoutJson — step validation', () => {
 
   it('rejects invalid stepTypeId', () => {
     const w = easyRun();
-    const steps = (w['workoutSegments'] as Array<Record<string, unknown>>)[0]![
-      'workoutSteps'
-    ] as Array<Record<string, unknown>>;
-    (steps[0]!['stepType'] as Record<string, unknown>)['stepTypeId'] = 99;
+    const steps = (w.workoutSegments as Array<Record<string, unknown>>)[0]!.workoutSteps as Array<
+      Record<string, unknown>
+    >;
+    (steps[0]!.stepType as Record<string, unknown>).stepTypeId = 99;
     const r = validateWorkoutJson(w);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.some((e) => e.includes('stepTypeId'))).toBe(true);
@@ -270,11 +270,11 @@ describe('validateWorkoutJson — step validation', () => {
 
   it('rejects rest step with non-null targetType', () => {
     const w = intervalWorkout();
-    const steps = (w['workoutSegments'] as Array<Record<string, unknown>>)[0]![
-      'workoutSteps'
-    ] as Array<Record<string, unknown>>;
+    const steps = (w.workoutSegments as Array<Record<string, unknown>>)[0]!.workoutSteps as Array<
+      Record<string, unknown>
+    >;
     // Step index 1 is the rest step
-    steps[1]!['targetType'] = {
+    steps[1]!.targetType = {
       workoutTargetTypeId: 1,
       workoutTargetTypeKey: 'no.target',
       displayOrder: 1,
@@ -287,10 +287,10 @@ describe('validateWorkoutJson — step validation', () => {
 
   it('rejects distance step without preferredEndConditionUnit', () => {
     const w = easyRun();
-    const steps = (w['workoutSegments'] as Array<Record<string, unknown>>)[0]![
-      'workoutSteps'
-    ] as Array<Record<string, unknown>>;
-    steps[0]!['preferredEndConditionUnit'] = null;
+    const steps = (w.workoutSegments as Array<Record<string, unknown>>)[0]!.workoutSteps as Array<
+      Record<string, unknown>
+    >;
+    steps[0]!.preferredEndConditionUnit = null;
     const r = validateWorkoutJson(w);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.some((e) => e.includes('kilometer'))).toBe(true);
@@ -298,11 +298,11 @@ describe('validateWorkoutJson — step validation', () => {
 
   it('rejects cooldown with non-null endConditionValue on lap.button', () => {
     const w = intervalWorkout();
-    const steps = (w['workoutSegments'] as Array<Record<string, unknown>>)[0]![
-      'workoutSteps'
-    ] as Array<Record<string, unknown>>;
+    const steps = (w.workoutSegments as Array<Record<string, unknown>>)[0]!.workoutSteps as Array<
+      Record<string, unknown>
+    >;
     // Last step is cooldown
-    steps[3]!['endConditionValue'] = 2000;
+    steps[3]!.endConditionValue = 2000;
     const r = validateWorkoutJson(w);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.some((e) => e.includes('lap.button'))).toBe(true);
@@ -314,12 +314,12 @@ describe('validateWorkoutJson — step validation', () => {
 describe('validateWorkoutJson — pace targets', () => {
   it('rejects pace.zone with missing targetValues', () => {
     const w = intervalWorkout();
-    const steps = (w['workoutSegments'] as Array<Record<string, unknown>>)[0]![
-      'workoutSteps'
-    ] as Array<Record<string, unknown>>;
+    const steps = (w.workoutSegments as Array<Record<string, unknown>>)[0]!.workoutSteps as Array<
+      Record<string, unknown>
+    >;
     const repeatGroup = steps[2] as Record<string, unknown>;
-    const children = repeatGroup['workoutSteps'] as Array<Record<string, unknown>>;
-    children[0]!['targetValueOne'] = null;
+    const children = repeatGroup.workoutSteps as Array<Record<string, unknown>>;
+    children[0]!.targetValueOne = null;
     const r = validateWorkoutJson(w);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.some((e) => e.includes('pace.zone'))).toBe(true);
@@ -327,14 +327,14 @@ describe('validateWorkoutJson — pace targets', () => {
 
   it('rejects pace.zone with inverted values (slow > fast)', () => {
     const w = intervalWorkout();
-    const steps = (w['workoutSegments'] as Array<Record<string, unknown>>)[0]![
-      'workoutSteps'
-    ] as Array<Record<string, unknown>>;
+    const steps = (w.workoutSegments as Array<Record<string, unknown>>)[0]!.workoutSteps as Array<
+      Record<string, unknown>
+    >;
     const repeatGroup = steps[2] as Record<string, unknown>;
-    const children = repeatGroup['workoutSteps'] as Array<Record<string, unknown>>;
+    const children = repeatGroup.workoutSteps as Array<Record<string, unknown>>;
     // Swap: targetValueOne should be higher (faster) than targetValueTwo
-    children[0]!['targetValueOne'] = 3.0;
-    children[0]!['targetValueTwo'] = 3.5;
+    children[0]!.targetValueOne = 3.0;
+    children[0]!.targetValueTwo = 3.5;
     const r = validateWorkoutJson(w);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.some((e) => e.includes('targetValueOne'))).toBe(true);
@@ -346,10 +346,10 @@ describe('validateWorkoutJson — pace targets', () => {
 describe('validateWorkoutJson — repeat groups', () => {
   it('rejects repeat group with mismatched numberOfIterations and endConditionValue', () => {
     const w = intervalWorkout();
-    const steps = (w['workoutSegments'] as Array<Record<string, unknown>>)[0]![
-      'workoutSteps'
-    ] as Array<Record<string, unknown>>;
-    (steps[2] as Record<string, unknown>)['numberOfIterations'] = 8;
+    const steps = (w.workoutSegments as Array<Record<string, unknown>>)[0]!.workoutSteps as Array<
+      Record<string, unknown>
+    >;
+    (steps[2] as Record<string, unknown>).numberOfIterations = 8;
     // endConditionValue is still 6
     const r = validateWorkoutJson(w);
     expect(r.ok).toBe(false);
@@ -358,22 +358,22 @@ describe('validateWorkoutJson — repeat groups', () => {
 
   it('rejects repeat group with empty workoutSteps', () => {
     const w = intervalWorkout();
-    const steps = (w['workoutSegments'] as Array<Record<string, unknown>>)[0]![
-      'workoutSteps'
-    ] as Array<Record<string, unknown>>;
-    (steps[2] as Record<string, unknown>)['workoutSteps'] = [];
+    const steps = (w.workoutSegments as Array<Record<string, unknown>>)[0]!.workoutSteps as Array<
+      Record<string, unknown>
+    >;
+    (steps[2] as Record<string, unknown>).workoutSteps = [];
     const r = validateWorkoutJson(w);
     expect(r.ok).toBe(false);
   });
 
   it('rejects repeat group with mixed childStepIds', () => {
     const w = intervalWorkout();
-    const steps = (w['workoutSegments'] as Array<Record<string, unknown>>)[0]![
-      'workoutSteps'
-    ] as Array<Record<string, unknown>>;
+    const steps = (w.workoutSegments as Array<Record<string, unknown>>)[0]!.workoutSteps as Array<
+      Record<string, unknown>
+    >;
     const repeatGroup = steps[2] as Record<string, unknown>;
-    const children = repeatGroup['workoutSteps'] as Array<Record<string, unknown>>;
-    children[1]!['childStepId'] = 99; // different from children[0] which is 1
+    const children = repeatGroup.workoutSteps as Array<Record<string, unknown>>;
+    children[1]!.childStepId = 99; // different from children[0] which is 1
     const r = validateWorkoutJson(w);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.some((e) => e.includes('childStepId'))).toBe(true);
@@ -385,11 +385,11 @@ describe('validateWorkoutJson — repeat groups', () => {
 describe('validateWorkoutJson — step ordering', () => {
   it('rejects non-sequential step orders', () => {
     const w = intervalWorkout();
-    const steps = (w['workoutSegments'] as Array<Record<string, unknown>>)[0]![
-      'workoutSteps'
-    ] as Array<Record<string, unknown>>;
+    const steps = (w.workoutSegments as Array<Record<string, unknown>>)[0]!.workoutSteps as Array<
+      Record<string, unknown>
+    >;
     // Set cooldown (last step) to stepOrder 3 (same as repeat group)
-    steps[3]!['stepOrder'] = 3;
+    steps[3]!.stepOrder = 3;
     const r = validateWorkoutJson(w);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.some((e) => e.includes('sequential'))).toBe(true);

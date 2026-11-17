@@ -12,13 +12,9 @@
 // SC-003: State machine checkpointing enables resumption from last completed state.
 // US5:    Crash recovery — job resumes from last checkpoint.
 
-import { transition, MAX_RETRIES } from '../core/research-machine.js';
+import { MAX_RETRIES, transition } from '../core/research-machine.js';
 import { isTerminal, stateProgress } from '../core/research-types.js';
-import type {
-  ResearchJobData,
-  ResearchContext,
-  TraceEvent,
-} from '../core/research-types.js';
+import type { ResearchContext, ResearchJobData, TraceEvent } from '../core/research-types.js';
 import { executeState } from './research-states.js';
 import type { ResearchDeps } from './research-states.js';
 
@@ -31,10 +27,17 @@ import type { ResearchDeps } from './research-states.js';
  * Retriable: network errors, timeouts, rate limits, and anything else.
  */
 const NON_RETRIABLE_PATTERNS = [
-  'unauthorized', '401', '403', 'forbidden',
-  'invalid', 'not found', '404',
-  'permission', 'access denied',
-  'authentication', 'auth_error',
+  'unauthorized',
+  '401',
+  '403',
+  'forbidden',
+  'invalid',
+  'not found',
+  '404',
+  'permission',
+  'access denied',
+  'authentication',
+  'auth_error',
 ] as const;
 
 function isRetriableError(error: unknown): boolean {

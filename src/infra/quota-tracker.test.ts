@@ -1,10 +1,10 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import {
+  DEFAULT_DAILY_LIMIT,
+  QUOTA_TTL_SECONDS,
+  type QuotaRedisClient,
   buildQuotaKey,
   createQuotaTracker,
-  QUOTA_TTL_SECONDS,
-  DEFAULT_DAILY_LIMIT,
-  type QuotaRedisClient,
 } from './quota-tracker.js';
 
 // ─── In-memory Redis mock ─────────────────────────────────────────────────────
@@ -39,7 +39,7 @@ function createMockRedis(store: MockRedisStore = new Map()): QuotaRedisClient & 
 
     async incrby(key: string, count: number): Promise<number> {
       incrByCalls.push({ key, count });
-      const current = parseInt(store.get(key) ?? '0', 10);
+      const current = Number.parseInt(store.get(key) ?? '0', 10);
       const next = current + count;
       store.set(key, String(next));
       return next;

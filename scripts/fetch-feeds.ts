@@ -39,7 +39,7 @@ type Feed = { readonly source: string; readonly url: string };
 const FEEDS: readonly Feed[] = [
   { source: 'Hacker News', url: 'https://news.ycombinator.com/rss' },
   { source: 'Lobsters', url: 'https://lobste.rs/rss' },
-  { source: "Simon Willison", url: 'https://simonwillison.net/atom/everything/' },
+  { source: 'Simon Willison', url: 'https://simonwillison.net/atom/everything/' },
   { source: 'Ars Technica', url: 'https://feeds.arstechnica.com/arstechnica/index' },
   { source: 'LWN.net', url: 'https://lwn.net/headlines/rss' },
   { source: 'One Useful Thing', url: 'https://www.oneusefulthing.org/feed' },
@@ -56,13 +56,20 @@ const SEEN_PATH = join(homedir(), '.cache', 'reclaw', 'tech-digest-seen.txt');
 
 function loadSeen(): Set<string> {
   try {
-    return new Set(readFileSync(SEEN_PATH, 'utf8').split('\n').map((l) => l.trim()).filter(Boolean));
+    return new Set(
+      readFileSync(SEEN_PATH, 'utf8')
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean),
+    );
   } catch (e) {
     // A missing cache is the normal first-run case → empty set, no noise.
     // Any other error (permissions, corrupt/partial read) would silently defeat
     // dedup and re-surface the whole backlog, so make it visible in logs.
     if (!(e instanceof Error && 'code' in e && e.code === 'ENOENT')) {
-      process.stderr.write(`fetch-feeds: could not read seen-cache ${SEEN_PATH}: ${e instanceof Error ? e.message : String(e)}\n`);
+      process.stderr.write(
+        `fetch-feeds: could not read seen-cache ${SEEN_PATH}: ${e instanceof Error ? e.message : String(e)}\n`,
+      );
     }
     return new Set();
   }
@@ -75,12 +82,22 @@ function markSeen(urls: readonly string[]): void {
   // synchronously after a scheduled digest (queue concurrency 1), never
   // concurrently. Two concurrent appends could interleave lines and corrupt the
   // cache — do not invoke this from a parallel context.
-  appendFileSync(SEEN_PATH, `${urls.map((u) => u.trim()).filter(Boolean).join('\n')}\n`, 'utf8');
+  appendFileSync(
+    SEEN_PATH,
+    `${urls
+      .map((u) => u.trim())
+      .filter(Boolean)
+      .join('\n')}\n`,
+    'utf8',
+  );
 }
 
 // ─── Fetch (I/O) ───────────────────────────────────────────────────────────────
 
-async function fetchFeed(feed: Feed, timeoutMs: number): Promise<{ items: FeedItem[]; error?: string }> {
+async function fetchFeed(
+  feed: Feed,
+  timeoutMs: number,
+): Promise<{ items: FeedItem[]; error?: string }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -115,7 +132,10 @@ function numericArg(name: string, fallback: number): number {
 async function main(): Promise<void> {
   if (process.argv.includes('--mark')) {
     const stdin = readFileSync(0, 'utf8');
-    const urls = stdin.split('\n').map((l) => l.trim()).filter(Boolean);
+    const urls = stdin
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
     markSeen(urls);
     process.stderr.write(`marked ${urls.length} url(s) as seen\n`);
     return;
@@ -140,7 +160,9 @@ async function main(): Promise<void> {
   // Surface total failure to stderr so it's distinguishable in logs (still exit 0
   // — an empty digest is valid output the skill can degrade on).
   if (errors.length === FEEDS.length) {
-    process.stderr.write(`fetch-feeds: all ${FEEDS.length} feeds failed — digest is empty due to fetch errors, not a quiet day\n`);
+    process.stderr.write(
+      `fetch-feeds: all ${FEEDS.length} feeds failed — digest is empty due to fetch errors, not a quiet day\n`,
+    );
   }
 
   const sorted = sortNewestFirst(items);

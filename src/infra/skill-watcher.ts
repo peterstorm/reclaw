@@ -1,7 +1,13 @@
 import { readFileSync } from 'node:fs';
 import chokidar, { type FSWatcher } from 'chokidar';
 import { parseSkillConfig } from '../core/skill-config.js';
-import { type SkillConfig, type SkillId, type SkillRegistry, emptySkillRegistry, makeSkillId } from '../core/types.js';
+import {
+  type SkillConfig,
+  type SkillId,
+  type SkillRegistry,
+  emptySkillRegistry,
+  makeSkillId,
+} from '../core/types.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -19,10 +25,7 @@ export type SkillWatcher = {
 /**
  * Add or update a skill in the registry. Returns a new Map (immutable).
  */
-function registryWithSkill(
-  registry: SkillRegistry,
-  skill: SkillConfig,
-): SkillRegistry {
+function registryWithSkill(registry: SkillRegistry, skill: SkillConfig): SkillRegistry {
   const next = new Map(registry);
   next.set(skill.id, skill);
   return next;
@@ -31,10 +34,7 @@ function registryWithSkill(
 /**
  * Remove a skill from the registry by id. Returns a new Map (immutable).
  */
-function registryWithoutSkill(
-  registry: SkillRegistry,
-  skillId: SkillId,
-): SkillRegistry {
+function registryWithoutSkill(registry: SkillRegistry, skillId: SkillId): SkillRegistry {
   const next = new Map(registry);
   next.delete(skillId);
   return next;
@@ -77,7 +77,9 @@ export function createSkillWatcher(skillsDir: string): SkillWatcher {
   // Both conditions must therefore hold: chokidar has finished scanning, and no
   // debounced load is still pending.
   let readyResolve: (() => void) | null = null;
-  const readyPromise = new Promise<void>((resolve) => { readyResolve = resolve; });
+  const readyPromise = new Promise<void>((resolve) => {
+    readyResolve = resolve;
+  });
   let scanComplete = false;
   // Whether the initial scan has been applied. Until it has, the registry is a
   // partial view and listeners are not told about it — see notifyHandlers.
@@ -138,7 +140,10 @@ export function createSkillWatcher(skillsDir: string): SkillWatcher {
     try {
       content = readFileSync(filePath, 'utf-8');
     } catch (e) {
-      console.error(`[skill-watcher] Failed to read "${filePath}":`, e instanceof Error ? e.message : String(e));
+      console.error(
+        `[skill-watcher] Failed to read "${filePath}":`,
+        e instanceof Error ? e.message : String(e),
+      );
       return;
     }
 
@@ -195,7 +200,10 @@ export function createSkillWatcher(skillsDir: string): SkillWatcher {
     });
 
     watcher.on('error', (error: unknown) => {
-      console.error('[skill-watcher] Watcher error:', error instanceof Error ? error.message : String(error));
+      console.error(
+        '[skill-watcher] Watcher error:',
+        error instanceof Error ? error.message : String(error),
+      );
     });
   };
 

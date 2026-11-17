@@ -67,29 +67,29 @@ const errorEvent = (error: string, retriable = true): ResearchEvent => ({
 
 describe('MAX_RETRIES', () => {
   it('defines creating_notebook as 2', () => {
-    expect(MAX_RETRIES['creating_notebook']).toBe(2);
+    expect(MAX_RETRIES.creating_notebook).toBe(2);
   });
 
   it('defines searching_sources as 2', () => {
-    expect(MAX_RETRIES['searching_sources']).toBe(2);
+    expect(MAX_RETRIES.searching_sources).toBe(2);
   });
 
   it('defines adding_sources as 2', () => {
-    expect(MAX_RETRIES['adding_sources']).toBe(2);
+    expect(MAX_RETRIES.adding_sources).toBe(2);
   });
 
   it('defines writing_vault as 3', () => {
-    expect(MAX_RETRIES['writing_vault']).toBe(3);
+    expect(MAX_RETRIES.writing_vault).toBe(3);
   });
 
   it('defines notifying as 2', () => {
-    expect(MAX_RETRIES['notifying']).toBe(2);
+    expect(MAX_RETRIES.notifying).toBe(2);
   });
 
   it('is immutable (readonly)', () => {
     expect(() => {
       // @ts-expect-error -- testing immutability at runtime
-      MAX_RETRIES['creating_notebook'] = 99;
+      MAX_RETRIES.creating_notebook = 99;
     }).toThrow();
   });
 });
@@ -130,7 +130,7 @@ describe('transition: creating_notebook -> NOTEBOOK_CREATED', () => {
     const ctx = makeContext({ retries: { creating_notebook: 1 } });
 
     const result = transition(state, event, ctx);
-    expect(result.context.retries['creating_notebook']).toBeUndefined();
+    expect(result.context.retries.creating_notebook).toBeUndefined();
   });
 
   it('fails on unexpected event', () => {
@@ -437,8 +437,8 @@ describe('transition: querying -> QUERY_ANSWERED', () => {
 
     const result = transition(state, event, initialCtx);
     expect(Object.keys(result.context.answers)).toHaveLength(2);
-    expect(result.context.answers['Q1']).toBeDefined();
-    expect(result.context.answers['Q2']).toBeDefined();
+    expect(result.context.answers.Q1).toBeDefined();
+    expect(result.context.answers.Q2).toBeDefined();
   });
 
   it('increments chatsUsed by 1', () => {
@@ -562,12 +562,12 @@ describe('transition: querying -> ERROR (retry)', () => {
     // First retriable error -> stays in querying, retries incremented
     const result1 = transition(state, errorEvent('API timeout', true), ctx);
     expect(result1.state.kind).toBe('querying');
-    expect(result1.context.retries['querying']).toBe(1);
+    expect(result1.context.retries.querying).toBe(1);
 
     // Second retriable error -> still in querying
     const result2 = transition(state, errorEvent('API timeout', true), result1.context);
     expect(result2.state.kind).toBe('querying');
-    expect(result2.context.retries['querying']).toBe(2);
+    expect(result2.context.retries.querying).toBe(2);
 
     // Third retriable error -> exhausted MAX_RETRIES (querying: 2) -> failed
     const result3 = transition(state, errorEvent('API timeout', true), result2.context);
@@ -575,7 +575,7 @@ describe('transition: querying -> ERROR (retry)', () => {
   });
 
   it('uses MAX_RETRIES querying value of 2', () => {
-    expect(MAX_RETRIES['querying']).toBe(2);
+    expect(MAX_RETRIES.querying).toBe(2);
   });
 });
 
@@ -607,7 +607,7 @@ describe('transition: querying -> ALL_QUERIES_DONE', () => {
     });
 
     const result = transition(state, event, ctx);
-    expect(result.context.answers['Q1']).toBeDefined();
+    expect(result.context.answers.Q1).toBeDefined();
   });
 
   it('clears lastError on ALL_QUERIES_DONE', () => {
@@ -694,7 +694,7 @@ describe('transition: writing_vault -> VAULT_WRITTEN', () => {
     const ctx = makeContext({ retries: { writing_vault: 2 }, lastError: 'write failed' });
 
     const result = transition(state, event, ctx);
-    expect(result.context.retries['writing_vault']).toBeUndefined();
+    expect(result.context.retries.writing_vault).toBeUndefined();
     expect(result.context.lastError).toBeNull();
   });
 });
@@ -753,7 +753,7 @@ describe('transition: notifying -> NOTIFIED', () => {
 
     const result = transition(state, event, ctx);
     expect(result.context.lastError).toBeNull();
-    expect(result.context.retries['notifying']).toBeUndefined();
+    expect(result.context.retries.notifying).toBeUndefined();
   });
 
   it('fails on unexpected event', () => {
@@ -784,7 +784,7 @@ describe('ERROR event: retriable=true, retries not exhausted', () => {
     const event = errorEvent('Network error', true);
 
     const result = transition(state, event, ctx);
-    expect(result.context.retries['creating_notebook']).toBe(2);
+    expect(result.context.retries.creating_notebook).toBe(2);
   });
 
   it('stores lastError in context for re-reasoning (FR-051)', () => {
@@ -802,17 +802,17 @@ describe('ERROR event: retriable=true, retries not exhausted', () => {
     const ctx0 = makeContext();
     const r1 = transition(state, errorEvent('IO error'), ctx0);
     expect(r1.state.kind).toBe('writing_vault');
-    expect(r1.context.retries['writing_vault']).toBe(1);
+    expect(r1.context.retries.writing_vault).toBe(1);
 
     // Retry 2
     const r2 = transition(state, errorEvent('IO error'), r1.context);
     expect(r2.state.kind).toBe('writing_vault');
-    expect(r2.context.retries['writing_vault']).toBe(2);
+    expect(r2.context.retries.writing_vault).toBe(2);
 
     // Retry 3
     const r3 = transition(state, errorEvent('IO error'), r2.context);
     expect(r3.state.kind).toBe('writing_vault');
-    expect(r3.context.retries['writing_vault']).toBe(3);
+    expect(r3.context.retries.writing_vault).toBe(3);
 
     // Exhausted: fails
     const r4 = transition(state, errorEvent('IO error'), r3.context);
@@ -885,7 +885,7 @@ describe('ERROR event: retriable=false -> immediate failure', () => {
     const result = transition(state, event, ctx);
     // Should be failed without touching retries
     expect(result.state.kind).toBe('failed');
-    expect(result.context.retries['searching_sources']).toBeUndefined();
+    expect(result.context.retries.searching_sources).toBeUndefined();
   });
 
   it('records the error in failed state', () => {
@@ -999,12 +999,12 @@ describe('transition: generating_artifacts -> ERROR (retry)', () => {
 
     const result = transition(state, errorEvent('Artifact generation timeout', true), ctx);
     expect(result.state.kind).toBe('generating_artifacts');
-    expect(result.context.retries['generating_artifacts']).toBe(1);
+    expect(result.context.retries.generating_artifacts).toBe(1);
   });
 
   it('transitions to notifying (not failed) when retries exhausted', () => {
     const state: ResearchState = { kind: 'generating_artifacts' };
-    const maxRetries = MAX_RETRIES['generating_artifacts'] ?? 2;
+    const maxRetries = MAX_RETRIES.generating_artifacts ?? 2;
     const ctx = makeContext({ retries: { generating_artifacts: maxRetries } });
 
     const result = transition(state, errorEvent('Persistent artifact error', true), ctx);
@@ -1068,7 +1068,7 @@ describe('immutability: transition never mutates input', () => {
 
     transition(state, event, originalCtx);
 
-    expect(originalCtx.retries['creating_notebook']).toBe(0);
+    expect(originalCtx.retries.creating_notebook).toBe(0);
   });
 
   it('original answers are unchanged after QUERY_ANSWERED', () => {
@@ -1322,10 +1322,10 @@ describe('edge cases', () => {
     const ctx = makeContext(); // retries = {} -> no key for creating_notebook
 
     const r1 = transition(state, errorEvent('Error 1'), ctx);
-    expect(r1.context.retries['creating_notebook']).toBe(1);
+    expect(r1.context.retries.creating_notebook).toBe(1);
 
     const r2 = transition(state, errorEvent('Error 2'), r1.context);
-    expect(r2.context.retries['creating_notebook']).toBe(2);
+    expect(r2.context.retries.creating_notebook).toBe(2);
 
     // At max=2, next error fails
     const r3 = transition(state, errorEvent('Error 3'), r2.context);

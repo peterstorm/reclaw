@@ -434,7 +434,7 @@ describe('buildQANote', () => {
 
   describe('long question filename truncation', () => {
     it('truncates question to 50 chars in the filename', () => {
-      const longQuestion = 'A'.repeat(60) + ' and more text';
+      const longQuestion = `${'A'.repeat(60)} and more text`;
       const note = buildQANote(longQuestion, resolvedAnswer, citedSources, topicSlug, hubPath);
       const parts = note.relativePath.split('/');
       const filename = parts[parts.length - 1]!;

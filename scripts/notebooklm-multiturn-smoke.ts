@@ -18,10 +18,7 @@
  */
 
 import { NotebookLMClient } from 'notebooklm-kit';
-import {
-  fetchCurrentBuildLabel,
-  FALLBACK_BL,
-} from '../src/infra/notebooklm-client.js';
+import { FALLBACK_BL, fetchCurrentBuildLabel } from '../src/infra/notebooklm-client.js';
 
 const DEFAULT_Q1 = 'List the three most important claims this notebook makes, numbered 1, 2, 3.';
 const DEFAULT_Q2 = 'Expand on the second point. What evidence in the sources supports it?';
@@ -41,10 +38,10 @@ async function main(): Promise<void> {
   const q1 = q1Arg ?? DEFAULT_Q1;
   const q2 = q2Arg ?? DEFAULT_Q2;
 
-  const authToken = process.env['NOTEBOOKLM_AUTH_TOKEN'];
-  const cookies = process.env['NOTEBOOKLM_COOKIES'];
-  const email = process.env['GOOGLE_EMAIL'];
-  const password = process.env['GOOGLE_PASSWORD'];
+  const authToken = process.env.NOTEBOOKLM_AUTH_TOKEN;
+  const cookies = process.env.NOTEBOOKLM_COOKIES;
+  const email = process.env.GOOGLE_EMAIL;
+  const password = process.env.GOOGLE_PASSWORD;
 
   let bl: string;
   try {
@@ -74,7 +71,7 @@ async function main(): Promise<void> {
   await sdk.connect();
   await sdk.notebooks.list(); // health check
 
-  console.log(`\n── Turn 1 ──────────────────────────────────────────────`);
+  console.log('\n── Turn 1 ──────────────────────────────────────────────');
   console.log(`Q: ${q1}\n`);
   const r1 = await sdk.generation.chat(notebookId, q1);
   console.log(`A: ${preview(r1.text)}\n`);
@@ -82,7 +79,7 @@ async function main(): Promise<void> {
   console.log(`messageIds:     ${r1.messageIds?.join(', ') ?? '(none)'}`);
   console.log(`citations:      ${r1.citations?.join(', ') ?? '(none)'}`);
 
-  console.log(`\n── Turn 2 (with conversationId) ────────────────────────`);
+  console.log('\n── Turn 2 (with conversationId) ────────────────────────');
   console.log(`Q: ${q2}\n`);
   const r2 = await sdk.generation.chat(notebookId, q2, {
     conversationId: r1.conversationId,
@@ -91,10 +88,10 @@ async function main(): Promise<void> {
   console.log(`conversationId: ${r2.conversationId ?? '(none)'}`);
   console.log(`messageIds:     ${r2.messageIds?.join(', ') ?? '(none)'}`);
 
-  console.log(`\n── Verdict ─────────────────────────────────────────────`);
+  console.log('\n── Verdict ─────────────────────────────────────────────');
   console.log(`Same conversationId echoed back? ${r2.conversationId === r1.conversationId}`);
   console.log(`Eyeball turn 2: did it reference "the second point" from turn 1?`);
-  console.log(`  - YES → multi-turn works on conversationId alone, ship it.`);
+  console.log('  - YES → multi-turn works on conversationId alone, ship it.');
   console.log(`  - NO  → SDK doesn't thread context; fall back to /ask one-shot or fork SDK.`);
 
   sdk.dispose();

@@ -3,29 +3,31 @@
 // Per-state executor tests with mocked infrastructure deps.
 // All infra adapters are mocked — no real SDK/Redis/filesystem calls.
 
-import { describe, it, expect, vi } from 'vitest';
-import {
-  executeState,
-  buildCortexSummary,
-  normalizeUrl,
-  deduplicateClaudeUrls,
-  type ResearchDeps,
-} from './research-states.js';
+import { describe, expect, it, vi } from 'vitest';
 import type {
+  ChatResponse,
   ResearchContext,
   ResearchState,
   SourceMeta,
-  ChatResponse,
 } from '../core/research-types.js';
 import type { NotebookLMAdapter } from '../infra/notebooklm-client.js';
-import type { ResearchLLMAdapter } from '../infra/research-llm-client.js';
-import type { VaultWriterAdapter } from '../infra/vault-writer.js';
 import type { QuotaTracker } from '../infra/quota-tracker.js';
+import type { ResearchLLMAdapter } from '../infra/research-llm-client.js';
 import type { TelegramAdapter } from '../infra/telegram.js';
+import type { VaultWriterAdapter } from '../infra/vault-writer.js';
+import {
+  type ResearchDeps,
+  buildCortexSummary,
+  deduplicateClaudeUrls,
+  executeState,
+  normalizeUrl,
+} from './research-states.js';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
-const MOCK_TOPIC_SLUG = 'ai-agents' as ReturnType<typeof import('../core/topic-slug.js').generateTopicSlug>;
+const MOCK_TOPIC_SLUG = 'ai-agents' as ReturnType<
+  typeof import('../core/topic-slug.js').generateTopicSlug
+>;
 
 const makeMockContext = (overrides: Partial<ResearchContext> = {}): ResearchContext => ({
   topic: 'AI agents',
@@ -99,7 +101,9 @@ function makeMockDeps(overrides: Partial<ResearchDeps> = {}): ResearchDeps {
     createAudioOverview: vi.fn().mockResolvedValue({ ok: true, value: 'audio-001' }),
     createVideoOverview: vi.fn().mockResolvedValue({ ok: true, value: 'video-001' }),
     waitForArtifact: vi.fn().mockResolvedValue({ ok: true, value: 'ready' }),
-    shareNotebook: vi.fn().mockResolvedValue({ ok: true, value: 'https://notebooklm.google.com/notebook/shared-123' }),
+    shareNotebook: vi
+      .fn()
+      .mockResolvedValue({ ok: true, value: 'https://notebooklm.google.com/notebook/shared-123' }),
     dispose: vi.fn().mockResolvedValue(undefined),
   };
 
@@ -124,8 +128,12 @@ function makeMockDeps(overrides: Partial<ResearchDeps> = {}): ResearchDeps {
   };
 
   const vaultWriter: VaultWriterAdapter = {
-    writeNotes: vi.fn().mockResolvedValue({ ok: true, value: '/vault/reclaw/research/ai-agents/_index.md' }),
-    writeEmergencyNote: vi.fn().mockResolvedValue({ ok: true, value: '/vault/reclaw/research/ai-agents/_emergency.md' }),
+    writeNotes: vi
+      .fn()
+      .mockResolvedValue({ ok: true, value: '/vault/reclaw/research/ai-agents/_index.md' }),
+    writeEmergencyNote: vi
+      .fn()
+      .mockResolvedValue({ ok: true, value: '/vault/reclaw/research/ai-agents/_emergency.md' }),
     appendToNote: vi.fn().mockResolvedValue({ ok: true, value: undefined }),
   };
 
@@ -362,10 +370,7 @@ describe('executeState / adding_sources', () => {
 
     await executeState(state, ctx, deps);
 
-    expect(deps.notebookLM.addSourceUrl).toHaveBeenCalledWith(
-      'nb-001',
-      'https://example.com/blog',
-    );
+    expect(deps.notebookLM.addSourceUrl).toHaveBeenCalledWith('nb-001', 'https://example.com/blog');
   });
 
   it('returns ERROR (non-retriable) when notebookId is null', async () => {
@@ -402,9 +407,7 @@ describe('executeState / adding_sources', () => {
     const ctx = makeMockContext({
       notebookId: 'nb-001',
       searchSessionId: 'session-001',
-      discoveredWebSources: [
-        { title: 'Source 1', url: 'https://example.com/1' },
-      ],
+      discoveredWebSources: [{ title: 'Source 1', url: 'https://example.com/1' }],
       sourceHints: ['https://youtube.com/watch?v=abc'],
     });
     const deps = makeMockDeps();
@@ -431,7 +434,9 @@ describe('executeState / adding_sources', () => {
     const deps = makeMockDeps({
       notebookLM: {
         ...makeMockDeps().notebookLM,
-        addDiscoveredSources: vi.fn().mockResolvedValue({ ok: false, error: { message: 'Add failed', retriable: true } }),
+        addDiscoveredSources: vi
+          .fn()
+          .mockResolvedValue({ ok: false, error: { message: 'Add failed', retriable: true } }),
       },
     });
 
@@ -557,11 +562,7 @@ describe('executeState / generating_questions', () => {
       expect(event.questions.length).toBe(3);
       expect(event.questions[0]).toBe('Q1?');
     }
-    expect(deps.researchLLM.generateQuestions).toHaveBeenCalledWith(
-      'AI agents',
-      ctx.sources,
-      null,
-    );
+    expect(deps.researchLLM.generateQuestions).toHaveBeenCalledWith('AI agents', ctx.sources, null);
   });
 
   it('returns ERROR (retriable) when question generation fails', async () => {
@@ -845,10 +846,7 @@ describe('executeState / querying', () => {
 
     await executeState(state, ctx, deps);
 
-    expect(deps.researchLLM.rephraseQuestion).toHaveBeenCalledWith(
-      question,
-      ctx.sources,
-    );
+    expect(deps.researchLLM.rephraseQuestion).toHaveBeenCalledWith(question, ctx.sources);
     // Should call chat with the rephrased question
     expect(deps.notebookLM.chat).toHaveBeenCalledWith('nb-001', 'Rephrased question?');
   });
@@ -1017,7 +1015,8 @@ describe('executeState / notifying', () => {
 
     await executeState(state, ctx, deps);
 
-    const summaryArg = (deps.telegram.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as string;
+    const summaryArg = (deps.telegram.sendMessage as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[1] as string;
     expect(summaryArg).toContain('1/2 answered');
     expect(summaryArg).toContain('Citations');
     expect(summaryArg).toContain('Sources');
@@ -1299,8 +1298,14 @@ describe('executeState / adding_sources (Claude-discovered URLs)', () => {
 
     await executeState(state, ctx, deps);
 
-    expect(deps.notebookLM.addSourceUrl).toHaveBeenCalledWith('nb-001', 'https://claude-found.com/a');
-    expect(deps.notebookLM.addSourceUrl).toHaveBeenCalledWith('nb-001', 'https://claude-found.com/b');
+    expect(deps.notebookLM.addSourceUrl).toHaveBeenCalledWith(
+      'nb-001',
+      'https://claude-found.com/a',
+    );
+    expect(deps.notebookLM.addSourceUrl).toHaveBeenCalledWith(
+      'nb-001',
+      'https://claude-found.com/b',
+    );
   });
 
   it('adds Claude YouTube URLs via addYouTubeSource', async () => {
@@ -1313,7 +1318,10 @@ describe('executeState / adding_sources (Claude-discovered URLs)', () => {
 
     await executeState(state, ctx, deps);
 
-    expect(deps.notebookLM.addYouTubeSource).toHaveBeenCalledWith('nb-001', 'https://youtube.com/watch?v=test123');
+    expect(deps.notebookLM.addYouTubeSource).toHaveBeenCalledWith(
+      'nb-001',
+      'https://youtube.com/watch?v=test123',
+    );
   });
 
   it('Claude URL add failure is non-fatal', async () => {
@@ -1350,7 +1358,7 @@ describe('executeState / adding_sources (Claude-discovered URLs)', () => {
     }) as ResearchContext;
     // Remove the field to simulate legacy data
     const legacyCtx = { ...ctx } as Record<string, unknown>;
-    delete legacyCtx['claudeDiscoveredUrls'];
+    delete legacyCtx.claudeDiscoveredUrls;
     const deps = makeMockDeps();
 
     const event = await executeState(state, legacyCtx as ResearchContext, deps);
@@ -1372,7 +1380,12 @@ describe('buildCortexSummary', () => {
       hubPath: '/vault/reclaw/research/ai-agents/_index.md',
     });
     const quality = { grade: 'good', warnings: [] };
-    const metrics = { questionsAnswered: 2, questionsAsked: 2, totalCitations: 3, sourcesIngested: 1 };
+    const metrics = {
+      questionsAnswered: 2,
+      questionsAsked: 2,
+      totalCitations: 3,
+      sourcesIngested: 1,
+    };
 
     const summary = buildCortexSummary(ctx, quality, metrics);
 
@@ -1388,7 +1401,12 @@ describe('buildCortexSummary', () => {
       answers: { 'Q1?': makeMockChatResponse({ text: 'This is a detailed answer about AI.' }) },
     });
     const quality = { grade: 'partial', warnings: [] };
-    const metrics = { questionsAnswered: 1, questionsAsked: 1, totalCitations: 2, sourcesIngested: 1 };
+    const metrics = {
+      questionsAnswered: 1,
+      questionsAsked: 1,
+      totalCitations: 2,
+      sourcesIngested: 1,
+    };
 
     const summary = buildCortexSummary(ctx, quality, metrics);
 

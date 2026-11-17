@@ -15,31 +15,31 @@ describe('parseEnvToRaw', () => {
       SCHEDULED_TIMEOUT_MS: '180000',
     });
     expect(errors).toHaveLength(0);
-    expect(raw['telegramToken']).toBe('bot123:ABC');
-    expect(raw['authorizedUserIds']).toEqual([42]);
-    expect(raw['redisHost']).toBe('redis.local');
-    expect(raw['redisPort']).toBe(6380);
-    expect(raw['scheduledTimeoutMs']).toBe(180000);
+    expect(raw.telegramToken).toBe('bot123:ABC');
+    expect(raw.authorizedUserIds).toEqual([42]);
+    expect(raw.redisHost).toBe('redis.local');
+    expect(raw.redisPort).toBe(6380);
+    expect(raw.scheduledTimeoutMs).toBe(180000);
   });
 
   it('returns undefined for missing optional numerics', () => {
     const { raw, errors } = parseEnvToRaw(VALID_ENV);
     expect(errors).toHaveLength(0);
-    expect(raw['redisPort']).toBeUndefined();
+    expect(raw.redisPort).toBeUndefined();
   });
 
   it('collects error for non-integer REDIS_PORT', () => {
     const { raw, errors } = parseEnvToRaw({ ...VALID_ENV, REDIS_PORT: 'abc' });
     expect(errors.length).toBeGreaterThan(0);
     expect(errors[0]).toContain('REDIS_PORT');
-    expect(raw['redisPort']).toBeUndefined();
+    expect(raw.redisPort).toBeUndefined();
   });
 
   it('collects error for float REDIS_PORT', () => {
     const { raw, errors } = parseEnvToRaw({ ...VALID_ENV, REDIS_PORT: '6379.9' });
     expect(errors.length).toBeGreaterThan(0);
     expect(errors[0]).toContain('REDIS_PORT');
-    expect(raw['redisPort']).toBeUndefined();
+    expect(raw.redisPort).toBeUndefined();
   });
 });
 

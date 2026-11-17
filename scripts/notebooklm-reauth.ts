@@ -29,10 +29,19 @@
  * on success, so the next job reads the fresh credentials.json automatically.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, symlinkSync, existsSync, readdirSync, rmSync, chmodSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   NOTEBOOKLM_WEB_ORIGIN,
   NOTEBOOKLM_WEB_ORIGINS,
@@ -61,9 +70,11 @@ function wantedChromiumRevision(): string {
  * its path. The nix store is read-only, so the shim lives under ~/.cache.
  */
 function shimBrowsersPath(): string {
-  const nixPath = process.env['PLAYWRIGHT_BROWSERS_PATH'];
+  const nixPath = process.env.PLAYWRIGHT_BROWSERS_PATH;
   if (!nixPath || !existsSync(nixPath)) {
-    throw new Error('PLAYWRIGHT_BROWSERS_PATH must point at the nix playwright-driver.browsers store path');
+    throw new Error(
+      'PLAYWRIGHT_BROWSERS_PATH must point at the nix playwright-driver.browsers store path',
+    );
   }
   const wanted = wantedChromiumRevision();
   const entries = readdirSync(nixPath);
@@ -89,15 +100,15 @@ function shimBrowsersPath(): string {
 }
 
 async function main(): Promise<void> {
-  const email = process.env['GOOGLE_EMAIL'];
-  const password = process.env['GOOGLE_PASSWORD'];
+  const email = process.env.GOOGLE_EMAIL;
+  const password = process.env.GOOGLE_PASSWORD;
   if (!email || !password) {
     console.error('[reauth] missing GOOGLE_EMAIL / GOOGLE_PASSWORD');
     process.exit(1);
   }
 
-  process.env['PLAYWRIGHT_BROWSERS_PATH'] = shimBrowsersPath();
-  process.env['PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD'] = '1';
+  process.env.PLAYWRIGHT_BROWSERS_PATH = shimBrowsersPath();
+  process.env.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = '1';
 
   // Imported here, after the env is set, so the browser registry resolves to the shim.
   const { chromium } = await import('playwright-core');
@@ -112,22 +123,26 @@ async function main(): Promise<void> {
     });
     const page = await ctx.newPage();
 
-    await page.goto(
-      `https://accounts.google.com/ServiceLogin?continue=${NOTEBOOKLM_WEB_ORIGIN}/`,
-      { waitUntil: 'networkidle', timeout: 60_000 },
-    );
+    await page.goto(`https://accounts.google.com/ServiceLogin?continue=${NOTEBOOKLM_WEB_ORIGIN}/`, {
+      waitUntil: 'networkidle',
+      timeout: 60_000,
+    });
 
     // Email — WebLiteSignIn uses input[name="identifier"], not input[type=email].
     await page.fill('#identifierId, input[name="identifier"]', email, { timeout: 20_000 });
-    await page.click('#identifierNext button, #identifierNext', { timeout: 10_000 })
+    await page
+      .click('#identifierNext button, #identifierNext', { timeout: 10_000 })
       .catch(() => page.keyboard.press('Enter'));
     console.error('[reauth] email submitted');
 
     // Password
-    await page.waitForSelector('input[type="password"]:visible, input[name="Passwd"]', { timeout: 25_000 });
+    await page.waitForSelector('input[type="password"]:visible, input[name="Passwd"]', {
+      timeout: 25_000,
+    });
     await page.waitForTimeout(1_000);
     await page.fill('input[type="password"], input[name="Passwd"]', password, { timeout: 20_000 });
-    await page.click('#passwordNext button, #passwordNext', { timeout: 10_000 })
+    await page
+      .click('#passwordNext button, #passwordNext', { timeout: 10_000 })
       .catch(() => page.keyboard.press('Enter'));
     console.error('[reauth] password submitted');
 
@@ -136,7 +151,11 @@ async function main(): Promise<void> {
       .catch(() => undefined);
     await page.waitForTimeout(3_000);
     if (!isNotebookLMWebUrl(page.url())) {
-      const heading = await page.locator('h1, [role=heading]').first().innerText().catch(() => '?');
+      const heading = await page
+        .locator('h1, [role=heading]')
+        .first()
+        .innerText()
+        .catch(() => '?');
       throw new Error(`login did not reach NotebookLM (stuck at "${heading}", url=${page.url()})`);
     }
 
@@ -148,7 +167,7 @@ async function main(): Promise<void> {
 
     const authToken = await page.evaluate(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      () => ((window as any).WIZ_global_data && (window as any).WIZ_global_data.SNlM0e) || null,
+      () => (window as any).WIZ_global_data?.SNlM0e || null,
     );
     if (!authToken) throw new Error('SNlM0e auth token not found on NotebookLM page');
 
@@ -159,7 +178,9 @@ async function main(): Promise<void> {
     ]);
     const cookieHeader = cookies.map((c) => `${c.name}=${c.value}`).join('; ');
     credentials = { authToken, cookies: cookieHeader };
-    console.error(`[reauth] extracted token(${authToken.length}ch) cookies(${cookieHeader.length}ch)`);
+    console.error(
+      `[reauth] extracted token(${authToken.length}ch) cookies(${cookieHeader.length}ch)`,
+    );
   } finally {
     await browser.close();
   }

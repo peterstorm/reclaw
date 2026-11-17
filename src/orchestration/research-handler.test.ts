@@ -11,21 +11,21 @@
 // FR-080: Trace event per state transition.
 // FR-081: Progress reported as percentage.
 
-import { describe, it, expect, vi } from 'vitest';
-import { handleResearchJob, type ResearchJobLike } from './research-handler.js';
-import type { ResearchDeps } from './research-states.js';
+import { describe, expect, it, vi } from 'vitest';
 import type {
-  ResearchJobData,
-  ResearchContext,
-  SourceMeta,
   ChatResponse,
+  ResearchContext,
+  ResearchJobData,
+  SourceMeta,
 } from '../core/research-types.js';
-import type { NotebookLMAdapter } from '../infra/notebooklm-client.js';
-import type { ResearchLLMAdapter } from '../infra/research-llm-client.js';
-import type { VaultWriterAdapter } from '../infra/vault-writer.js';
-import type { QuotaTracker } from '../infra/quota-tracker.js';
-import type { TelegramAdapter } from '../infra/telegram.js';
 import { makeResearchJobData } from '../core/research-types.js';
+import type { NotebookLMAdapter } from '../infra/notebooklm-client.js';
+import type { QuotaTracker } from '../infra/quota-tracker.js';
+import type { ResearchLLMAdapter } from '../infra/research-llm-client.js';
+import type { TelegramAdapter } from '../infra/telegram.js';
+import type { VaultWriterAdapter } from '../infra/vault-writer.js';
+import { type ResearchJobLike, handleResearchJob } from './research-handler.js';
+import type { ResearchDeps } from './research-states.js';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -62,9 +62,7 @@ function makeMockDeps(overrides: Partial<ResearchDeps> = {}): ResearchDeps {
       ok: true,
       value: {
         sessionId: 'session-001',
-        webSources: [
-          { title: 'Source 1', url: 'https://example.com/1' },
-        ],
+        webSources: [{ title: 'Source 1', url: 'https://example.com/1' }],
       },
     }),
     addDiscoveredSources: vi.fn().mockResolvedValue({ ok: true, value: ['id-1'] }),
@@ -80,7 +78,9 @@ function makeMockDeps(overrides: Partial<ResearchDeps> = {}): ResearchDeps {
     createAudioOverview: vi.fn().mockResolvedValue({ ok: true, value: 'audio-001' }),
     createVideoOverview: vi.fn().mockResolvedValue({ ok: true, value: 'video-001' }),
     waitForArtifact: vi.fn().mockResolvedValue({ ok: true, value: 'ready' }),
-    shareNotebook: vi.fn().mockResolvedValue({ ok: true, value: 'https://notebooklm.google.com/notebook/shared-123' }),
+    shareNotebook: vi
+      .fn()
+      .mockResolvedValue({ ok: true, value: 'https://notebooklm.google.com/notebook/shared-123' }),
     dispose: vi.fn().mockResolvedValue(undefined),
   };
 
@@ -207,7 +207,9 @@ describe('handleResearchJob', () => {
     await handleResearchJob(job, deps);
 
     // Get the final context from the last updateData call
-    const finalData = job.updateData.mock.calls[job.updateData.mock.calls.length - 1]?.[0] as ResearchJobData;
+    const finalData = job.updateData.mock.calls[
+      job.updateData.mock.calls.length - 1
+    ]?.[0] as ResearchJobData;
     const trace = finalData?.context?.trace ?? [];
 
     // Should have trace events for each state executed
@@ -237,9 +239,7 @@ describe('handleResearchJob', () => {
       },
     });
 
-    await expect(handleResearchJob(job, deps)).rejects.toThrow(
-      /Research pipeline failed/,
-    );
+    await expect(handleResearchJob(job, deps)).rejects.toThrow(/Research pipeline failed/);
   });
 
   it('sends Telegram error message on permanent pipeline failure (FR-062)', async () => {
@@ -262,7 +262,8 @@ describe('handleResearchJob', () => {
       12345,
       expect.stringContaining('Research failed: "AI agents"'),
     );
-    const errorMsg = (deps.telegram.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as string;
+    const errorMsg = (deps.telegram.sendMessage as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[1] as string;
     expect(errorMsg).toContain('creating_notebook');
     expect(errorMsg).toContain('Auth error - permanent');
   });
@@ -371,7 +372,9 @@ describe('handleResearchJob', () => {
     expect(result.topic).toBe('AI agents');
 
     // Verify the context shows 1 skipped and 2 answered
-    const finalData = job.updateData.mock.calls[job.updateData.mock.calls.length - 1]?.[0] as ResearchJobData;
+    const finalData = job.updateData.mock.calls[
+      job.updateData.mock.calls.length - 1
+    ]?.[0] as ResearchJobData;
     const skipped = finalData?.context?.skippedQuestions ?? [];
     expect(skipped.length).toBe(1);
     const answered = Object.keys(finalData?.context?.answers ?? {});

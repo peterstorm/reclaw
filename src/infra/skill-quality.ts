@@ -13,7 +13,7 @@
 
 import { appendFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { toRecord, type SkillQualitySignal } from '../core/skill-quality.js';
+import { type SkillQualitySignal, toRecord } from '../core/skill-quality.js';
 
 export type SkillQualityRecorder = (signal: SkillQualitySignal) => void;
 
