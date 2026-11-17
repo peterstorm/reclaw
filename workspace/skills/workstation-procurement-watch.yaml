@@ -1,5 +1,5 @@
 name: Workstation Procurement Watch
-schedule: "45 9 * * *"  # Daily 09:45. Two distinct modes, see "Run mode": Monday = full ~55-source sweep + report; other days = targeted watch of the cached list + the 15 price targets only. The daily run is deliberately cheap — running the full sweep daily cannot fit the 900s timeout.
+schedule: "45 9 * * *"  # Daily 09:45. Two distinct modes, see "Run mode": Monday = full ~55-source sweep + report; other days = targeted watch of the cached list + the 16 price targets only. The daily run is deliberately cheap — running the full sweep daily cannot fit the 900s timeout.
 permissionProfile: scheduled
 # Pi/vLLM unreachable (desktop off) or out of quota → rerun once on Claude; the message says so.
 fallback: { backend: claude, model: sonnet }
@@ -146,6 +146,7 @@ promptTemplate: |
   | RTX PRO 6000 Blackwell Server Edition | >= 20% below that exact variant's observed historical average, with passive-cooling deployment cost included |
   | NVIDIA DGX Spark | Single unit at >= 20% below that exact configuration's verified current EU retail baseline or observed 30-day average; multi-unit lot filling the remaining four-system goal at >= 15% below baseline per landed unit |
   | ASUS Ascent GX10 | Single unit at >= 20% below that exact configuration's verified current EU retail baseline or observed 30-day average; multi-unit lot filling the remaining four-system goal at >= 15% below baseline per landed unit |
+  | Corsair Vengeance RGB DDR5-6000 96GB (2×48GB) CL36, MPN CMH96GX5M2E6000Z36, Proshop https://www.proshop.dk/RAM/Corsair-Vengeance-RGB-DDR5-6000-96GB-CL36-Dual-Channel-2-pcs-AMD-EXPO-Intel-XMP-Graa-med-RGB/3372743 — USED listings only (user-added 2026-11-12) | Used kit >= 20% below current Proshop new price (14,561 DKK PreOrder on 2026-11-12) landed, i.e. <= ~11,650 DKK; default gate, user may override. Same MPN/capacity/speed only; never blend with ECC RDIMM or other non-ECC kits; log new price as baseline only |
 
   Use a VAT-inclusive Danish price when available; otherwise convert a verified VAT-inclusive EU retail price to DKK and record the source/date. Do not invent a baseline from search snippets. If neither a credible retail baseline nor enough historical samples exists, collect the listing as price history but do not claim a threshold hit.
 
@@ -191,7 +192,7 @@ promptTemplate: |
      most recently seen. If more than 25 qualify, say so in the coverage line.
 
   2. **Check the immediate price targets.** For each row in the "Immediate price
-     targets" table, run one targeted search for that item. These fifteen thresholds are
+     targets" table, run one targeted search for that item. These sixteen thresholds are
      the same-day promise of this skill; nothing else is. The three RTX PRO 6000
      Blackwell variants and the two compact GB10 system models are separate searches
      and separate price populations.
@@ -682,7 +683,7 @@ promptTemplate: |
   Why it matters: [1-2 lines]
   Recommended action: [buy / verify / wait]
 
-  Coverage: targeted watch — [N] cached listings re-checked, [M]/15 price targets searched
+  Coverage: targeted watch — [N] cached listings re-checked, [M]/16 price targets searched
   ```
 
   **Monday report format:**
@@ -740,7 +741,7 @@ promptTemplate: |
   - "Skipped for time" and "blocked/unreachable" are different findings and are
     never merged.
   - `ALL_CLEAR` on a TARGETED WATCH day asserts only that the cached watch list and
-    the fifteen price targets were checked. It never implies the wider market was.
+    the sixteen price targets were checked. It never implies the wider market was.
 
   ## Quality guardrails
 
