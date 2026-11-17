@@ -1,0 +1,242 @@
+{
+  "requireGovernance": [
+    "src/"
+  ],
+  "boundaries": [
+    {
+      "module": "src/core/",
+      "description": "Functional core: pure domain logic, ports and parsers; imports itself and pure libraries only, never infra/orchestration",
+      "allow": [
+        "./",
+        "src/core/",
+        "zod",
+        "yaml",
+        "ts-pattern",
+        "cron-parser",
+        "ts-fsrs",
+        "chrono-node",
+        "vitest",
+        "fast-check"
+      ],
+      "deny": [
+        "src/infra/",
+        "src/orchestration/",
+        "src/main.ts",
+        "node:"
+      ]
+    },
+    {
+      "module": "src/infra/",
+      "description": "Adapters: Redis/BullMQ, Telegram, filesystem, subprocesses, HTTP; implement core ports, never call orchestration",
+      "allow": [
+        "./",
+        "src/infra/",
+        "src/core/",
+        "node:",
+        "bullmq",
+        "ioredis",
+        "grammy",
+        "chokidar",
+        "unpdf",
+        "notebooklm-kit",
+        "zod",
+        "ts-pattern",
+        "vitest",
+        "fast-check"
+      ],
+      "deny": [
+        "src/orchestration/",
+        "src/main.ts"
+      ]
+    },
+    {
+      "module": "src/orchestration/",
+      "description": "Shell orchestrators: wire core decisions to infra adapters (reclaw convention, workspace architecture.md: orchestration may import infra adapters directly); never the composition root",
+      "allow": [
+        "./",
+        "src/orchestration/",
+        "src/core/",
+        "src/infra/",
+        "node:",
+        "bullmq",
+        "ioredis",
+        "cron-parser",
+        "ts-pattern",
+        "vitest",
+        "fast-check"
+      ],
+      "deny": [
+        "src/main.ts"
+      ]
+    },
+    {
+      "module": "src/main.ts",
+      "description": "Composition root: builds adapters and hands them to orchestrators",
+      "allow": [
+        "./",
+        "src/",
+        "node:",
+        "ioredis"
+      ],
+      "deny": []
+    },
+    {
+      "module": "src/main.test.ts",
+      "description": "Composition-root tests",
+      "allow": [
+        "./",
+        "src/",
+        "node:",
+        "ioredis",
+        "vitest",
+        "fast-check"
+      ],
+      "deny": []
+    }
+  ],
+  "pureModules": [
+    "src/core/"
+  ],
+  "maxFunctionLines": 50,
+  "excludeFromMaxLines": [
+    ".test.ts",
+    ".spec.ts"
+  ],
+  "docReferences": {
+    "govern": [
+      {
+        "path": "docs/",
+        "reason": "the project's documentation describes the tree as it is"
+      },
+      {
+        "path": "README.md",
+        "reason": "the entry document names the commands and files a reader starts from"
+      },
+      {
+        "path": "CONTEXT.md",
+        "reason": "the ubiquitous language names the code that realizes each term"
+      }
+    ],
+    "plans": [
+      {
+        "path": ".claude/plans/",
+        "reason": "a plan cites its spec's ids and ADRs; it names files not built yet, so only those are resolved"
+      }
+    ],
+    "sourceRoots": [
+      "src"
+    ]
+  },
+  "switchTotalityBaseline": [
+    "src/core/podcast-request.ts::format",
+    "src/core/podcast-request.ts::length",
+    "src/core/skill-quality.ts::signal.status",
+    "src/core/study-plan.ts::e.kind",
+    "src/infra/agent-backends/pi-backend.ts::event.type",
+    "src/infra/vault-workspace.ts::error.kind",
+    "src/orchestration/learn-command.ts::name",
+    "src/orchestration/scheduler.ts::decision.action"
+  ],
+  "discriminantBranchingBaseline": [
+    "src/infra/agent-backends/runner.ts::delta.type"
+  ],
+  "duplicateBlockBaseline": [
+    "src/infra/agent-backends/runner.ts::src/infra/agent-backends/runner.ts@696e63e0",
+    "src/infra/telegram.ts::src/infra/telegram.ts@efea554f",
+    "src/main.test.ts::src/orchestration/message-router.test.ts@47772a04",
+    "src/orchestration/message-router.test.ts::src/main.test.ts@47772a04",
+    "src/orchestration/research-handler.test.ts::src/orchestration/research-states.test.ts@0fb9caad",
+    "src/orchestration/research-handler.test.ts::src/orchestration/research-states.test.ts@7a90b4e7",
+    "src/orchestration/research-handler.test.ts::src/orchestration/research-states.test.ts@942c2422",
+    "src/orchestration/research-states.test.ts::src/orchestration/research-handler.test.ts@0fb9caad",
+    "src/orchestration/research-states.test.ts::src/orchestration/research-handler.test.ts@7a90b4e7",
+    "src/orchestration/research-states.test.ts::src/orchestration/research-handler.test.ts@942c2422",
+    "src/orchestration/scheduler.test.ts::src/orchestration/scheduler.test.ts@1d4fa7f6",
+    "src/orchestration/scheduler.test.ts::src/orchestration/scheduler.test.ts@77748918",
+    "src/orchestration/worker.test.ts::src/orchestration/worker.test.ts@2aeccd5a",
+    "src/orchestration/worker.test.ts::src/orchestration/worker.test.ts@2aeccd5a",
+    "src/orchestration/worker.test.ts::src/orchestration/worker.test.ts@2aeccd5a",
+    "src/orchestration/worker.test.ts::src/orchestration/worker.test.ts@2aeccd5a",
+    "src/orchestration/worker.test.ts::src/orchestration/worker.test.ts@2aeccd5a",
+    "src/orchestration/worker.test.ts::src/orchestration/worker.test.ts@f1adec3d"
+  ],
+  "wireCastBaseline": [
+    "ops/zyxel-dhcp.ts::as Record<string, unknown>",
+    "ops/zyxel-dhcp.ts::as Record<string, unknown>",
+    "ops/zyxel-dhcp.ts::as Record<string, unknown>",
+    "ops/zyxel-dhcp.ts::as { RSAPublicKey: string }",
+    "scripts/commute-weather.ts::as OpenMeteoResponse",
+    "scripts/dotslash-contacts.ts::as Contact",
+    "scripts/garmin-schedule-workout.ts::workout: Record<string, unknown>",
+    "scripts/notebooklm-reauth.ts::as { browsers: ReadonlyArray<{ name: string; revision: string }> }"
+  ],
+  "docReferenceBaseline": [
+    ".claude/plans/2026-02-26-personal-agent.md::/home/peterstorm/dev/claude-plugins/reclaw/.claude/specs/2026-02-26-personal-agent/spec.md",
+    ".claude/plans/2026-03-03-deep-research.md::/home/peterstorm/dev/claude-plugins/reclaw/.claude/specs/2026-03-03-deep-research/spec.md",
+    ".claude/plans/2026-05-18-pi-backend.md::.claude/specs/2026-05-18-pi-backend/spec.md",
+    "CONTEXT.md::CODE",
+    "CONTEXT.md::ai-engineering",
+    "CONTEXT.md::inference-infra",
+    "CONTEXT.md::learning/curriculum/",
+    "CONTEXT.md::learning/curriculum/registry.yaml",
+    "CONTEXT.md::media/instagram/MOC.md",
+    "CONTEXT.md::software-engineering",
+    "README.md::CLAUDE_BINARY_PATH",
+    "README.md::INCRBY",
+    "README.md::SESSION_IDLE_TIMEOUT_MS",
+    "README.md::TELEGRAM_BOT_TOKEN",
+    "README.md::TIMEZONE",
+    "README.md::learning/curriculum/",
+    "README.md::learning/curriculum/.state/study-log.jsonl",
+    "README.md::reclaw/skills/learning-loop.md",
+    "README.md::setInterval",
+    "docs/adr/0001-strategy-pattern-shared-runner-lifecycle.md::claude-subprocess.ts",
+    "docs/adr/0001-strategy-pattern-shared-runner-lifecycle.md::run-claude.ts",
+    "docs/adr/0001-strategy-pattern-shared-runner-lifecycle.md::run-pi.ts",
+    "docs/adr/0002-backend-agnostic-consumer-interface.md::agent-backends/",
+    "docs/adr/0002-backend-agnostic-consumer-interface.md::aider",
+    "docs/adr/0002-backend-agnostic-consumer-interface.md::claude-permissions.ts",
+    "docs/adr/0002-backend-agnostic-consumer-interface.md::pi-permissions.ts",
+    "docs/adr/0003-directory-structure-static-backend-resolution.md::../infra/agent-backends/index.js",
+    "docs/adr/0003-directory-structure-static-backend-resolution.md::../infra/claude-subprocess.js",
+    "docs/adr/0003-directory-structure-static-backend-resolution.md::agent-backends/",
+    "docs/adr/0003-directory-structure-static-backend-resolution.md::agent-runner.ts",
+    "docs/adr/0003-directory-structure-static-backend-resolution.md::agent-types.ts",
+    "docs/adr/0003-directory-structure-static-backend-resolution.md::permissionFlags",
+    "docs/adr/0003-directory-structure-static-backend-resolution.md::src/infra/claude-subprocess.test.ts",
+    "docs/adr/0003-directory-structure-static-backend-resolution.md::src/infra/claude-subprocess.ts",
+    "docs/adr/0003-directory-structure-static-backend-resolution.md::src/infra/claude-subprocess.ts",
+    "docs/adr/0003-directory-structure-static-backend-resolution.md::src/infra/claude-subprocess.ts",
+    "docs/adr/0004-operational-conventions-multi-backend.md::.pi/settings.json",
+    "docs/adr/0004-operational-conventions-multi-backend.md::AGENT_MODEL",
+    "docs/adr/0004-operational-conventions-multi-backend.md::AGENT_MODEL",
+    "docs/adr/0004-operational-conventions-multi-backend.md::AGENT_PROVIDER",
+    "docs/adr/0006-canonical-vault-path-confinement.md::openat",
+    "docs/adr/0007-durable-telegram-ingress-acknowledgement.md::getUpdates",
+    "docs/adr/0007-durable-telegram-ingress-acknowledgement.md::getUpdates",
+    "docs/adr/0012-persistent-opaque-telegram-uploads.md::Content-Length",
+    "docs/architecture-review-2026-08-14.md::JobLike",
+    "docs/architecture-review-2026-08-14.md::Machine",
+    "docs/architecture-review-2026-08-14.md::MaxListenersExceededWarning",
+    "docs/architecture-review-2026-08-14.md::QueueBackend",
+    "docs/architecture-review-2026-08-14.md::adaptBullMQJob",
+    "docs/architecture-review-2026-08-14.md::agent-failed",
+    "docs/architecture-review-2026-08-14.md::agentCli",
+    "docs/architecture-review-2026-08-14.md::core/infra/orchestration",
+    "docs/architecture-review-2026-08-14.md::credentials.json.bak",
+    "docs/architecture-review-2026-08-14.md::credentials.json.bak",
+    "docs/architecture-review-2026-08-14.md::invalid-session",
+    "docs/architecture-review-2026-08-14.md::invalid-session",
+    "docs/architecture-review-2026-08-14.md::nonzero-exit",
+    "docs/architecture-review-2026-08-14.md::notebookLm",
+    "docs/architecture-review-2026-08-14.md::output-limit-exceeded",
+    "docs/architecture-review-2026-08-14.md::protocol-drift",
+    "docs/architecture-review-2026-08-14.md::provider-auth-failed",
+    "docs/architecture-review-2026-08-14.md::runStateMachine",
+    "docs/architecture-review-2026-08-14.md::runStateMachine",
+    "docs/architecture-review-2026-08-14.md::runStateMachine",
+    "docs/architecture-review-2026-08-14.md::spawn-failed",
+    "docs/architecture-review-2026-08-14.md::telegramDelivery",
+    "docs/architecture-review-2026-08-14.md::timed-out"
+  ]
+}

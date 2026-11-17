@@ -1,0 +1,27 @@
+{
+  "kind": "regex",
+  "name": "no-console-log",
+  "description": "Disallow console.log() in the service — reclaw logs operational lines with console.info/console.error to journald. scripts/ and ops/ are exempt: they are CLIs whose contract is stdout (skills parse their JSON/text output), so console.log IS their interface.",
+  "extensions": [
+    ".ts",
+    ".tsx",
+    ".mts",
+    ".cts"
+  ],
+  "pattern": "(?<![\"'`])console\\.log\\(",
+  "flags": "",
+  "fixHint": "In src/, log with console.info (operational) or console.error (failures); remove debug prints",
+  "enabled": true,
+  "excludePatterns": [
+    ".test.ts",
+    ".test.tsx",
+    ".test.mts",
+    ".test.cts",
+    ".spec.ts",
+    ".spec.tsx",
+    ".spec.mts",
+    ".spec.cts",
+    "scripts/",
+    "ops/"
+  ]
+}
