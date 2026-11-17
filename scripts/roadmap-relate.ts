@@ -115,6 +115,11 @@ const REPOS: readonly Readonly<{ name: string; path: string; what: string }>[] =
   { name: 'reclaw', path: '~/dev/claude-plugins/reclaw', what: 'personal assistant service' },
   { name: 'chatbot', path: '~/dev/web/chatbot', what: 'multi-tenant SMB chatbot product' },
   { name: 'cortex', path: '~/dev/claude-plugins/cortex', what: 'retrieval/memory plugin' },
+  {
+    name: 'ds4-native',
+    path: '~/dev/ds4-native',
+    what: 'native-precision DeepSeek-V4.1-Flash inference engine (CUDA, 2× RTX PRO 6000)',
+  },
 ];
 
 const expand = (p: string) => p.replace(/^~/, homedir());

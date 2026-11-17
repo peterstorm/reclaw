@@ -163,6 +163,10 @@ promptTemplate: |
   automation / recursive self-improvement) is literacy, not a build skill: leave it out of the
   matrix. Stages 8–10 are where these repos are most likely ahead of the market (harness
   constraints, memory extraction and decay, self-improvement loops) — look hard there.
+  `ds4-native` is a CUDA/C++ inference engine, not an LLM application: judge it mainly on
+  serving and inference optimisation (batching, KV cache, quantisation, memory budgets), model
+  internals (stage 7) and its eval/benchmark tooling; mark application-layer items (RAG,
+  prompting, agents) "n/a" for it rather than ❌.
 
   Write the mapping note with the Write tool (it is fully generated each time — overwrite it):
 
@@ -188,8 +192,8 @@ promptTemplate: |
   (items whose status changed, with the commit/area that changed it; "first mapping" if none)
 
   ## Matrix
-  One table per roadmap stage: | Item | Consensus | loom | fugue | reclaw | chatbot | cortex | —
-  cells are status + evidence path, short.
+  One table per roadmap stage: | Item | Consensus | loom | fugue | reclaw | chatbot | cortex |
+  ds4-native | — one column per repo in `repos`, cells are status + evidence path, short.
 
   ## Strongest proof points
   The 5–8 items where a repo is already portfolio-grade, with where to look.
