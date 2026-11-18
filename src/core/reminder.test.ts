@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  type ParsedReminder,
   formatAbsoluteTime,
   formatDuration,
+  formatReminderEnqueueOutcome,
   formatSemanticDate,
   isRemindListCommand,
   parseAbsoluteTime,
@@ -469,5 +471,43 @@ describe('parseRemindCommand recurring', () => {
     if (r.ok) {
       expect(r.value.kind).toBe('cron-recurring');
     }
+  });
+});
+
+// ─── formatReminderEnqueueOutcome ─────────────────────────────────────────────
+
+describe('formatReminderEnqueueOutcome', () => {
+  const now = new Date('2026-03-01T10:00:00');
+  const oneShot: ParsedReminder = { kind: 'duration', delayMs: 1_800_000, text: 'stretch' };
+  const interval: ParsedReminder = { kind: 'recurring', intervalMs: 7_200_000, text: 'water' };
+  const cron: ParsedReminder = {
+    kind: 'cron-recurring',
+    cronPattern: '0 12 * * 0',
+    cronDescription: 'every Sunday at 12:00',
+    text: 'water plants',
+  };
+
+  it('confirms an enqueued reminder', () => {
+    expect(formatReminderEnqueueOutcome({ kind: 'enqueued', reminder: oneShot }, now)).toBe(
+      "Got it — I'll remind you in 30m.",
+    );
+    expect(formatReminderEnqueueOutcome({ kind: 'enqueued', reminder: interval }, now)).toBe(
+      "Got it — I'll remind you every 2h to: water",
+    );
+    expect(formatReminderEnqueueOutcome({ kind: 'enqueued', reminder: cron }, now)).toBe(
+      "Got it — I'll remind you every Sunday at 12:00 to: water plants",
+    );
+  });
+
+  it('names the job the factory rejected', () => {
+    expect(
+      formatReminderEnqueueOutcome({ kind: 'rejected', reminder: oneShot, reason: 'bad' }, now),
+    ).toBe('Cannot create reminder: bad');
+    expect(
+      formatReminderEnqueueOutcome({ kind: 'rejected', reminder: interval, reason: 'bad' }, now),
+    ).toBe('Cannot create recurring reminder: bad');
+    expect(
+      formatReminderEnqueueOutcome({ kind: 'rejected', reminder: cron, reason: 'bad' }, now),
+    ).toBe('Cannot create recurring reminder: bad');
   });
 });

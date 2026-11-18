@@ -1,4 +1,5 @@
 import { match } from 'ts-pattern';
+import { type AskRejection, formatAskRejection } from '../core/ask-rejection.js';
 import { parseAskCommand } from '../core/ask-request.js';
 import {
   citedSourceIndicesOf,
@@ -14,7 +15,8 @@ import {
 } from '../core/podcast-request.js';
 import {
   type ParsedReminder,
-  formatReminderConfirmation,
+  type ReminderEnqueueOutcome,
+  formatReminderEnqueueOutcome,
   formatReminderList,
   isRemindListCommand,
   parseRemindCancelCommand,
@@ -23,6 +25,13 @@ import {
 import { parseResearchCommand } from '../core/research-request.js';
 import { makeResearchJobData } from '../core/research-types.js';
 import type { SourceMeta } from '../core/research-types.js';
+import {
+  type RunRejection,
+  findRunSkill,
+  formatRunRejection,
+  manualRunWindow,
+  parseRunCommand,
+} from '../core/run-command.js';
 import {
   type AgentBackendName,
   type JobId,
@@ -36,7 +45,6 @@ import {
   makeRecurringReminderJob,
   makeReminderJob,
   makeScheduledJob,
-  makeSkillId,
   makeTelegramIngressJobId,
   makeTelegramUserId,
   ok,
@@ -44,7 +52,7 @@ import {
 import type { NotebookLMAdapter } from '../infra/notebooklm-client.js';
 import type { Queues } from '../infra/queue.js';
 import type { QuotaTracker } from '../infra/quota-tracker.js';
-import { appendAskAnswer } from '../infra/research-qa-writer.js';
+import { type AskAnswerInput, appendAskAnswer } from '../infra/research-qa-writer.js';
 import { type NotebookLookup, findNotebookByTopic } from '../infra/research-vault-lookup.js';
 import type { SessionStore } from '../infra/session-store.js';
 import type {
@@ -255,25 +263,21 @@ async function routeRemindCommand(msg: IncomingMessage, deps: MessageRouterDeps)
   }
 
   const reminder = parseResult.value;
-  const enqueued =
+  const outcome =
     reminder.kind === 'recurring' || reminder.kind === 'cron-recurring'
       ? await enqueueRecurringReminder(msg, deps, reminder)
       : await enqueueOneShotReminder(msg, deps, reminder);
-  await deps.telegram.sendMessage(
-    msg.chatId,
-    enqueued.ok ? formatReminderConfirmation(reminder, now) : enqueued.error,
-  );
+  await deps.telegram.sendMessage(msg.chatId, formatReminderEnqueueOutcome(outcome, now));
 }
 
 type RecurringReminder = Extract<ParsedReminder, { kind: 'recurring' | 'cron-recurring' }>;
 type OneShotReminder = Exclude<ParsedReminder, RecurringReminder>;
 
-/** Enqueue a recurring reminder; err carries the message to send instead of a confirmation. */
 async function enqueueRecurringReminder(
   msg: IncomingMessage,
   deps: MessageRouterDeps,
   reminder: RecurringReminder,
-): Promise<Result<undefined, string>> {
+): Promise<ReminderEnqueueOutcome> {
   const jobId = ingressJobId(msg, 'recurring');
   const recurringResult = makeRecurringReminderJob({
     id: jobId,
@@ -285,19 +289,16 @@ async function enqueueRecurringReminder(
       : { intervalMs: reminder.intervalMs }),
     schedulerId: jobId,
   });
-  if (!recurringResult.ok) {
-    return err(`Cannot create recurring reminder: ${recurringResult.error}`);
-  }
+  if (!recurringResult.ok) return { kind: 'rejected', reminder, reason: recurringResult.error };
   await deps.queues.enqueueRecurringReminder(recurringResult.value);
-  return ok(undefined);
+  return { kind: 'enqueued', reminder };
 }
 
-/** Enqueue a one-shot reminder; err carries the message to send instead of a confirmation. */
 async function enqueueOneShotReminder(
   msg: IncomingMessage,
   deps: MessageRouterDeps,
   reminder: OneShotReminder,
-): Promise<Result<undefined, string>> {
+): Promise<ReminderEnqueueOutcome> {
   const reminderResult = makeReminderJob({
     id: ingressJobId(msg, 'reminder'),
     chatId: msg.chatId,
@@ -305,11 +306,9 @@ async function enqueueOneShotReminder(
     createdAt: new Date().toISOString(),
     delayMs: reminder.delayMs,
   });
-  if (!reminderResult.ok) {
-    return err(`Cannot create reminder: ${reminderResult.error}`);
-  }
+  if (!reminderResult.ok) return { kind: 'rejected', reminder, reason: reminderResult.error };
   await deps.queues.enqueueReminder(reminderResult.value);
-  return ok(undefined);
+  return { kind: 'enqueued', reminder };
 }
 
 // ─── /research-status ────────────────────────────────────────────────────────
@@ -430,10 +429,11 @@ async function routeHelpCommand(msg: IncomingMessage, deps: MessageRouterDeps): 
 async function runAsk(msg: IncomingMessage, deps: MessageRouterDeps): Promise<void> {
   const target = await resolveAskTarget(msg, deps);
   if (!target.ok) {
-    await deps.telegram.sendMessage(msg.chatId, target.error);
+    await deps.telegram.sendMessage(msg.chatId, formatAskRejection(target.error));
     return;
   }
-  const { notebookLM, lookup, question, vaultBasePath } = target.value;
+  const { notebookLM, notebook, question } = target.value;
+  const { lookup } = notebook;
 
   await deps.telegram.sendMessage(msg.chatId, `Asking notebook: ${lookup.topic}…`);
 
@@ -461,8 +461,7 @@ async function runAsk(msg: IncomingMessage, deps: MessageRouterDeps): Promise<vo
   // vault failure does not suppress an otherwise valid answer, but it is no
   // longer detached from ingress lifecycle and process shutdown.
   const persisted = await appendAskAnswer({
-    vaultBasePath,
-    lookup,
+    ...notebook,
     question,
     resolvedAnswer: resolvedText,
     citedSources,
@@ -473,41 +472,43 @@ async function runAsk(msg: IncomingMessage, deps: MessageRouterDeps): Promise<vo
   await deps.telegram.sendChunkedMessage(msg.chatId, splitMessage(reply));
 }
 
+/** A topic's notebook, together with the vault it was resolved against. */
+type ResolvedNotebook = Pick<AskAnswerInput, 'vaultBasePath' | 'lookup'>;
+
 type AskTarget = {
   readonly notebookLM: NotebookLMAdapter;
-  readonly lookup: NotebookLookup;
+  readonly notebook: ResolvedNotebook;
   readonly question: string;
-  readonly vaultBasePath: string;
 };
 
 /**
  * Everything /ask needs before it spends a NotebookLM chat: wiring, a parsed
- * command, the topic's notebook, quota, and an adapter. err carries the reply.
+ * command, the topic's notebook, quota, and an adapter.
  */
 async function resolveAskTarget(
   msg: IncomingMessage,
   deps: MessageRouterDeps,
-): Promise<Result<AskTarget, string>> {
-  if (deps.getNotebookLM === undefined || deps.vaultBasePath === undefined) {
-    return err('/ask is not wired up — NotebookLM adapter or vault path missing.');
+): Promise<Result<AskTarget, AskRejection>> {
+  const { getNotebookLM, vaultBasePath } = deps;
+  if (getNotebookLM === undefined || vaultBasePath === undefined) {
+    return err({ kind: 'not-wired' });
   }
   const parsed = parseAskCommand(msg.text);
-  if (!parsed.ok) return err(parsed.error);
+  if (!parsed.ok) return err({ kind: 'invalid-command', reason: parsed.error });
 
-  const lookup = await findNotebookByTopic(deps.vaultBasePath, parsed.value.slug);
-  if (!lookup.ok) return err(lookup.error);
+  const lookup = await findNotebookByTopic(vaultBasePath, parsed.value.slug);
+  if (!lookup.ok) return err({ kind: 'topic-unavailable', reason: lookup.error });
 
   const hasQuota = await deps.quotaTracker.hasQuota(1);
-  if (!hasQuota) return err('Daily NotebookLM chat quota exhausted. Try again tomorrow.');
+  if (!hasQuota) return err({ kind: 'quota-exhausted' });
 
-  const notebookLM = await deps.getNotebookLM();
-  if (notebookLM === null) return err('NotebookLM is not configured on this reclaw instance.');
+  const notebookLM = await getNotebookLM();
+  if (notebookLM === null) return err({ kind: 'notebooklm-unconfigured' });
 
   return ok({
     notebookLM,
-    lookup: lookup.value,
+    notebook: { vaultBasePath, lookup: lookup.value },
     question: parsed.value.question,
-    vaultBasePath: deps.vaultBasePath,
   });
 }
 
@@ -523,8 +524,8 @@ const citedInOrder = (
 
 function formatAskReply(
   resolvedText: string,
-  cited: ReadonlyArray<{ readonly title: string; readonly url: string }>,
-  lookup: { readonly topic: string; readonly hubVaultPath: string },
+  cited: readonly SourceMeta[],
+  lookup: NotebookLookup,
 ): string {
   const sourcesSection =
     cited.length > 0
@@ -646,7 +647,7 @@ async function routeDlqCommand(msg: IncomingMessage, deps: MessageRouterDeps): P
 async function routeRunCommand(msg: IncomingMessage, deps: MessageRouterDeps): Promise<void> {
   const skill = resolveRunSkill(msg.text, deps.getSkillRegistry);
   if (!skill.ok) {
-    await deps.telegram.sendMessage(msg.chatId, skill.error);
+    await deps.telegram.sendMessage(msg.chatId, formatRunRejection(skill.error));
     return;
   }
 
@@ -674,41 +675,13 @@ async function routeRunCommand(msg: IncomingMessage, deps: MessageRouterDeps): P
   );
 }
 
-/** Resolve the skill a /run command names; err carries the reply. */
+/** The skill a /run command names. The registry is read only once the command parses. */
 function resolveRunSkill(
   text: string,
   getSkillRegistry: (() => SkillRegistry) | undefined,
-): Result<SkillConfig, string> {
-  if (getSkillRegistry === undefined) {
-    return err('Skill registry not available — /run is disabled.');
-  }
-  const rawSkillId = text.trim().split(/\s+/)[1];
-  if (!rawSkillId || rawSkillId === '') {
-    return err(
-      'Usage: /run <skill-id>\nUse /status to see how many skills are loaded; check workspace/skills/ for IDs.',
-    );
-  }
-  const skillIdResult = makeSkillId(rawSkillId);
-  if (!skillIdResult.ok) return err(`Invalid skill id "${rawSkillId}": ${skillIdResult.error}`);
-
-  const registry = getSkillRegistry();
-  const skill = registry.get(skillIdResult.value);
-  if (skill === undefined) {
-    const known = [...registry.keys()].slice(0, 20).join(', ');
-    return err(`Unknown skill "${rawSkillId}". Known: ${known}`);
-  }
-  return ok(skill);
-}
-
-/** A manual run triggers at `now` (whole seconds) and stays valid for the skill's window. */
-function manualRunWindow(
-  now: Date,
-  validityWindowMinutes: number,
-): { readonly triggeredAt: string; readonly validUntil: string } {
-  const triggeredAt = new Date(now);
-  triggeredAt.setMilliseconds(0);
-  return {
-    triggeredAt: triggeredAt.toISOString(),
-    validUntil: new Date(triggeredAt.getTime() + validityWindowMinutes * 60 * 1000).toISOString(),
-  };
+): Result<SkillConfig, RunRejection> {
+  if (getSkillRegistry === undefined) return err({ kind: 'registry-unavailable' });
+  const skillId = parseRunCommand(text);
+  if (!skillId.ok) return skillId;
+  return findRunSkill(getSkillRegistry(), skillId.value);
 }

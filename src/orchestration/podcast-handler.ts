@@ -155,7 +155,15 @@ export async function handlePodcastJob(job: PodcastJob, deps: PodcastDeps): Prom
     .catch(console.error);
 
   const generated = await generatePodcastAudio(notebookLM, job, note.title, content, formatLabel);
-  if (!generated.ok) return fail(generated.error);
+  if (!generated.ok) {
+    const failure = generated.error;
+    if (failure.kind === 'audio-not-generated') {
+      console.error(
+        `[podcast] audio generation failed after creating notebook ${failure.notebookId}: ${failure.reason}`,
+      );
+    }
+    return fail(failure.reason);
+  }
   const notebookId = generated.value;
 
   const shareResult = await notebookLM.shareNotebook(notebookId);
@@ -187,32 +195,50 @@ async function loadPodcastSource(
   return ok({ note: note.value, content });
 }
 
+/** The audio a podcast job asks NotebookLM for. */
+type PodcastAudioOptions = Pick<PodcastJob, 'audioFormat' | 'audioLength'>;
+
+/**
+ * Why no audio was generated. Once the notebook exists the failure names it:
+ * the notebook outlives the job, so it must be traceable.
+ */
+type PodcastFailure =
+  | { readonly kind: 'notebook-not-created'; readonly reason: string }
+  | { readonly kind: 'audio-not-generated'; readonly notebookId: string; readonly reason: string };
+
 /**
  * Turn the note into a finished NotebookLM audio overview: notebook → text
  * source → processing → audio → artifact. Returns the notebook id to share.
  */
 async function generatePodcastAudio(
   notebookLM: NotebookLMAdapter,
-  job: PodcastJob,
+  audio: PodcastAudioOptions,
   title: string,
   content: string,
   formatLabel: string,
-): Promise<Result<string, string>> {
+): Promise<Result<string, PodcastFailure>> {
   const nbResult = await notebookLM.createNotebook(`Podcast: ${title}`);
-  if (!nbResult.ok) return err(`could not create notebook — ${nbResult.error.message}`);
+  if (!nbResult.ok) {
+    const reason = `could not create notebook — ${nbResult.error.message}`;
+    return err({ kind: 'notebook-not-created', reason });
+  }
   const notebookId = nbResult.value;
+  const notGenerated = (reason: string) =>
+    err<PodcastFailure>({ kind: 'audio-not-generated', notebookId, reason });
 
   const addResult = await notebookLM.addSourceText(notebookId, title, content);
-  if (!addResult.ok) return err(`could not add note as source — ${addResult.error.message}`);
+  if (!addResult.ok)
+    return notGenerated(`could not add note as source — ${addResult.error.message}`);
 
   const procResult = await notebookLM.waitForProcessing(notebookId, SOURCE_PROCESSING_TIMEOUT_MS);
-  if (!procResult.ok) return err(`source processing timed out — ${procResult.error.message}`);
+  if (!procResult.ok)
+    return notGenerated(`source processing timed out — ${procResult.error.message}`);
 
   const audioResult = await notebookLM.createAudioOverview(notebookId, {
     instructions: `Create a ${formatLabel.toLowerCase()} audio overview about: ${title}`,
-    customization: { format: job.audioFormat, length: job.audioLength },
+    customization: { format: audio.audioFormat, length: audio.audioLength },
   });
-  if (!audioResult.ok) return err(`audio creation failed — ${audioResult.error.message}`);
+  if (!audioResult.ok) return notGenerated(`audio creation failed — ${audioResult.error.message}`);
 
   const artifactResult = await notebookLM.waitForArtifact(
     audioResult.value,
@@ -220,9 +246,9 @@ async function generatePodcastAudio(
     ARTIFACT_TIMEOUT_MS,
   );
   if (!artifactResult.ok)
-    return err(`artifact generation timed out — ${artifactResult.error.message}`);
+    return notGenerated(`artifact generation timed out — ${artifactResult.error.message}`);
   if (artifactResult.value === 'failed')
-    return err(`NotebookLM could not generate audio for "${title}"`);
+    return notGenerated(`NotebookLM could not generate audio for "${title}"`);
   return ok(notebookId);
 }
 

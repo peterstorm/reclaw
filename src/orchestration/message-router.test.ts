@@ -6,7 +6,10 @@ import { fakeDeadLetterStore, rawScheduled } from '../core/__fixtures__/dead-let
 import {
   type ConversationGeneration,
   type ConversationRevision,
+  type SkillConfig,
+  makeSkillId,
   makeTelegramUpdateId,
+  skillRegistryFromList,
 } from '../core/types.js';
 import { fakeQueueOperations } from '../infra/__fixtures__/queue-operations.js';
 import type { NotebookLMAdapter } from '../infra/notebooklm-client.js';
@@ -192,6 +195,161 @@ describe('routeMessage', () => {
         );
       });
       expect(deps.queues.enqueueReminder).not.toHaveBeenCalled();
+    });
+
+    it('enqueues an interval reminder under the recurring identity and confirms', async () => {
+      const deps = makeDeps();
+      await routeMessage(makeMsg({ text: '/remind every 2h water' }), deps);
+
+      expect(deps.queues.enqueueRecurringReminder).toHaveBeenCalledWith({
+        kind: 'recurring-reminder',
+        id: 'telegram:1001:recurring',
+        chatId: 456,
+        text: 'water',
+        createdAt: expect.any(String),
+        intervalMs: 7_200_000,
+        schedulerId: 'telegram:1001:recurring',
+      });
+      expect(deps.queues.enqueueReminder).not.toHaveBeenCalled();
+      expect(deps.telegram.sendMessage).toHaveBeenCalledWith(
+        456,
+        "Got it — I'll remind you every 2h to: water",
+      );
+    });
+
+    it('enqueues a cron reminder with its pattern and confirms with its description', async () => {
+      const deps = makeDeps();
+      await routeMessage(makeMsg({ text: '/remind every Sunday at noon water' }), deps);
+
+      expect(deps.queues.enqueueRecurringReminder).toHaveBeenCalledWith(
+        expect.objectContaining({
+          intervalMs: 0,
+          cronPattern: '0 12 * * 0',
+          cronDescription: 'every Sunday at 12:00',
+          text: 'water',
+        }),
+      );
+      expect(deps.telegram.sendMessage).toHaveBeenCalledWith(
+        456,
+        "Got it — I'll remind you every Sunday at 12:00 to: water",
+      );
+    });
+
+    it('sends the recurring job error and enqueues nothing when the job is invalid', async () => {
+      const deps = makeDeps();
+      await routeMessage(makeMsg({ chatId: 4.5, text: '/remind every 2h water' }), deps);
+
+      expect(deps.telegram.sendMessage).toHaveBeenCalledTimes(1);
+      expect(deps.telegram.sendMessage).toHaveBeenCalledWith(
+        4.5,
+        'Cannot create recurring reminder: chatId must be an integer, got: 4.5',
+      );
+      expect(deps.queues.enqueueRecurringReminder).not.toHaveBeenCalled();
+      expect(deps.queues.enqueueReminder).not.toHaveBeenCalled();
+    });
+
+    it('sends the one-shot job error and enqueues nothing when the job is invalid', async () => {
+      const deps = makeDeps();
+      await routeMessage(makeMsg({ chatId: 4.5, text: '/remind 30m stretch' }), deps);
+
+      expect(deps.telegram.sendMessage).toHaveBeenCalledTimes(1);
+      expect(deps.telegram.sendMessage).toHaveBeenCalledWith(
+        4.5,
+        'Cannot create reminder: chatId must be an integer, got: 4.5',
+      );
+      expect(deps.queues.enqueueReminder).not.toHaveBeenCalled();
+      expect(deps.queues.enqueueRecurringReminder).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('/run command', () => {
+    const skill = (id: string, validityWindowMinutes = 30): SkillConfig => {
+      const skillId = makeSkillId(id);
+      if (!skillId.ok) throw new Error(skillId.error);
+      return {
+        id: skillId.value,
+        name: id,
+        schedule: null,
+        promptTemplate: 'Do it.',
+        permissionProfile: 'scheduled',
+        validityWindowMinutes,
+        environment: [],
+        dependsOn: null,
+      };
+    };
+    const withSkills = (...skills: readonly SkillConfig[]): MessageRouterDeps =>
+      makeDeps({ getSkillRegistry: () => skillRegistryFromList(skills) });
+
+    const expectRunReply = async (
+      deps: MessageRouterDeps,
+      text: string,
+      reply: string,
+    ): Promise<void> => {
+      await routeMessage(makeMsg({ text }), deps);
+      expect(deps.telegram.sendMessage).toHaveBeenCalledTimes(1);
+      expect(deps.telegram.sendMessage).toHaveBeenCalledWith(456, reply);
+      expect(deps.queues.enqueueScheduled).not.toHaveBeenCalled();
+    };
+
+    it('routes /run <skill> to enqueueScheduled with validUntil = triggeredAt + validityWindowMinutes and triggeredAt at whole seconds', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2026-11-18T07:30:15.987Z'));
+      try {
+        const deps = withSkills(skill('morning-brief', 45), skill('other'));
+        await routeMessage(makeMsg({ text: '/run morning-brief' }), deps);
+
+        expect(deps.queues.enqueueScheduled).toHaveBeenCalledWith({
+          kind: 'scheduled',
+          id: 'telegram:1001:run',
+          skillId: 'morning-brief',
+          triggeredAt: '2026-11-18T07:30:15.000Z',
+          validUntil: '2026-11-18T08:15:15.000Z',
+          trigger: 'manual',
+        });
+        expect(deps.telegram.sendMessage).toHaveBeenCalledWith(
+          456,
+          'Triggered "morning-brief" — output will arrive in chat when it completes.',
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('replies that /run is disabled when no skill registry is wired', async () => {
+      await expectRunReply(
+        makeDeps(),
+        '/run morning-brief',
+        'Skill registry not available — /run is disabled.',
+      );
+    });
+
+    it('replies with usage when no skill id is given', async () => {
+      await expectRunReply(
+        withSkills(skill('a')),
+        '/run',
+        'Usage: /run <skill-id>\nUse /status to see how many skills are loaded; check workspace/skills/ for IDs.',
+      );
+    });
+
+    it('rejects an invalid skill id', async () => {
+      await expectRunReply(
+        withSkills(skill('a')),
+        '/run a/b',
+        'Invalid skill id "a/b": SkillId must not contain path separators: a/b',
+      );
+    });
+
+    it('rejects an unknown skill and lists the first 20 known ones', async () => {
+      const skills = Array.from({ length: 25 }, (_, i) => skill(`s${i}`));
+      const known = skills
+        .slice(0, 20)
+        .map((s) => s.id)
+        .join(', ');
+      await expectRunReply(
+        withSkills(...skills),
+        '/run nope',
+        `Unknown skill "nope". Known: ${known}`,
+      );
     });
   });
 

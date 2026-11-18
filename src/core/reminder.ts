@@ -1,6 +1,6 @@
 import * as chrono from 'chrono-node';
 import { requiredGroup } from './regex-group.js';
-import { type Result, err, ok } from './types.js';
+import { type Result, assertNever, err, ok } from './types.js';
 
 // ─── Duration Parsing ─────────────────────────────────────────────────────────
 
@@ -491,6 +491,35 @@ export function formatReminderConfirmation(parsed: ParsedReminder, now: Date): s
     return `Got it — I'll remind you at ${formatAbsoluteTime(parsed.delayMs, now)}.`;
   }
   return `Got it — I'll remind you on ${formatSemanticDate(parsed.delayMs, now)}.`;
+}
+
+/**
+ * What enqueuing a parsed /remind did. Both arms carry the reminder, so the
+ * reply is a function of the outcome alone.
+ */
+export type ReminderEnqueueOutcome =
+  | { readonly kind: 'enqueued'; readonly reminder: ParsedReminder }
+  | {
+      readonly kind: 'rejected';
+      readonly reminder: ParsedReminder;
+      /** Why the job factory refused the reminder. */
+      readonly reason: string;
+    };
+
+/** The reply to a /remind: its confirmation, or why the job could not be created. */
+export function formatReminderEnqueueOutcome(outcome: ReminderEnqueueOutcome, now: Date): string {
+  switch (outcome.kind) {
+    case 'enqueued':
+      return formatReminderConfirmation(outcome.reminder, now);
+    case 'rejected': {
+      const { kind } = outcome.reminder;
+      const job =
+        kind === 'recurring' || kind === 'cron-recurring' ? 'recurring reminder' : 'reminder';
+      return `Cannot create ${job}: ${outcome.reason}`;
+    }
+    default:
+      return assertNever(outcome);
+  }
 }
 
 // ─── Human-readable duration formatting ───────────────────────────────────────

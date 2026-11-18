@@ -450,16 +450,15 @@ export function makeReminderJob(params: {
   });
 }
 
-export function makeRecurringReminderJob(params: {
-  id: JobId;
-  chatId: number;
-  text: string;
-  createdAt: string;
-  intervalMs?: number;
-  cronPattern?: string;
-  cronDescription?: string;
-  schedulerId: string;
-}): Result<RecurringReminderJob, string> {
+export function makeRecurringReminderJob(
+  params: {
+    id: JobId;
+    chatId: number;
+    text: string;
+    createdAt: string;
+    schedulerId: string;
+  } & Partial<RecurringSchedule>,
+): Result<RecurringReminderJob, string> {
   if (params.text.trim().length === 0) {
     return err('Recurring reminder text must not be empty.');
   }
@@ -493,11 +492,9 @@ type RecurringSchedule = Pick<
 >;
 
 /** Exactly one of a cron pattern or an interval of at least a minute; interval is 0 for cron. */
-function parseRecurringSchedule(params: {
-  intervalMs?: number;
-  cronPattern?: string;
-  cronDescription?: string;
-}): Result<RecurringSchedule, string> {
+function parseRecurringSchedule(
+  params: Partial<RecurringSchedule>,
+): Result<RecurringSchedule, string> {
   const cronPattern = params.cronPattern ?? '';
   const intervalMs = params.intervalMs ?? 0;
   const hasCron = cronPattern.length > 0;

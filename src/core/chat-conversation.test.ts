@@ -36,25 +36,25 @@ describe('selectExecutionConversation', () => {
   it('rebases onto the current conversation while generation and backend match', () => {
     const current = target(2, 'claude', 5, 's-latest');
     const captured = target(2, 'claude', 1, null);
-    expect(selectExecutionConversation(current, captured)).toBe(current);
+    expect(selectExecutionConversation({ current, captured })).toBe(current);
   });
 
   it('keeps the ingress snapshot once the generation advanced', () => {
     const current = target(3, 'claude', 0, null);
     const captured = target(2, 'claude', 1, 's-old');
-    expect(selectExecutionConversation(current, captured)).toBe(captured);
+    expect(selectExecutionConversation({ current, captured })).toBe(captured);
   });
 
   it('keeps the ingress snapshot when the backend changed', () => {
     const current = target(2, 'pi', 0, null);
     const captured = target(2, 'claude', 1, 's-old');
-    expect(selectExecutionConversation(current, captured)).toBe(captured);
+    expect(selectExecutionConversation({ current, captured })).toBe(captured);
   });
 
   it('never executes outside the generation and backend captured at ingress', () => {
     fc.assert(
       fc.property(targetArb, targetArb, (current, captured) => {
-        const chosen = selectExecutionConversation(current, captured);
+        const chosen = selectExecutionConversation({ current, captured });
         expect(chosen.generation).toBe(captured.generation);
         expect(chosen.backend).toBe(captured.backend);
         expect([current, captured]).toContain(chosen);

@@ -18,13 +18,9 @@
 import { match } from 'ts-pattern';
 import { extractPassageToSourceMap, resolveAnswerCitations } from '../core/citation-resolver.js';
 import { computeMetrics, evaluateQuality } from '../core/research-quality.js';
+import { buildTelegramSummary } from '../core/research-summary.js';
 import type { ResearchContext, ResearchEvent, ResearchState } from '../core/research-types.js';
-import type {
-  ArtifactMeta,
-  QualityResult,
-  ResearchMetrics,
-  ResolvedNote,
-} from '../core/research-types.js';
+import type { ArtifactMeta, ResolvedNote } from '../core/research-types.js';
 import { RESEARCH_BASE, generateTopicSlug } from '../core/topic-slug.js';
 import { buildAllVaultNotes, buildEmergencyNote } from '../core/vault-content.js';
 import { parseVaultRelativePath } from '../core/vault-path.js';
@@ -807,49 +803,6 @@ async function readQuotaRemaining(quotaTracker: QuotaTracker): Promise<string> {
 }
 
 // ─── Pure helpers ─────────────────────────────────────────────────────────────
-
-/** A titled bullet section, or nothing when there are no items. */
-const bulletSection = (title: string, items: readonly string[]): string =>
-  items.length > 0 ? `\n\n${title}:\n${items.map((item) => `• ${item}`).join('\n')}` : '';
-
-/**
- * Build the Telegram research summary.
- *
- * FR-060: questions answered, citations, sources, quota, grade.
- * FR-062: key findings per question (up to 3) and the vault hub link.
- */
-function buildTelegramSummary(
-  ctx: ResearchContext,
-  quality: QualityResult,
-  metrics: ResearchMetrics,
-  quotaRemaining: string,
-): string {
-  const hubLink = ctx.hubPath !== null ? `\n\nVault: ${ctx.hubPath}` : '';
-  const durationMin = Math.round(metrics.durationMs / 60_000);
-
-  const keyFindings = Object.entries(ctx.answers)
-    .slice(0, 3)
-    .map(([question, response]) => {
-      const preview = response.text.slice(0, 120).trim();
-      const ellipsis = response.text.length > 120 ? '...' : '';
-      return `Q: ${question}\nA: ${preview}${ellipsis}`;
-    })
-    .join('\n\n');
-  const keyFindingsSection = keyFindings.length > 0 ? `\n\nKey Findings:\n${keyFindings}` : '';
-
-  const skippedSection =
-    ctx.skippedQuestions.length > 0
-      ? `\n\nSkipped questions (${ctx.skippedQuestions.length}): ${ctx.skippedQuestions.join(', ')}`
-      : '';
-  const warningsText = bulletSection('Warnings', quality.warnings);
-  const artifactLinks = bulletSection(
-    'Media',
-    ctx.artifacts.map((a) => `${a.type === 'audio' ? 'Audio' : 'Video'}: ${a.url}`),
-  );
-  const artifactFailuresText = bulletSection('Failed artifacts', ctx.artifactFailures);
-
-  return `Research Complete: ${ctx.topic}\n\nQuality: ${quality.grade.toUpperCase()}\nQuestions: ${metrics.questionsAnswered}/${metrics.questionsAsked} answered\nCitations: ${metrics.totalCitations} total, ${metrics.avgCitationsPerAnswer.toFixed(1)} avg/answer\nSources: ${metrics.sourcesIngested} ingested, ${metrics.sourcesCited} cited\nQuota used: ${metrics.chatsUsed} chats, ${quotaRemaining} remaining today\nDuration: ${durationMin}m${skippedSection}${warningsText}${keyFindingsSection}${artifactLinks}${artifactFailuresText}${hubLink}`;
-}
 
 /**
  * Build the Cortex memory summary.

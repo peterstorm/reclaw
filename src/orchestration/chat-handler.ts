@@ -97,10 +97,10 @@ export function planChatTelegramCompletion(
  */
 export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<ChatActivityOutcome> {
   const personality = await loadPersonality(deps.config.personalityPath);
-  const conversation = selectExecutionConversation(
-    await deps.sessionStore.getCurrent(job.chatId),
-    job.conversation,
-  );
+  const conversation = selectExecutionConversation({
+    current: await deps.sessionStore.getCurrent(job.chatId),
+    captured: job.conversation,
+  });
   const statusMsgId = await sendStatusMessage(job.chatId, deps.telegram);
   const status = createStatusStream(job.chatId, deps.telegram, statusMsgId);
 

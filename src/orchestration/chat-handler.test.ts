@@ -121,6 +121,33 @@ describe('handleChatJob', () => {
     }
   });
 
+  it.each(['', '   '])(
+    'completes without session lineage when the backend returns a malformed session id %j',
+    async (malformedSessionId) => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const runClaudeStreaming = makeRunClaudeStreaming({
+        ok: true,
+        output: 'Answer',
+        sessionId: malformedSessionId,
+        durationMs: 100,
+      });
+
+      const result = await handleChatJob(makeChatJob(), {
+        runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+        telegram: makeTelegram(),
+        config: makeConfig(),
+        sessionStore: makeSessionStore(),
+      });
+
+      expect(result).toMatchObject({ kind: 'completed', response: 'Answer', sessionId: null });
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('malformed session id for chatId=456'),
+        'AgentSessionId must not be empty.',
+      );
+      warn.mockRestore();
+    },
+  );
+
   it('calls runClaudeStreaming with chat permission flags (FR-011)', async () => {
     const job = makeChatJob();
     const telegram = makeTelegram();
