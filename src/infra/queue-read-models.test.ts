@@ -1,5 +1,7 @@
 import type { JobSchedulerJson } from 'bullmq';
+import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
+import { formatDuration, formatReminderList } from '../core/reminder.js';
 import {
   type RecurringSchedule,
   type RecurringScheduleSpec,
@@ -7,9 +9,9 @@ import {
 } from '../core/types.js';
 import {
   UNKNOWN_ACTIVE_RESEARCH,
+  listedSchedule,
   parseActiveResearch,
   readReminderScheduler,
-  schedulerInfoFromSchedule,
 } from './queue-read-models.js';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
@@ -48,19 +50,23 @@ describe('readReminderScheduler', () => {
   it('reads an interval scheduler as a reminder', () => {
     expect(readReminderScheduler(scheduler({ every: 3600000 }))).toEqual({
       kind: 'reminder',
-      info: { schedulerId: 'sched-001', text: 'stand up', intervalMs: 3600000, chatId: 123 },
+      info: {
+        schedulerId: 'sched-001',
+        text: 'stand up',
+        schedule: { kind: 'interval', intervalMs: 3600000 },
+        chatId: 123,
+      },
     });
   });
 
-  it('reads a cron scheduler, falling back to the scheduler pattern', () => {
+  it('reads an interval template on a cron scheduler by the scheduler pattern', () => {
     const reading = readReminderScheduler(scheduler({ pattern: '0 12 * * 0' }));
     expect(reading).toEqual({
       kind: 'reminder',
       info: {
         schedulerId: 'sched-001',
         text: 'stand up',
-        intervalMs: 0,
-        cronPattern: '0 12 * * 0',
+        schedule: { kind: 'pattern', cronPattern: '0 12 * * 0' },
         chatId: 123,
       },
     });
@@ -82,7 +88,9 @@ describe('readReminderScheduler', () => {
     );
     expect(reading).toMatchObject({
       kind: 'reminder',
-      info: { cronPattern: '0 12 * * 0', cronDescription: 'every Sunday' },
+      info: {
+        schedule: { kind: 'cron', cronPattern: '0 12 * * 0', cronDescription: 'every Sunday' },
+      },
     });
   });
 
@@ -104,9 +112,9 @@ describe('readReminderScheduler', () => {
   });
 });
 
-// ─── schedulerInfoFromSchedule ────────────────────────────────────────────────
+// ─── listedSchedule ───────────────────────────────────────────────────────────
 
-describe('schedulerInfoFromSchedule', () => {
+describe('listedSchedule', () => {
   const schedule = (spec: RecurringScheduleSpec): RecurringSchedule => {
     const made = makeRecurringSchedule(spec);
     if (!made.ok) throw new Error(made.error);
@@ -118,55 +126,71 @@ describe('schedulerInfoFromSchedule', () => {
     cronPattern: '0 12 * * 0',
     cronDescription: 'every Sunday',
   });
+  const SUNDAYS_LISTED = {
+    kind: 'cron',
+    cronPattern: '0 12 * * 0',
+    cronDescription: 'every Sunday',
+  } as const;
 
-  it('reports an interval schedule the scheduler agrees with', () => {
-    expect(schedulerInfoFromSchedule(hourly, { every: 3_600_000 })).toEqual({
+  it('lists an interval schedule the scheduler agrees with by its interval', () => {
+    expect(listedSchedule(hourly, { every: 3_600_000 })).toEqual({
+      kind: 'interval',
       intervalMs: 3_600_000,
     });
   });
 
-  it('reports a cron schedule the scheduler agrees with, with its description', () => {
-    expect(schedulerInfoFromSchedule(sundays, { pattern: '0 12 * * 0' })).toEqual({
-      intervalMs: 0,
-      cronPattern: '0 12 * * 0',
-      cronDescription: 'every Sunday',
-    });
+  it('lists a cron template as itself, whatever the scheduler repeats on', () => {
+    expect(listedSchedule(sundays, { pattern: '0 12 * * 0' })).toEqual(SUNDAYS_LISTED);
+    expect(listedSchedule(sundays, { pattern: '0 9 * * *' })).toEqual(SUNDAYS_LISTED);
+    expect(listedSchedule(sundays, { every: 7_200_000 })).toEqual(SUNDAYS_LISTED);
   });
 
   it('takes the interval from the scheduler, which is what BullMQ fires on', () => {
-    expect(schedulerInfoFromSchedule(hourly, { every: 7_200_000 })).toEqual({
+    expect(listedSchedule(hourly, { every: 7_200_000 })).toEqual({
+      kind: 'interval',
       intervalMs: 7_200_000,
     });
-    expect(schedulerInfoFromSchedule(sundays, { every: 7_200_000 })).toEqual({
-      intervalMs: 7_200_000,
-      cronPattern: '0 12 * * 0',
-      cronDescription: 'every Sunday',
-    });
   });
 
-  it('reports no interval when the scheduler has none, whatever the template says', () => {
-    expect(schedulerInfoFromSchedule(hourly, { pattern: '0 9 * * *' })).toEqual({
-      intervalMs: 0,
+  it('lists an interval of 0 when the scheduler reports neither interval nor pattern', () => {
+    expect(listedSchedule(hourly, {})).toEqual({ kind: 'interval', intervalMs: 0 });
+  });
+
+  it('lists an interval template by the scheduler pattern when it has a non-empty one', () => {
+    expect(listedSchedule(hourly, { every: 3_600_000, pattern: '0 9 * * *' })).toEqual({
+      kind: 'pattern',
       cronPattern: '0 9 * * *',
     });
-  });
-
-  it('takes the pattern and description from a cron template over the scheduler pattern', () => {
-    expect(schedulerInfoFromSchedule(sundays, { pattern: '0 9 * * *' })).toEqual({
-      intervalMs: 0,
-      cronPattern: '0 12 * * 0',
-      cronDescription: 'every Sunday',
+    expect(listedSchedule(hourly, { every: 3_600_000, pattern: '' })).toEqual({
+      kind: 'interval',
+      intervalMs: 3_600_000,
     });
   });
 
-  it('falls back to the scheduler pattern only when the template is an interval', () => {
-    expect(schedulerInfoFromSchedule(hourly, { every: 3_600_000, pattern: '0 9 * * *' })).toEqual({
-      intervalMs: 3_600_000,
-      cronPattern: '0 9 * * *',
-    });
-    expect(schedulerInfoFromSchedule(hourly, { every: 3_600_000, pattern: '' })).toEqual({
-      intervalMs: 3_600_000,
-    });
+  it('shows every reminder exactly as the flat-field read model did', () => {
+    // The display rule before the union: description, else a truthy pattern, else the interval.
+    const flatDisplay = (s: RecurringSchedule, every?: number, pattern?: string): string => {
+      const cronPattern = s.kind === 'cron' ? s.cronPattern : pattern;
+      const cronDescription = s.kind === 'cron' ? s.cronDescription : undefined;
+      return cronDescription ?? (cronPattern ? cronPattern : `every ${formatDuration(every ?? 0)}`);
+    };
+    fc.assert(
+      fc.property(
+        fc.constantFrom(hourly, sundays),
+        fc.option(fc.nat({ max: 10 * 86_400_000 }), { nil: undefined }),
+        fc.option(fc.constantFrom('', '0 9 * * *', '*/5 * * * *'), { nil: undefined }),
+        (template, every, pattern) => {
+          const entry = {
+            schedulerId: 's',
+            text: 't',
+            schedule: listedSchedule(template, { every, pattern }),
+          };
+          expect(formatReminderList([entry])).toContain(
+            `1. \`s\` ${flatDisplay(template, every, pattern)} — t`,
+          );
+        },
+      ),
+    );
   });
 });
 

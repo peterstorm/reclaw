@@ -86,7 +86,7 @@ function traceOutcome(
   return match(event)
     .returnType<Pick<TraceEvent, 'outcome' | 'detail'>>()
     .with({ type: 'ERROR' }, (e) => {
-      const maxRetries = MAX_RETRIES[state.kind] ?? 0;
+      const maxRetries = MAX_RETRIES[state.kind];
       const currentRetries = context.retries[state.kind] ?? 0;
       const willRetry = currentRetries < maxRetries && e.retriable;
       return { outcome: willRetry ? 'retry' : 'fail', detail: e.error };

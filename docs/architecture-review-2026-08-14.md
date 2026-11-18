@@ -699,7 +699,7 @@ Do not move files first. Moving them before fixing lifecycle semantics would cre
 Add a `CONTEXT.md` defining the ubiquitous language. Current terminology has drifted:
 
 - ~~`ClaudeSessionId` also stores Pi sessions.~~ ADR 0011 introduces backend-neutral `AgentSessionId`; the old name remains a compatibility alias during source migration.
-- `runClaude` may run Pi.
+- runClaude may run Pi.
 - `ResearchJob` does not represent the actual research queue payload.
 - Permission profiles claim distinctions that do not currently exist.
 - "Skill," "task," "job," "workflow," and "activity" are not formally separated.

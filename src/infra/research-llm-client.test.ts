@@ -352,11 +352,11 @@ describe('parseDiscoveredUrlsFromOutput', () => {
   });
 });
 
-// ─── createResearchLLMAdapter integration tests (mocked runClaude) ────────────
+// ─── createResearchLLMAdapter integration tests (mocked runAgent) ────────────
 
 describe('createResearchLLMAdapter', () => {
   /**
-   * Create a mock runClaude that records calls and returns fixed output.
+   * Create a mock runAgent that records calls and returns fixed output.
    */
   type MockRunClaude = {
     calls: AgentOptions[];

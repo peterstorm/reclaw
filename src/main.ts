@@ -16,6 +16,7 @@ import type {
   AgentResult,
   OnStreamChunk,
   runAgent,
+  runAgentStreaming,
 } from './infra/agent-backends/index.js';
 import type { AppConfig } from './infra/config.js';
 import type {
@@ -62,9 +63,10 @@ export type BootstrapDeps = {
     isJobCompleted: (jobId: string) => Promise<boolean>,
   ) => CronScheduler;
   readonly createWorkersFn?: typeof createWorkers;
-  readonly runClaudeStreamingFn?: StreamingAgentRun;
   /** The backend runner every non-streaming agent run reaches after backend and model resolution. */
   readonly runAgentFn?: typeof runAgent;
+  /** The backend runner every chat (streaming) run reaches after backend and model resolution. */
+  readonly runAgentStreamingFn?: typeof runAgentStreaming;
   readonly createNotebookLMAdapterFn?: typeof createNotebookLMAdapter;
   readonly handleChatJobFn?: typeof handleChatJob;
   readonly handleScheduledJobFn?: typeof handleScheduledJob;
@@ -105,7 +107,8 @@ type JobRuntime = Required<
 type CortexExtraction = (sessionId: string, cwd: string) => Promise<void>;
 
 type AgentRuntime = {
-  readonly runClaude: AgentRun;
+  /** On-demand runs (research LLM, memory summaries) on the service-wide model defaults. */
+  readonly runAgent: AgentRun;
   /** Scheduled skills may run on a cheaper/faster Pi model than chat (RECLAW_PI_SCHEDULED_MODEL). */
   readonly runScheduled: AgentRun;
   /** Serialized: chat runs share conversation state. */
@@ -263,7 +266,7 @@ type AgentRunnerConfig = Pick<
   AppConfig,
   'agentBackend' | 'agentContainment' | 'piProvider' | 'piModel' | 'piScheduledModel'
 >;
-type InjectedAgentRunners = Pick<BootstrapDeps, 'runClaudeStreamingFn' | 'runAgentFn'>;
+type InjectedAgentRunners = Pick<BootstrapDeps, 'runAgentFn' | 'runAgentStreamingFn'>;
 
 async function createAgentRuntime(
   config: AgentRunnerConfig,
@@ -278,7 +281,7 @@ async function createAgentRuntime(
 async function createAgentRunners(
   config: AgentRunnerConfig,
   injected: InjectedAgentRunners,
-): Promise<Pick<AgentRuntime, 'runClaude' | 'runScheduled' | 'runChatStreaming'>> {
+): Promise<Pick<AgentRuntime, 'runAgent' | 'runScheduled' | 'runChatStreaming'>> {
   const { resolveBackend, runAgent, runAgentStreaming } = await import(
     './infra/agent-backends/index.js'
   );
@@ -304,14 +307,14 @@ async function createAgentRunners(
 
   const serviceSelections = piModelSelections(config);
   const scheduledSelections = scheduledModelSelections(serviceSelections, config.piScheduledModel);
-  const runStreaming: StreamingAgentRun =
-    injected.runClaudeStreamingFn ??
-    ((opts, onChunk) => runAgentStreaming(...forBackend(serviceSelections)(opts), onChunk));
   const run = injected.runAgentFn ?? runAgent;
+  const runStreaming = injected.runAgentStreamingFn ?? runAgentStreaming;
   return {
-    runClaude: (opts) => run(...forBackend(serviceSelections)(opts)),
+    runAgent: (opts) => run(...forBackend(serviceSelections)(opts)),
     runScheduled: (opts) => run(...forBackend(scheduledSelections)(opts)),
-    runChatStreaming: serialized(runStreaming),
+    runChatStreaming: serialized((opts, onChunk) =>
+      runStreaming(...forBackend(serviceSelections)(opts), onChunk),
+    ),
   };
 }
 
@@ -579,14 +582,14 @@ function createJobWorkers(
     redisConnection: { host: config.redisHost, port: config.redisPort },
     chatHandler: (job) =>
       jobs.handleChatJobFn(job, {
-        runClaudeStreaming: agents.runChatStreaming,
+        runAgentStreaming: agents.runChatStreaming,
         telegram,
         config,
         sessionStore,
       }),
     scheduledHandler: (job) =>
       jobs.handleScheduledJobFn(job, {
-        runClaude: agents.runScheduled,
+        runAgent: agents.runScheduled,
         telegram,
         skillRegistry: skillWatcher.getRegistry(),
         config,
@@ -610,7 +613,7 @@ function createJobWorkers(
   });
 }
 
-type ResearchMemoryAgents = Pick<AgentRuntime, 'runClaude' | 'triggerCortexExtraction'>;
+type ResearchMemoryAgents = Pick<AgentRuntime, 'runAgent' | 'triggerCortexExtraction'>;
 
 /** Research and podcast jobs both need NotebookLM; each job fails when it is not configured. */
 async function createNotebookJobHandlers(
@@ -621,7 +624,7 @@ async function createNotebookJobHandlers(
 ): Promise<NotebookJobHandlers> {
   const vaultWriter = await import('./infra/vault-writer.js').then((m) => m.createVaultWriter());
   const researchLLM = await import('./infra/research-llm-client.js').then((m) =>
-    m.createResearchLLMAdapter(config.workspacePath, 30_000, 600_000, agents.runClaude),
+    m.createResearchLLMAdapter(config.workspacePath, 30_000, 600_000, agents.runAgent),
   );
   const { telegram, notebookLM, quotaTracker } = components;
   const vaultBasePath = config.obsidianVaultPath ?? config.workspacePath;
@@ -650,7 +653,7 @@ function rememberResearchSummary(
   agents: ResearchMemoryAgents,
 ): (text: string) => Promise<void> {
   return async (text) => {
-    const result = await agents.runClaude({
+    const result = await agents.runAgent({
       cwd: workspacePath,
       prompt: `Store this research summary in memory for future recall:\n\n${text}`,
       allowedTools: [],

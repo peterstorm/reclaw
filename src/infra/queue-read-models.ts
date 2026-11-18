@@ -5,19 +5,14 @@
 
 import type { JobSchedulerJson } from 'bullmq';
 import { parseRecurringReminderJob, parseResearchJobData } from '../core/job-schemas.js';
+import type { ListedSchedule, ReminderListEntry } from '../core/reminder.js';
 import { stateProgress } from '../core/research-types.js';
 import { type RecurringSchedule, type Result, err, ok } from '../core/types.js';
 
 // ─── Recurring reminders ──────────────────────────────────────────────────────
 
-export type RecurringReminderInfo = {
-  readonly schedulerId: string;
-  readonly text: string;
-  readonly intervalMs: number;
-  readonly cronPattern?: string;
-  readonly cronDescription?: string;
-  readonly chatId: number;
-};
+/** A listed reminder plus the chat it belongs to, which `/remind list` filters on. */
+export type RecurringReminderInfo = ReminderListEntry & { readonly chatId: number };
 
 export type ReminderSchedulerReading =
   /** No repeat rule or no id: not a reminder this adapter lists. */
@@ -48,7 +43,7 @@ export function readReminderScheduler(
     info: {
       schedulerId: id,
       text,
-      ...schedulerInfoFromSchedule(schedule, { every, pattern }),
+      schedule: listedSchedule(schedule, { every, pattern }),
       chatId,
     },
   };
@@ -61,21 +56,24 @@ type SchedulerRepeat = Readonly<{ every?: number | undefined; pattern?: string |
  * The schedule a reminder is listed with. The template's schedule and the scheduler's repeat
  * rule agree for every reminder `enqueueRecurringReminder` wrote, since both come from one
  * schedule. When they disagree:
- *   - the interval is the scheduler's `every`, the rule BullMQ fires on (0 when it has none);
- *   - a cron template's pattern wins over the scheduler's `pattern`, which is the fallback
- *     only when the template is an interval;
- *   - the description comes from a cron template alone.
+ *   - a cron template is listed as itself, by its description;
+ *   - an interval template is listed by the scheduler's non-empty `pattern` when it has one,
+ *     else by the scheduler's `every`, the rule BullMQ fires on (0 when it has none).
  */
-export function schedulerInfoFromSchedule(
+export function listedSchedule(
   schedule: RecurringSchedule,
   scheduler: SchedulerRepeat,
-): Pick<RecurringReminderInfo, 'intervalMs' | 'cronPattern' | 'cronDescription'> {
-  const cronPattern = schedule.kind === 'cron' ? schedule.cronPattern : scheduler.pattern;
-  return {
-    intervalMs: scheduler.every ?? 0,
-    ...(cronPattern ? { cronPattern } : {}),
-    ...(schedule.kind === 'cron' ? { cronDescription: schedule.cronDescription } : {}),
-  };
+): ListedSchedule {
+  if (schedule.kind === 'cron') {
+    return {
+      kind: 'cron',
+      cronPattern: schedule.cronPattern,
+      cronDescription: schedule.cronDescription,
+    };
+  }
+  return scheduler.pattern
+    ? { kind: 'pattern', cronPattern: scheduler.pattern }
+    : { kind: 'interval', intervalMs: scheduler.every ?? 0 };
 }
 
 // ─── Research status ──────────────────────────────────────────────────────────

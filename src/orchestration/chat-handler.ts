@@ -31,7 +31,7 @@ import type { TelegramAdapter } from '../infra/telegram.js';
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type ChatDeps = {
-  readonly runClaudeStreaming: (
+  readonly runAgentStreaming: (
     options: AgentOptions,
     onChunk: OnStreamChunk,
   ) => Promise<AgentResult>;
@@ -93,7 +93,7 @@ export function planChatTelegramCompletion(
  * FR-011: Apply 'chat' permission profile.
  * FR-012: On failure, the worker's dead-letter handler sends the user-friendly
  *         message — the handler stays silent to avoid duplicate "Sorry" sends.
- * FR-016: Timeout enforced by runClaudeStreaming.
+ * FR-016: Timeout enforced by runAgentStreaming.
  */
 export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<ChatActivityOutcome> {
   const personality = await loadPersonality(deps.config.personalityPath);
@@ -219,7 +219,7 @@ const chatPrompt = (job: ChatJob, personality: string): string =>
     job.storedUploads,
   );
 
-/** FR-011 chat permission profile; FR-016 timeout is enforced by runClaudeStreaming. */
+/** FR-011 chat permission profile; FR-016 timeout is enforced by runAgentStreaming. */
 const chatAgentOptions = (
   config: AppConfig,
   conversation: ConversationTarget,
@@ -250,7 +250,7 @@ async function runChatAgent(
 ): Promise<AgentResult> {
   const isResuming = conversation.sessionId !== null;
   console.info(`[chat] Running Claude for chatId=${job.chatId} resume=${isResuming}`);
-  const result = await deps.runClaudeStreaming(
+  const result = await deps.runAgentStreaming(
     chatAgentOptions(
       deps.config,
       conversation,
@@ -268,7 +268,7 @@ async function runChatAgent(
   }
   console.info(`[chat] Invalid session for chatId=${job.chatId}, retrying fresh`);
   status.restart();
-  return deps.runClaudeStreaming(
+  return deps.runAgentStreaming(
     chatAgentOptions(deps.config, conversation, chatPrompt(job, personality), undefined),
     status.onChunk,
   );

@@ -5,7 +5,7 @@
 //
 // FR-020: Generate 3 to 5 topic-specific research questions per job.
 // FR-021: Use a lightweight language model call (not the full chat subprocess).
-// AD-4: Question generation uses existing runClaude() subprocess for LLM calls.
+// AD-4: Question generation uses existing runAgent() subprocess for LLM calls.
 
 import { formatAgentFailure } from '../core/agent-failure.js';
 import type { SourceMeta } from '../core/research-types.js';
