@@ -18,9 +18,9 @@ export type ResearchLLMAdapter = {
   /**
    * Derive a concise 3-8 word topic title from a user's free-form research prompt.
    * Used in the deriving_topic state before any other pipeline state runs.
-   * Throws on error — the state machine executor catches and emits ERROR.
+   * An agent failure or a blank reply is an err.
    */
-  readonly deriveTopic: (prompt: string) => Promise<string>;
+  readonly deriveTopic: (prompt: string) => Promise<Result<string, string>>;
 
   /**
    * Generate 3-5 research questions for a given topic, informed by source titles.
@@ -301,6 +301,10 @@ type ResearchAgents = Readonly<{
   webSearch: PromptRunner;
 }>;
 
+/** The `failurePrefix` of each agent configuration's subprocess failures. */
+const SUBPROCESS_FAILED = 'Claude subprocess failed';
+const WEB_SEARCH_SUBPROCESS_FAILED = 'Claude web search subprocess failed';
+
 /** Run `prompt`, reporting a subprocess failure under `failurePrefix`, and parse the output. */
 async function askAgent<T>(
   run: PromptRunner,
@@ -314,23 +318,6 @@ async function askAgent<T>(
   }
   return parse(agentResult.output);
 }
-
-async function deriveTopic(agents: ResearchAgents, userPrompt: string): Promise<string> {
-  const claudeResult = await agents.plain(buildDeriveTopicPrompt(userPrompt));
-
-  if (!claudeResult.ok) {
-    throw new Error(`Claude subprocess failed: ${formatAgentFailure(claudeResult.failure)}`);
-  }
-
-  const trimmed = claudeResult.output.trim().split('\n')[0]?.trim() ?? '';
-  if (!trimmed) {
-    throw new Error('Empty topic derivation response from Claude');
-  }
-
-  return trimmed;
-}
-
-const SUBPROCESS_FAILED = 'Claude subprocess failed';
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
 
@@ -354,7 +341,10 @@ export function createResearchLLMAdapter(
   };
 
   return {
-    deriveTopic: (userPrompt) => deriveTopic(agents, userPrompt),
+    deriveTopic: (userPrompt) =>
+      askAgent(agents.plain, buildDeriveTopicPrompt(userPrompt), SUBPROCESS_FAILED, (output) =>
+        parseSingleLineResponse(output, 'topic derivation'),
+      ),
     generateQuestions: (topic, sources, researchPrompt) =>
       askAgent(
         agents.plain,
@@ -380,7 +370,7 @@ export function createResearchLLMAdapter(
       askAgent(
         agents.webSearch,
         buildDiscoverSourcesPrompt(topic, researchPrompt),
-        'Claude web search subprocess failed',
+        WEB_SEARCH_SUBPROCESS_FAILED,
         parseDiscoveredUrlsFromOutput,
       ),
   } as const;

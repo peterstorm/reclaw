@@ -24,6 +24,7 @@ import { errorMessage } from '../core/error-message.js';
 import { requiredGroup } from '../core/regex-group.js';
 import type { ChatResponse, SourceMeta, WebSource } from '../core/research-types.js';
 import type { Result } from '../core/types.js';
+import { addedTextSourceId, stringField } from './notebooklm-reply.js';
 import { NOTEBOOKLM_WEB_ORIGIN } from './notebooklm-web.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -339,8 +340,8 @@ function permanentFailure(message: string): Result<never, AdapterError> {
 }
 
 /** The id an SDK call returned, or a permanent failure naming what was missing. */
-function requiredId(id: string | undefined, missing: string): Result<string, AdapterError> {
-  return id ? { ok: true, value: id } : permanentFailure(missing);
+function requiredId(id: string | null, missing: string): Result<string, AdapterError> {
+  return id === null ? permanentFailure(missing) : { ok: true, value: id };
 }
 
 async function createNotebook(
@@ -349,7 +350,10 @@ async function createNotebook(
 ): Promise<Result<string, AdapterError>> {
   const result = await safeCall(() => sdk.notebooks.create({ title }));
   if (!result.ok) return result;
-  return requiredId(result.value.projectId, 'NotebookLM did not return a projectId');
+  return requiredId(
+    stringField(result.value, 'projectId'),
+    'NotebookLM did not return a projectId',
+  );
 }
 
 async function searchWeb(
@@ -377,18 +381,6 @@ async function addDiscoveredSources(
   const capped = sources.slice(0, limit);
   const webSources = capped.map((s) => ({ url: s.url, title: s.title }));
   return safeCall(() => sdk.sources.addDiscovered(notebookId, { sessionId, webSources }));
-}
-
-type AddedText = Awaited<ReturnType<NotebookLMClient['sources']['addFromText']>>;
-
-/** SDK returns plain string (sourceId) for small texts, or AddSourceResult for chunked uploads. */
-function addedTextSourceId(added: AddedText): string {
-  return typeof added === 'string'
-    ? added
-    : ((added as { sourceId?: string; allSourceIds?: string[]; sourceIds?: string[] }).sourceId ??
-        (added as { allSourceIds?: string[] }).allSourceIds?.[0] ??
-        (added as { sourceIds?: string[] }).sourceIds?.[0] ??
-        '');
 }
 
 async function addSourceText(
@@ -444,10 +436,7 @@ async function createAudioOverview(
   if (options?.instructions) createOpts.instructions = options.instructions;
   const result = await safeCall(() => sdk.artifacts.audio.create(notebookId, createOpts));
   if (!result.ok) return result;
-  return requiredId(
-    (result.value as { audioId?: string }).audioId,
-    'Audio creation returned no audioId',
-  );
+  return requiredId(stringField(result.value, 'audioId'), 'Audio creation returned no audioId');
 }
 
 async function createVideoOverview(
@@ -459,10 +448,7 @@ async function createVideoOverview(
   if (options?.instructions) videoOpts.instructions = options.instructions;
   const result = await safeCall(() => sdk.artifacts.video.create(notebookId, videoOpts));
   if (!result.ok) return result;
-  return requiredId(
-    (result.value as { videoId?: string }).videoId,
-    'Video creation returned no videoId',
-  );
+  return requiredId(stringField(result.value, 'videoId'), 'Video creation returned no videoId');
 }
 
 /** Poll an artifact until READY or FAILED; throws once `timeoutMs` passes. */
@@ -496,7 +482,7 @@ async function shareNotebook(
     () => sdk.artifacts.share(notebookId, { accessType: 1 }), // anyone with link
   );
   if (!result.ok) return result;
-  return requiredId((result.value as { shareUrl?: string }).shareUrl, 'Share returned no shareUrl');
+  return requiredId(stringField(result.value, 'shareUrl'), 'Share returned no shareUrl');
 }
 
 /** Wire every adapter operation to one connected SDK. */

@@ -166,9 +166,11 @@ async function executeDerivingTopic(
   deps: ResearchDeps,
 ): Promise<ResearchEvent> {
   try {
-    const derivedTopic = await deps.researchLLM.deriveTopic(ctx.prompt ?? '');
-    const topicSlug = generateTopicSlug(derivedTopic);
-    return { type: 'TOPIC_DERIVED', topic: derivedTopic, topicSlug };
+    const derived = await deps.researchLLM.deriveTopic(ctx.prompt ?? '');
+    // `Error: ` keeps the text String(err) gave when deriveTopic threw.
+    if (!derived.ok) return { type: 'ERROR', error: `Error: ${derived.error}`, retriable: true };
+    const topicSlug = generateTopicSlug(derived.value);
+    return { type: 'TOPIC_DERIVED', topic: derived.value, topicSlug };
   } catch (err) {
     return { type: 'ERROR', error: String(err), retriable: true };
   }

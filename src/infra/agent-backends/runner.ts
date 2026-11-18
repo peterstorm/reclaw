@@ -262,17 +262,20 @@ async function startRun(
   });
 }
 
+/** A run that exited 0 before its deadline. */
+type CleanExit = { readonly durationMs: number };
+
 /**
  * Wait for a run whose stdout has ended to exit, and disarm its deadline. A
  * deadline that fired or a nonzero exit is the run's failure; otherwise the
- * run's duration.
+ * clean exit and how long the run took.
  */
 async function awaitCleanExit(
   backend: AgentBackend,
   run: StartedRun,
   timeoutMs: number,
   rawOutput: string,
-): Promise<Result<number, AgentFailure>> {
+): Promise<Result<CleanExit, AgentFailure>> {
   const exitCode = await run.proc.exited;
   run.clearDeadline();
   const durationMs = Date.now() - run.startMs;
@@ -288,7 +291,7 @@ async function awaitCleanExit(
       classifyAgentExit(backend.name, exitCode, buildExitDetail(backend, stderrText, rawOutput)),
     );
   }
-  return ok(durationMs);
+  return ok({ durationMs });
 }
 
 /** A failure the backend reported inside an exit-0 run, classified and logged. */
@@ -326,7 +329,7 @@ export async function runAgent(backend: AgentBackend, options: AgentOptions): Pr
 
   const exited = await awaitCleanExit(backend, run, options.timeoutMs, rawOutput);
   if (!exited.ok) return failed(exited.error);
-  const durationMs = exited.value;
+  const { durationMs } = exited.value;
 
   const parsed = backend.parseResult(rawOutput);
   // A backend-reported failure wins even when an earlier assistant message
@@ -538,5 +541,5 @@ export async function runAgentStreaming(
   const rawOutput = transcript.lines.join('\n');
   const exited = await awaitCleanExit(backend, run, options.timeoutMs, rawOutput);
   if (!exited.ok) return failed(exited.error);
-  return streamedReply(backend, transcript, rawOutput, exited.value);
+  return streamedReply(backend, transcript, rawOutput, exited.value.durationMs);
 }

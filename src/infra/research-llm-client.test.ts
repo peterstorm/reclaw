@@ -406,6 +406,46 @@ describe('createResearchLLMAdapter', () => {
       expect(result.error.length).toBeGreaterThan(0);
     }
   });
+
+  const timedOutRun = async () => ({
+    ok: false as const,
+    failure: { kind: 'timeout' as const, backend: 'claude', timeoutMs: 100 },
+  });
+
+  it('deriveTopic returns the first non-blank line of the reply', async () => {
+    const { adapter, mock } = createMockAdapter('\n  AI Agent Architectures  \nextra commentary');
+    await expect(adapter.deriveTopic('tell me about agents')).resolves.toEqual({
+      ok: true,
+      value: 'AI Agent Architectures',
+    });
+    expect(mock.calls).toHaveLength(1);
+    expect(mock.calls[0]?.allowedTools).toEqual([]);
+    expect(mock.calls[0]?.timeoutMs).toBe(5_000);
+  });
+
+  it('deriveTopic returns an err naming the subprocess failure', async () => {
+    const adapter = createResearchLLMAdapter('/tmp', 100, 120_000, timedOutRun);
+    await expect(adapter.deriveTopic('tell me about agents')).resolves.toEqual({
+      ok: false,
+      error: 'Claude subprocess failed: claude timed out after 100ms',
+    });
+  });
+
+  it('deriveTopic returns an err for a blank reply', async () => {
+    const { adapter } = createMockAdapter('  \n\t ');
+    await expect(adapter.deriveTopic('tell me about agents')).resolves.toEqual({
+      ok: false,
+      error: 'Empty topic derivation response from Claude',
+    });
+  });
+
+  it('discoverSourceUrls reports a subprocess failure under the web search prefix', async () => {
+    const adapter = createResearchLLMAdapter('/tmp', 100, 120_000, timedOutRun);
+    await expect(adapter.discoverSourceUrls('AI agents')).resolves.toEqual({
+      ok: false,
+      error: 'Claude web search subprocess failed: claude timed out after 100ms',
+    });
+  });
 });
 
 // ─── Prompt quality tests ─────────────────────────────────────────────────────

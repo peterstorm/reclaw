@@ -1,4 +1,4 @@
-import { isRecord } from '../core/is-record.js';
+import { type UnknownRecord, isRecord } from '../core/is-record.js';
 import {
   type ConversationCommitResult,
   type ConversationLineage,
@@ -195,27 +195,31 @@ async function advance(
   return parseLineage(requireRedisString(result, 'conversation advance'), ctx.defaultBackend);
 }
 
-/** COMMIT_SCRIPT's `{ committed, lineage }` reply, parsed into the commit outcome. */
-function parseCommitReply(
-  raw: string,
-  params: CommitParams,
-  defaultBackend: AgentBackendName,
-): ConversationCommitResult {
+/** COMMIT_SCRIPT's reply envelope; the lineage inside it is still unparsed. */
+type CommitEnvelope = Readonly<{ committed: boolean; lineage: UnknownRecord }>;
+
+function parseCommitEnvelope(raw: string): CommitEnvelope {
   let decoded: unknown;
   try {
     decoded = JSON.parse(raw);
   } catch {
     throw new Error('Redis conversation commit returned invalid JSON');
   }
-  if (
-    !isRecord(decoded) ||
-    typeof decoded.committed !== 'boolean' ||
-    typeof decoded.lineage !== 'object'
-  ) {
+  if (!isRecord(decoded) || typeof decoded.committed !== 'boolean' || !isRecord(decoded.lineage)) {
     throw new Error('Redis conversation commit returned invalid envelope');
   }
-  const lineage = parseLineage(JSON.stringify(decoded.lineage), defaultBackend);
-  return decoded.committed
+  return { committed: decoded.committed, lineage: decoded.lineage };
+}
+
+/** COMMIT_SCRIPT's `{ committed, lineage }` reply, parsed into the commit outcome. */
+function parseCommitReply(
+  raw: string,
+  params: CommitParams,
+  defaultBackend: AgentBackendName,
+): ConversationCommitResult {
+  const envelope = parseCommitEnvelope(raw);
+  const lineage = parseLineage(JSON.stringify(envelope.lineage), defaultBackend);
+  return envelope.committed
     ? { kind: 'committed', lineage }
     : {
         kind: 'stale',
@@ -271,6 +275,9 @@ async function getMessageReference(
   if (raw === null) return null;
   const parsed = parseMessageConversationReference(raw);
   if (!parsed.ok) {
+    console.warn(
+      `[session-store] corrupt message reference for chat ${chatId} message ${messageId}, deleting it: ${parsed.error}`,
+    );
     await redis.del(key);
     return null;
   }
