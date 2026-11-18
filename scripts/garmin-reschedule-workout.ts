@@ -17,6 +17,7 @@
  */
 
 import type { GarminConnect } from '@gooin/garmin-connect';
+import { z } from 'zod';
 import { connectGarmin, exportGarminTokens, requireGarminCredentials } from './garmin-session.js';
 
 /** Garmin's id for one scheduling of a workout: the calendar item's `id`, or its `workoutScheduleId`. */
@@ -24,6 +25,13 @@ type ScheduleId = string | number;
 
 /** The scheduling being moved: its id and the calendar item's title (as Garmin sent it, or null). */
 type Schedule = { readonly title: unknown; readonly scheduleId: ScheduleId };
+
+/**
+ * The month's calendar as Garmin sends it. The SDK's ICalendarItem omits fields
+ * this script reads (workoutScheduleId), so each item stays an untyped record
+ * and is read field by field.
+ */
+const calendarSchema = z.object({ calendarItems: z.array(z.record(z.unknown())).optional() });
 
 /** A present, non-empty id; null for anything else. */
 const parseScheduleId = (value: unknown): ScheduleId | null =>
@@ -37,10 +45,13 @@ async function findSchedule(
 ): Promise<Schedule> {
   const [year, month] = fromDate.split('-').map(Number) as [number, number];
   console.error(`[INFO] Fetching calendar for ${year}-${String(month).padStart(2, '0')}...`);
-  const calendar = (await client.getCalendar(year, month - 1)) as {
-    calendarItems?: Array<Record<string, unknown>>;
-  };
-  const items = calendar.calendarItems ?? [];
+  const raw: unknown = await client.getCalendar(year, month - 1);
+  const calendar = calendarSchema.safeParse(raw);
+  if (!calendar.success) {
+    console.error(`[FATAL] Unexpected calendar payload: ${calendar.error.message}`);
+    process.exit(1);
+  }
+  const items = calendar.data.calendarItems ?? [];
 
   const match = items.find(
     (i) =>
@@ -78,14 +89,9 @@ async function moveSchedule(
   workoutIdArg: string,
   toDate: string,
 ): Promise<number | undefined> {
-  const rawClient = (
-    client as unknown as {
-      client: { get: (u: string) => Promise<unknown>; delete: (u: string) => Promise<unknown> };
-    }
-  ).client;
-
   console.error(`[INFO] Deleting schedule ${scheduleId}...`);
-  await rawClient.delete(`https://connectapi.garmin.com/workout-service/schedule/${scheduleId}`);
+  // DELETE https://connectapi.garmin.com/workout-service/schedule/<scheduleId>
+  await client.unscheduleWorkout(scheduleId);
   console.error('[INFO] Schedule deleted');
 
   console.error(`[INFO] Scheduling workout ${workoutIdArg} for ${toDate}...`);

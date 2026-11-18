@@ -8,6 +8,7 @@ import {
   it,
   vi,
 } from 'vitest';
+import { makeResearchJobData } from './core/research-types.js';
 import {
   type JobId,
   type ScheduledJob,
@@ -17,7 +18,7 @@ import {
   makeTelegramUpdateId,
 } from './core/types.js';
 import { fakeQueueOperations } from './infra/__fixtures__/queue-operations.js';
-import type { AgentResult } from './infra/agent-backends/index.js';
+import type { AgentOptions, AgentResult, runAgent } from './infra/agent-backends/index.js';
 import type { AppConfig } from './infra/config.js';
 import type { NotebookLMAdapter, NotebookLMCredentials } from './infra/notebooklm-client.js';
 import type {
@@ -26,6 +27,7 @@ import type {
   createTelegramAdapter,
 } from './infra/telegram.js';
 import { type BootstrapDeps, bootstrap } from './main.js';
+import type { ResearchJobLike, handleResearchJob } from './orchestration/research-handler.js';
 import type { handleScheduledJob } from './orchestration/scheduled-handler.js';
 import type { createWorkers } from './orchestration/worker.js';
 
@@ -69,6 +71,20 @@ const podcastJobResult = makePodcastJob({
 });
 if (!podcastJobResult.ok) throw new Error(podcastJobResult.error);
 const PODCAST_JOB = podcastJobResult.value;
+
+const researchJobData = makeResearchJobData({
+  now: new Date('2026-08-14T10:00:00.000Z'),
+  prompt: 'agent memory',
+  sourceHints: [],
+  chatId: 99988877,
+});
+if (!researchJobData.ok) throw new Error(researchJobData.error);
+/** The research handler under test never persists, so the job's write-backs are no-ops. */
+const RESEARCH_JOB: ResearchJobLike = {
+  data: researchJobData.value,
+  updateData: async () => {},
+  updateProgress: async () => {},
+};
 
 const SCHEDULED_JOB: ScheduledJob = {
   kind: 'scheduled',
@@ -217,6 +233,8 @@ describe('bootstrap', () => {
   let mockNotebookLM: ReturnType<typeof makeMockNotebookLM>;
   let handlePodcastJobMock: ReturnType<typeof vi.fn>;
   let handleScheduledJobMock: ReturnType<typeof vi.fn>;
+  let handleResearchJobMock: ReturnType<typeof vi.fn>;
+  let runAgentMock: Mock<typeof runAgent>;
   let processExitSpy: MockInstance<typeof process.exit>;
   let processOnceSpy: MockInstance<typeof process.once>;
   const signalHandlers = new Map<string, () => void>();
@@ -247,6 +265,8 @@ describe('bootstrap', () => {
     createNotebookLMMock = vi.fn().mockResolvedValue(mockNotebookLM.adapter);
     handlePodcastJobMock = vi.fn().mockResolvedValue({ ok: true, response: 'podcast ready' });
     handleScheduledJobMock = vi.fn().mockResolvedValue({ kind: 'skipped', reason: 'test' });
+    handleResearchJobMock = vi.fn().mockResolvedValue({ hubPath: null, topic: 'test' });
+    runAgentMock = vi.fn<typeof runAgent>().mockResolvedValue(AGENT_SUCCESS);
 
     processExitSpy = vi.spyOn(process, 'exit').mockImplementation((code): never => {
       throw new Error(`process.exit(${code})`);
@@ -281,12 +301,12 @@ describe('bootstrap', () => {
       createSkillWatcherFn: createSkillWatcherMock,
       createSchedulerFn: createSchedulerMock,
       createWorkersFn: createWorkersMock,
-      runClaudeFn: vi.fn(),
+      runAgentFn: runAgentMock,
       handleChatJobFn: vi.fn().mockResolvedValue({ ok: true, response: '' }),
       handleScheduledJobFn: handleScheduledJobMock,
       handleReminderJobFn: vi.fn().mockResolvedValue({ ok: true, response: '' }),
       handleRecurringReminderJobFn: vi.fn().mockResolvedValue({ ok: true, response: '' }),
-      handleResearchJobFn: vi.fn().mockResolvedValue({ hubPath: null, topic: 'test' }),
+      handleResearchJobFn: handleResearchJobMock,
       handlePodcastJobFn: handlePodcastJobMock,
       createNotebookLMAdapterFn: createNotebookLMMock,
       createSessionStoreFn: createSessionStoreMock,
@@ -839,7 +859,7 @@ describe('bootstrap', () => {
     });
   });
 
-  describe('scheduled agent runs', () => {
+  describe('agent runs resolve backend and model before the injected runner', () => {
     const piConfig: AppConfig = {
       ...mockConfig,
       agentBackend: 'pi',
@@ -847,11 +867,12 @@ describe('bootstrap', () => {
       piModel: 'chat-model',
     };
 
-    /** Run the scheduled agent bootstrap hands to the scheduled job handler; returns the run's options. */
-    async function scheduledRunOptions(config: AppConfig): Promise<unknown> {
-      const runAgentMock = vi.fn().mockResolvedValue(AGENT_SUCCESS);
-      const { runClaudeFn: _chatRunner, ...deps } = makeDepsWithConfig(config);
-      await bootstrap({ ...deps, runAgentFn: runAgentMock });
+    /** Bootstrap over `config`, then run the scheduled agent bootstrap hands to the scheduled job handler. */
+    async function runScheduledAgent(
+      config: AppConfig,
+      overrides: Partial<AgentOptions> = {},
+    ): Promise<void> {
+      await bootstrap(makeDepsWithConfig(config));
 
       await capturedWorkerDeps().scheduledHandler(SCHEDULED_JOB);
       const handlerDeps = handleScheduledJobMock.mock.calls[0]?.[1] as Parameters<
@@ -862,7 +883,13 @@ describe('bootstrap', () => {
         prompt: 'briefing',
         allowedTools: [],
         timeoutMs: 1_000,
+        ...overrides,
       });
+    }
+
+    /** The options the scheduled Pi run reached the backend runner with. */
+    async function scheduledRunOptions(config: AppConfig): Promise<unknown> {
+      await runScheduledAgent(config);
 
       expect(runAgentMock).toHaveBeenCalledOnce();
       expect(runAgentMock.mock.calls[0]?.[0]).toMatchObject({ name: 'pi' });
@@ -883,6 +910,35 @@ describe('bootstrap', () => {
       expect(options).toMatchObject({
         modelSelection: { provider: 'vllm', model: 'chat-model' },
       });
+    });
+
+    it('stores research summaries on the chat Pi model, not the scheduled one', async () => {
+      await bootstrap(
+        makeDepsWithConfig({ ...piConfig, ...TOKEN_CREDENTIALS, piScheduledModel: 'cheap-model' }),
+      );
+
+      await capturedWorkerDeps().researchHandler(RESEARCH_JOB);
+      const { cortexRemember } = handleResearchJobMock.mock.calls[0]?.[1] as Parameters<
+        typeof handleResearchJob
+      >[1];
+      if (cortexRemember === undefined) throw new Error('bootstrap wired no cortexRemember');
+      await cortexRemember('summary of findings');
+
+      expect(runAgentMock).toHaveBeenCalledOnce();
+      expect(runAgentMock.mock.calls[0]?.[0]).toMatchObject({ name: 'pi' });
+      expect(runAgentMock.mock.calls[0]?.[1]).toMatchObject({
+        prompt: expect.stringContaining('summary of findings'),
+        modelSelection: { provider: 'vllm', model: 'chat-model' },
+        containment: { kind: 'none' },
+      });
+    });
+
+    it('never hands the Pi model to a run that pins the claude backend', async () => {
+      await runScheduledAgent(piConfig, { backend: 'claude' });
+
+      expect(runAgentMock).toHaveBeenCalledOnce();
+      expect(runAgentMock.mock.calls[0]?.[0]).toMatchObject({ name: 'claude' });
+      expect(runAgentMock.mock.calls[0]?.[1]).not.toHaveProperty('modelSelection');
     });
   });
 

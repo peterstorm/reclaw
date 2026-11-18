@@ -62,10 +62,8 @@ export type BootstrapDeps = {
     isJobCompleted: (jobId: string) => Promise<boolean>,
   ) => CronScheduler;
   readonly createWorkersFn?: typeof createWorkers;
-  /** Replaces every non-streaming agent run, skipping backend and model resolution. */
-  readonly runClaudeFn?: AgentRun;
   readonly runClaudeStreamingFn?: StreamingAgentRun;
-  /** The backend runner under backend and model resolution; used when runClaudeFn is not injected. */
+  /** The backend runner every non-streaming agent run reaches after backend and model resolution. */
   readonly runAgentFn?: typeof runAgent;
   readonly createNotebookLMAdapterFn?: typeof createNotebookLMAdapter;
   readonly handleChatJobFn?: typeof handleChatJob;
@@ -265,10 +263,7 @@ type AgentRunnerConfig = Pick<
   AppConfig,
   'agentBackend' | 'agentContainment' | 'piProvider' | 'piModel' | 'piScheduledModel'
 >;
-type InjectedAgentRunners = Pick<
-  BootstrapDeps,
-  'runClaudeFn' | 'runClaudeStreamingFn' | 'runAgentFn'
->;
+type InjectedAgentRunners = Pick<BootstrapDeps, 'runClaudeStreamingFn' | 'runAgentFn'>;
 
 async function createAgentRuntime(
   config: AgentRunnerConfig,
@@ -314,8 +309,8 @@ async function createAgentRunners(
     ((opts, onChunk) => runAgentStreaming(...forBackend(serviceSelections)(opts), onChunk));
   const run = injected.runAgentFn ?? runAgent;
   return {
-    runClaude: injected.runClaudeFn ?? ((opts) => run(...forBackend(serviceSelections)(opts))),
-    runScheduled: injected.runClaudeFn ?? ((opts) => run(...forBackend(scheduledSelections)(opts))),
+    runClaude: (opts) => run(...forBackend(serviceSelections)(opts)),
+    runScheduled: (opts) => run(...forBackend(scheduledSelections)(opts)),
     runChatStreaming: serialized(runStreaming),
   };
 }

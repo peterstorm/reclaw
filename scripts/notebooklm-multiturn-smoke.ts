@@ -23,7 +23,9 @@ import { FALLBACK_BL, fetchCurrentBuildLabel } from '../src/infra/notebooklm-cli
 const DEFAULT_Q1 = 'List the three most important claims this notebook makes, numbered 1, 2, 3.';
 const DEFAULT_Q2 = 'Expand on the second point. What evidence in the sources supports it?';
 
-function preview(text: string, n = 600): string {
+/** The SDK leaves `text` unset when it could not decode an answer. */
+function preview(text: string | undefined, n = 600): string {
+  if (text === undefined) return '(no text)';
   const trimmed = text.trim();
   return trimmed.length <= n ? trimmed : `${trimmed.slice(0, n)}…`;
 }
@@ -94,9 +96,11 @@ async function main(): Promise<void> {
 
   console.log('\n── Turn 2 (with conversationId) ────────────────────────');
   console.log(`Q: ${q2}\n`);
-  const r2 = await sdk.generation.chat(notebookId, q2, {
-    conversationId: r1.conversationId,
-  });
+  const r2 = await sdk.generation.chat(
+    notebookId,
+    q2,
+    r1.conversationId === undefined ? {} : { conversationId: r1.conversationId },
+  );
   console.log(`A: ${preview(r2.text)}\n`);
   console.log(`conversationId: ${r2.conversationId ?? '(none)'}`);
   console.log(`messageIds:     ${r2.messageIds?.join(', ') ?? '(none)'}`);
