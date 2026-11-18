@@ -5,6 +5,7 @@ import {
   formatAbsoluteTime,
   formatDuration,
   formatReminderEnqueueOutcome,
+  formatReminderList,
   formatSemanticDate,
   isRemindListCommand,
   parseAbsoluteTime,
@@ -245,6 +246,14 @@ describe('parseRecurringReminder', () => {
     const r = parseRecurringReminder('30s stretch');
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain('at least 1 minute');
+  });
+
+  it('accepts exactly the 1 minute minimum, the floor the job factory enforces', () => {
+    expect(parseRecurringReminder('1m stretch')).toEqual({
+      ok: true,
+      value: { type: 'interval', intervalMs: 60_000, text: 'stretch' },
+    });
+    expect(parseRecurringReminder('59s stretch').ok).toBe(false);
   });
 
   it('rejects missing message', () => {
@@ -547,6 +556,48 @@ describe('parseRemindCommand recurring', () => {
     if (r.ok) {
       expect(r.value.kind).toBe('cron-recurring');
     }
+  });
+});
+
+// ─── formatReminderList ───────────────────────────────────────────────────────
+
+describe('formatReminderList', () => {
+  it('returns null for no reminders', () => {
+    expect(formatReminderList([])).toBeNull();
+  });
+
+  it('shows each reminder by its schedule kind, numbered, with the cancel hint', () => {
+    expect(
+      formatReminderList([
+        {
+          schedulerId: 'r1',
+          text: 'water plants',
+          schedule: { kind: 'cron', cronDescription: 'every Sunday at 12:00' },
+        },
+        {
+          schedulerId: 'r2',
+          text: 'stretch',
+          schedule: { kind: 'pattern', cronPattern: '0 9 * * *' },
+        },
+        {
+          schedulerId: 'r3',
+          text: 'drink water',
+          schedule: { kind: 'interval', intervalMs: 7_200_000 },
+        },
+      ]),
+    ).toBe(
+      'Active recurring reminders:\n\n' +
+        '1. `r1` every Sunday at 12:00 — water plants\n' +
+        '2. `r2` 0 9 * * * — stretch\n' +
+        '3. `r3` every 2h — drink water\n\n' +
+        'Cancel with: /remind cancel <id>',
+    );
+  });
+
+  it('shows a reminder with no repeat rule as such, still listed so it can be cancelled', () => {
+    expect(
+      formatReminderList([{ schedulerId: 'r1', text: 'x', schedule: { kind: 'no-repeat-rule' } }]),
+    ).toContain('1. `r1` (no repeat rule) — x');
   });
 });
 

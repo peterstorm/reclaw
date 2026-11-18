@@ -345,17 +345,24 @@ The `>=` comparison is important — `failed` fires on every retryable attempt, 
 
 ### The chat mutex sits above the workers
 
-Chat handlers spawn the Claude CLI, which writes to a session file. Two concurrent spawns could corrupt it. So `main.ts` wraps the streaming call in an `AsyncMutex`:
+Chat handlers spawn the agent CLI (Claude or Pi), which writes to the conversation's session file. Two concurrent spawns could corrupt it. So `main.ts` resolves the backend, model and containment for every chat run, then serializes the runs through an `AsyncMutex`:
 
 ```ts
-const guardedRunClaudeStreamingChat = async (opts, onChunk) => {
-  const release = await chatMutex.acquire();
-  try { return await runClaudeStreamingFn(opts, onChunk); }
-  finally { release(); }
-};
+function serialized(run: StreamingAgentRun): StreamingAgentRun {
+  const mutex = createAsyncMutex();
+  return async (options, onChunk) => {
+    const release = await mutex.acquire();
+    try { return await run(options, onChunk); }
+    finally { release(); }
+  };
+}
+
+// createAgentRunners
+runChatStreaming: serialized((opts, onChunk) =>
+  runStreaming(...forBackend(serviceSelections)(opts), onChunk)),
 ```
 
-This is **on top of** `concurrency: 1`. Queue concurrency only protects within one queue; the mutex protects across handlers. Scheduled jobs deliberately don't take the mutex — they spawn independent Claude instances on disjoint workspace files, so concurrency there is safe.
+This is **on top of** `concurrency: 1`. Queue concurrency only protects within one queue; the mutex protects across handlers. Scheduled jobs deliberately don't take the mutex — they spawn independent agent runs on disjoint activity/session lineages, so concurrency there is safe.
 
 ### Lifecycle
 

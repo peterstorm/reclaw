@@ -80,8 +80,8 @@ const makeSessionStore = (): SessionStore & {
 const thinkingChunk = (thinking: string): StreamChunk => ({ phase: 'thinking', thinking });
 const textChunk = (text: string): StreamChunk => ({ phase: 'text', text });
 
-/** Creates a mock runClaudeStreaming that calls onChunk with a final text chunk before resolving. */
-const makeRunClaudeStreaming = (result: AgentResult) =>
+/** Creates a mock runAgentStreaming that calls onChunk with a final text chunk before resolving. */
+const makeRunAgentStreaming = (result: AgentResult) =>
   vi.fn().mockImplementation((_options: unknown, onChunk?: OnStreamChunk) => {
     if (result.ok && onChunk) {
       onChunk(textChunk(result.output));
@@ -101,7 +101,7 @@ describe('handleChatJob', () => {
     const job = makeChatJob();
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const runClaudeStreaming = makeRunClaudeStreaming({
+    const runAgentStreaming = makeRunAgentStreaming({
       ok: true,
       output: 'Hello from claude!',
       sessionId: 'sess-1',
@@ -109,7 +109,7 @@ describe('handleChatJob', () => {
     });
 
     const result = await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      runAgentStreaming: runAgentStreaming as unknown as ChatDeps['runAgentStreaming'],
       telegram,
       config: makeConfig(),
       sessionStore,
@@ -125,7 +125,7 @@ describe('handleChatJob', () => {
     'completes without session lineage when the backend returns a malformed session id %j',
     async (malformedSessionId) => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      const runClaudeStreaming = makeRunClaudeStreaming({
+      const runAgentStreaming = makeRunAgentStreaming({
         ok: true,
         output: 'Answer',
         sessionId: malformedSessionId,
@@ -133,7 +133,7 @@ describe('handleChatJob', () => {
       });
 
       const result = await handleChatJob(makeChatJob(), {
-        runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+        runAgentStreaming: runAgentStreaming as unknown as ChatDeps['runAgentStreaming'],
         telegram: makeTelegram(),
         config: makeConfig(),
         sessionStore: makeSessionStore(),
@@ -148,11 +148,11 @@ describe('handleChatJob', () => {
     },
   );
 
-  it('calls runClaudeStreaming with chat permission flags (FR-011)', async () => {
+  it('calls runAgentStreaming with chat permission flags (FR-011)', async () => {
     const job = makeChatJob();
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const runClaudeStreaming = makeRunClaudeStreaming({
+    const runAgentStreaming = makeRunAgentStreaming({
       ok: true,
       output: 'response',
       sessionId: null,
@@ -160,22 +160,22 @@ describe('handleChatJob', () => {
     });
 
     await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      runAgentStreaming: runAgentStreaming as unknown as ChatDeps['runAgentStreaming'],
       telegram,
       config: makeConfig(),
       sessionStore,
     });
 
-    expect(runClaudeStreaming).toHaveBeenCalledOnce();
-    const callArgs = runClaudeStreaming.mock.calls[0]?.[0];
+    expect(runAgentStreaming).toHaveBeenCalledOnce();
+    const callArgs = runAgentStreaming.mock.calls[0]?.[0];
     expect(callArgs.allowedTools).toEqual(getAllowedTools('chat'));
   });
 
-  it('calls runClaudeStreaming with workspace cwd and chat timeout (FR-016)', async () => {
+  it('calls runAgentStreaming with workspace cwd and chat timeout (FR-016)', async () => {
     const job = makeChatJob();
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const runClaudeStreaming = makeRunClaudeStreaming({
+    const runAgentStreaming = makeRunAgentStreaming({
       ok: true,
       output: 'response',
       sessionId: null,
@@ -183,13 +183,13 @@ describe('handleChatJob', () => {
     });
 
     await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      runAgentStreaming: runAgentStreaming as unknown as ChatDeps['runAgentStreaming'],
       telegram,
       config: makeConfig({ workspacePath: '/my/workspace' }),
       sessionStore,
     });
 
-    const callArgs = runClaudeStreaming.mock.calls[0]?.[0];
+    const callArgs = runAgentStreaming.mock.calls[0]?.[0];
     expect(callArgs.cwd).toBe('/my/workspace');
     expect(callArgs.timeoutMs).toBe(3_600_000);
   });
@@ -200,7 +200,7 @@ describe('handleChatJob', () => {
     const job = makeChatJob({ text: 'What is the capital of France?' });
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const runClaudeStreaming = makeRunClaudeStreaming({
+    const runAgentStreaming = makeRunAgentStreaming({
       ok: true,
       output: 'Paris',
       sessionId: null,
@@ -208,13 +208,13 @@ describe('handleChatJob', () => {
     });
 
     await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      runAgentStreaming: runAgentStreaming as unknown as ChatDeps['runAgentStreaming'],
       telegram,
       config: makeConfig(),
       sessionStore,
     });
 
-    const callArgs = runClaudeStreaming.mock.calls[0]?.[0];
+    const callArgs = runAgentStreaming.mock.calls[0]?.[0];
     expect(callArgs.prompt).toContain('You are a helpful assistant.');
     expect(callArgs.prompt).toContain('What is the capital of France?');
   });
@@ -233,7 +233,7 @@ describe('handleChatJob', () => {
       sessionId: 'existing-session' as ClaudeSessionId,
       lastActivityAt: new Date().toISOString(),
     });
-    const runClaudeStreaming = makeRunClaudeStreaming({
+    const runAgentStreaming = makeRunAgentStreaming({
       ok: true,
       output: 'Summary',
       sessionId: 'existing-session',
@@ -241,13 +241,13 @@ describe('handleChatJob', () => {
     });
 
     await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      runAgentStreaming: runAgentStreaming as unknown as ChatDeps['runAgentStreaming'],
       telegram: makeTelegram(),
       config: makeConfig(),
       sessionStore,
     });
 
-    expect(runClaudeStreaming.mock.calls[0]?.[0].prompt).toContain(
+    expect(runAgentStreaming.mock.calls[0]?.[0].prompt).toContain(
       '[Read extracted document text: /state/notes.md.txt]',
     );
   });
@@ -264,7 +264,7 @@ describe('handleChatJob', () => {
         },
       ],
     });
-    const runClaudeStreaming = makeRunClaudeStreaming({
+    const runAgentStreaming = makeRunAgentStreaming({
       ok: true,
       output: 'Stored',
       sessionId: null,
@@ -272,13 +272,13 @@ describe('handleChatJob', () => {
     });
 
     await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      runAgentStreaming: runAgentStreaming as unknown as ChatDeps['runAgentStreaming'],
       telegram: makeTelegram(),
       config: makeConfig(),
       sessionStore: makeSessionStore(),
     });
 
-    expect(runClaudeStreaming.mock.calls[0]?.[0].prompt).toContain(
+    expect(runAgentStreaming.mock.calls[0]?.[0].prompt).toContain(
       '[Stored uploaded file: "bundle.skill"]',
     );
   });
@@ -289,7 +289,7 @@ describe('handleChatJob', () => {
     const job = makeChatJob({ text: 'Hello!' });
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const runClaudeStreaming = makeRunClaudeStreaming({
+    const runAgentStreaming = makeRunAgentStreaming({
       ok: true,
       output: 'Hi!',
       sessionId: null,
@@ -297,14 +297,14 @@ describe('handleChatJob', () => {
     });
 
     const result = await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      runAgentStreaming: runAgentStreaming as unknown as ChatDeps['runAgentStreaming'],
       telegram,
       config: makeConfig(),
       sessionStore,
     });
 
     expect(result.kind).toBe('completed');
-    const callArgs = runClaudeStreaming.mock.calls[0]?.[0];
+    const callArgs = runAgentStreaming.mock.calls[0]?.[0];
     expect(callArgs.prompt).toBe('Hello!');
   });
 
@@ -312,7 +312,7 @@ describe('handleChatJob', () => {
     const job = makeChatJob({ chatId: 789 });
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const runClaudeStreaming = makeRunClaudeStreaming({
+    const runAgentStreaming = makeRunAgentStreaming({
       ok: true,
       output: 'Final response',
       sessionId: null,
@@ -320,7 +320,7 @@ describe('handleChatJob', () => {
     });
 
     const result = await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      runAgentStreaming: runAgentStreaming as unknown as ChatDeps['runAgentStreaming'],
       telegram,
       config: makeConfig(),
       sessionStore,
@@ -346,7 +346,7 @@ describe('handleChatJob', () => {
     });
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const runClaudeStreaming = makeRunClaudeStreaming({
+    const runAgentStreaming = makeRunAgentStreaming({
       ok: true,
       output: 'Durable response',
       sessionId: 'durable-session',
@@ -354,7 +354,7 @@ describe('handleChatJob', () => {
     });
 
     const result = await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      runAgentStreaming: runAgentStreaming as unknown as ChatDeps['runAgentStreaming'],
       telegram,
       config: makeConfig(),
       sessionStore,
@@ -389,10 +389,10 @@ describe('handleChatJob', () => {
       detail: '429 quota exceeded',
     } as const;
     const result = await handleChatJob(makeChatJob(), {
-      runClaudeStreaming: makeRunClaudeStreaming({
+      runAgentStreaming: makeRunAgentStreaming({
         ok: false,
         failure,
-      }) as unknown as ChatDeps['runClaudeStreaming'],
+      }) as unknown as ChatDeps['runAgentStreaming'],
       telegram: makeTelegram(),
       config: makeConfig(),
       sessionStore: makeSessionStore(),
@@ -405,7 +405,7 @@ describe('handleChatJob', () => {
     const job = makeChatJob({ chatId: 789 });
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const runClaudeStreaming = makeRunClaudeStreaming({
+    const runAgentStreaming = makeRunAgentStreaming({
       ok: true,
       output: 'Response',
       sessionId: null,
@@ -413,7 +413,7 @@ describe('handleChatJob', () => {
     });
 
     await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      runAgentStreaming: runAgentStreaming as unknown as ChatDeps['runAgentStreaming'],
       telegram,
       config: makeConfig(),
       sessionStore,
@@ -430,7 +430,7 @@ describe('handleChatJob', () => {
       new Error('Telegram API error'),
     );
     const sessionStore = makeSessionStore();
-    const runClaudeStreaming = makeRunClaudeStreaming({
+    const runAgentStreaming = makeRunAgentStreaming({
       ok: true,
       output: 'Fallback response',
       sessionId: null,
@@ -438,7 +438,7 @@ describe('handleChatJob', () => {
     });
 
     const result = await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      runAgentStreaming: runAgentStreaming as unknown as ChatDeps['runAgentStreaming'],
       telegram,
       config: makeConfig(),
       sessionStore,
@@ -465,10 +465,10 @@ describe('handleChatJob', () => {
       exitCode: 1,
       detail: 'failure',
     } as const;
-    const runClaudeStreaming = makeRunClaudeStreaming({ ok: false, failure });
+    const runAgentStreaming = makeRunAgentStreaming({ ok: false, failure });
 
     const result = await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      runAgentStreaming: runAgentStreaming as unknown as ChatDeps['runAgentStreaming'],
       telegram,
       config: makeConfig(),
       sessionStore,
@@ -491,13 +491,13 @@ describe('handleChatJob', () => {
     const job = makeChatJob();
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const runClaudeStreaming = makeRunClaudeStreaming({
+    const runAgentStreaming = makeRunAgentStreaming({
       ok: false,
       failure: { kind: 'timeout', backend: 'claude', timeoutMs: 120_000 },
     });
 
     await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      runAgentStreaming: runAgentStreaming as unknown as ChatDeps['runAgentStreaming'],
       telegram,
       config: makeConfig(),
       sessionStore,
@@ -511,7 +511,7 @@ describe('handleChatJob', () => {
     const job = makeChatJob({ text: 'What is the answer?' });
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const runClaudeStreaming = makeRunClaudeStreaming({
+    const runAgentStreaming = makeRunAgentStreaming({
       ok: true,
       output: claudeOutput,
       sessionId: null,
@@ -519,7 +519,7 @@ describe('handleChatJob', () => {
     });
 
     const result = await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      runAgentStreaming: runAgentStreaming as unknown as ChatDeps['runAgentStreaming'],
       telegram,
       config: makeConfig(),
       sessionStore,
@@ -545,7 +545,7 @@ describe('handleChatJob', () => {
       sessionId: 'sess-existing' as ClaudeSessionId,
       lastActivityAt: new Date().toISOString(),
     } satisfies ConversationLineage);
-    const runClaudeStreaming = makeRunClaudeStreaming({
+    const runAgentStreaming = makeRunAgentStreaming({
       ok: true,
       output: 'answer',
       sessionId: 'sess-existing',
@@ -553,13 +553,13 @@ describe('handleChatJob', () => {
     });
 
     await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      runAgentStreaming: runAgentStreaming as unknown as ChatDeps['runAgentStreaming'],
       telegram,
       config: makeConfig(),
       sessionStore,
     });
 
-    const callArgs = runClaudeStreaming.mock.calls[0]?.[0];
+    const callArgs = runAgentStreaming.mock.calls[0]?.[0];
     // Should send just the user message, not personality+message
     expect(callArgs.prompt).toBe('follow up question');
     expect(callArgs.resumeSessionId).toBe('sess-existing');
@@ -583,7 +583,7 @@ describe('handleChatJob', () => {
       sessionId: 'session-latest' as ClaudeSessionId,
       lastActivityAt: new Date().toISOString(),
     } satisfies ConversationLineage);
-    const runClaudeStreaming = makeRunClaudeStreaming({
+    const runAgentStreaming = makeRunAgentStreaming({
       ok: true,
       output: 'continued',
       sessionId: 'session-next',
@@ -591,13 +591,13 @@ describe('handleChatJob', () => {
     });
 
     const result = await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      runAgentStreaming: runAgentStreaming as unknown as ChatDeps['runAgentStreaming'],
       telegram: makeTelegram(),
       config: makeConfig(),
       sessionStore,
     });
 
-    expect(runClaudeStreaming.mock.calls[0]?.[0]).toMatchObject({
+    expect(runAgentStreaming.mock.calls[0]?.[0]).toMatchObject({
       resumeSessionId: 'session-latest',
       backend: 'pi',
     });
@@ -627,7 +627,7 @@ describe('handleChatJob', () => {
       sessionId: null,
       lastActivityAt: new Date().toISOString(),
     } satisfies ConversationLineage);
-    const runClaudeStreaming = makeRunClaudeStreaming({
+    const runAgentStreaming = makeRunAgentStreaming({
       ok: true,
       output: 'old request result',
       sessionId: 'session-old-result',
@@ -635,13 +635,13 @@ describe('handleChatJob', () => {
     });
 
     const result = await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      runAgentStreaming: runAgentStreaming as unknown as ChatDeps['runAgentStreaming'],
       telegram: makeTelegram(),
       config: makeConfig(),
       sessionStore,
     });
 
-    expect(runClaudeStreaming.mock.calls[0]?.[0]).toMatchObject({
+    expect(runAgentStreaming.mock.calls[0]?.[0]).toMatchObject({
       resumeSessionId: 'session-old-generation',
       backend: 'claude',
     });
@@ -666,7 +666,7 @@ describe('handleChatJob', () => {
     } satisfies ConversationLineage);
 
     // First call (resume) fails, second call (fresh) succeeds
-    const runClaudeStreaming = vi
+    const runAgentStreaming = vi
       .fn()
       .mockResolvedValueOnce({
         ok: false,
@@ -680,7 +680,7 @@ describe('handleChatJob', () => {
       });
 
     const result = await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      runAgentStreaming: runAgentStreaming as unknown as ChatDeps['runAgentStreaming'],
       telegram,
       config: makeConfig(),
       sessionStore,
@@ -691,11 +691,11 @@ describe('handleChatJob', () => {
       expect(result.response).toBe('recovered');
       expect(result.sessionId).toBe('sess-fresh');
     }
-    // Should have called runClaudeStreaming twice
-    expect(runClaudeStreaming).toHaveBeenCalledTimes(2);
+    // Should have called runAgentStreaming twice
+    expect(runAgentStreaming).toHaveBeenCalledTimes(2);
     // First with resume, second without
-    expect(runClaudeStreaming.mock.calls[0]?.[0].resumeSessionId).toBe('sess-stale');
-    expect(runClaudeStreaming.mock.calls[1]?.[0].resumeSessionId).toBeUndefined();
+    expect(runAgentStreaming.mock.calls[0]?.[0].resumeSessionId).toBe('sess-stale');
+    expect(runAgentStreaming.mock.calls[1]?.[0].resumeSessionId).toBeUndefined();
     // Fallback does not mutate lineage; the session commit is the worker's
     // job (chat-session delivery), not the handler's.
     expect(sessionStore.advance).not.toHaveBeenCalled();
@@ -727,17 +727,17 @@ describe('handleChatJob', () => {
       sessionId: 'sess-valid' as ClaudeSessionId,
       lastActivityAt: new Date().toISOString(),
     } satisfies ConversationLineage);
-    const runClaudeStreaming = makeRunClaudeStreaming({ ok: false, failure });
+    const runAgentStreaming = makeRunAgentStreaming({ ok: false, failure });
 
     const result = await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      runAgentStreaming: runAgentStreaming as unknown as ChatDeps['runAgentStreaming'],
       telegram,
       config: makeConfig(),
       sessionStore,
     });
 
     expect(result).toEqual({ kind: 'failed', failure });
-    expect(runClaudeStreaming).toHaveBeenCalledOnce();
+    expect(runAgentStreaming).toHaveBeenCalledOnce();
     expect(sessionStore.advance).not.toHaveBeenCalled();
   });
 
@@ -749,7 +749,7 @@ describe('handleChatJob', () => {
     const sessionStore = makeSessionStore();
     const thinking = 'Let me analyze this carefully and consider the options...';
 
-    const runClaudeStreaming = vi
+    const runAgentStreaming = vi
       .fn()
       .mockImplementation((_opts: unknown, onChunk?: OnStreamChunk) => {
         if (onChunk) {
@@ -766,7 +766,7 @@ describe('handleChatJob', () => {
       });
 
     const result = await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      runAgentStreaming: runAgentStreaming as unknown as ChatDeps['runAgentStreaming'],
       telegram,
       config: makeConfig(),
       sessionStore,
@@ -805,7 +805,7 @@ describe('handleChatJob', () => {
     const sessionStore = makeSessionStore();
     const thinking = 'Deep internal reasoning that must not flood the chat.';
 
-    const runClaudeStreaming = vi
+    const runAgentStreaming = vi
       .fn()
       .mockImplementation(async (_opts: unknown, onChunk?: OnStreamChunk) => {
         if (onChunk) {
@@ -828,7 +828,7 @@ describe('handleChatJob', () => {
       });
 
     const result = await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      runAgentStreaming: runAgentStreaming as unknown as ChatDeps['runAgentStreaming'],
       telegram,
       config: makeConfig(),
       sessionStore,
@@ -863,7 +863,7 @@ describe('handleChatJob', () => {
     const sessionStore = makeSessionStore();
 
     // Only text chunks, no thinking
-    const runClaudeStreaming = makeRunClaudeStreaming({
+    const runAgentStreaming = makeRunAgentStreaming({
       ok: true,
       output: 'Direct answer',
       sessionId: null,
@@ -871,7 +871,7 @@ describe('handleChatJob', () => {
     });
 
     const result = await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      runAgentStreaming: runAgentStreaming as unknown as ChatDeps['runAgentStreaming'],
       telegram,
       config: makeConfig(),
       sessionStore,
@@ -897,7 +897,7 @@ describe('handleChatJob', () => {
     const sessionStore = makeSessionStore();
     // Long enough to exceed the 4096-char Telegram limit after HTML conversion.
     const longOutput = `${'Paragraph one of a long answer. '.repeat(300)}Final tail.`;
-    const runClaudeStreaming = makeRunClaudeStreaming({
+    const runAgentStreaming = makeRunAgentStreaming({
       ok: true,
       output: longOutput,
       sessionId: null,
@@ -905,7 +905,7 @@ describe('handleChatJob', () => {
     });
 
     const result = await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      runAgentStreaming: runAgentStreaming as unknown as ChatDeps['runAgentStreaming'],
       telegram,
       config: makeConfig(),
       sessionStore,
@@ -940,7 +940,7 @@ describe('handleChatJob', () => {
     );
     const sessionStore = makeSessionStore();
 
-    const runClaudeStreaming = vi
+    const runAgentStreaming = vi
       .fn()
       .mockImplementation((_opts: unknown, onChunk?: OnStreamChunk) => {
         if (onChunk) {
@@ -956,7 +956,7 @@ describe('handleChatJob', () => {
       });
 
     const result = await handleChatJob(job, {
-      runClaudeStreaming: runClaudeStreaming as unknown as ChatDeps['runClaudeStreaming'],
+      runAgentStreaming: runAgentStreaming as unknown as ChatDeps['runAgentStreaming'],
       telegram,
       config: makeConfig(),
       sessionStore,

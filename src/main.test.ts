@@ -10,15 +10,25 @@ import {
 } from 'vitest';
 import { makeResearchJobData } from './core/research-types.js';
 import {
+  type ChatJob,
   type JobId,
   type ScheduledJob,
   type SkillId,
   type SkillRegistry,
+  makeChatJob,
+  makeConversationGeneration,
+  makeConversationRevision,
   makePodcastJob,
   makeTelegramUpdateId,
+  makeTelegramUserId,
 } from './core/types.js';
 import { fakeQueueOperations } from './infra/__fixtures__/queue-operations.js';
-import type { AgentOptions, AgentResult, runAgent } from './infra/agent-backends/index.js';
+import type {
+  AgentOptions,
+  AgentResult,
+  runAgent,
+  runAgentStreaming,
+} from './infra/agent-backends/index.js';
 import type { AppConfig } from './infra/config.js';
 import type { NotebookLMAdapter, NotebookLMCredentials } from './infra/notebooklm-client.js';
 import type {
@@ -27,6 +37,7 @@ import type {
   createTelegramAdapter,
 } from './infra/telegram.js';
 import { type BootstrapDeps, bootstrap } from './main.js';
+import type { handleChatJob } from './orchestration/chat-handler.js';
 import type { ResearchJobLike, handleResearchJob } from './orchestration/research-handler.js';
 import type { handleScheduledJob } from './orchestration/scheduled-handler.js';
 import type { createWorkers } from './orchestration/worker.js';
@@ -96,6 +107,29 @@ const SCHEDULED_JOB: ScheduledJob = {
 };
 
 const AGENT_SUCCESS: AgentResult = { ok: true, output: '', sessionId: null, durationMs: 1 };
+
+function makeChatJobFixture(): ChatJob {
+  const userId = makeTelegramUserId(111222333);
+  const generation = makeConversationGeneration(0);
+  const revision = makeConversationRevision(0);
+  if (!userId.ok || !generation.ok || !revision.ok) throw new Error('Invalid chat-job fixture');
+  const job = makeChatJob({
+    id: 'telegram:7003:chat' as JobId,
+    userId: userId.value,
+    text: 'hello',
+    chatId: 99988877,
+    receivedAt: '2026-08-14T10:00:00.000Z',
+    conversation: {
+      generation: generation.value,
+      revision: revision.value,
+      backend: 'pi',
+      sessionId: null,
+    },
+  });
+  if (!job.ok) throw new Error(job.error);
+  return job.value;
+}
+const CHAT_JOB = makeChatJobFixture();
 
 /** Stands in for the NotebookLM SDK adapter: the job handlers under test never call it. */
 function makeMockNotebookLM() {
@@ -235,6 +269,8 @@ describe('bootstrap', () => {
   let handleScheduledJobMock: ReturnType<typeof vi.fn>;
   let handleResearchJobMock: ReturnType<typeof vi.fn>;
   let runAgentMock: Mock<typeof runAgent>;
+  let runAgentStreamingMock: Mock<typeof runAgentStreaming>;
+  let handleChatJobMock: ReturnType<typeof vi.fn>;
   let processExitSpy: MockInstance<typeof process.exit>;
   let processOnceSpy: MockInstance<typeof process.once>;
   const signalHandlers = new Map<string, () => void>();
@@ -267,6 +303,8 @@ describe('bootstrap', () => {
     handleScheduledJobMock = vi.fn().mockResolvedValue({ kind: 'skipped', reason: 'test' });
     handleResearchJobMock = vi.fn().mockResolvedValue({ hubPath: null, topic: 'test' });
     runAgentMock = vi.fn<typeof runAgent>().mockResolvedValue(AGENT_SUCCESS);
+    runAgentStreamingMock = vi.fn<typeof runAgentStreaming>().mockResolvedValue(AGENT_SUCCESS);
+    handleChatJobMock = vi.fn().mockResolvedValue({ ok: true, response: '' });
 
     processExitSpy = vi.spyOn(process, 'exit').mockImplementation((code): never => {
       throw new Error(`process.exit(${code})`);
@@ -302,7 +340,8 @@ describe('bootstrap', () => {
       createSchedulerFn: createSchedulerMock,
       createWorkersFn: createWorkersMock,
       runAgentFn: runAgentMock,
-      handleChatJobFn: vi.fn().mockResolvedValue({ ok: true, response: '' }),
+      runAgentStreamingFn: runAgentStreamingMock,
+      handleChatJobFn: handleChatJobMock,
       handleScheduledJobFn: handleScheduledJobMock,
       handleReminderJobFn: vi.fn().mockResolvedValue({ ok: true, response: '' }),
       handleRecurringReminderJobFn: vi.fn().mockResolvedValue({ ok: true, response: '' }),
@@ -878,7 +917,7 @@ describe('bootstrap', () => {
       const handlerDeps = handleScheduledJobMock.mock.calls[0]?.[1] as Parameters<
         typeof handleScheduledJob
       >[1];
-      await handlerDeps.runClaude({
+      await handlerDeps.runAgent({
         cwd: '/workspace',
         prompt: 'briefing',
         allowedTools: [],
@@ -939,6 +978,84 @@ describe('bootstrap', () => {
       expect(runAgentMock).toHaveBeenCalledOnce();
       expect(runAgentMock.mock.calls[0]?.[0]).toMatchObject({ name: 'claude' });
       expect(runAgentMock.mock.calls[0]?.[1]).not.toHaveProperty('modelSelection');
+    });
+
+    /** Bootstrap over `config`, then return the streaming run bootstrap hands to the chat handler. */
+    async function chatStreamingRun(
+      config: AppConfig,
+    ): Promise<Parameters<typeof handleChatJob>[1]['runAgentStreaming']> {
+      await bootstrap(makeDepsWithConfig(config));
+      await capturedWorkerDeps().chatHandler(CHAT_JOB);
+      const handlerDeps = handleChatJobMock.mock.calls[0]?.[1] as Parameters<
+        typeof handleChatJob
+      >[1];
+      return handlerDeps.runAgentStreaming;
+    }
+
+    const CHAT_OPTIONS: AgentOptions = {
+      cwd: '/workspace',
+      prompt: 'hello',
+      allowedTools: [],
+      timeoutMs: 1_000,
+    };
+
+    it('runs chat on the resolved backend, chat Pi model and service containment', async () => {
+      const runStreaming = await chatStreamingRun({ ...piConfig, piScheduledModel: 'cheap-model' });
+      const onChunk = vi.fn();
+
+      await runStreaming(CHAT_OPTIONS, onChunk);
+
+      expect(runAgentStreamingMock).toHaveBeenCalledOnce();
+      const [backend, options, chunkSink] = runAgentStreamingMock.mock.calls[0] ?? [];
+      expect(backend).toMatchObject({ name: 'pi' });
+      expect(options).toMatchObject({
+        prompt: 'hello',
+        modelSelection: { provider: 'vllm', model: 'chat-model' },
+        containment: { kind: 'none' },
+      });
+      expect(chunkSink).toBe(onChunk);
+    });
+
+    it('never hands the Pi model to a chat run that pins the claude backend', async () => {
+      const runStreaming = await chatStreamingRun(piConfig);
+
+      await runStreaming({ ...CHAT_OPTIONS, backend: 'claude' }, vi.fn());
+
+      const [backend, options] = runAgentStreamingMock.mock.calls[0] ?? [];
+      expect(backend).toMatchObject({ name: 'claude' });
+      expect(options).not.toHaveProperty('modelSelection');
+    });
+
+    it('serializes chat runs: the second starts only after the first settles', async () => {
+      let finishFirst: (result: AgentResult) => void = () => {};
+      runAgentStreamingMock.mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishFirst = resolve;
+        }),
+      );
+      const runStreaming = await chatStreamingRun(piConfig);
+
+      const first = runStreaming(CHAT_OPTIONS, vi.fn());
+      const second = runStreaming(CHAT_OPTIONS, vi.fn());
+      await vi.waitFor(() => expect(runAgentStreamingMock).toHaveBeenCalledOnce());
+      await new Promise((r) => setTimeout(r, 10));
+      expect(runAgentStreamingMock).toHaveBeenCalledOnce();
+
+      finishFirst(AGENT_SUCCESS);
+      await Promise.all([first, second]);
+      expect(runAgentStreamingMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('releases the chat lock when a run rejects, so the next run still starts', async () => {
+      runAgentStreamingMock.mockRejectedValueOnce(new Error('agent crashed'));
+      const runStreaming = await chatStreamingRun(piConfig);
+
+      const first = runStreaming(CHAT_OPTIONS, vi.fn());
+      const second = runStreaming(CHAT_OPTIONS, vi.fn());
+
+      await expect(first).rejects.toThrow('agent crashed');
+      await expect(second).resolves.toEqual(AGENT_SUCCESS);
+      expect(runAgentStreamingMock).toHaveBeenCalledTimes(2);
     });
   });
 

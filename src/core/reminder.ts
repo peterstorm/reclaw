@@ -1,6 +1,6 @@
 import * as chrono from 'chrono-node';
 import { requiredGroup } from './regex-group.js';
-import { type Result, assertNever, err, ok } from './types.js';
+import { MIN_RECURRING_INTERVAL_MS, type Result, assertNever, err, ok } from './types.js';
 
 // ─── Duration Parsing ─────────────────────────────────────────────────────────
 
@@ -327,7 +327,7 @@ export function parseRecurringReminder(input: string): Result<RecurringParsed, s
     if (text.length > 0) {
       const durationResult = parseDuration(durationStr);
       if (durationResult.ok) {
-        if (durationResult.value < 60_000) {
+        if (durationResult.value < MIN_RECURRING_INTERVAL_MS) {
           return err('Recurring interval must be at least 1 minute.');
         }
         return ok({ type: 'interval', intervalMs: durationResult.value, text });
@@ -453,14 +453,41 @@ function parseOneShotRemind(withoutPrefix: string, now: Date): Result<ParsedRemi
 
 // ─── Reminder list + confirmation formatting ────────────────────────────────
 
-/** Minimal shape needed for formatting — avoids coupling to infra/queue RecurringReminderInfo. */
-type ReminderListEntry = {
+/**
+ * How a listed recurring reminder repeats, as `/remind list` shows it:
+ * - `cron`: a cron reminder, shown by its description;
+ * - `pattern`: an interval template whose scheduler repeats on a cron pattern, shown raw;
+ * - `interval`: repeats every `intervalMs`, the scheduler's own interval;
+ * - `no-repeat-rule`: the scheduler reports neither an interval nor a pattern. It is still
+ *   listed, so the user can see and cancel it, but never as a plausible schedule.
+ */
+export type ListedSchedule =
+  | { readonly kind: 'cron'; readonly cronDescription: string }
+  | { readonly kind: 'pattern'; readonly cronPattern: string }
+  | { readonly kind: 'interval'; readonly intervalMs: number }
+  | { readonly kind: 'no-repeat-rule' };
+
+/** One recurring reminder as `/remind list` shows it. */
+export type ReminderListEntry = {
   readonly schedulerId: string;
   readonly text: string;
-  readonly intervalMs: number;
-  readonly cronDescription?: string;
-  readonly cronPattern?: string;
+  readonly schedule: ListedSchedule;
 };
+
+function describeListedSchedule(schedule: ListedSchedule): string {
+  switch (schedule.kind) {
+    case 'cron':
+      return schedule.cronDescription;
+    case 'pattern':
+      return schedule.cronPattern;
+    case 'interval':
+      return `every ${formatDuration(schedule.intervalMs)}`;
+    case 'no-repeat-rule':
+      return '(no repeat rule)';
+    default:
+      return assertNever(schedule);
+  }
+}
 
 /**
  * Format a list of recurring reminders for display.
@@ -468,12 +495,9 @@ type ReminderListEntry = {
  */
 export function formatReminderList(reminders: readonly ReminderListEntry[]): string | null {
   if (reminders.length === 0) return null;
-  const lines = reminders.map((r, i) => {
-    const schedule =
-      r.cronDescription ??
-      (r.cronPattern ? r.cronPattern : `every ${formatDuration(r.intervalMs)}`);
-    return `${i + 1}. \`${r.schedulerId}\` ${schedule} — ${r.text}`;
-  });
+  const lines = reminders.map(
+    (r, i) => `${i + 1}. \`${r.schedulerId}\` ${describeListedSchedule(r.schedule)} — ${r.text}`,
+  );
   return `Active recurring reminders:\n\n${lines.join('\n')}\n\nCancel with: /remind cancel <id>`;
 }
 

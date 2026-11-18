@@ -93,6 +93,23 @@ describe('MAX_RETRIES', () => {
       MAX_RETRIES.creating_notebook = 99;
     }).toThrow();
   });
+
+  it('gives every state kind its own limit, and none to an Object.prototype name', () => {
+    for (const limit of Object.values(MAX_RETRIES)) {
+      expect(Number.isInteger(limit) && limit >= 0).toBe(true);
+    }
+    expect(Object.hasOwn(MAX_RETRIES, 'constructor')).toBe(false);
+  });
+
+  it('does not retry resolving_citations: a retriable error there fails at once', () => {
+    const state: ResearchState = { kind: 'resolving_citations' };
+    expect(MAX_RETRIES.resolving_citations).toBe(0);
+    expect(transition(state, errorEvent('citation bug', true), makeContext()).state).toEqual({
+      kind: 'failed',
+      error: 'citation bug',
+      failedState: 'resolving_citations',
+    });
+  });
 });
 
 // ─── Happy Path: creating_notebook ───────────────────────────────────────────
@@ -1005,7 +1022,7 @@ describe('transition: generating_artifacts -> ERROR (retry)', () => {
 
   it('transitions to notifying (not failed) when retries exhausted', () => {
     const state: ResearchState = { kind: 'generating_artifacts' };
-    const maxRetries = MAX_RETRIES.generating_artifacts ?? 2;
+    const maxRetries = MAX_RETRIES.generating_artifacts;
     const ctx = makeContext({ retries: { generating_artifacts: maxRetries } });
 
     const result = transition(state, errorEvent('Persistent artifact error', true), ctx);
@@ -1093,7 +1110,7 @@ describe('property: retry count monotonically increases under repeated errors', 
   it('retry count increases on each retriable error until exhausted', () => {
     const stateKey = 'adding_sources';
     const state: ResearchState = { kind: stateKey };
-    const maxRetries = defined(MAX_RETRIES[stateKey]);
+    const maxRetries = MAX_RETRIES[stateKey];
 
     let ctx = makeContext();
     const retryCounts: number[] = [];
@@ -1115,7 +1132,7 @@ describe('property: retry count monotonically increases under repeated errors', 
   it('retry count equals maxRetries at exhaustion', () => {
     const stateKey = 'writing_vault';
     const state: ResearchState = { kind: stateKey };
-    const maxRetries = defined(MAX_RETRIES[stateKey]); // 3
+    const maxRetries = MAX_RETRIES[stateKey]; // 3
 
     let ctx = makeContext();
     for (let i = 0; i < maxRetries; i++) {

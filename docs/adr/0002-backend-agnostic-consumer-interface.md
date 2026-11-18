@@ -1,7 +1,7 @@
 # ADR-0002: Backend-Agnostic Consumer Interface
 
 ## Status
-Accepted; backend-specific permission-argument details superseded by ADR 0005
+Accepted; backend-specific permission-argument details superseded by ADR 0005; DI slot naming superseded by ADR 0014 (slots are now `runAgent`/`runAgentStreaming`)
 
 ## Context
 
@@ -9,7 +9,7 @@ Reclaw's consumer modules (`chat-handler.ts`, `scheduled-handler.ts`, `research-
 
 1. **Permission flags were pre-formatted CLI arguments.** `permissions.ts` returned `readonly string[]` containing literal flags like `['--dangerously-skip-permissions', '--allowedTools', 'Read,Write,Bash']`. This meant the permissions module _knew_ it was targeting Claude — adding a Pi backend would require either duplicating the permission logic or threading backend awareness into a module that should be purely about access policy.
 
-2. **DI slot naming referenced "Claude" explicitly.** `ChatDeps.runClaudeStreaming` and `ScheduledDeps.runClaude` baked the backend identity into the type system. Renaming these to `runAgentStreaming`/`runAgent` in the DI interfaces would cascade across every consumer file, every test, and every mock setup — a high-churn change with zero behavioral benefit.
+2. **DI slot naming referenced "Claude" explicitly.** ChatDeps.runClaudeStreaming and ScheduledDeps.runClaude baked the backend identity into the type system. Renaming these to `runAgentStreaming`/`runAgent` in the DI interfaces would cascade across every consumer file, every test, and every mock setup — a high-churn change with zero behavioral benefit.
 
 The forces at play:
 - **NFR-100 (Zero Consumer Changes):** Consumer modules must not change behavior or require re-testing when a new backend is added.
@@ -21,7 +21,7 @@ The forces at play:
 1. **Semantic tool names + stable DI naming (chosen)**
    - `permissions.ts` returns `allowedTools: string[]` — a backend-neutral list of tool names (PascalCase canonical: `Read`, `Write`, `Bash`).
    - Each backend's `buildArgs()` formats these into its own flag syntax.
-   - DI interfaces keep `runClaude`/`runClaudeStreaming` naming; the bound functions internally delegate to `runAgent`/`runAgentStreaming`.
+   - DI interfaces keep runClaude/runClaudeStreaming naming; the bound functions internally delegate to `runAgent`/`runAgentStreaming`.
    - Pros: Zero consumer module changes; permissions become a pure policy module; adding a third backend requires no consumer or permissions changes.
    - Cons: DI naming is a legacy artifact ("Claude" doesn't describe what happens anymore); developers must understand the indirection.
 
@@ -42,7 +42,7 @@ The forces at play:
 
 ## Decision
 
-**Use semantic `allowedTools: string[]` in `AgentOptions` and preserve `runClaude`/`runClaudeStreaming` naming in DI interfaces.**
+**Use semantic `allowedTools: string[]` in `AgentOptions` and preserve runClaude/runClaudeStreaming naming in DI interfaces.**
 
 Concrete implementation:
 
@@ -53,7 +53,7 @@ Concrete implementation:
 - **Consumer DI types** remain unchanged:
   - `ChatDeps.runClaudeStreaming: (options: AgentOptions, onChunk: OnStreamChunk) => Promise<AgentResult>`
   - `ScheduledDeps.runClaude: (options: AgentOptions) => Promise<AgentResult>`
-- **`main.ts`** wires backend-bound `runAgent`/`runAgentStreaming` closures into the existing `runClaude`/`runClaudeStreaming` DI slots.
+- **`main.ts`** wires backend-bound `runAgent`/`runAgentStreaming` closures into the existing runClaude/runClaudeStreaming DI slots.
 - **Invariant:** Consumers never import from `src/infra/agent-backends/` for anything except types. They never see the backend identity.
 
 ## Consequences
@@ -66,6 +66,6 @@ Concrete implementation:
 - Tool list is centrally defined and auditable in one place per profile.
 
 **Negative:**
-- DI slot naming (`runClaude`, `runClaudeStreaming`) is now a historical artifact that no longer describes the implementation. New contributors may initially expect Claude-specific behavior behind these names.
+- DI slot naming (runClaude, runClaudeStreaming) is now a historical artifact that no longer describes the implementation. New contributors may initially expect Claude-specific behavior behind these names.
 - A minor conceptual indirection exists: `main.ts` binds `runAgent(backend, ...)` into a slot named `runClaude(...)`. This requires a one-line comment to explain.
 - PascalCase canonical tool names (chosen to match Claude's format) mean the Pi backend must lowercase — if a future backend uses a third casing convention, the canonical form may need revisiting.

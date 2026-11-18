@@ -93,3 +93,40 @@ npx vitest run
 bun ~/dev/claude-plugins/loom/scripts/lint-project.ts
 bun /tmp/fnlen/scan.ts "$PWD"   # AST function-length scan: expect 0
 ```
+
+---
+
+# PR #13 — chore/pr12-followups (review-and-fix)
+
+- **Branch:** `chore/pr12-followups`, reviewed head `391c6ec`
+- **Scope:** `all` over the 21 files in the PR diff (single run, no slicing)
+- **Review run:** `.claude/reviews/review-and-fix-runs/pr13-review`. 7 reviewers; silent-failure-hunter was retried once for read coverage. 0 critical findings (0 surviving, 0 refuted), 13 advisory.
+- **Policy publication:** `.claude/reviews/review-and-fix-runs/pr13-policy`, disposition digest `0b901a354e59c26520679cfcb5c3d823cb3521d842baaa7759f312b3fcd0b956`.
+- **Surviving critical findings:** none, so the defect family is `not-required` (DECLARED).
+- **Refuted findings:** none.
+
+## Advisory dispositions (DECLARED)
+
+| ID | Decision | Reason / fix |
+|---|---|---|
+| code-reviewer-1 | dismissed | Loom `no-dangling-doc-reference` requires removed names to be written as prose. Restoring the backticks on runClaude/runClaudeStreaming fails lint-project. |
+| code-simplifier-3 | dismissed | Same as code-reviewer-1. |
+| silent-failure-hunter-1 | accepted | Add a `no-repeat-rule` ListedSchedule variant, shown as "(no repeat rule)". A scheduler with an empty pattern and no `every` is no longer listed as "every 0s". |
+| type-design-analyzer-1 | accepted | Same fix. `interval` now always carries the scheduler's `every`. |
+| pr-test-analyzer-1 | accepted | main.test: a rejecting chat run releases the lock, and the next run starts. |
+| pr-test-analyzer-2 | accepted | Drop the magic `toHaveLength(13)`. The type enforces totality. |
+| architecture-tech-lead-2 | accepted | Same as pr-test-analyzer-2. |
+| comment-analyzer-1 | accepted | The property test is now titled by its invariant, and its oracle is written independently of the old model. |
+| comment-analyzer-2 | accepted | Rename the test helpers: makeRunAgentStreaming, makeRunAgent, MockRunAgent. |
+| architecture-tech-lead-3 | accepted | Same as comment-analyzer-2. |
+| code-simplifier-2 | accepted | Same as comment-analyzer-2. |
+| architecture-tech-lead-1 | accepted | Drop the unread `cronPattern` from the `cron` ListedSchedule variant. |
+| code-simplifier-1 | accepted | Same as architecture-tech-lead-1. |
+
+## Behaviour change
+
+`/remind list` now shows a scheduler that has neither an interval nor a non-empty pattern as `(no repeat rule)` instead of `every 0s`. It is still listed, so it can still be cancelled.
+
+## Validation
+
+`npx tsc --noEmit`, `npx biome check .`, Loom `lint-project` and `npx vitest run` (117 files, 2782 tests) all pass. The AST function-length scan finds 0 functions over the limit.

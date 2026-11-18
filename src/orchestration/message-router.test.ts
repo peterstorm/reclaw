@@ -145,7 +145,12 @@ describe('routeMessage', () => {
     it('lists recurring reminders for this chat', async () => {
       const deps = makeDeps();
       (deps.queues.listRecurringReminders as ReturnType<typeof vi.fn>).mockResolvedValue([
-        { schedulerId: 'recur:123:abc', text: 'drink water', intervalMs: 7_200_000, chatId: 456 },
+        {
+          schedulerId: 'recur:123:abc',
+          text: 'drink water',
+          schedule: { kind: 'interval', intervalMs: 7_200_000 },
+          chatId: 456,
+        },
       ]);
 
       routeMessage(makeMsg({ text: '/remind list' }), deps);
