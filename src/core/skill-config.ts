@@ -115,20 +115,11 @@ export function parseSkillConfig(
     return err(`Invalid skill id derived from path "${filePath}": ${idResult.error}`);
   }
 
-  // Parse YAML
-  let raw: unknown;
-  try {
-    raw = parseYaml(yamlContent);
-  } catch (e) {
-    return err(`YAML parse error in "${filePath}": ${e instanceof Error ? e.message : String(e)}`);
-  }
-
-  if (raw === null || typeof raw !== 'object') {
-    return err(`Skill config in "${filePath}" must be a YAML object, got ${typeof raw}`);
-  }
+  const raw = parseYamlObject(yamlContent, filePath);
+  if (!raw.ok) return raw;
 
   // Validate with Zod
-  const result = SkillConfigSchema.safeParse(raw);
+  const result = SkillConfigSchema.safeParse(raw.value);
   if (!result.success) {
     const msg = result.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
     return err(`Skill config validation failed in "${filePath}": ${msg}`);
@@ -141,24 +132,52 @@ export function parseSkillConfig(
     );
   }
 
-  // Validate dependsOn as a SkillId if present
-  let dependsOnId: SkillConfig['dependsOn'] = null;
-  if (result.data.dependsOn !== null) {
-    if (result.data.dependsOn === idStr) {
-      return err(`Skill "${filePath}" cannot depend on itself`);
-    }
-    const depResult = makeSkillId(result.data.dependsOn);
-    if (!depResult.ok) {
-      return err(`dependsOn in "${filePath}" is invalid: ${depResult.error}`);
-    }
-    dependsOnId = depResult.value;
-  }
+  const dependsOn = parseDependsOn(result.data.dependsOn, idStr, filePath);
+  if (!dependsOn.ok) return dependsOn;
+  return assembleSkillConfig(idResult.value, dependsOn.value, result.data, filePath);
+}
 
-  const agent = parseSkillAgent(result.data.backend, result.data.model);
+function parseYamlObject(yamlContent: string, filePath: string): Result<object, string> {
+  let raw: unknown;
+  try {
+    raw = parseYaml(yamlContent);
+  } catch (e) {
+    return err(`YAML parse error in "${filePath}": ${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (raw === null || typeof raw !== 'object') {
+    return err(`Skill config in "${filePath}" must be a YAML object, got ${typeof raw}`);
+  }
+  return ok(raw);
+}
+
+/** The skill this one runs after, if any: a valid id other than its own. */
+function parseDependsOn(
+  dependsOn: string | null,
+  idStr: string,
+  filePath: string,
+): Result<SkillConfig['dependsOn'], string> {
+  if (dependsOn === null) return ok(null);
+  if (dependsOn === idStr) {
+    return err(`Skill "${filePath}" cannot depend on itself`);
+  }
+  const depResult = makeSkillId(dependsOn);
+  if (!depResult.ok) {
+    return err(`dependsOn in "${filePath}" is invalid: ${depResult.error}`);
+  }
+  return ok(depResult.value);
+}
+
+function assembleSkillConfig(
+  id: SkillConfig['id'],
+  dependsOnId: SkillConfig['dependsOn'],
+  data: z.output<typeof SkillConfigSchema>,
+  filePath: string,
+): Result<SkillConfig, string> {
+  const agent = parseSkillAgent(data.backend, data.model);
   if (!agent.ok) {
     return err(`Skill config validation failed in "${filePath}": ${agent.error}`);
   }
-  const fallback = parseFallback(result.data.backend, result.data.fallback);
+  const fallback = parseFallback(data.backend, data.fallback);
   if (!fallback.ok) {
     return err(`Skill config validation failed in "${filePath}": ${fallback.error}`);
   }
@@ -166,16 +185,16 @@ export function parseSkillConfig(
   return ok({
     ...agent.value,
     ...(fallback.value !== undefined ? { fallback: fallback.value } : {}),
-    id: idResult.value,
-    name: result.data.name,
-    schedule: result.data.schedule,
-    promptTemplate: result.data.promptTemplate,
-    permissionProfile: result.data.permissionProfile,
-    validityWindowMinutes: result.data.validityWindowMinutes,
+    id,
+    name: data.name,
+    schedule: data.schedule,
+    promptTemplate: data.promptTemplate,
+    permissionProfile: data.permissionProfile,
+    validityWindowMinutes: data.validityWindowMinutes,
     // Only set timeout when explicitly provided — exactOptionalPropertyTypes forbids an
     // explicit `undefined`, and an absent key is exactly what signals "inherit the default".
-    ...(result.data.timeout !== undefined ? { timeout: result.data.timeout } : {}),
-    environment: result.data.environment,
+    ...(data.timeout !== undefined ? { timeout: data.timeout } : {}),
+    environment: data.environment,
     dependsOn: dependsOnId,
   } satisfies SkillConfig);
 }

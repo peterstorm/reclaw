@@ -92,89 +92,125 @@ export function foldStudy(
   brokenNotes: ReadonlyMap<TopicSlug, readonly string[]>,
   events: readonly StudyEvent[],
 ): StudyState {
-  const ordered = events
+  const cardIndex = new Map<CardId, RecallCard>();
+  for (const note of notes.values()) for (const c of note.cards) cardIndex.set(c.id, c);
+
+  const log = replayLog(chronological(events), notes, cardIndex);
+  return {
+    curriculum,
+    notes,
+    brokenNotes,
+    lessonsRead: log.lessonsRead,
+    cards: unlockedCards(curriculum.settings, cardIndex, log),
+    rounds: log.rounds,
+    feynmanAt: log.feynmanAt,
+    orphanEvents: log.orphanEvents,
+  };
+}
+
+/** Events by instant; events at the same instant keep their log order. */
+const chronological = (events: readonly StudyEvent[]): readonly StudyEvent[] =>
+  events
     .map((e, i) => ({ e, i, t: Date.parse(e.at) }))
     .sort((a, b) => a.t - b.t || a.i - b.i)
     .map(({ e }) => e);
 
-  const cardIndex = new Map<CardId, RecallCard>();
-  for (const note of notes.values()) for (const c of note.cards) cardIndex.set(c.id, c);
+/** What replaying the study log yields, before cards are scheduled. */
+type ReplayedLog = {
+  readonly lessonsRead: Map<string, Date>;
+  readonly rounds: Map<RoundId, { at: Date; cards: readonly CardId[] }>;
+  readonly suspended: Map<CardId, boolean>;
+  readonly feynmanAt: Map<TopicSlug, Date>;
+  /** Per card, per round: the first instant graded + the last grade given. */
+  readonly gradesByCard: Map<CardId, Map<RoundId, GradeRecord>>;
+  orphanEvents: number;
+};
 
-  const lessonsRead = new Map<string, Date>();
-  const rounds = new Map<RoundId, { at: Date; cards: readonly CardId[] }>();
-  const suspended = new Map<CardId, boolean>();
-  const feynmanAt = new Map<TopicSlug, Date>();
-  // Per card, per round: the first instant graded + the last grade given.
-  const gradesByCard = new Map<CardId, Map<RoundId, GradeRecord>>();
-  let orphanEvents = 0;
-
+function replayLog(
+  ordered: readonly StudyEvent[],
+  notes: ReadonlyMap<TopicSlug, MasterNote>,
+  cardIndex: ReadonlyMap<CardId, RecallCard>,
+): ReplayedLog {
+  const log: ReplayedLog = {
+    lessonsRead: new Map(),
+    rounds: new Map(),
+    suspended: new Map(),
+    feynmanAt: new Map(),
+    gradesByCard: new Map(),
+    orphanEvents: 0,
+  };
   for (const e of ordered) {
     const at = new Date(e.at);
     switch (e.kind) {
       case 'lesson-read': {
-        if (!notes.has(e.topic)) orphanEvents++;
+        if (!notes.has(e.topic)) log.orphanEvents++;
         const key = lessonKey(e.topic, e.lesson);
-        if (!lessonsRead.has(key)) lessonsRead.set(key, at);
+        if (!log.lessonsRead.has(key)) log.lessonsRead.set(key, at);
         break;
       }
       case 'round-asked':
-        rounds.set(e.round, { at, cards: e.cards });
+        log.rounds.set(e.round, { at, cards: e.cards });
         break;
-      case 'card-graded': {
-        if (!cardIndex.has(e.card)) {
-          orphanEvents++;
-          break;
-        }
-        const perRound = gradesByCard.get(e.card) ?? new Map<RoundId, GradeRecord>();
-        const prior = perRound.get(e.round);
-        perRound.set(e.round, { round: e.round, at: prior?.at ?? at, grade: e.grade });
-        gradesByCard.set(e.card, perRound);
+      case 'card-graded':
+        if (cardIndex.has(e.card)) recordGrade(log.gradesByCard, e, at);
+        else log.orphanEvents++;
         break;
-      }
       case 'card-suspended':
-        suspended.set(e.card, true);
+        log.suspended.set(e.card, true);
         break;
       case 'card-unsuspended':
-        suspended.set(e.card, false);
+        log.suspended.set(e.card, false);
         break;
       case 'feynman-checked':
-        feynmanAt.set(e.topic, at);
+        log.feynmanAt.set(e.topic, at);
         break;
       default:
         return assertNever(e);
     }
   }
+  return log;
+}
 
+/** A re-grade within a round keeps the round's first grading instant and takes the new grade. */
+function recordGrade(
+  gradesByCard: Map<CardId, Map<RoundId, GradeRecord>>,
+  e: Extract<StudyEvent, { kind: 'card-graded' }>,
+  at: Date,
+): void {
+  const perRound = gradesByCard.get(e.card) ?? new Map<RoundId, GradeRecord>();
+  const prior = perRound.get(e.round);
+  perRound.set(e.round, { round: e.round, at: prior?.at ?? at, grade: e.grade });
+  gradesByCard.set(e.card, perRound);
+}
+
+/** Every card whose lesson has been read, scheduled by FSRS from its grades. */
+function unlockedCards(
+  settings: StudySettings,
+  cardIndex: ReadonlyMap<CardId, RecallCard>,
+  log: ReplayedLog,
+): ReadonlyMap<CardId, CardProgress> {
   const askedIn = new Map<CardId, { round: RoundId; at: Date }>();
-  for (const [round, r] of rounds) for (const id of r.cards) askedIn.set(id, { round, at: r.at });
+  for (const [round, r] of log.rounds) {
+    for (const id of r.cards) askedIn.set(id, { round, at: r.at });
+  }
 
   const cards = new Map<CardId, CardProgress>();
   for (const card of cardIndex.values()) {
-    const unlockedAt = lessonsRead.get(lessonKey(card.topic, card.lesson));
+    const unlockedAt = log.lessonsRead.get(lessonKey(card.topic, card.lesson));
     if (unlockedAt === undefined) continue;
-    const perRound = gradesByCard.get(card.id);
+    const perRound = log.gradesByCard.get(card.id);
     const grades = [...(perRound?.values() ?? [])].sort((a, b) => a.at.getTime() - b.at.getTime());
     const lastAsk = askedIn.get(card.id);
     cards.set(card.id, {
       card,
       unlockedAt,
-      fsrs: scheduleCard(curriculum.settings, unlockedAt, grades),
-      suspended: suspended.get(card.id) ?? false,
+      fsrs: scheduleCard(settings, unlockedAt, grades),
+      suspended: log.suspended.get(card.id) ?? false,
       pending: lastAsk !== undefined && perRound?.has(lastAsk.round) !== true ? lastAsk : null,
       grades,
     });
   }
-
-  return {
-    curriculum,
-    notes,
-    brokenNotes,
-    lessonsRead,
-    cards,
-    rounds,
-    feynmanAt,
-    orphanEvents,
-  };
+  return cards;
 }
 
 // ─── Reading ──────────────────────────────────────────────────────────────────

@@ -139,69 +139,21 @@ function validateExecutableStep(
   errors: string[],
   stepOrders: number[],
 ): void {
-  // stepOrder
-  if (typeof s.stepOrder !== 'number' || s.stepOrder < 1) {
-    errors.push(`${path}: stepOrder must be a positive number`);
-  } else {
-    stepOrders.push(s.stepOrder as number);
-  }
+  recordStepOrder(s, path, errors, stepOrders);
 
-  // stepType
   const st = s.stepType as Record<string, unknown> | undefined;
-  if (!st) {
-    errors.push(`${path}: stepType is required`);
-  } else {
-    if (!VALID_STEP_TYPE_IDS.has(st.stepTypeId as number)) {
-      errors.push(`${path}: invalid stepTypeId ${String(st.stepTypeId)}`);
-    }
-    if (!VALID_STEP_TYPE_KEYS.has(st.stepTypeKey as string)) {
-      errors.push(`${path}: invalid stepTypeKey "${String(st.stepTypeKey)}"`);
-    }
-  }
-
-  // endCondition
-  const ec = s.endCondition as Record<string, unknown> | undefined;
-  if (!ec) {
-    errors.push(`${path}: endCondition is required`);
-  } else if (!VALID_CONDITION_TYPE_IDS.has(ec.conditionTypeId as number)) {
-    errors.push(`${path}: invalid conditionTypeId ${String(ec.conditionTypeId)}`);
-  }
-
-  // Cooldown with lap.button must have null endConditionValue
-  if (ec && ec.conditionTypeKey === 'lap.button' && s.endConditionValue !== null) {
-    errors.push(`${path}: cooldown with lap.button must have endConditionValue: null`);
-  }
-
-  // Distance steps need preferredEndConditionUnit
-  if (ec && ec.conditionTypeKey === 'distance') {
-    const unit = s.preferredEndConditionUnit as Record<string, unknown> | null;
-    if (!unit || unit.unitKey !== 'kilometer') {
-      errors.push(
-        `${path}: distance steps must have preferredEndConditionUnit with unitKey "kilometer"`,
-      );
-    }
-  }
+  validateStepType(st, path, errors);
+  validateEndCondition(s, path, errors);
 
   // Rest steps must have targetType: null
   if (st && st.stepTypeKey === 'rest' && s.targetType !== null) {
     errors.push(`${path}: rest steps must have targetType: null`);
   }
 
-  // Pace-targeted steps need both values
-  const tt = s.targetType as Record<string, unknown> | null;
-  if (tt && tt.workoutTargetTypeKey === 'pace.zone') {
-    if (typeof s.targetValueOne !== 'number' || typeof s.targetValueTwo !== 'number') {
-      errors.push(`${path}: pace.zone targets require numeric targetValueOne and targetValueTwo`);
-    } else if ((s.targetValueOne as number) <= (s.targetValueTwo as number)) {
-      // targetValueOne (fast) should be > targetValueTwo (slow) in m/s
-      errors.push(
-        `${path}: targetValueOne (fast, ${s.targetValueOne}) must be > targetValueTwo (slow, ${s.targetValueTwo})`,
-      );
-    }
-  }
+  validatePaceTarget(s, path, errors);
 }
 
-function validateRepeatGroup(
+function recordStepOrder(
   s: Record<string, unknown>,
   path: string,
   errors: string[],
@@ -212,6 +164,72 @@ function validateRepeatGroup(
   } else {
     stepOrders.push(s.stepOrder as number);
   }
+}
+
+function validateStepType(
+  st: Record<string, unknown> | undefined,
+  path: string,
+  errors: string[],
+): void {
+  if (!st) {
+    errors.push(`${path}: stepType is required`);
+    return;
+  }
+  if (!VALID_STEP_TYPE_IDS.has(st.stepTypeId as number)) {
+    errors.push(`${path}: invalid stepTypeId ${String(st.stepTypeId)}`);
+  }
+  if (!VALID_STEP_TYPE_KEYS.has(st.stepTypeKey as string)) {
+    errors.push(`${path}: invalid stepTypeKey "${String(st.stepTypeKey)}"`);
+  }
+}
+
+function validateEndCondition(s: Record<string, unknown>, path: string, errors: string[]): void {
+  const ec = s.endCondition as Record<string, unknown> | undefined;
+  if (!ec) {
+    errors.push(`${path}: endCondition is required`);
+    return;
+  }
+  if (!VALID_CONDITION_TYPE_IDS.has(ec.conditionTypeId as number)) {
+    errors.push(`${path}: invalid conditionTypeId ${String(ec.conditionTypeId)}`);
+  }
+
+  // Cooldown with lap.button must have null endConditionValue
+  if (ec.conditionTypeKey === 'lap.button' && s.endConditionValue !== null) {
+    errors.push(`${path}: cooldown with lap.button must have endConditionValue: null`);
+  }
+
+  // Distance steps need preferredEndConditionUnit
+  if (ec.conditionTypeKey === 'distance') {
+    const unit = s.preferredEndConditionUnit as Record<string, unknown> | null;
+    if (!unit || unit.unitKey !== 'kilometer') {
+      errors.push(
+        `${path}: distance steps must have preferredEndConditionUnit with unitKey "kilometer"`,
+      );
+    }
+  }
+}
+
+/** Pace-targeted steps need both values, fast before slow. */
+function validatePaceTarget(s: Record<string, unknown>, path: string, errors: string[]): void {
+  const tt = s.targetType as Record<string, unknown> | null;
+  if (!tt || tt.workoutTargetTypeKey !== 'pace.zone') return;
+  if (typeof s.targetValueOne !== 'number' || typeof s.targetValueTwo !== 'number') {
+    errors.push(`${path}: pace.zone targets require numeric targetValueOne and targetValueTwo`);
+  } else if (s.targetValueOne <= s.targetValueTwo) {
+    // targetValueOne (fast) should be > targetValueTwo (slow) in m/s
+    errors.push(
+      `${path}: targetValueOne (fast, ${s.targetValueOne}) must be > targetValueTwo (slow, ${s.targetValueTwo})`,
+    );
+  }
+}
+
+function validateRepeatGroup(
+  s: Record<string, unknown>,
+  path: string,
+  errors: string[],
+  stepOrders: number[],
+): void {
+  recordStepOrder(s, path, errors, stepOrders);
 
   const st = s.stepType as Record<string, unknown> | undefined;
   if (!st || st.stepTypeKey !== 'repeat' || st.stepTypeId !== 6) {

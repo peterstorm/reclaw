@@ -330,98 +330,104 @@ export function buildAllVaultNotes(
   quality: QualityResult,
   preResolvedNotes?: readonly ResolvedNote[],
 ): readonly VaultNote[] {
-  const notes: VaultNote[] = [];
   const hubPath = hubRelativePath(ctx.topicSlug ?? 'untitled');
-  const researchDate = ctx.startedAt.split('T')[0] ?? ctx.startedAt;
-  const notebookId = ctx.notebookId ?? '';
+  const resolvedAnswers = resolveAllAnswers(ctx, preResolvedQaNotes(preResolvedNotes ?? []));
+  return [
+    buildHubNote(ctx, quality),
+    ...buildSourceNotes(ctx, hubPath, anchorsBySource(resolvedAnswers)),
+    ...buildQANotes(ctx, hubPath, resolvedAnswers),
+  ];
+}
 
-  // ── 1. Hub note ──────────────────────────────────────────────────────────────
-  notes.push(buildHubNote(ctx, quality));
+/** Checkpointed Q&A notes, by the question they answer. */
+function preResolvedQaNotes(notes: readonly ResolvedNote[]): ReadonlyMap<string, ResolvedNote> {
+  return new Map(notes.filter((n) => n.type === 'qa').map((n) => [n.filename, n]));
+}
 
-  // ── Pre-compute: resolve [N] text markers for all answers ──────────────────
-  // [N] markers in answer text are 1-indexed source references (source at index N-1).
-  // We resolve all answers first so we can derive both:
-  //   - which sources are cited (for passage anchors in source notes)
-  //   - resolved text with wikilinks (for Q&A notes)
-  //
-  // Note: response.citations from the NotebookLM SDK are notebook-wide passage
-  // indices, NOT source indices — they can exceed the source count and must not
-  // be used for source-to-passage mapping.
+/**
+ * Every answer's resolved text and cited passages, in ctx.answers order (Map keeps
+ * insertion order). A checkpointed note is reused; any other answer has its [N] text
+ * markers resolved — 1-indexed source references (source at index N-1).
+ *
+ * Note: response.citations from the NotebookLM SDK are notebook-wide passage
+ * indices, NOT source indices — they can exceed the source count and must not
+ * be used for source-to-passage mapping.
+ */
+function resolveAllAnswers(
+  ctx: ResearchContext,
+  preResolved: ReadonlyMap<string, ResolvedNote>,
+): ReadonlyMap<string, CitationResolutionResult> {
+  return new Map(
+    Object.entries(ctx.answers).map(([question, response]) => {
+      const note = preResolved.get(question);
+      const result: CitationResolutionResult = note
+        ? { resolvedText: note.content, citedPassagesBySource: citedPassagesFromNote(note) }
+        : resolveAnswerCitations(response.text, ctx.sources);
+      return [question, result];
+    }),
+  );
+}
 
-  const resolvedMap = new Map<string, ResolvedNote>();
-  if (preResolvedNotes) {
-    for (const note of preResolvedNotes) {
-      if (note.type === 'qa') {
-        resolvedMap.set(note.filename, note);
-      }
-    }
-  }
-
-  const resolvedAnswers = new Map<string, CitationResolutionResult>();
-  // sourceIndex → every passage number any answer linked to for that source.
-  // Accumulated across answers because one source note carries the anchors for
-  // all Q&A notes that cite it.
-  const anchorsBySource = new Map<number, Set<number>>();
-
-  for (const [question, response] of Object.entries(ctx.answers)) {
-    const preResolved = resolvedMap.get(question);
-    const result = preResolved
-      ? {
-          resolvedText: preResolved.content,
-          citedPassagesBySource: citedPassagesFromNote(preResolved),
-        }
-      : resolveAnswerCitations(response.text, ctx.sources);
-
-    resolvedAnswers.set(question, result);
+/**
+ * sourceIndex → every passage number any answer linked to for that source.
+ * Accumulated across answers because one source note carries the anchors for
+ * all Q&A notes that cite it.
+ */
+function anchorsBySource(
+  resolvedAnswers: ReadonlyMap<string, CitationResolutionResult>,
+): ReadonlyMap<number, ReadonlySet<number>> {
+  const anchors = new Map<number, Set<number>>();
+  for (const result of resolvedAnswers.values()) {
     for (const [sourceIndex, passages] of result.citedPassagesBySource) {
-      const existing = anchorsBySource.get(sourceIndex);
-      if (existing === undefined) {
-        anchorsBySource.set(sourceIndex, new Set(passages));
-      } else {
-        for (const n of passages) existing.add(n);
-      }
+      const existing = anchors.get(sourceIndex);
+      if (existing === undefined) anchors.set(sourceIndex, new Set(passages));
+      else for (const n of passages) existing.add(n);
     }
   }
+  return anchors;
+}
 
-  // ── 2. Source notes ──────────────────────────────────────────────────────────
-  // Anchors come from the passage numbers the wikilinks actually used, so a
-  // [[Source Title#Passage N]] link always finds a matching `## Passage N`
-  // heading — including when N is a NotebookLM passage number unrelated to the
-  // source's position in the list.
-  for (const [i, source] of ctx.sources.entries()) {
-    const passageNumbers = [...(anchorsBySource.get(i) ?? [])];
-    const anchors = generatePassageAnchors(source, passageNumbers);
-    notes.push(
-      buildSourceNote(
-        source,
-        ctx.topicSlug ?? 'untitled',
-        hubPath,
-        anchors,
-        researchDate,
-        notebookId,
-      ),
-    );
-  }
+/**
+ * One source note per source. Anchors come from the passage numbers the wikilinks
+ * actually used, so a [[Source Title#Passage N]] link always finds a matching
+ * `## Passage N` heading — including when N is a NotebookLM passage number unrelated
+ * to the source's position in the list.
+ */
+function buildSourceNotes(
+  ctx: ResearchContext,
+  hubPath: string,
+  anchors: ReadonlyMap<number, ReadonlySet<number>>,
+): readonly VaultNote[] {
+  const researchDate = ctx.startedAt.split('T')[0] ?? ctx.startedAt;
+  return ctx.sources.map((source, i) =>
+    buildSourceNote(
+      source,
+      ctx.topicSlug ?? 'untitled',
+      hubPath,
+      generatePassageAnchors(source, [...(anchors.get(i) ?? [])]),
+      researchDate,
+      ctx.notebookId ?? '',
+    ),
+  );
+}
 
-  // ── 3. Q&A notes ─────────────────────────────────────────────────────────────
-  // resolvedAnswers holds one entry per answer, in ctx.answers order (Map keeps
-  // insertion order), so iterating it visits exactly the answered questions.
-  for (const [question, resolved] of resolvedAnswers) {
+/** One Q&A note per answered question, citing its sources in source order. */
+function buildQANotes(
+  ctx: ResearchContext,
+  hubPath: string,
+  resolvedAnswers: ReadonlyMap<string, CitationResolutionResult>,
+): readonly VaultNote[] {
+  return [...resolvedAnswers].map(([question, resolved]) => {
     const citedSources = [...resolved.citedPassagesBySource.keys()]
       .sort((a, b) => a - b)
       .map((idx) => ctx.sources[idx])
       .filter((s): s is SourceMeta => s !== undefined);
-
-    notes.push(
-      buildQANote(
-        question,
-        resolved.resolvedText,
-        citedSources,
-        ctx.topicSlug ?? 'untitled',
-        hubPath,
-      ),
+    return buildQANote(
+      question,
+      resolved.resolvedText,
+      citedSources,
+      ctx.topicSlug ?? 'untitled',
+      hubPath,
     );
-  }
-
-  return notes;
+  });
 }

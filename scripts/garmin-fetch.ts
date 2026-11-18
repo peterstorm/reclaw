@@ -5,11 +5,15 @@ import { join } from 'node:path';
 import type { GarminConnect } from '@gooin/garmin-connect';
 import {
   type ActivitySummary,
+  type CalendarWorkout,
   type GarminDailyData,
   type HrZone,
+  type ListedActivity,
   type ScheduledWorkout,
-  type TrainingReadinessSummary,
+  type WorkoutDescription,
   type WorkoutStep,
+  activitiesOn,
+  calendarItems,
   extractActivity,
   extractAssociatedWorkout,
   extractCompletedSets,
@@ -24,6 +28,8 @@ import {
   extractTrainingStatus,
   extractVo2Max,
   hasExerciseSets,
+  workoutDescription,
+  workoutOn,
   workoutSteps,
 } from '../src/core/garmin-daily.js';
 import {
@@ -100,49 +106,43 @@ const enrich = async <T>(warning: string, fn: () => Promise<T>): Promise<T | nul
 /** The activity's detail record, enriched with HR series, laps, prescription and sets. Throws when the detail call fails. */
 async function fetchActivityDetail(
   client: GarminConnect,
-  act: Record<string, unknown>,
+  act: ListedActivity,
   summaryHrZones: readonly HrZone[] | null,
 ): Promise<ActivitySummary> {
-  const detail = (await client.getActivity({
-    activityId: act.activityId as number,
-  })) as unknown as Record<string, unknown>;
-  const extracted = extractActivity(detail);
+  const { activityId } = act;
+  if (activityId === null) throw new Error('the list entry has no activity id');
+  const extracted = extractActivity(await client.getActivity({ activityId }));
   // Merge summary HR zones if detail didn't have them
   const activity =
     !extracted.hrZones && summaryHrZones ? { ...extracted, hrZones: summaryHrZones } : extracted;
-  const activityUrl = `${client.url.ACTIVITY}${act.activityId as number}`;
+  const activityUrl = `${client.url.ACTIVITY}${activityId}`;
 
   const hrTimeSeries = await enrich(
-    `Failed to fetch HR time series for activity ${act.activityId}`,
+    `Failed to fetch HR time series for activity ${activityId}`,
     async () =>
       extractHrTimeSeries(
-        await client.get<Record<string, unknown>>(`${activityUrl}/details`, {
+        await client.get<unknown>(`${activityUrl}/details`, {
           params: { maxChartSize: 1000, maxPolylineSize: 1000 },
         }),
       ),
   );
   // Per-km lap splits
   const lapSplits = await enrich(
-    `Failed to fetch lap splits for activity ${act.activityId}`,
-    async () =>
-      extractLapSplits(await client.get<Record<string, unknown>>(`${activityUrl}/splits`)),
+    `Failed to fetch lap splits for activity ${activityId}`,
+    async () => extractLapSplits(await client.get<unknown>(`${activityUrl}/splits`)),
   );
   // The workout prescription, if this activity links to one
   const associatedWorkout = activity.associatedWorkoutId
     ? await enrich(`Failed to fetch associated workout ${activity.associatedWorkoutId}`, async () =>
         extractAssociatedWorkout(
-          (await client.getWorkoutDetail({
-            workoutId: String(activity.associatedWorkoutId),
-          })) as unknown as Record<string, unknown>,
+          await client.getWorkoutDetail({ workoutId: String(activity.associatedWorkoutId) }),
         ),
       )
     : null;
   // Per-set actuals (reps + weight) for strength-style activities
   const completedSets = hasExerciseSets(activity.activityType)
-    ? await enrich(`Failed to fetch exerciseSets for activity ${act.activityId}`, async () =>
-        extractCompletedSets(
-          await client.get<Record<string, unknown>>(`${activityUrl}/exerciseSets`),
-        ),
+    ? await enrich(`Failed to fetch exerciseSets for activity ${activityId}`, async () =>
+        extractCompletedSets(await client.get<unknown>(`${activityUrl}/exerciseSets`)),
       )
     : null;
 
@@ -150,19 +150,16 @@ async function fetchActivityDetail(
 }
 
 /** The activity's detail record; its list summary, with a warning, when the detail call fails. */
-async function fetchActivity(
-  client: GarminConnect,
-  act: Record<string, unknown>,
-): Promise<ActivitySummary> {
+async function fetchActivity(client: GarminConnect, act: ListedActivity): Promise<ActivitySummary> {
   // Extract HR zone times from summary list (not available in detail endpoint)
-  const summaryHrZones = extractHrZonesFromSummary(act);
+  const summaryHrZones = extractHrZonesFromSummary(act.record);
   try {
     return await fetchActivityDetail(client, act, summaryHrZones);
   } catch (e) {
     console.error(
       `[WARN] Failed to fetch activity detail ${act.activityId}, using its list summary: ${errorText(e)}`,
     );
-    return extractActivity(act);
+    return extractActivity(act.record);
   }
 }
 
@@ -173,10 +170,7 @@ async function fetchActivities(
 ): Promise<Gathered<readonly ActivitySummary[]>> {
   return gatherEach(
     'activities',
-    async () => {
-      const raw = (await client.getActivities(0, 20)) as unknown as Array<Record<string, unknown>>;
-      return raw.filter((a) => ((a.startTimeLocal as string) ?? '').startsWith(dateStr));
-    },
+    async () => activitiesOn(await client.getActivities(0, 20), dateStr),
     async (act) => {
       const activity = await fetchActivity(client, act);
       await delay(300);
@@ -185,58 +179,27 @@ async function fetchActivities(
   );
 }
 
-async function fetchTrainingReadiness(
-  client: GarminConnect,
-  dateStr: string,
-): Promise<TrainingReadinessSummary | null> {
-  const readinessUrl = `${client.url.GC_API}/metrics-service/metrics/trainingreadiness/${dateStr}`;
-  const raw = await client.get<unknown>(readinessUrl);
-  const items = Array.isArray(raw) ? raw : [raw];
-  // Prefer the after-wakeup entry if available
-  const entry = (items.find(
-    (i: Record<string, unknown>) => i.inputContext === 'AFTER_WAKEUP_RESET',
-  ) ?? items[0]) as Record<string, unknown> | undefined;
-  if (!entry) return null;
-  return extractTrainingReadiness(entry);
-}
-
 /** A calendar workout, with the description and steps of its workout detail when that call succeeds. */
 async function fetchScheduledWorkout(
   client: GarminConnect,
-  item: Record<string, unknown>,
+  workout: CalendarWorkout,
 ): Promise<ScheduledWorkout> {
-  let description: string | null = null;
-  let provider: string | null = null;
+  let detail: WorkoutDescription = { description: null, provider: null };
   let steps: readonly WorkoutStep[] = [];
-  const workoutId = item.workoutId as number | null;
 
-  if (workoutId) {
+  if (workout.workoutId) {
     try {
       await delay(300);
-      const detail = (await client.getWorkoutDetail({
-        workoutId: String(workoutId),
-      })) as unknown as Record<string, unknown>;
-      description = (detail.description as string) ?? null;
-      provider = (detail.workoutProvider as string) ?? null;
+      const response = await client.getWorkoutDetail({ workoutId: String(workout.workoutId) });
+      detail = workoutDescription(response);
       // One step at a time: a malformed later segment keeps the steps read before it.
-      for (const step of workoutSteps(detail)) steps = [...steps, step];
+      for (const step of workoutSteps(response)) steps = [...steps, step];
     } catch (e) {
-      console.error(`[WARN] Failed to fetch workout detail ${workoutId}: ${errorText(e)}`);
+      console.error(`[WARN] Failed to fetch workout detail ${workout.workoutId}: ${errorText(e)}`);
     }
   }
 
-  return {
-    title: (item.title as string) ?? null,
-    date: item.date as string,
-    duration: (item.duration as number) ?? null,
-    distance: (item.distance as number) ?? null,
-    sportTypeKey: (item.sportTypeKey as string) ?? null,
-    itemType: item.itemType as string,
-    workoutId,
-    description,
-    provider,
-    steps,
-  };
+  return { ...workout, ...detail, steps };
 }
 
 /** The target date's calendar workouts. */
@@ -247,30 +210,22 @@ async function fetchScheduledWorkouts(
 ): Promise<Gathered<readonly ScheduledWorkout[]>> {
   return gatherEach(
     'scheduledWorkouts',
-    async () => {
-      const cal = (await client.getCalendar(
-        date.getFullYear(),
-        date.getMonth(),
-      )) as unknown as Record<string, unknown>;
-      return (cal.calendarItems as Array<Record<string, unknown>> | undefined) ?? [];
+    async () => calendarItems(await client.getCalendar(date.getFullYear(), date.getMonth())),
+    async (item) => {
+      const workout = workoutOn(item, dateStr);
+      return workout ? [await fetchScheduledWorkout(client, workout)] : [];
     },
-    async (item) =>
-      item.itemType === 'workout' && (item.date as string) === dateStr
-        ? [await fetchScheduledWorkout(client, item)]
-        : [],
   );
 }
 
 /** Sleep, steps and heart rate: the daily wellness summaries. */
 async function fetchWellness(client: GarminConnect, date: Date) {
-  const sleep = await tryFetch('sleep', async () =>
-    extractSleep((await client.getSleepData(date)) as unknown as Record<string, unknown>),
-  );
+  const sleep = await tryFetch('sleep', async () => extractSleep(await client.getSleepData(date)));
   await delay(300);
   const steps = await tryFetch('steps', () => client.getSteps(date));
   await delay(300);
   const heartRate = await tryFetch('heartRate', async () =>
-    extractHeartRate((await client.getHeartRate(date)) as unknown as Record<string, unknown>),
+    extractHeartRate(await client.getHeartRate(date)),
   );
   return {
     value: { sleep: sleep.value, steps: steps.value, heartRate: heartRate.value },
@@ -282,27 +237,24 @@ async function fetchWellness(client: GarminConnect, date: Date) {
 async function fetchTrainingMetrics(client: GarminConnect, date: Date, dateStr: string) {
   // VO2 Max from personal info
   const vo2Max = await tryFetch('vo2Max', async () =>
-    extractVo2Max((await client.getPersonalInfo()) as unknown as Record<string, unknown>),
+    extractVo2Max(await client.getPersonalInfo()),
   );
   // Lactate threshold from user settings (same login, separate call)
   await delay(300);
   const lactateThreshold = await tryFetch('lactateThreshold', async () =>
-    extractLactateThreshold((await client.getUserSettings()) as unknown as Record<string, unknown>),
+    extractLactateThreshold(await client.getUserSettings()),
   );
   await delay(300);
   const trainingStatus = await tryFetch('trainingStatus', async () =>
-    extractTrainingStatus(
-      (await client.getTrainingStatus(date)) as unknown as Record<string, unknown>,
-    ),
+    extractTrainingStatus(await client.getTrainingStatus(date)),
   );
   await delay(300);
-  const trainingReadiness = await tryFetch('trainingReadiness', () =>
-    fetchTrainingReadiness(client, dateStr),
+  const readinessUrl = `${client.url.GC_API}/metrics-service/metrics/trainingreadiness/${dateStr}`;
+  const trainingReadiness = await tryFetch('trainingReadiness', async () =>
+    extractTrainingReadiness(await client.get<unknown>(readinessUrl)),
   );
   await delay(300);
-  const hrv = await tryFetch('hrv', async () =>
-    extractHrv((await client.getHRVData(date)) as unknown as Record<string, unknown>),
-  );
+  const hrv = await tryFetch('hrv', async () => extractHrv(await client.getHRVData(date)));
   return {
     value: {
       vo2Max: vo2Max.value,
