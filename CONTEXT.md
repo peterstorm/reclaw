@@ -3,6 +3,10 @@
 Domain terms with ONE meaning each, used identically in code, tests, skills and vault docs.
 Started 2026-10-18 with the learning context; add other contexts as they are named.
 
+**`<vault>`** in paths below is the Obsidian vault root. The scripts (`scripts/*.ts`) read it from
+`RECLAW_VAULT_ROOT` (default `~/dev/notes/remotevault`). The service reads it from
+`OBSIDIAN_VAULT_PATH`, falling back to the workspace path.
+
 ## Learning (curriculum + recall loop)
 
 Code: `src/core/{curriculum,master-note,study-log,study-plan,curriculum-moc}.ts`,

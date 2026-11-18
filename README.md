@@ -475,6 +475,8 @@ Skills are not part of this repo — they live in the workspace at `~/dev/claude
 
 A curriculum learning system over the vault (`<vault>/learning/curriculum/`): master learning notes read one lesson a day, recall cards answered in free text over Telegram, FSRS scheduling. Vocabulary: [CONTEXT.md](CONTEXT.md). Design note: `<vault>/reclaw/skills/learning-loop.md`.
 
+`<vault>` is the Obsidian vault root. The scripts read it from `RECLAW_VAULT_ROOT` (default `~/dev/notes/remotevault`). The service reads it from `OBSIDIAN_VAULT_PATH` (see [Configuration](#configuration)).
+
 - **One command surface:** `bun scripts/learn.ts <status|lesson|read|round|grade|suspend|unsuspend|build-next|feynman|feynman-log|validate>` — prints JSON; refuses (exit 1, nothing written) on an unknown card/round or a corrupt log. `grade … --answer -` reads the answer from stdin (skills pass it through a quoted heredoc).
 - **State:** only the append-only `<vault>/learning/curriculum/.state/study-log.jsonl` (`STUDY_LOG_PATH`). Card schedules, reading progress and stats are a pure fold (`src/core/study-plan.ts`, ts-fsrs with fuzz off → deterministic). Models grade answers; the core decides what a grade means.
 - **Skills:** `learn-lesson` (07:00), `learn-recall` (11:30/15:30/19:30), `learn-feynman` (Sun 17:00), `curriculum-builder` (02:30, builds the next note when fewer than `buildBuffer` built topics are unread). The builder follows `AGENT_BACKEND` like every other skill, with `fallback: { backend: claude, model: sonnet }`; the three learn skills pin `backend: claude` + `model: sonnet` (grading short answers) with `fallback: pi`. A missed builder night is absorbed by the 3-topic buffer. Replies to their messages resume the skill session, which then calls `learn.ts`.
