@@ -1045,6 +1045,18 @@ describe('bootstrap', () => {
       await Promise.all([first, second]);
       expect(runAgentStreamingMock).toHaveBeenCalledTimes(2);
     });
+
+    it('releases the chat lock when a run rejects, so the next run still starts', async () => {
+      runAgentStreamingMock.mockRejectedValueOnce(new Error('agent crashed'));
+      const runStreaming = await chatStreamingRun(piConfig);
+
+      const first = runStreaming(CHAT_OPTIONS, vi.fn());
+      const second = runStreaming(CHAT_OPTIONS, vi.fn());
+
+      await expect(first).rejects.toThrow('agent crashed');
+      await expect(second).resolves.toEqual(AGENT_SUCCESS);
+      expect(runAgentStreamingMock).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe('/research command (FR-090, AD-9)', () => {

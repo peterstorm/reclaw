@@ -88,9 +88,14 @@ describe('readReminderScheduler', () => {
     );
     expect(reading).toMatchObject({
       kind: 'reminder',
-      info: {
-        schedule: { kind: 'cron', cronPattern: '0 12 * * 0', cronDescription: 'every Sunday' },
-      },
+      info: { schedule: { kind: 'cron', cronDescription: 'every Sunday' } },
+    });
+  });
+
+  it('lists a scheduler with an empty pattern and no interval as having no repeat rule', () => {
+    expect(readReminderScheduler(scheduler({ pattern: '' }))).toMatchObject({
+      kind: 'reminder',
+      info: { schedulerId: 'sched-001', schedule: { kind: 'no-repeat-rule' } },
     });
   });
 
@@ -126,11 +131,7 @@ describe('listedSchedule', () => {
     cronPattern: '0 12 * * 0',
     cronDescription: 'every Sunday',
   });
-  const SUNDAYS_LISTED = {
-    kind: 'cron',
-    cronPattern: '0 12 * * 0',
-    cronDescription: 'every Sunday',
-  } as const;
+  const SUNDAYS_LISTED = { kind: 'cron', cronDescription: 'every Sunday' } as const;
 
   it('lists an interval schedule the scheduler agrees with by its interval', () => {
     expect(listedSchedule(hourly, { every: 3_600_000 })).toEqual({
@@ -152,8 +153,9 @@ describe('listedSchedule', () => {
     });
   });
 
-  it('lists an interval of 0 when the scheduler reports neither interval nor pattern', () => {
-    expect(listedSchedule(hourly, {})).toEqual({ kind: 'interval', intervalMs: 0 });
+  it('lists no repeat rule, not a made-up interval, when the scheduler reports neither', () => {
+    expect(listedSchedule(hourly, {})).toEqual({ kind: 'no-repeat-rule' });
+    expect(listedSchedule(hourly, { pattern: '' })).toEqual({ kind: 'no-repeat-rule' });
   });
 
   it('lists an interval template by the scheduler pattern when it has a non-empty one', () => {
@@ -167,12 +169,12 @@ describe('listedSchedule', () => {
     });
   });
 
-  it('shows every reminder exactly as the flat-field read model did', () => {
-    // The display rule before the union: description, else a truthy pattern, else the interval.
-    const flatDisplay = (s: RecurringSchedule, every?: number, pattern?: string): string => {
-      const cronPattern = s.kind === 'cron' ? s.cronPattern : pattern;
-      const cronDescription = s.kind === 'cron' ? s.cronDescription : undefined;
-      return cronDescription ?? (cronPattern ? cronPattern : `every ${formatDuration(every ?? 0)}`);
+  it('lists a reminder by description, else a non-empty pattern, else the interval', () => {
+    // Reference oracle for the display rule, written independently of the union.
+    const expectedDisplay = (s: RecurringSchedule, every?: number, pattern?: string): string => {
+      if (s.kind === 'cron') return s.cronDescription;
+      if (pattern) return pattern;
+      return every === undefined ? '(no repeat rule)' : `every ${formatDuration(every)}`;
     };
     fc.assert(
       fc.property(
@@ -186,7 +188,7 @@ describe('listedSchedule', () => {
             schedule: listedSchedule(template, { every, pattern }),
           };
           expect(formatReminderList([entry])).toContain(
-            `1. \`s\` ${flatDisplay(template, every, pattern)} — t`,
+            `1. \`s\` ${expectedDisplay(template, every, pattern)} — t`,
           );
         },
       ),

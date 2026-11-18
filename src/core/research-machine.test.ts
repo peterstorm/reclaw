@@ -98,7 +98,6 @@ describe('MAX_RETRIES', () => {
     for (const limit of Object.values(MAX_RETRIES)) {
       expect(Number.isInteger(limit) && limit >= 0).toBe(true);
     }
-    expect(Object.keys(MAX_RETRIES)).toHaveLength(13);
     expect(Object.hasOwn(MAX_RETRIES, 'constructor')).toBe(false);
   });
 

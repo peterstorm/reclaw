@@ -457,12 +457,15 @@ function parseOneShotRemind(withoutPrefix: string, now: Date): Result<ParsedRemi
  * How a listed recurring reminder repeats, as `/remind list` shows it:
  * - `cron`: a cron reminder, shown by its description;
  * - `pattern`: an interval template whose scheduler repeats on a cron pattern, shown raw;
- * - `interval`: repeats every `intervalMs` (0 when the scheduler reports no interval).
+ * - `interval`: repeats every `intervalMs`, the scheduler's own interval;
+ * - `no-repeat-rule`: the scheduler reports neither an interval nor a pattern. It is still
+ *   listed, so the user can see and cancel it, but never as a plausible schedule.
  */
 export type ListedSchedule =
-  | { readonly kind: 'cron'; readonly cronPattern: string; readonly cronDescription: string }
+  | { readonly kind: 'cron'; readonly cronDescription: string }
   | { readonly kind: 'pattern'; readonly cronPattern: string }
-  | { readonly kind: 'interval'; readonly intervalMs: number };
+  | { readonly kind: 'interval'; readonly intervalMs: number }
+  | { readonly kind: 'no-repeat-rule' };
 
 /** One recurring reminder as `/remind list` shows it. */
 export type ReminderListEntry = {
@@ -479,6 +482,8 @@ function describeListedSchedule(schedule: ListedSchedule): string {
       return schedule.cronPattern;
     case 'interval':
       return `every ${formatDuration(schedule.intervalMs)}`;
+    case 'no-repeat-rule':
+      return '(no repeat rule)';
     default:
       return assertNever(schedule);
   }

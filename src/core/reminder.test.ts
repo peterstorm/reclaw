@@ -572,11 +572,7 @@ describe('formatReminderList', () => {
         {
           schedulerId: 'r1',
           text: 'water plants',
-          schedule: {
-            kind: 'cron',
-            cronPattern: '0 12 * * 0',
-            cronDescription: 'every Sunday at 12:00',
-          },
+          schedule: { kind: 'cron', cronDescription: 'every Sunday at 12:00' },
         },
         {
           schedulerId: 'r2',
@@ -598,12 +594,10 @@ describe('formatReminderList', () => {
     );
   });
 
-  it('shows an interval the scheduler did not report as every 0s', () => {
+  it('shows a reminder with no repeat rule as such, still listed so it can be cancelled', () => {
     expect(
-      formatReminderList([
-        { schedulerId: 'r1', text: 'x', schedule: { kind: 'interval', intervalMs: 0 } },
-      ]),
-    ).toContain('1. `r1` every 0s — x');
+      formatReminderList([{ schedulerId: 'r1', text: 'x', schedule: { kind: 'no-repeat-rule' } }]),
+    ).toContain('1. `r1` (no repeat rule) — x');
   });
 });
 

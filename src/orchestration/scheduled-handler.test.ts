@@ -90,7 +90,7 @@ const makeSessionStore = (): SessionStore & {
   getMessageReference: vi.fn().mockResolvedValue(null),
 });
 
-const makeRunClaude = (result: AgentResult) => vi.fn().mockResolvedValue(result);
+const makeRunAgent = (result: AgentResult) => vi.fn().mockResolvedValue(result);
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
@@ -104,7 +104,7 @@ describe('handleScheduledJob', () => {
   it('returns ok result on successful execution', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runAgent = makeRunClaude({
+    const runAgent = makeRunAgent({
       ok: true,
       output: 'Morning briefing content',
       sessionId: null,
@@ -130,7 +130,7 @@ describe('handleScheduledJob', () => {
       validUntil: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
     });
     const telegram = makeTelegram();
-    const runAgent = makeRunClaude({
+    const runAgent = makeRunAgent({
       ok: true,
       output: 'Should not run',
       sessionId: null,
@@ -159,7 +159,7 @@ describe('handleScheduledJob', () => {
       triggeredAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
       validUntil: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
     });
-    const runAgent = makeRunClaude({
+    const runAgent = makeRunAgent({
       ok: true,
       output: 'Runs under the accepted deadline',
       sessionId: null,
@@ -180,7 +180,7 @@ describe('handleScheduledJob', () => {
   it('returns error when skill not found in registry', async () => {
     const job = makeScheduledJob({ skillId: makeSkillId('nonexistent-skill') });
     const telegram = makeTelegram();
-    const runAgent = makeRunClaude({
+    const runAgent = makeRunAgent({
       ok: true,
       output: 'Should not run',
       sessionId: null,
@@ -206,7 +206,7 @@ describe('handleScheduledJob', () => {
 
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runAgent = makeRunClaude({
+    const runAgent = makeRunAgent({
       ok: true,
       output: 'Briefing without personality',
       sessionId: null,
@@ -231,7 +231,7 @@ describe('handleScheduledJob', () => {
 
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runAgent = makeRunClaude({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
+    const runAgent = makeRunAgent({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
 
     await handleScheduledJob(job, {
       runAgent: runAgent as unknown as ScheduledDeps['runAgent'],
@@ -254,7 +254,7 @@ describe('handleScheduledJob', () => {
   it('uses scheduled permission flags (FR-011)', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runAgent = makeRunClaude({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
+    const runAgent = makeRunAgent({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
 
     await handleScheduledJob(job, {
       runAgent: runAgent as unknown as ScheduledDeps['runAgent'],
@@ -270,7 +270,7 @@ describe('handleScheduledJob', () => {
   it('passes only the service environment explicitly granted by the skill', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runAgent = makeRunClaude({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
+    const runAgent = makeRunAgent({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
     const garminSkill = makeSkillConfig({
       environment: ['GARMIN_EMAIL', 'GARMIN_PASSWORD'],
     });
@@ -297,7 +297,7 @@ describe('handleScheduledJob', () => {
   it('omits service environment when the skill has no grants', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runAgent = makeRunClaude({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
+    const runAgent = makeRunAgent({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
 
     await handleScheduledJob(job, {
       runAgent: runAgent as unknown as ScheduledDeps['runAgent'],
@@ -316,7 +316,7 @@ describe('handleScheduledJob', () => {
   it('omits an allowed service variable that is not configured', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runAgent = makeRunClaude({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
+    const runAgent = makeRunAgent({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
     const garminSkill = makeSkillConfig({ environment: ['GARMIN_EMAIL', 'GARMIN_PASSWORD'] });
 
     await handleScheduledJob(job, {
@@ -333,7 +333,7 @@ describe('handleScheduledJob', () => {
   it('uses scheduled timeout and workspace cwd (FR-016)', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runAgent = makeRunClaude({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
+    const runAgent = makeRunAgent({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
 
     await handleScheduledJob(job, {
       runAgent: runAgent as unknown as ScheduledDeps['runAgent'],
@@ -350,7 +350,7 @@ describe('handleScheduledJob', () => {
   it('passes a per-skill backend override to the agent runner', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runAgent = makeRunClaude({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
+    const runAgent = makeRunAgent({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
     const piSkill = makeSkillConfig({ backend: 'pi' });
 
     await handleScheduledJob(job, {
@@ -368,7 +368,7 @@ describe('handleScheduledJob', () => {
   it('snapshots the configured backend when the skill has no override', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runAgent = makeRunClaude({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
+    const runAgent = makeRunAgent({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
 
     await handleScheduledJob(job, {
       runAgent: runAgent as unknown as ScheduledDeps['runAgent'],
@@ -383,7 +383,7 @@ describe('handleScheduledJob', () => {
   });
 
   it("passes a Claude skill's pinned model to the agent runner", async () => {
-    const runAgent = makeRunClaude({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
+    const runAgent = makeRunAgent({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
     const sonnetSkill = makeSkillConfig({ backend: 'claude', model: 'sonnet' as ClaudeModel });
 
     await handleScheduledJob(makeScheduledJob(), {
@@ -399,7 +399,7 @@ describe('handleScheduledJob', () => {
   });
 
   it('requests no model when the skill pins none, leaving the choice to the runner', async () => {
-    const runAgent = makeRunClaude({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
+    const runAgent = makeRunAgent({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
 
     await handleScheduledJob(makeScheduledJob(), {
       runAgent: runAgent as unknown as ScheduledDeps['runAgent'],
@@ -565,7 +565,7 @@ describe('handleScheduledJob', () => {
   it('falls back to global scheduledTimeoutMs when skill has no timeout', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runAgent = makeRunClaude({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
+    const runAgent = makeRunAgent({ ok: true, output: 'Done', sessionId: null, durationMs: 100 });
     const skillWithoutTimeout = makeSkillConfig({ timeout: 0 });
 
     await handleScheduledJob(job, {
@@ -584,7 +584,7 @@ describe('handleScheduledJob', () => {
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
     const triggerCortexExtraction = vi.fn();
-    const runAgent = makeRunClaude({
+    const runAgent = makeRunAgent({
       ok: true,
       output: 'Briefing result',
       sessionId: 'scheduled-session',
@@ -620,7 +620,7 @@ describe('handleScheduledJob', () => {
       detail: 'invalid API key',
     } as const;
     const result = await handleScheduledJob(makeScheduledJob(), {
-      runAgent: makeRunClaude({ ok: false, failure }) as unknown as ScheduledDeps['runAgent'],
+      runAgent: makeRunAgent({ ok: false, failure }) as unknown as ScheduledDeps['runAgent'],
       telegram: makeTelegram(),
       skillRegistry: makeRegistry(),
       config: makeConfig(),
@@ -633,7 +633,7 @@ describe('handleScheduledJob', () => {
   it('sends result chunks to all authorized users', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runAgent = makeRunClaude({
+    const runAgent = makeRunAgent({
       ok: true,
       output: 'Briefing result',
       sessionId: null,
@@ -664,7 +664,7 @@ describe('handleScheduledJob', () => {
   it('returns error result on claude failure without notifying user', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runAgent = makeRunClaude({
+    const runAgent = makeRunAgent({
       ok: false,
       failure: { kind: 'timeout', backend: 'claude', timeoutMs: 300_000 },
     });
@@ -688,7 +688,7 @@ describe('handleScheduledJob', () => {
   it('returns ok:false when claude returns a non-timeout error result', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runAgent = makeRunClaude({
+    const runAgent = makeRunAgent({
       ok: false,
       failure: { kind: 'process-exit', backend: 'claude', exitCode: 1, detail: 'failure' },
     });
@@ -713,7 +713,7 @@ describe('handleScheduledJob', () => {
   it('suppresses telegram notification when output is ALL_CLEAR', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runAgent = makeRunClaude({
+    const runAgent = makeRunAgent({
       ok: true,
       output: 'ALL_CLEAR',
       sessionId: null,
@@ -735,7 +735,7 @@ describe('handleScheduledJob', () => {
   it('suppresses telegram notification when output is ALL_CLEAR with whitespace', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runAgent = makeRunClaude({
+    const runAgent = makeRunAgent({
       ok: true,
       output: '  ALL_CLEAR\n',
       sessionId: null,
@@ -756,7 +756,7 @@ describe('handleScheduledJob', () => {
   it('does not suppress when output contains ALL_CLEAR among other text', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runAgent = makeRunClaude({
+    const runAgent = makeRunAgent({
       ok: true,
       output: 'Status: ALL_CLEAR but also some issues',
       sessionId: null,
@@ -780,7 +780,7 @@ describe('handleScheduledJob', () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
     const triggerCortexExtraction = vi.fn();
-    const runAgent = makeRunClaude({
+    const runAgent = makeRunAgent({
       ok: true,
       output: 'Briefing',
       sessionId: 'sess-sched-1',
@@ -803,7 +803,7 @@ describe('handleScheduledJob', () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
     const triggerCortexExtraction = vi.fn();
-    const runAgent = makeRunClaude({
+    const runAgent = makeRunAgent({
       ok: true,
       output: 'Briefing',
       sessionId: null,
@@ -825,7 +825,7 @@ describe('handleScheduledJob', () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
     const triggerCortexExtraction = vi.fn();
-    const runAgent = makeRunClaude({
+    const runAgent = makeRunAgent({
       ok: false,
       failure: { kind: 'timeout', backend: 'claude', timeoutMs: 300_000 },
     });
@@ -844,7 +844,7 @@ describe('handleScheduledJob', () => {
   it('works without triggerCortexExtraction (optional dep)', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runAgent = makeRunClaude({
+    const runAgent = makeRunAgent({
       ok: true,
       output: 'Briefing',
       sessionId: 'sess-1',
@@ -868,7 +868,7 @@ describe('handleScheduledJob', () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const runAgent = makeRunClaude({
+    const runAgent = makeRunAgent({
       ok: true,
       output: 'Alert: Redis down',
       sessionId: 'sess-watchdog-1',
@@ -898,7 +898,7 @@ describe('handleScheduledJob', () => {
     const sessionStore = makeSessionStore();
     // Mock sendChunkedMessage to return multiple message IDs
     (telegram.sendChunkedMessage as ReturnType<typeof vi.fn>).mockResolvedValue([500, 501, 502]);
-    const runAgent = makeRunClaude({
+    const runAgent = makeRunAgent({
       ok: true,
       output: 'Long alert content',
       sessionId: 'sess-multi',
@@ -927,7 +927,7 @@ describe('handleScheduledJob', () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const runAgent = makeRunClaude({
+    const runAgent = makeRunAgent({
       ok: true,
       output: 'Alert',
       sessionId: null,
@@ -948,7 +948,7 @@ describe('handleScheduledJob', () => {
   it('does not save mapping when sessionStore is not provided', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runAgent = makeRunClaude({
+    const runAgent = makeRunAgent({
       ok: true,
       output: 'Alert',
       sessionId: 'sess-1',
@@ -970,7 +970,7 @@ describe('handleScheduledJob', () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
-    const runAgent = makeRunClaude({
+    const runAgent = makeRunAgent({
       ok: true,
       output: 'ALL_CLEAR',
       sessionId: 'sess-1',
@@ -994,7 +994,7 @@ describe('handleScheduledJob', () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
     const recordSkillQuality = vi.fn();
-    const runAgent = makeRunClaude({
+    const runAgent = makeRunAgent({
       ok: true,
       output: 'ALL_CLEAR',
       sessionId: null,
@@ -1023,7 +1023,7 @@ describe('handleScheduledJob', () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
     const recordSkillQuality = vi.fn();
-    const runAgent = makeRunClaude({
+    const runAgent = makeRunAgent({
       ok: false,
       failure: { kind: 'timeout', backend: 'claude', timeoutMs: 300_000 },
     });
@@ -1046,7 +1046,7 @@ describe('handleScheduledJob', () => {
     const job = makeScheduledJob({ skillId: makeSkillId('nonexistent-skill') });
     const telegram = makeTelegram();
     const recordSkillQuality = vi.fn();
-    const runAgent = makeRunClaude({ ok: true, output: 'unused', sessionId: null, durationMs: 0 });
+    const runAgent = makeRunAgent({ ok: true, output: 'unused', sessionId: null, durationMs: 0 });
 
     await handleScheduledJob(job, {
       runAgent: runAgent as unknown as ScheduledDeps['runAgent'],
@@ -1069,7 +1069,7 @@ describe('handleScheduledJob', () => {
     });
     const telegram = makeTelegram();
     const recordSkillQuality = vi.fn();
-    const runAgent = makeRunClaude({ ok: true, output: 'unused', sessionId: null, durationMs: 0 });
+    const runAgent = makeRunAgent({ ok: true, output: 'unused', sessionId: null, durationMs: 0 });
 
     await handleScheduledJob(job, {
       runAgent: runAgent as unknown as ScheduledDeps['runAgent'],
@@ -1088,7 +1088,7 @@ describe('handleScheduledJob', () => {
     const telegram = makeTelegram();
     const recordSkillQuality = vi.fn();
     const output = 'Morning briefing — all systems nominal.';
-    const runAgent = makeRunClaude({ ok: true, output, sessionId: 'sess-1', durationMs: 500 });
+    const runAgent = makeRunAgent({ ok: true, output, sessionId: 'sess-1', durationMs: 500 });
 
     await handleScheduledJob(job, {
       runAgent: runAgent as unknown as ScheduledDeps['runAgent'],
@@ -1107,7 +1107,7 @@ describe('handleScheduledJob', () => {
   it('works without recordSkillQuality (optional dep)', async () => {
     const job = makeScheduledJob();
     const telegram = makeTelegram();
-    const runAgent = makeRunClaude({
+    const runAgent = makeRunAgent({
       ok: true,
       output: 'Briefing',
       sessionId: null,

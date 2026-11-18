@@ -58,22 +58,20 @@ type SchedulerRepeat = Readonly<{ every?: number | undefined; pattern?: string |
  * schedule. When they disagree:
  *   - a cron template is listed as itself, by its description;
  *   - an interval template is listed by the scheduler's non-empty `pattern` when it has one,
- *     else by the scheduler's `every`, the rule BullMQ fires on (0 when it has none).
+ *     else by the scheduler's `every`, the rule BullMQ fires on;
+ *   - with neither, it is listed as having no repeat rule rather than a made-up interval.
  */
 export function listedSchedule(
   schedule: RecurringSchedule,
   scheduler: SchedulerRepeat,
 ): ListedSchedule {
   if (schedule.kind === 'cron') {
-    return {
-      kind: 'cron',
-      cronPattern: schedule.cronPattern,
-      cronDescription: schedule.cronDescription,
-    };
+    return { kind: 'cron', cronDescription: schedule.cronDescription };
   }
-  return scheduler.pattern
-    ? { kind: 'pattern', cronPattern: scheduler.pattern }
-    : { kind: 'interval', intervalMs: scheduler.every ?? 0 };
+  if (scheduler.pattern) return { kind: 'pattern', cronPattern: scheduler.pattern };
+  return scheduler.every === undefined
+    ? { kind: 'no-repeat-rule' }
+    : { kind: 'interval', intervalMs: scheduler.every };
 }
 
 // ─── Research status ──────────────────────────────────────────────────────────

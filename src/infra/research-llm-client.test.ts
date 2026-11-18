@@ -358,16 +358,16 @@ describe('createResearchLLMAdapter', () => {
   /**
    * Create a mock runAgent that records calls and returns fixed output.
    */
-  type MockRunClaude = {
+  type MockRunAgent = {
     calls: AgentOptions[];
     mockOutput: string;
   };
 
   function createMockAdapter(mockOutput: string): {
     adapter: ReturnType<typeof createResearchLLMAdapter>;
-    mock: MockRunClaude;
+    mock: MockRunAgent;
   } {
-    const mock: MockRunClaude = { calls: [], mockOutput };
+    const mock: MockRunAgent = { calls: [], mockOutput };
     const mockRunFn = async (opts: AgentOptions) => {
       mock.calls.push(opts);
       return { ok: true as const, output: mock.mockOutput, sessionId: null, durationMs: 10 };
