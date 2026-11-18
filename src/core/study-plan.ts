@@ -115,60 +115,59 @@ const chronological = (events: readonly StudyEvent[]): readonly StudyEvent[] =>
     .sort((a, b) => a.t - b.t || a.i - b.i)
     .map(({ e }) => e);
 
-/** What replaying the study log yields, before cards are scheduled. */
-type ReplayedLog = {
-  readonly lessonsRead: Map<string, Date>;
-  readonly rounds: Map<RoundId, { at: Date; cards: readonly CardId[] }>;
-  readonly suspended: Map<CardId, boolean>;
-  readonly feynmanAt: Map<TopicSlug, Date>;
+/** What replaying the study log yields, before cards are scheduled. Read-only once replayed. */
+type ReplayedLog = Readonly<{
+  lessonsRead: ReadonlyMap<string, Date>;
+  rounds: ReadonlyMap<RoundId, Readonly<{ at: Date; cards: readonly CardId[] }>>;
+  suspended: ReadonlyMap<CardId, boolean>;
+  feynmanAt: ReadonlyMap<TopicSlug, Date>;
   /** Per card, per round: the first instant graded + the last grade given. */
-  readonly gradesByCard: Map<CardId, Map<RoundId, GradeRecord>>;
+  gradesByCard: ReadonlyMap<CardId, ReadonlyMap<RoundId, GradeRecord>>;
   orphanEvents: number;
-};
+}>;
 
+/** The study log folded in order; the maps are filled here and nowhere else. */
 function replayLog(
   ordered: readonly StudyEvent[],
   notes: ReadonlyMap<TopicSlug, MasterNote>,
   cardIndex: ReadonlyMap<CardId, RecallCard>,
 ): ReplayedLog {
-  const log: ReplayedLog = {
-    lessonsRead: new Map(),
-    rounds: new Map(),
-    suspended: new Map(),
-    feynmanAt: new Map(),
-    gradesByCard: new Map(),
-    orphanEvents: 0,
-  };
+  const lessonsRead = new Map<string, Date>();
+  const rounds = new Map<RoundId, Readonly<{ at: Date; cards: readonly CardId[] }>>();
+  const suspended = new Map<CardId, boolean>();
+  const feynmanAt = new Map<TopicSlug, Date>();
+  const gradesByCard = new Map<CardId, Map<RoundId, GradeRecord>>();
+  let orphanEvents = 0;
   for (const e of ordered) {
     const at = new Date(e.at);
     switch (e.kind) {
       case 'lesson-read': {
-        if (!notes.has(e.topic)) log.orphanEvents++;
+        if (!notes.has(e.topic)) orphanEvents++;
         const key = lessonKey(e.topic, e.lesson);
-        if (!log.lessonsRead.has(key)) log.lessonsRead.set(key, at);
+        if (!lessonsRead.has(key)) lessonsRead.set(key, at);
         break;
       }
       case 'round-asked':
-        log.rounds.set(e.round, { at, cards: e.cards });
+        rounds.set(e.round, { at, cards: e.cards });
         break;
       case 'card-graded':
-        if (cardIndex.has(e.card)) recordGrade(log.gradesByCard, e, at);
-        else log.orphanEvents++;
+        if (cardIndex.has(e.card)) recordGrade(gradesByCard, e, at);
+        else orphanEvents++;
         break;
       case 'card-suspended':
-        log.suspended.set(e.card, true);
+        suspended.set(e.card, true);
         break;
       case 'card-unsuspended':
-        log.suspended.set(e.card, false);
+        suspended.set(e.card, false);
         break;
       case 'feynman-checked':
-        log.feynmanAt.set(e.topic, at);
+        feynmanAt.set(e.topic, at);
         break;
       default:
         return assertNever(e);
     }
   }
-  return log;
+  return { lessonsRead, rounds, suspended, feynmanAt, gradesByCard, orphanEvents };
 }
 
 /** A re-grade within a round keeps the round's first grading instant and takes the new grade. */

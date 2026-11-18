@@ -16,14 +16,13 @@ import type {
   ConversationRevision,
   JobId,
   JobResult,
-  RecurringReminderJob,
   ReminderJob,
   ScheduledJob,
   ScheduledOutcome,
   SkillId,
   TelegramUserId,
 } from '../core/types.js';
-import { makeClaudeSessionId } from '../core/types.js';
+import { makeClaudeSessionId, makeRecurringReminderJob } from '../core/types.js';
 import type { AppConfig } from '../infra/config.js';
 import type { SessionStore } from '../infra/session-store.js';
 import { DEFAULT_ATTACHMENT_DIR, type TelegramAdapter } from '../infra/telegram.js';
@@ -1060,15 +1059,16 @@ describe('createWorkers', () => {
 
     const reminderWorker = requireWorker('reclaw-reminder');
 
-    const recurringJob: RecurringReminderJob = {
-      kind: 'recurring-reminder',
+    const made = makeRecurringReminderJob({
       id: 'recur-001' as JobId,
       chatId: 999888777,
       text: 'take vitamins',
       createdAt: '2026-03-01T10:00:00Z',
       schedule: { kind: 'interval', intervalMs: 86_400_000 },
       schedulerId: 'recur:111:abc',
-    };
+    });
+    if (!made.ok) throw new Error(made.error);
+    const recurringJob = made.value;
 
     // Redis holds the persisted wire shape; the handler receives the parsed union.
     const bullJob: FakeBullJob = {

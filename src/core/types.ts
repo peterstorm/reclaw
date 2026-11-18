@@ -284,19 +284,36 @@ export type ReminderJob = {
   readonly delayMs: number; // BullMQ delay in milliseconds
 };
 
-/** When a recurring reminder fires: a fixed interval, or a cron pattern. Never both, never neither. */
-export type RecurringSchedule =
+/** The shortest interval a recurring reminder may repeat at. */
+export const MIN_RECURRING_INTERVAL_MS = 60_000;
+
+/**
+ * When a recurring reminder fires: a fixed interval, or a cron pattern. Never both, never
+ * neither. Only `makeRecurringSchedule` builds one, so every schedule can fire.
+ */
+export type RecurringSchedule = (
   | {
       readonly kind: 'interval';
-      /** BullMQ repeat interval in ms; at least a minute. */
+      /** BullMQ repeat interval in ms: an integer, at least {@link MIN_RECURRING_INTERVAL_MS}. */
       readonly intervalMs: number;
     }
   | {
       readonly kind: 'cron';
-      /** Cron expression, e.g. "0 12 * * 0". */
+      /** Cron expression, trimmed and non-blank, e.g. "0 12 * * 0". */
       readonly cronPattern: string;
-      /** Human-readable, e.g. "every Sunday at 12:00". */
+      /** Human-readable and non-blank, e.g. "every Sunday at 12:00". */
       readonly cronDescription: string;
+    }
+) & { readonly __brand: 'RecurringSchedule' };
+
+/** A schedule as requested, before `makeRecurringSchedule` checks that it can fire. */
+export type RecurringScheduleSpec =
+  | { readonly kind: 'interval'; readonly intervalMs: number }
+  | {
+      readonly kind: 'cron';
+      readonly cronPattern: string;
+      /** Defaults to the pattern when absent or blank. */
+      readonly cronDescription?: string | undefined;
     };
 
 /**
@@ -472,7 +489,7 @@ export function makeRecurringReminderJob(params: {
   chatId: number;
   text: string;
   createdAt: string;
-  schedule: RecurringSchedule;
+  schedule: RecurringScheduleSpec;
   schedulerId: string;
 }): Result<RecurringReminderJob, string> {
   if (params.text.trim().length === 0) {
@@ -488,8 +505,8 @@ export function makeRecurringReminderJob(params: {
     return err('schedulerId must not be empty.');
   }
 
-  const scheduleError = recurringScheduleError(params.schedule);
-  if (scheduleError !== null) return err(scheduleError);
+  const schedule = makeRecurringSchedule(params.schedule);
+  if (!schedule.ok) return schedule;
 
   return ok({
     kind: 'recurring-reminder',
@@ -497,24 +514,32 @@ export function makeRecurringReminderJob(params: {
     chatId: params.chatId,
     text: params.text,
     createdAt: params.createdAt,
-    schedule: params.schedule,
+    schedule: schedule.value,
     schedulerId: params.schedulerId,
   });
 }
 
-/** Why a schedule cannot fire: an interval under a minute, or an empty cron pattern. */
-function recurringScheduleError(schedule: RecurringSchedule): string | null {
-  switch (schedule.kind) {
+/**
+ * A schedule that can fire: an integer interval of at least a minute, or a cron pattern that
+ * is not blank once trimmed. The pattern is kept trimmed; a cron schedule without a
+ * description is described by its pattern. Idempotent on a schedule it already built.
+ */
+export function makeRecurringSchedule(
+  spec: RecurringScheduleSpec,
+): Result<RecurringSchedule, string> {
+  switch (spec.kind) {
     case 'interval':
-      return Number.isInteger(schedule.intervalMs) && schedule.intervalMs >= 60_000
-        ? null
-        : 'Recurring reminder interval must be at least 1 minute.';
-    case 'cron':
-      return schedule.cronPattern.length > 0
-        ? null
-        : 'Recurring reminder cronPattern must not be empty.';
+      return Number.isInteger(spec.intervalMs) && spec.intervalMs >= MIN_RECURRING_INTERVAL_MS
+        ? ok({ kind: 'interval', intervalMs: spec.intervalMs } as RecurringSchedule)
+        : err('Recurring reminder interval must be at least 1 minute.');
+    case 'cron': {
+      const cronPattern = spec.cronPattern.trim();
+      if (cronPattern.length === 0) return err('Recurring reminder cronPattern must not be empty.');
+      const cronDescription = spec.cronDescription?.trim() ? spec.cronDescription : cronPattern;
+      return ok({ kind: 'cron', cronPattern, cronDescription } as RecurringSchedule);
+    }
     default:
-      return assertNever(schedule);
+      return assertNever(spec);
   }
 }
 

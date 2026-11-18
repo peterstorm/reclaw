@@ -12,6 +12,8 @@ const mockGetJob = vi.fn().mockResolvedValue(undefined);
 const mockGetWaitingCount = vi.fn().mockResolvedValue(0);
 const mockGetActiveCount = vi.fn().mockResolvedValue(0);
 const mockClient = Promise.resolve({ set: mockRedisSet, get: mockRedisGet });
+/** Records the queue name first, so a test can tell which queue a scheduler was upserted on. */
+const mockUpsertJobScheduler = vi.fn().mockResolvedValue(undefined);
 const MockQueue = vi.fn().mockImplementation((name: string, opts: unknown) => ({
   name,
   opts,
@@ -21,6 +23,7 @@ const MockQueue = vi.fn().mockImplementation((name: string, opts: unknown) => ({
   getJob: mockGetJob,
   getWaitingCount: mockGetWaitingCount,
   getActiveCount: mockGetActiveCount,
+  upsertJobScheduler: (...args: unknown[]) => mockUpsertJobScheduler(name, ...args),
   client: mockClient,
 }));
 
@@ -34,13 +37,17 @@ const { createQueues, retryOptions, deliveryRetryOptions } = await import('./que
 // ─── Test data ────────────────────────────────────────────────────────────────
 
 import { makeActivityId, makeTelegramBatchDelivery } from '../core/activity.js';
-import type {
-  ChatJob,
-  ConversationGeneration,
-  ConversationRevision,
-  JobId,
-  ScheduledJob,
-  TelegramUserId,
+import { recurringReminderJobToWire } from '../core/job-schemas.js';
+import {
+  type ChatJob,
+  type ConversationGeneration,
+  type ConversationRevision,
+  type JobId,
+  type RecurringReminderJob,
+  type RecurringScheduleSpec,
+  type ScheduledJob,
+  type TelegramUserId,
+  makeRecurringReminderJob,
 } from '../core/types.js';
 
 const chatJob: ChatJob = {
@@ -66,6 +73,19 @@ const scheduledJob: ScheduledJob = {
   validUntil: '2026-02-26T06:30:00Z',
   trigger: 'cron',
 };
+
+function recurringJob(schedulerId: string, schedule: RecurringScheduleSpec): RecurringReminderJob {
+  const job = makeRecurringReminderJob({
+    id: schedulerId as JobId,
+    chatId: 987654,
+    text: 'water the plants',
+    createdAt: '2026-03-04T10:00:00Z',
+    schedule,
+    schedulerId,
+  });
+  if (!job.ok) throw new Error(job.error);
+  return job.value;
+}
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
@@ -344,6 +364,47 @@ describe('createQueues', () => {
     expect(jobOpts.attempts).toBe(3);
     expect(jobOpts.backoff.type).toBe('exponential');
     expect(jobOpts.backoff.delay).toBe(120_000);
+  });
+
+  // ── Recurring reminders ────────────────────────────────────────────────────
+
+  it('enqueueRecurringReminder schedules a cron reminder by pattern with the wire template', async () => {
+    const queues = createQueues(redisConnection);
+    const job = recurringJob('telegram:1002:recurring', {
+      kind: 'cron',
+      cronPattern: '0 12 * * 0',
+      cronDescription: 'every Sunday at 12:00',
+    });
+
+    await expect(queues.enqueueRecurringReminder(job)).resolves.toBe('telegram:1002:recurring');
+    expect(mockUpsertJobScheduler).toHaveBeenCalledTimes(1);
+    expect(mockUpsertJobScheduler).toHaveBeenCalledWith(
+      'reclaw-reminder',
+      'telegram:1002:recurring',
+      { pattern: '0 12 * * 0' },
+      { name: 'telegram:1002:recurring', data: recurringReminderJobToWire(job) },
+    );
+  });
+
+  it('enqueueRecurringReminder schedules an interval reminder by every with the wire template', async () => {
+    const queues = createQueues(redisConnection);
+    const job = recurringJob('telegram:1001:recurring', {
+      kind: 'interval',
+      intervalMs: 7_200_000,
+    });
+
+    await expect(queues.enqueueRecurringReminder(job)).resolves.toBe('telegram:1001:recurring');
+    expect(mockUpsertJobScheduler).toHaveBeenCalledTimes(1);
+    expect(mockUpsertJobScheduler).toHaveBeenCalledWith(
+      'reclaw-reminder',
+      'telegram:1001:recurring',
+      { every: 7_200_000 },
+      { name: 'telegram:1001:recurring', data: recurringReminderJobToWire(job) },
+    );
+    // The template is the persisted wire shape, never the in-memory union.
+    const template = mockUpsertJobScheduler.mock.calls[0]?.[3] as { data: unknown };
+    expect(template.data).not.toHaveProperty('schedule');
+    expect(template.data).toHaveProperty('intervalMs', 7_200_000);
   });
 
   // ── Completion markers ─────────────────────────────────────────────────────

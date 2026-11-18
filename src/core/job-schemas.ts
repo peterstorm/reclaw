@@ -19,6 +19,7 @@ import {
   makeJobId,
   makePodcastJob,
   makeRecurringReminderJob,
+  makeRecurringSchedule,
   makeReminderJob,
   makeScheduledJob,
   makeSkillId,
@@ -222,7 +223,10 @@ type RecurringScheduleWire = Pick<
   'intervalMs' | 'cronPattern' | 'cronDescription'
 >;
 
-/** The wire's schedule fields as the union: exactly one of a cron pattern or a positive interval. */
+/**
+ * The wire's schedule fields as a schedule that can fire: exactly one of a cron pattern or a
+ * positive interval, then the schedule constructor's checks and defaults.
+ */
 function parseRecurringScheduleWire(
   wire: RecurringScheduleWire,
 ): Result<RecurringSchedule, string> {
@@ -237,9 +241,9 @@ function parseRecurringScheduleWire(
         : 'Either intervalMs or cronPattern must be provided.',
     );
   }
-  return ok(
+  return makeRecurringSchedule(
     hasCron
-      ? { kind: 'cron', cronPattern, cronDescription: wire.cronDescription ?? cronPattern }
+      ? { kind: 'cron', cronPattern, cronDescription: wire.cronDescription }
       : { kind: 'interval', intervalMs: wire.intervalMs },
   );
 }

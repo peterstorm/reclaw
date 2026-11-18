@@ -12,7 +12,7 @@ import {
 import {
   MAX_REPLY_CONTEXT_CHARS,
   type RecurringReminderJob,
-  type RecurringSchedule,
+  type RecurringScheduleSpec,
   makeJobId,
   makeRecurringReminderJob,
 } from './types.js';
@@ -408,6 +408,30 @@ describe('parseRecurringReminderJob', () => {
       false,
     );
   });
+
+  it.each([
+    [{ intervalMs: 59_999 }, 'Recurring reminder interval must be at least 1 minute.'],
+    [{ intervalMs: 0, cronPattern: ' \t ' }, 'Recurring reminder cronPattern must not be empty.'],
+  ])('rejects a schedule that cannot fire: %j', (overrides, reason) => {
+    expect(parseRecurringReminderJob({ ...validRecurringReminderData(), ...overrides })).toEqual({
+      ok: false,
+      error: `Invalid recurring reminder job: ${reason}`,
+    });
+  });
+
+  it('builds the schedule with the schedule constructor: trimmed pattern, blank description defaulted', () => {
+    const result = parseRecurringReminderJob({
+      ...validRecurringReminderData(),
+      intervalMs: 0,
+      cronPattern: ' 0 9 * * 1-5 ',
+      cronDescription: '  ',
+    });
+    expect(result.ok && result.value.schedule).toEqual({
+      kind: 'cron',
+      cronPattern: '0 9 * * 1-5',
+      cronDescription: '0 9 * * 1-5',
+    });
+  });
 });
 
 // ─── Recurring reminder wire codec ──────────────────────────────────────────
@@ -459,13 +483,14 @@ describe('recurring reminder wire codec', () => {
     },
   );
 
-  const scheduleArb: fc.Arbitrary<RecurringSchedule> = fc.oneof(
+  // Any schedule the factory accepts; it normalises the pattern and description.
+  const scheduleArb: fc.Arbitrary<RecurringScheduleSpec> = fc.oneof(
     fc
       .integer({ min: 60_000, max: 365 * 86_400_000 })
       .map((intervalMs) => ({ kind: 'interval' as const, intervalMs })),
     fc
       .record({
-        cronPattern: fc.string({ minLength: 1, maxLength: 30 }),
+        cronPattern: fc.string({ minLength: 1, maxLength: 30 }).filter((p) => p.trim() !== ''),
         cronDescription: fc.string({ maxLength: 40 }),
       })
       .map((cron) => ({ kind: 'cron' as const, ...cron })),

@@ -126,10 +126,8 @@ export function buildChatPrompt(
   const uploads = storedUploads ?? [];
   const hasAttachments = images.length > 0 || documents.length > 0 || uploads.length > 0;
 
-  const textPart =
-    trimmedMessage.length > 0 ? trimmedMessage : attachmentOnlyText(documents, uploads);
   const requestPart = hasAttachments
-    ? `${textPart}\n\n${attachmentReferences(images, documents, uploads)}`
+    ? attachmentRequest(trimmedMessage, images, documents, uploads)
     : trimmedMessage;
   const userPart =
     replyContext === undefined
@@ -141,6 +139,17 @@ export function buildChatPrompt(
   }
 
   return `${trimmedPersonality}\n\n---\n\n${userPart}`;
+}
+
+/** A request that carries attachments: the message, or a stand-in when it is empty, then the references. */
+function attachmentRequest(
+  message: string,
+  images: readonly string[],
+  documents: readonly string[],
+  uploads: readonly StoredUpload[],
+): string {
+  const text = message.length > 0 ? message : attachmentOnlyText(documents, uploads);
+  return `${text}\n\n${attachmentReferences(images, documents, uploads)}`;
 }
 
 /** One reference per attachment, images then documents then uploads, each marked untrusted where it carries text. */
