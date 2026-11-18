@@ -171,33 +171,38 @@ export type RecurringParsed =
       readonly text: string;
     };
 
-const DAY_MAP: Record<string, string> = {
-  sunday: '0',
-  sun: '0',
-  monday: '1',
-  mon: '1',
-  tuesday: '2',
-  tue: '2',
-  tues: '2',
-  wednesday: '3',
-  wed: '3',
-  thursday: '4',
-  thu: '4',
-  thur: '4',
-  thurs: '4',
-  friday: '5',
-  fri: '5',
-  saturday: '6',
-  sat: '6',
-  weekday: '1-5',
-  weekdays: '1-5',
-  weekend: '0,6',
-  weekends: '0,6',
-  day: '*',
-  daily: '*',
-};
+/** The day-of-week field of a cron reminder's pattern. */
+type CronDayField = '0' | '1' | '2' | '3' | '4' | '5' | '6' | '1-5' | '0,6' | '*';
 
-const DAY_DISPLAY: Record<string, string> = {
+// The lookups below are keyed by words the user typed, so they are Maps: a word
+// such as "constructor" or "__proto__" must miss, not hit Object.prototype.
+const DAY_WORDS: ReadonlyMap<string, CronDayField> = new Map([
+  ['sunday', '0'],
+  ['sun', '0'],
+  ['monday', '1'],
+  ['mon', '1'],
+  ['tuesday', '2'],
+  ['tue', '2'],
+  ['tues', '2'],
+  ['wednesday', '3'],
+  ['wed', '3'],
+  ['thursday', '4'],
+  ['thu', '4'],
+  ['thur', '4'],
+  ['thurs', '4'],
+  ['friday', '5'],
+  ['fri', '5'],
+  ['saturday', '6'],
+  ['sat', '6'],
+  ['weekday', '1-5'],
+  ['weekdays', '1-5'],
+  ['weekend', '0,6'],
+  ['weekends', '0,6'],
+  ['day', '*'],
+  ['daily', '*'],
+]);
+
+const DAY_DISPLAY: Readonly<Record<CronDayField, string>> = {
   '0': 'Sunday',
   '1': 'Monday',
   '2': 'Tuesday',
@@ -212,13 +217,13 @@ const DAY_DISPLAY: Record<string, string> = {
 
 type ClockTime = Readonly<{ hour: number; minute: number }>;
 
-const TIME_KEYWORDS: Record<string, ClockTime> = {
-  noon: { hour: 12, minute: 0 },
-  midnight: { hour: 0, minute: 0 },
-  morning: { hour: 9, minute: 0 },
-  evening: { hour: 18, minute: 0 },
-  night: { hour: 21, minute: 0 },
-};
+const TIME_KEYWORDS: ReadonlyMap<string, ClockTime> = new Map([
+  ['noon', { hour: 12, minute: 0 }],
+  ['midnight', { hour: 0, minute: 0 }],
+  ['morning', { hour: 9, minute: 0 }],
+  ['evening', { hour: 18, minute: 0 }],
+  ['night', { hour: 21, minute: 0 }],
+]);
 
 /** A cron reminder with no time fires at 09:00. */
 const DEFAULT_CRON_TIME: ClockTime = { hour: 9, minute: 0 };
@@ -236,7 +241,7 @@ function parseCronTime(words: readonly string[], idx: number): Result<CronTime, 
   if (timeWord === 'at') {
     const timeStr = words[idx + 1]?.toLowerCase();
     if (timeStr === undefined) return err('Expected a time after "at".');
-    const keyword = TIME_KEYWORDS[timeStr];
+    const keyword = TIME_KEYWORDS.get(timeStr);
     if (keyword) return ok({ time: keyword, next: idx + 2 });
     // Clock time: "9am", "14:30", "3:30pm"
     const clock = parseClockTime(timeStr);
@@ -244,7 +249,7 @@ function parseCronTime(words: readonly string[], idx: number): Result<CronTime, 
     return ok({ time: clock.value, next: idx + 2 });
   }
   // A time keyword without "at"
-  const keyword = timeWord === undefined ? undefined : TIME_KEYWORDS[timeWord];
+  const keyword = timeWord === undefined ? undefined : TIME_KEYWORDS.get(timeWord);
   return ok(keyword ? { time: keyword, next: idx + 1 } : { time: DEFAULT_CRON_TIME, next: idx });
 }
 
@@ -260,8 +265,7 @@ function parseCronRecurring(input: string): Result<RecurringParsed, string> {
   if (words.length < 2 || dayWord === undefined) return err('Not a cron pattern.');
 
   // Match day spec (first word)
-  const dayKey = dayWord.toLowerCase();
-  const dayOfWeek = DAY_MAP[dayKey];
+  const dayOfWeek = DAY_WORDS.get(dayWord.toLowerCase());
   if (dayOfWeek === undefined) return err('Not a cron pattern.');
 
   const cronTime = parseCronTime(words, 1);
@@ -275,11 +279,10 @@ function parseCronRecurring(input: string): Result<RecurringParsed, string> {
     return err('Recurring reminder message must not be empty.');
   }
 
-  const dayDisplay = DAY_DISPLAY[dayOfWeek] ?? dayKey;
   return ok({
     type: 'cron',
     cronPattern: `${time.minute} ${time.hour} * * ${dayOfWeek}`,
-    cronDescription: `every ${dayDisplay} at ${twoDigits(time.hour)}:${twoDigits(time.minute)}`,
+    cronDescription: `every ${DAY_DISPLAY[dayOfWeek]} at ${twoDigits(time.hour)}:${twoDigits(time.minute)}`,
     text,
   });
 }

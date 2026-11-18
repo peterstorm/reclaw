@@ -18,9 +18,9 @@ export type ResearchLLMAdapter = {
   /**
    * Derive a concise 3-8 word topic title from a user's free-form research prompt.
    * Used in the deriving_topic state before any other pipeline state runs.
-   * Throws on error — the state machine executor catches and emits ERROR.
+   * An agent failure or a blank reply is an err.
    */
-  readonly deriveTopic: (prompt: string) => Promise<string>;
+  readonly deriveTopic: (prompt: string) => Promise<Result<string, string>>;
 
   /**
    * Generate 3-5 research questions for a given topic, informed by source titles.
@@ -290,6 +290,35 @@ export function parseDiscoveredUrlsFromOutput(output: string): Result<readonly s
   return { ok: true, value: unique.slice(0, MAX_CLAUDE_DISCOVERED_URLS) };
 }
 
+// ─── Shell: agent calls ───────────────────────────────────────────────────────
+
+/** One agent subprocess call with fixed options; only the prompt varies. */
+type PromptRunner = (prompt: string) => Promise<AgentResult>;
+
+/** The two agent configurations the adapter calls: tool-less, and web search. */
+type ResearchAgents = Readonly<{
+  plain: PromptRunner;
+  webSearch: PromptRunner;
+}>;
+
+/** The `failurePrefix` of each agent configuration's subprocess failures. */
+const SUBPROCESS_FAILED = 'Claude subprocess failed';
+const WEB_SEARCH_SUBPROCESS_FAILED = 'Claude web search subprocess failed';
+
+/** Run `prompt`, reporting a subprocess failure under `failurePrefix`, and parse the output. */
+async function askAgent<T>(
+  run: PromptRunner,
+  prompt: string,
+  failurePrefix: string,
+  parse: (output: string) => Result<T, string>,
+): Promise<Result<T, string>> {
+  const agentResult = await run(prompt);
+  if (!agentResult.ok) {
+    return { ok: false, error: `${failurePrefix}: ${formatAgentFailure(agentResult.failure)}` };
+  }
+  return parse(agentResult.output);
+}
+
 // ─── Factory ──────────────────────────────────────────────────────────────────
 
 /**
@@ -305,109 +334,44 @@ export function createResearchLLMAdapter(
   webSearchTimeoutMs: number,
   runFn: (options: AgentOptions) => Promise<AgentResult>,
 ): ResearchLLMAdapter {
-  const baseOptions: Omit<AgentOptions, 'prompt'> = {
-    cwd,
-    allowedTools: [],
-    timeoutMs,
-  };
-
-  const webSearchOptions: Omit<AgentOptions, 'prompt'> = {
-    cwd,
-    allowedTools: ['WebSearch(*)'],
-    timeoutMs: webSearchTimeoutMs,
-  };
-
-  const deriveTopic = async (userPrompt: string): Promise<string> => {
-    const claudePrompt = buildDeriveTopicPrompt(userPrompt);
-    const claudeResult = await runFn({ ...baseOptions, prompt: claudePrompt });
-
-    if (!claudeResult.ok) {
-      throw new Error(`Claude subprocess failed: ${formatAgentFailure(claudeResult.failure)}`);
-    }
-
-    const trimmed = claudeResult.output.trim().split('\n')[0]?.trim() ?? '';
-    if (!trimmed) {
-      throw new Error('Empty topic derivation response from Claude');
-    }
-
-    return trimmed;
-  };
-
-  const generateQuestions = async (
-    topic: string,
-    sources: readonly SourceMeta[],
-    researchPrompt?: string | null,
-  ): Promise<Result<readonly string[], string>> => {
-    const prompt = buildGenerateQuestionsPrompt(topic, sources, researchPrompt);
-    const claudeResult = await runFn({ ...baseOptions, prompt });
-
-    if (!claudeResult.ok) {
-      return {
-        ok: false,
-        error: `Claude subprocess failed: ${formatAgentFailure(claudeResult.failure)}`,
-      };
-    }
-
-    return parseQuestionsFromOutput(claudeResult.output);
-  };
-
-  const reformulateQuery = async (
-    topic: string,
-    previousError: string,
-    researchPrompt?: string | null,
-  ): Promise<Result<string, string>> => {
-    const prompt = buildReformulateQueryPrompt(topic, previousError, researchPrompt);
-    const claudeResult = await runFn({ ...baseOptions, prompt });
-
-    if (!claudeResult.ok) {
-      return {
-        ok: false,
-        error: `Claude subprocess failed: ${formatAgentFailure(claudeResult.failure)}`,
-      };
-    }
-
-    return parseSingleLineResponse(claudeResult.output, 'reformulated query');
-  };
-
-  const rephraseQuestion = async (
-    question: string,
-    sources: readonly SourceMeta[],
-  ): Promise<Result<string, string>> => {
-    const prompt = buildRephraseQuestionPrompt(question, sources);
-    const claudeResult = await runFn({ ...baseOptions, prompt });
-
-    if (!claudeResult.ok) {
-      return {
-        ok: false,
-        error: `Claude subprocess failed: ${formatAgentFailure(claudeResult.failure)}`,
-      };
-    }
-
-    return parseSingleLineResponse(claudeResult.output, 'rephrased question');
-  };
-
-  const discoverSourceUrls = async (
-    topic: string,
-    researchPrompt?: string | null,
-  ): Promise<Result<readonly string[], string>> => {
-    const prompt = buildDiscoverSourcesPrompt(topic, researchPrompt);
-    const claudeResult = await runFn({ ...webSearchOptions, prompt });
-
-    if (!claudeResult.ok) {
-      return {
-        ok: false,
-        error: `Claude web search subprocess failed: ${formatAgentFailure(claudeResult.failure)}`,
-      };
-    }
-
-    return parseDiscoveredUrlsFromOutput(claudeResult.output);
+  const agents: ResearchAgents = {
+    plain: (prompt) => runFn({ cwd, allowedTools: [], timeoutMs, prompt }),
+    webSearch: (prompt) =>
+      runFn({ cwd, allowedTools: ['WebSearch(*)'], timeoutMs: webSearchTimeoutMs, prompt }),
   };
 
   return {
-    deriveTopic,
-    generateQuestions,
-    reformulateQuery,
-    rephraseQuestion,
-    discoverSourceUrls,
+    deriveTopic: (userPrompt) =>
+      askAgent(agents.plain, buildDeriveTopicPrompt(userPrompt), SUBPROCESS_FAILED, (output) =>
+        parseSingleLineResponse(output, 'topic derivation'),
+      ),
+    generateQuestions: (topic, sources, researchPrompt) =>
+      askAgent(
+        agents.plain,
+        buildGenerateQuestionsPrompt(topic, sources, researchPrompt),
+        SUBPROCESS_FAILED,
+        parseQuestionsFromOutput,
+      ),
+    reformulateQuery: (topic, previousError, researchPrompt) =>
+      askAgent(
+        agents.plain,
+        buildReformulateQueryPrompt(topic, previousError, researchPrompt),
+        SUBPROCESS_FAILED,
+        (output) => parseSingleLineResponse(output, 'reformulated query'),
+      ),
+    rephraseQuestion: (question, sources) =>
+      askAgent(
+        agents.plain,
+        buildRephraseQuestionPrompt(question, sources),
+        SUBPROCESS_FAILED,
+        (output) => parseSingleLineResponse(output, 'rephrased question'),
+      ),
+    discoverSourceUrls: (topic, researchPrompt) =>
+      askAgent(
+        agents.webSearch,
+        buildDiscoverSourcesPrompt(topic, researchPrompt),
+        WEB_SEARCH_SUBPROCESS_FAILED,
+        parseDiscoveredUrlsFromOutput,
+      ),
   } as const;
 }

@@ -1,3 +1,4 @@
+import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import {
   parseChatJob,
@@ -6,8 +7,15 @@ import {
   parseReminderJob,
   parseResearchJobData,
   parseScheduledJob,
+  recurringReminderJobToWire,
 } from './job-schemas.js';
-import { MAX_REPLY_CONTEXT_CHARS } from './types.js';
+import {
+  MAX_REPLY_CONTEXT_CHARS,
+  type RecurringReminderJob,
+  type RecurringScheduleSpec,
+  makeJobId,
+  makeRecurringReminderJob,
+} from './types.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -337,8 +345,49 @@ describe('parseRecurringReminderJob', () => {
     const result = parseRecurringReminderJob(data);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.cronPattern).toBe('0 12 * * 0');
+    expect(result.value.schedule).toEqual({
+      kind: 'cron',
+      cronPattern: '0 12 * * 0',
+      cronDescription: 'every Sunday at noon',
+    });
   });
+
+  it('defaults a missing cron description to the cron pattern', () => {
+    const result = parseRecurringReminderJob({
+      ...validRecurringReminderData(),
+      intervalMs: 0,
+      cronPattern: '0 9 * * 1-5',
+    });
+    expect(result.ok && result.value.schedule).toEqual({
+      kind: 'cron',
+      cronPattern: '0 9 * * 1-5',
+      cronDescription: '0 9 * * 1-5',
+    });
+  });
+
+  it('rejects a job with both an interval and a cron pattern', () => {
+    expect(
+      parseRecurringReminderJob({
+        ...validRecurringReminderData(),
+        intervalMs: 7_200_000,
+        cronPattern: '0 12 * * 0',
+      }),
+    ).toEqual({
+      ok: false,
+      error:
+        'Invalid recurring reminder job: Cannot specify both intervalMs and cronPattern for a recurring reminder.',
+    });
+  });
+
+  it.each([{ intervalMs: 0 }, { intervalMs: 0, cronPattern: '' }, { intervalMs: -60_000 }])(
+    'rejects a job with neither an interval nor a cron pattern %#',
+    (overrides) => {
+      expect(parseRecurringReminderJob({ ...validRecurringReminderData(), ...overrides })).toEqual({
+        ok: false,
+        error: 'Invalid recurring reminder job: Either intervalMs or cronPattern must be provided.',
+      });
+    },
+  );
 
   it('rejects empty schedulerId', () => {
     expect(parseRecurringReminderJob({ ...validRecurringReminderData(), schedulerId: '' }).ok).toBe(
@@ -357,6 +406,169 @@ describe('parseRecurringReminderJob', () => {
   ])('rejects invalid interval/cron combinations %#', (overrides) => {
     expect(parseRecurringReminderJob({ ...validRecurringReminderData(), ...overrides }).ok).toBe(
       false,
+    );
+  });
+
+  it.each([
+    [{ intervalMs: 59_999 }, 'Recurring reminder interval must be at least 1 minute.'],
+    [{ intervalMs: 0, cronPattern: ' \t ' }, 'Recurring reminder cronPattern must not be empty.'],
+  ])('rejects a schedule that cannot fire: %j', (overrides, reason) => {
+    expect(parseRecurringReminderJob({ ...validRecurringReminderData(), ...overrides })).toEqual({
+      ok: false,
+      error: `Invalid recurring reminder job: ${reason}`,
+    });
+  });
+
+  it('builds the schedule with the schedule constructor: trimmed pattern, blank description defaulted', () => {
+    const result = parseRecurringReminderJob({
+      ...validRecurringReminderData(),
+      intervalMs: 0,
+      cronPattern: ' 0 9 * * 1-5 ',
+      cronDescription: '  ',
+    });
+    expect(result.ok && result.value.schedule).toEqual({
+      kind: 'cron',
+      cronPattern: '0 9 * * 1-5',
+      cronDescription: '0 9 * * 1-5',
+    });
+  });
+});
+
+// ─── Recurring reminder wire codec ──────────────────────────────────────────
+// BullMQ persists a recurring reminder's job data in Redis as the scheduler's
+// template, and live reminders keep firing from it. The stored shape is fixed:
+// these tests pin it byte for byte and prove the internal union round-trips.
+
+/** Exactly what a producer wrote to Redis before the schedule became a union. */
+const STORED_INTERVAL_JOB =
+  '{"kind":"recurring-reminder","id":"telegram:1001:recurring","chatId":456,"text":"water","createdAt":"2026-03-04T10:00:00.000Z","intervalMs":7200000,"schedulerId":"telegram:1001:recurring"}';
+const STORED_CRON_JOB =
+  '{"kind":"recurring-reminder","id":"telegram:1002:recurring","chatId":456,"text":"water plants","createdAt":"2026-03-04T10:00:00.000Z","intervalMs":0,"cronPattern":"0 12 * * 0","cronDescription":"every Sunday at 12:00","schedulerId":"telegram:1002:recurring"}';
+
+/** Read stored job data back the way Redis hands it over: untyped. */
+const readStored = (json: string): unknown => JSON.parse(json);
+
+describe('recurring reminder wire codec', () => {
+  it('parses an interval reminder stored in the persisted shape', () => {
+    const result = parseRecurringReminderJob(readStored(STORED_INTERVAL_JOB));
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        kind: 'recurring-reminder',
+        id: 'telegram:1001:recurring',
+        chatId: 456,
+        text: 'water',
+        createdAt: '2026-03-04T10:00:00.000Z',
+        schedule: { kind: 'interval', intervalMs: 7_200_000 },
+        schedulerId: 'telegram:1001:recurring',
+      },
+    });
+  });
+
+  it('parses a cron reminder stored in the persisted shape', () => {
+    const result = parseRecurringReminderJob(readStored(STORED_CRON_JOB));
+    expect(result.ok && result.value.schedule).toEqual({
+      kind: 'cron',
+      cronPattern: '0 12 * * 0',
+      cronDescription: 'every Sunday at 12:00',
+    });
+  });
+
+  it.each([STORED_INTERVAL_JOB, STORED_CRON_JOB])(
+    'writes the persisted bytes unchanged after a parse %#',
+    (stored) => {
+      const parsed = parseRecurringReminderJob(readStored(stored));
+      if (!parsed.ok) throw new Error(parsed.error);
+      expect(JSON.stringify(recurringReminderJobToWire(parsed.value))).toBe(stored);
+    },
+  );
+
+  // Any schedule the factory accepts; it normalises the pattern and description.
+  const scheduleArb: fc.Arbitrary<RecurringScheduleSpec> = fc.oneof(
+    fc
+      .integer({ min: 60_000, max: 365 * 86_400_000 })
+      .map((intervalMs) => ({ kind: 'interval' as const, intervalMs })),
+    fc
+      .record({
+        cronPattern: fc.string({ minLength: 1, maxLength: 30 }).filter((p) => p.trim() !== ''),
+        cronDescription: fc.string({ maxLength: 40 }),
+      })
+      .map((cron) => ({ kind: 'cron' as const, ...cron })),
+  );
+
+  const jobArb: fc.Arbitrary<RecurringReminderJob> = fc
+    .record({
+      update: fc.integer({ min: 0, max: 2 ** 40 }),
+      chatId: fc.integer({ min: -(2 ** 40), max: 2 ** 40 }),
+      text: fc.string({ minLength: 1, maxLength: 60 }).filter((t) => t.trim().length > 0),
+      createdAt: fc
+        .date({
+          min: new Date('2020-01-01T00:00:00Z'),
+          max: new Date('2030-01-01T00:00:00Z'),
+          noInvalidDate: true,
+        })
+        .map((d) => d.toISOString()),
+      schedule: scheduleArb,
+    })
+    .map(({ update, chatId, text, createdAt, schedule }) => {
+      const id = makeJobId(`telegram:${update}:recurring`);
+      if (!id.ok) throw new Error(id.error);
+      const job = makeRecurringReminderJob({
+        id: id.value,
+        chatId,
+        text,
+        createdAt,
+        schedule,
+        schedulerId: id.value,
+      });
+      if (!job.ok) throw new Error(job.error);
+      return job.value;
+    });
+
+  it('property: union → wire → union is the identity', () => {
+    fc.assert(
+      fc.property(jobArb, (job) => {
+        const wire = readStored(JSON.stringify(recurringReminderJobToWire(job)));
+        expect(parseRecurringReminderJob(wire)).toEqual({ ok: true, value: job });
+      }),
+    );
+  });
+
+  it('property: the wire carries exactly one schedule, in the persisted field layout', () => {
+    fc.assert(
+      fc.property(jobArb, (job) => {
+        const wire = recurringReminderJobToWire(job);
+        const { schedule } = job;
+        if (schedule.kind === 'interval') {
+          expect(Object.keys(wire)).toEqual([
+            'kind',
+            'id',
+            'chatId',
+            'text',
+            'createdAt',
+            'intervalMs',
+            'schedulerId',
+          ]);
+          expect(wire.intervalMs).toBe(schedule.intervalMs);
+        } else {
+          expect(Object.keys(wire)).toEqual([
+            'kind',
+            'id',
+            'chatId',
+            'text',
+            'createdAt',
+            'intervalMs',
+            'cronPattern',
+            'cronDescription',
+            'schedulerId',
+          ]);
+          expect(wire).toMatchObject({
+            intervalMs: 0,
+            cronPattern: schedule.cronPattern,
+            cronDescription: schedule.cronDescription,
+          });
+        }
+      }),
     );
   });
 });

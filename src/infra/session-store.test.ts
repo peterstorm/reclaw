@@ -128,6 +128,41 @@ describe('createSessionStore', () => {
     });
   });
 
+  it('rejects a malformed commit reply instead of guessing a CAS outcome', async () => {
+    const session = makeAgentSessionId('new-session');
+    if (!session.ok) throw new Error(session.error);
+    const store = createSessionStore(redis, 'pi', () => NOW);
+    const commit = (reply: unknown) => {
+      redis.eval.mockResolvedValueOnce(reply);
+      return store.commitSession({
+        chatId: CHAT_ID,
+        expectedGeneration: 0 as ConversationGeneration,
+        expectedRevision: 2 as ConversationRevision,
+        backend: 'pi',
+        sessionId: session.value,
+        lastActivityAt: NOW,
+      });
+    };
+
+    await expect(commit(7)).rejects.toThrow('Redis conversation commit returned non-string result');
+    await expect(commit('not-json')).rejects.toThrow(
+      'Redis conversation commit returned invalid JSON',
+    );
+    for (const envelope of [
+      'null',
+      '[]',
+      '"committed"',
+      JSON.stringify({ committed: 'yes', lineage: lineage() }),
+      JSON.stringify({ committed: true }),
+      JSON.stringify({ committed: true, lineage: null }),
+      JSON.stringify({ committed: false, lineage: [] }),
+    ]) {
+      await expect(commit(envelope)).rejects.toThrow(
+        'Redis conversation commit returned invalid envelope',
+      );
+    }
+  });
+
   it('stores and reads message references scoped by chat ID', async () => {
     const session = makeAgentSessionId('session-1');
     if (!session.ok) throw new Error(session.error);
@@ -147,6 +182,30 @@ describe('createSessionStore', () => {
 
     redis.get.mockResolvedValueOnce(JSON.stringify(reference));
     await expect(store.getMessageReference(CHAT_ID, 100)).resolves.toEqual(reference);
+  });
+
+  it('logs and deletes a corrupt message reference before reporting none', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    redis.get.mockResolvedValueOnce('not-json');
+    const store = createSessionStore(redis, 'pi', () => NOW);
+
+    try {
+      await expect(store.getMessageReference(CHAT_ID, 100)).resolves.toBeNull();
+
+      expect(warn).toHaveBeenCalledOnce();
+      const [logged] = warn.mock.calls[0] ?? [];
+      expect(logged).toEqual(expect.stringContaining(`chat ${CHAT_ID}`));
+      expect(logged).toEqual(expect.stringContaining('message 100'));
+      expect(logged).toEqual(
+        expect.stringContaining('Invalid JSON for message conversation reference'),
+      );
+      expect(redis.del).toHaveBeenCalledWith(makeMessageConversationKey(CHAT_ID, 100));
+      expect(warn.mock.invocationCallOrder[0]).toBeLessThan(
+        redis.del.mock.invocationCallOrder[0] ?? Number.NEGATIVE_INFINITY,
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('does not read globally keyed legacy mappings that can collide across chats', async () => {

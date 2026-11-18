@@ -1,15 +1,22 @@
+import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import {
   MS_PER_DAY,
   MS_PER_HOUR,
+  type NotebookLMProbeRun,
   type NotebookLMSource,
   type Probe,
+  REAUTH_COMMAND,
+  type RepairDecision,
   classifyApiKeyProbe,
   classifyOAuthExpiry,
   decideGarminRepair,
   decideNotebookLMRepair,
   formatDuration,
+  lastRepairAttemptMs,
   parseClaudeCredentials,
+  planGarminCheck,
+  planNotebookLMCheck,
   renderReport,
   resolveNotebookLMSource,
   resolvePiProviderAuth,
@@ -217,6 +224,194 @@ describe('decideGarminRepair', () => {
     const decision = decideGarminRepair({ ...base, probe: 'failed', lastAttemptMs: NOW - 60_000 });
     expect(decision.kind).toBe('skip');
     if (decision.kind === 'skip') expect(decision.reason).toContain('cooling down');
+  });
+});
+
+describe('planNotebookLMCheck', () => {
+  const fileSource: NotebookLMSource = {
+    kind: 'token',
+    origin: 'file',
+    authToken: 't',
+    cookies: 'c',
+    ageDays: 3.7,
+  };
+  const envSource: NotebookLMSource = { ...fileSource, origin: 'env', ageDays: null };
+  const skip = (reason: string): RepairDecision => ({ kind: 'skip', reason });
+  const attempt = (reason: string): RepairDecision => ({ kind: 'attempt', reason });
+
+  it('reports a skipped, passing probe as healthy, naming where the credential comes from', () => {
+    const ok = { result: 'ok' } as const;
+    expect(
+      planNotebookLMCheck({ source: fileSource, run: ok, decision: skip('fresh'), dryRun: false }),
+    ).toEqual({
+      kind: 'report',
+      outcome: { kind: 'healthy', detail: 'credentials.json is 3 days old' },
+    });
+    expect(
+      planNotebookLMCheck({ source: envSource, run: ok, decision: skip('fresh'), dryRun: false }),
+    ).toEqual({
+      kind: 'report',
+      outcome: { kind: 'healthy', detail: 'credentials come from the environment' },
+    });
+  });
+
+  it('gives an env-provided credential the re-issue remedy, with the probe’s own error', () => {
+    const plan = planNotebookLMCheck({
+      source: envSource,
+      run: { result: 'failed', error: '401 from notebooks.list' },
+      decision: skip('env vars override credentials.json'),
+      dryRun: false,
+    });
+    expect(plan).toEqual({
+      kind: 'report',
+      outcome: {
+        kind: 'broken',
+        detail: '401 from notebooks.list',
+        remedy:
+          're-issue the NOTEBOOKLM_AUTH_TOKEN / NOTEBOOKLM_COOKIES secrets — they take priority over credentials.json',
+      },
+    });
+  });
+
+  it('explains a fault the cooldown skipped by the decision’s reason when the probe has no error', () => {
+    const plan = planNotebookLMCheck({
+      source: { kind: 'absent', reason: 'no credentials.json' },
+      run: { result: 'not-run' },
+      decision: skip('no usable credential, but cooling down'),
+      dryRun: false,
+    });
+    expect(plan).toEqual({
+      kind: 'report',
+      outcome: {
+        kind: 'broken',
+        detail: 'no usable credential, but cooling down',
+        remedy: `run ${REAUTH_COMMAND} to retry now`,
+      },
+    });
+    const emptyError = planNotebookLMCheck({
+      source: fileSource,
+      run: { result: 'failed', error: '' },
+      decision: skip('cooling down'),
+      dryRun: false,
+    });
+    expect(emptyError).toMatchObject({ outcome: { detail: 'cooling down' } });
+  });
+
+  it('reports the repair a dry run skipped: expiring while the probe passes, broken once it does not', () => {
+    const dryRun = (run: NotebookLMProbeRun) =>
+      planNotebookLMCheck({
+        source: fileSource,
+        run,
+        decision: attempt('21 days old'),
+        dryRun: true,
+      });
+    expect(dryRun({ result: 'ok' })).toEqual({
+      kind: 'report',
+      outcome: {
+        kind: 'expiring',
+        detail: '21 days old (repair skipped: --dry-run)',
+        remedy: `run ${REAUTH_COMMAND}`,
+      },
+    });
+    expect(dryRun({ result: 'failed', error: 'x' })).toMatchObject({
+      outcome: { kind: 'broken' },
+    });
+  });
+
+  it('repairs exactly when the decision attempts and the run is not a dry run', () => {
+    const sources = fc.constantFrom<NotebookLMSource>(fileSource, envSource, {
+      kind: 'absent',
+      reason: 'none',
+    });
+    const runs = fc.constantFrom<NotebookLMProbeRun>(
+      { result: 'ok' },
+      { result: 'not-run' },
+      { result: 'failed', error: 'boom' },
+    );
+    const decisions = fc.record({
+      kind: fc.constantFrom('attempt' as const, 'skip' as const),
+      reason: fc.string(),
+    });
+    fc.assert(
+      fc.property(sources, runs, decisions, fc.boolean(), (source, run, decision, dryRun) => {
+        const plan = planNotebookLMCheck({ source, run, decision, dryRun });
+        expect(plan.kind === 'repair').toBe(decision.kind === 'attempt' && !dryRun);
+        if (plan.kind === 'repair') expect(plan.reason).toBe(decision.reason);
+        // A credential this check would have repaired is never reported healthy.
+        if (decision.kind === 'attempt' && plan.kind === 'report') {
+          expect(plan.outcome.kind).not.toBe('healthy');
+        }
+      }),
+    );
+  });
+});
+
+describe('planGarminCheck', () => {
+  it('reports skipped, accepted tokens as healthy', () => {
+    expect(
+      planGarminCheck({
+        run: { result: 'ok' },
+        decision: { kind: 'skip', reason: 'cached tokens are valid' },
+        dryRun: false,
+      }),
+    ).toEqual({
+      kind: 'report',
+      outcome: { kind: 'healthy', detail: 'cached tokens accepted by Garmin' },
+    });
+  });
+
+  it('reports rejected tokens the cooldown skipped as broken, leaving the login to garmin-sync', () => {
+    const reason = 'cached tokens were rejected by Garmin, but cooling down';
+    const decision = { kind: 'skip', reason } as const;
+    expect(
+      planGarminCheck({ run: { result: 'failed', error: '401' }, decision, dryRun: false }),
+    ).toEqual({
+      kind: 'report',
+      outcome: {
+        kind: 'broken',
+        detail: '401',
+        remedy: `${reason} — the 20:00 garmin-sync will retry the login`,
+      },
+    });
+    expect(
+      planGarminCheck({ run: { result: 'no-tokens' }, decision, dryRun: false }),
+    ).toMatchObject({ outcome: { kind: 'broken', detail: reason } });
+  });
+
+  it('reports the login a dry run skipped as broken', () => {
+    expect(
+      planGarminCheck({
+        run: { result: 'no-tokens' },
+        decision: { kind: 'attempt', reason: 'no cached tokens' },
+        dryRun: true,
+      }),
+    ).toEqual({
+      kind: 'report',
+      outcome: {
+        kind: 'broken',
+        detail: 'no cached tokens (login skipped: --dry-run)',
+        remedy: 'run bun scripts/garmin-fetch.ts to force a fresh login',
+      },
+    });
+  });
+
+  it('logs in fresh when the decision attempts', () => {
+    expect(
+      planGarminCheck({
+        run: { result: 'failed', error: '401' },
+        decision: { kind: 'attempt', reason: 'cached tokens were rejected by Garmin' },
+        dryRun: false,
+      }),
+    ).toEqual({ kind: 'repair', reason: 'cached tokens were rejected by Garmin' });
+  });
+});
+
+describe('lastRepairAttemptMs', () => {
+  it("is this run's attempt when it made one, else the one before", () => {
+    expect(lastRepairAttemptMs({ attempted: true, atMs: NOW }, NOW - MS_PER_DAY)).toBe(NOW);
+    expect(lastRepairAttemptMs({ attempted: true, atMs: NOW }, null)).toBe(NOW);
+    expect(lastRepairAttemptMs({ attempted: false }, NOW - MS_PER_DAY)).toBe(NOW - MS_PER_DAY);
+    expect(lastRepairAttemptMs({ attempted: false }, null)).toBeNull();
   });
 });
 

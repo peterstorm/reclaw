@@ -8,23 +8,25 @@ import {
   makeActivityId,
   makeTelegramBatchDelivery,
 } from '../core/activity.js';
+import { recurringReminderJobToWire } from '../core/job-schemas.js';
+import { type ResearchJobData, makeResearchJobData } from '../core/research-types.js';
 import type {
   ChatJob,
   ConversationGeneration,
   ConversationRevision,
   JobId,
   JobResult,
-  RecurringReminderJob,
   ReminderJob,
   ScheduledJob,
   ScheduledOutcome,
   SkillId,
   TelegramUserId,
 } from '../core/types.js';
-import { makeClaudeSessionId } from '../core/types.js';
+import { makeClaudeSessionId, makeRecurringReminderJob } from '../core/types.js';
 import type { AppConfig } from '../infra/config.js';
 import type { SessionStore } from '../infra/session-store.js';
 import { DEFAULT_ATTACHMENT_DIR, type TelegramAdapter } from '../infra/telegram.js';
+import type { ResearchJobLike } from './research-handler.js';
 import {
   type BullWorkerLike,
   type WorkerFactory,
@@ -1057,18 +1059,20 @@ describe('createWorkers', () => {
 
     const reminderWorker = requireWorker('reclaw-reminder');
 
-    const recurringJob: RecurringReminderJob = {
-      kind: 'recurring-reminder',
+    const made = makeRecurringReminderJob({
       id: 'recur-001' as JobId,
       chatId: 999888777,
       text: 'take vitamins',
       createdAt: '2026-03-01T10:00:00Z',
-      intervalMs: 86_400_000,
+      schedule: { kind: 'interval', intervalMs: 86_400_000 },
       schedulerId: 'recur:111:abc',
-    };
+    });
+    if (!made.ok) throw new Error(made.error);
+    const recurringJob = made.value;
 
+    // Redis holds the persisted wire shape; the handler receives the parsed union.
     const bullJob: FakeBullJob = {
-      data: recurringJob,
+      data: recurringReminderJobToWire(recurringJob),
       id: recurringJob.id,
       opts: { attempts: 3 },
       attemptsMade: 0,
@@ -1180,6 +1184,120 @@ describe('createWorkers', () => {
     expect(typeof jobLikeArg.updateData).toBe('function');
     expect(typeof jobLikeArg.updateProgress).toBe('function');
     expect(result).toEqual({ hubPath: '/vault/ai-agents/_index.md', topic: 'AI agents' });
+  });
+
+  it('research worker checkpoints and reports progress through the BullMQ job receiver', async () => {
+    makeWorkers();
+    const researchWorker = requireWorker('reclaw-research');
+
+    // BullMQ's Job.updateData/updateProgress assign `this.data`/`this.progress`
+    // before writing Redis; called without their Job receiver they throw a
+    // TypeError and every research checkpoint is lost.
+    const fresh = makeResearchJobData({
+      prompt: 'AI agents research prompt',
+      now: new Date('2026-03-04T10:00:00Z'),
+      sourceHints: [],
+      chatId: 999888777,
+      generateAudio: false,
+      generateVideo: false,
+    });
+    if (!fresh.ok) throw new Error(fresh.error);
+    const receivers: unknown[] = [];
+    const bullJob: FakeBullJob & { progress?: number } = {
+      data: fresh.value,
+      id: 'research-job-002',
+      opts: { attempts: 3 },
+      attemptsMade: 0,
+      async updateData(this: FakeBullJob, data: unknown): Promise<void> {
+        receivers.push(this);
+        this.data = data;
+      },
+      async updateProgress(this: FakeBullJob & { progress?: number }, progress: number) {
+        receivers.push(this);
+        this.progress = progress;
+      },
+    };
+    const checkpoint: ResearchJobData = { ...fresh.value, state: { kind: 'creating_notebook' } };
+    researchHandler.mockImplementationOnce(async (jobLike: ResearchJobLike) => {
+      await jobLike.updateData(checkpoint);
+      await jobLike.updateProgress(10);
+      return { hubPath: null, topic: 'AI agents' };
+    });
+
+    await expect(researchWorker.processor(bullJob)).resolves.toEqual({
+      hubPath: null,
+      topic: 'AI agents',
+    });
+    expect(receivers).toEqual([bullJob, bullJob]);
+    expect(bullJob.data).toEqual(checkpoint);
+    expect(bullJob.progress).toBe(10);
+  });
+
+  it('research worker warns once when the job cannot checkpoint, and still runs', async () => {
+    makeWorkers();
+    const researchWorker = requireWorker('reclaw-research');
+    const fresh = makeResearchJobData({
+      prompt: 'AI agents research prompt',
+      now: new Date('2026-03-04T10:00:00Z'),
+      sourceHints: [],
+      chatId: 999888777,
+    });
+    if (!fresh.ok) throw new Error(fresh.error);
+    const bullJob: FakeBullJob = {
+      data: fresh.value,
+      id: 'research-job-003',
+      opts: { attempts: 3 },
+      attemptsMade: 0,
+    };
+    researchHandler.mockImplementationOnce(async (jobLike: ResearchJobLike) => {
+      await jobLike.updateData(fresh.value);
+      await jobLike.updateProgress(10);
+      await jobLike.updateData(fresh.value);
+      await jobLike.updateProgress(20);
+      return { hubPath: null, topic: 'AI agents' };
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(researchWorker.processor(bullJob)).resolves.toEqual({
+      hubPath: null,
+      topic: 'AI agents',
+    });
+    expect(warn.mock.calls).toEqual([
+      [
+        '[worker:research] Job research-job-003 has no updateData, updateProgress: those checkpoint calls are skipped (SC-002/SC-003)',
+      ],
+    ]);
+    warn.mockRestore();
+  });
+
+  it('research worker names only the checkpoint method the job lacks', async () => {
+    makeWorkers();
+    const researchWorker = requireWorker('reclaw-research');
+    const fresh = makeResearchJobData({
+      prompt: 'AI agents research prompt',
+      now: new Date('2026-03-04T10:00:00Z'),
+      sourceHints: [],
+      chatId: 999888777,
+    });
+    if (!fresh.ok) throw new Error(fresh.error);
+    const updateData = vi.fn().mockResolvedValue(undefined);
+    const bullJob: FakeBullJob = { data: fresh.value, attemptsMade: 0, updateData };
+    researchHandler.mockImplementationOnce(async (jobLike: ResearchJobLike) => {
+      await jobLike.updateData(fresh.value);
+      await jobLike.updateProgress(10);
+      return { hubPath: null, topic: 'AI agents' };
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await researchWorker.processor(bullJob);
+
+    expect(updateData).toHaveBeenCalledWith(fresh.value);
+    expect(warn.mock.calls).toEqual([
+      [
+        '[worker:research] Job unknown has no updateProgress: those checkpoint calls are skipped (SC-002/SC-003)',
+      ],
+    ]);
+    warn.mockRestore();
   });
 
   it('research worker throws on missing topic field', async () => {

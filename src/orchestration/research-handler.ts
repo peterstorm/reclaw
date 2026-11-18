@@ -3,7 +3,8 @@
 // The state machine loop for the deep research pipeline.
 //
 // Wraps executeState() with:
-// - timing and trace event recording (FR-080, FR-082)
+// - timing and trace event recording (FR-080, FR-082); the trace and the
+//   transition are the pure step in core/research-step.ts
 // - BullMQ checkpointing via job.updateData() after every transition (FR-005)
 // - progress reporting via job.updateProgress() (FR-081)
 // - throwing on terminal failed state to trigger BullMQ failure handling
@@ -12,43 +13,21 @@
 // SC-003: State machine checkpointing enables resumption from last completed state.
 // US5:    Crash recovery — job resumes from last checkpoint.
 
-import { MAX_RETRIES, transition } from '../core/research-machine.js';
+import {
+  type ExecutedStep,
+  applyStep,
+  resumeContext,
+  thrownErrorEvent,
+} from '../core/research-step.js';
 import { isTerminal, stateProgress } from '../core/research-types.js';
 import type {
   ResearchContext,
   ResearchEvent,
   ResearchJobData,
-  TraceEvent,
+  ResearchState,
 } from '../core/research-types.js';
 import { executeState } from './research-states.js';
 import type { ResearchDeps } from './research-states.js';
-
-// ─── Error Classification ─────────────────────────────────────────────────────
-
-/**
- * Classify whether an unexpected thrown error is retriable.
- *
- * Non-retriable: auth failures, permission errors, invalid input, 404s.
- * Retriable: network errors, timeouts, rate limits, and anything else.
- */
-const NON_RETRIABLE_PATTERNS = [
-  'unauthorized',
-  '401',
-  '403',
-  'forbidden',
-  'invalid',
-  'not found',
-  '404',
-  'permission',
-  'access denied',
-  'authentication',
-  'auth_error',
-] as const;
-
-function isRetriableError(error: unknown): boolean {
-  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
-  return !NON_RETRIABLE_PATTERNS.some((pattern) => message.includes(pattern));
-}
 
 // ─── BullMQ Job interface ─────────────────────────────────────────────────────
 
@@ -90,99 +69,16 @@ export async function handleResearchJob(
   job: ResearchJobLike,
   deps: ResearchDeps,
 ): Promise<{ hubPath: string | null; topic: string }> {
-  let { state, context } = job.data;
+  let { state } = job.data;
+  let context = resumeContext(state, job.data.context);
 
-  // SC-003: On BullMQ retry of a checkpointed job, clear the retry counter
-  // for the current state so each BullMQ attempt gets fresh per-state retries.
-  if (!isTerminal(state)) {
-    const stateKey = state.kind;
-    if (stateKey in context.retries) {
-      const { [stateKey]: _, ...rest } = context.retries;
-      context = { ...context, retries: rest, lastError: null };
-    }
-  }
-
-  // Loop until we reach a terminal state (done or failed)
   while (!isTerminal(state)) {
-    const startTime = Date.now();
-
-    // FR-080, FR-082: execute the state and record timing
-    let event: ResearchEvent;
-    let outcome: TraceEvent['outcome'] = 'success';
-    let detail = '';
-
-    try {
-      event = await executeState(state, context, deps);
-    } catch (err) {
-      // Unexpected executor error — classify retriability from the error content
-      const message = err instanceof Error ? err.message : String(err);
-      event = { type: 'ERROR' as const, error: message, retriable: isRetriableError(err) };
-    }
-
-    const durationMs = Date.now() - startTime;
-
-    // Determine trace outcome from event type
-    if (event.type === 'ERROR') {
-      const stateKey = state.kind;
-      const maxRetries = MAX_RETRIES[stateKey] ?? 0;
-      const currentRetries = context.retries[stateKey] ?? 0;
-      outcome = currentRetries < maxRetries && event.retriable ? 'retry' : 'fail';
-      detail = event.error;
-    } else if (event.type === 'QUERY_SKIPPED') {
-      outcome = 'skip';
-      detail = `Skipped question: ${event.question}. Reason: ${event.reason}`;
-    } else {
-      outcome = 'success';
-      detail = event.type;
-    }
-
-    // Build trace event (FR-082: state, timestamp, duration, outcome, detail)
-    const traceEvent: TraceEvent = {
-      state: state.kind,
-      timestamp: new Date(startTime).toISOString(),
-      durationMs,
-      outcome,
-      detail,
-      ...(event.type === 'QUERY_ANSWERED' ? { chatsUsed: context.chatsUsed + 1 } : {}),
-    };
-
-    // Transition to next state (pure, functional core)
-    const { state: nextState, context: nextContext } = transition(state, event, context);
-
-    // Append trace event to the context
-    const contextWithTrace: ResearchContext = {
-      ...nextContext,
-      trace: [...nextContext.trace, traceEvent],
-    };
-
-    state = nextState;
-    context = contextWithTrace;
-
-    // FR-005: Checkpoint — persist updated state+context to Redis via BullMQ.
-    // SC-003: Do NOT checkpoint terminal 'failed' states — preserve the last
-    // successful checkpoint so BullMQ retries resume from the pre-failure state.
-    if (state.kind !== 'failed') {
-      const checkpointData: ResearchJobData = {
-        ...job.data,
-        state,
-        context,
-      };
-      await job.updateData(checkpointData);
-    }
-
-    // FR-081: Report progress as a 0-100 percentage
-    await job.updateProgress(stateProgress(state));
+    ({ state, context } = applyStep(await executeTimed(state, context, deps)));
+    await checkpoint(job, state, context);
   }
 
-  // Handle terminal states
   if (state.kind === 'failed') {
-    // FR-062: Send Telegram error on permanent failure
-    try {
-      const errorMsg = `Research failed: "${context.topic}"\n\nFailed at: ${state.failedState}\nError: ${state.error}\nChats used: ${context.chatsUsed}`;
-      await deps.telegram.sendMessage(context.chatId, errorMsg);
-    } catch (err) {
-      console.warn('[research:handler] Telegram failure notification failed:', err);
-    }
+    await notifyFailure(state, context, deps);
     throw new Error(`Research pipeline failed at state '${state.failedState}': ${state.error}`);
   }
 
@@ -191,4 +87,51 @@ export async function handleResearchJob(
     hubPath: context.hubPath,
     topic: context.topic,
   };
+}
+
+/** FR-080, FR-082: execute the state and time it; an unexpected throw becomes an ERROR event. */
+async function executeTimed(
+  state: ResearchState,
+  context: ResearchContext,
+  deps: ResearchDeps,
+): Promise<ExecutedStep> {
+  const startedAtMs = Date.now();
+  let event: ResearchEvent;
+  try {
+    event = await executeState(state, context, deps);
+  } catch (err) {
+    event = thrownErrorEvent(err);
+  }
+  return { state, context, event, startedAtMs, durationMs: Date.now() - startedAtMs };
+}
+
+/**
+ * FR-005: persist state + context to Redis via BullMQ, then FR-081: report
+ * progress. SC-003: a terminal 'failed' state is never checkpointed, so a
+ * BullMQ retry resumes from the last successful state.
+ */
+async function checkpoint(
+  job: ResearchJobLike,
+  state: ResearchState,
+  context: ResearchContext,
+): Promise<void> {
+  if (state.kind !== 'failed') {
+    const checkpointData: ResearchJobData = { ...job.data, state, context };
+    await job.updateData(checkpointData);
+  }
+  await job.updateProgress(stateProgress(state));
+}
+
+/** FR-062: tell the user a research job failed for good. Best-effort. */
+async function notifyFailure(
+  state: Extract<ResearchState, { kind: 'failed' }>,
+  context: ResearchContext,
+  deps: ResearchDeps,
+): Promise<void> {
+  try {
+    const errorMsg = `Research failed: "${context.topic}"\n\nFailed at: ${state.failedState}\nError: ${state.error}\nChats used: ${context.chatsUsed}`;
+    await deps.telegram.sendMessage(context.chatId, errorMsg);
+  } catch (err) {
+    console.warn('[research:handler] Telegram failure notification failed:', err);
+  }
 }

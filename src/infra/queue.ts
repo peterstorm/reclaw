@@ -1,6 +1,7 @@
 import { Queue } from 'bullmq';
 import type { ActivityResultRepository, DeliveryJob, DeliveryOutbox } from '../core/activity.js';
 import type { DeadLetterStore, RawFailedJob } from '../core/dead-letter.js';
+import { recurringReminderJobToWire } from '../core/job-schemas.js';
 import type { ResearchJobData } from '../core/research-types.js';
 import {
   type ChatJob,
@@ -271,10 +272,14 @@ function reminderOperations(
       await reminder.add(job.id, job, { jobId: job.id, delay: job.delayMs });
     },
     enqueueRecurringReminder: async (job: RecurringReminderJob): Promise<string> => {
-      const repeatOpts = job.cronPattern ? { pattern: job.cronPattern } : { every: job.intervalMs };
+      const { schedule } = job;
+      const repeatOpts =
+        schedule.kind === 'cron'
+          ? { pattern: schedule.cronPattern }
+          : { every: schedule.intervalMs };
       await reminder.upsertJobScheduler(job.schedulerId, repeatOpts, {
         name: job.schedulerId,
-        data: job,
+        data: recurringReminderJobToWire(job),
       });
       return job.schedulerId;
     },

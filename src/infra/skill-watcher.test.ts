@@ -234,6 +234,63 @@ describe('createSkillWatcher', () => {
     }
   });
 
+  it('logs a listener that throws during the initial settle, still notifies the others, and resolves ready()', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    writeFileSync(join(tempDir, 'morning-briefing.yaml'), validYaml);
+
+    const watcher = createSkillWatcher(tempDir);
+    const sizes: number[] = [];
+    watcher.onRegistryChange(() => {
+      throw new Error('scheduler exploded');
+    });
+    watcher.onRegistryChange((registry) => {
+      sizes.push(registry.size);
+    });
+    watcher.start();
+
+    try {
+      await watcher.ready();
+      expect(sizes).toEqual([1]);
+      expect(consoleSpy).toHaveBeenCalledWith(
+        `[skill-watcher] Registry listener failed after "${tempDir}":`,
+        'scheduler exploded',
+      );
+    } finally {
+      await watcher.stop();
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it('logs a listener that throws on a live change with the changed file, and keeps notifying', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const watcher = createSkillWatcher(tempDir);
+    const sizes: number[] = [];
+    watcher.start();
+
+    try {
+      await watcher.ready();
+      watcher.onRegistryChange(() => {
+        throw new Error('scheduler exploded');
+      });
+      watcher.onRegistryChange((registry) => {
+        sizes.push(registry.size);
+      });
+
+      const filePath = join(tempDir, 'morning-briefing.yaml');
+      writeFileSync(filePath, validYaml);
+      await waitForSkillCount(watcher.getRegistry, 1);
+
+      expect(sizes).toEqual([1]);
+      expect(consoleSpy).toHaveBeenCalledWith(
+        `[skill-watcher] Registry listener failed after "${filePath}":`,
+        'scheduler exploded',
+      );
+    } finally {
+      await watcher.stop();
+      consoleSpy.mockRestore();
+    }
+  });
+
   it('ready() resolves after stop(), so a shutdown racing startup cannot deadlock', async () => {
     writeFileSync(join(tempDir, 'morning-briefing.yaml'), validYaml);
 
@@ -579,6 +636,32 @@ describe('createSettleTracker', () => {
     expect(load).not.toHaveBeenCalled();
     expect(onSettled).not.toHaveBeenCalled();
     expect(tracker.isSettled()).toBe(false);
+  });
+
+  // Regression: the settle hook (the registry listeners) ran before `ready` was
+  // released, so a listener that threw during the initial settle left `ready`
+  // pending forever and main.ts never got past startup.
+  it('releases ready when the settle hook throws after the last load, and surfaces the error', async () => {
+    const tracker = createSettleTracker(() => {
+      throw new Error('listener exploded');
+    });
+
+    tracker.schedule('a.yaml', () => {});
+    tracker.markScanComplete();
+
+    expect(() => vi.advanceTimersByTime(DEBOUNCE_MS)).toThrow('listener exploded');
+    expect(tracker.isSettled()).toBe(true);
+    expect(await hasResolved(tracker.ready())).toBe(true);
+  });
+
+  it('releases ready when the settle hook throws on an empty scan', async () => {
+    const tracker = createSettleTracker(() => {
+      throw new Error('listener exploded');
+    });
+
+    expect(() => tracker.markScanComplete()).toThrow('listener exploded');
+    expect(tracker.isSettled()).toBe(true);
+    expect(await hasResolved(tracker.ready())).toBe(true);
   });
 
   it('still settles when a load throws, and surfaces the error', async () => {

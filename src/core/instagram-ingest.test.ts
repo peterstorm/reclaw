@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_PROFILE_LIMIT,
+  INGEST_USAGE,
   type IngestReport,
   MAX_DATASET_POSTS,
   parseIngestArgs,
@@ -78,6 +79,44 @@ describe('parseIngestArgs', () => {
     const r = parseIngestArgs(args);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toMatch(message);
+  });
+
+  const POST = 'https://www.instagram.com/p/Db4K_XVyZOB/';
+
+  // Exact texts, and which check wins when several apply: flag values are parsed first,
+  // then the target, then the post-URL rules, then the source's limit cap.
+  it.each([
+    [
+      ['@someone', '--limit', '201'],
+      '--limit must be from 1 to 200 when scraping (each post costs Apify credit), got 201.',
+    ],
+    [['@someone', '--limit', '200'], null],
+    [
+      ['@someone', '--from-dataset', 'f.json', '--limit', '10001'],
+      '--limit must be from 1 to 10000 for a dataset, got 10001.',
+    ],
+    [['@someone', '--from-dataset', 'f.json', '--limit', '10000'], null],
+    [['@someone', '--limit'], `--limit needs a value. ${INGEST_USAGE}`],
+    [['@someone', '--model'], `--model needs a value. ${INGEST_USAGE}`],
+    [['@someone', '--from-dataset'], `--from-dataset needs a value. ${INGEST_USAGE}`],
+    [['@someone', '--limit', 'ten'], '--limit must be a positive integer, got "ten".'],
+    [['@someone', '--limit', '2.5'], '--limit must be a positive integer, got "2.5".'],
+    [['@someone', '--limit', '0'], '--limit must be a positive integer, got "0".'],
+    [['--limit', 'ten'], '--limit must be a positive integer, got "ten".'],
+    [[POST, '--limit', '3'], '--limit only applies to profiles; a post URL is always one post.'],
+    [[POST, '--limit', '999'], '--limit only applies to profiles; a post URL is always one post.'],
+    [
+      [POST, '--from-dataset', 'f.json'],
+      '--from-dataset ingests a saved profile dataset; give the @handle, not a post URL.',
+    ],
+    [
+      [POST, '--limit', '3', '--from-dataset', 'f.json'],
+      '--limit only applies to profiles; a post URL is always one post.',
+    ],
+  ])('reports exactly what is wrong with %j', (args, expected) => {
+    const r = parseIngestArgs(args);
+    if (expected === null) expect(r.ok).toBe(true);
+    else expect(r).toEqual({ ok: false, error: expected });
   });
 });
 

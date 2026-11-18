@@ -45,25 +45,32 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { format as formatLog, promisify } from 'node:util';
+import type { GarminConnect } from '@gooin/garmin-connect';
 import { parse as parseYaml } from 'yaml';
 import {
+  type CredentialCheck,
   type CredentialsFile,
-  type GarminProbe,
+  type GarminProbeRun,
   MS_PER_DAY,
-  MS_PER_HOUR,
-  type NotebookLMProbe,
+  type NotebookLMSource,
   type PiProviderAuth,
   type Probe,
   type ProbeOutcome,
   classifyApiKeyProbe,
   classifyOAuthExpiry,
-  decideGarminRepair,
-  decideNotebookLMRepair,
+  lastRepairAttemptMs,
   parseClaudeCredentials,
   renderReport,
   resolveNotebookLMSource,
   resolvePiProviderAuth,
 } from '../src/core/credential-health.js';
+import {
+  type CallResult,
+  type CheckContext,
+  type NotebookLMPorts,
+  checkGarmin,
+  checkNotebookLM,
+} from './credential-checks.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -82,10 +89,6 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CACHE_DIR = join(homedir(), '.cache', 'reclaw', 'credential-health');
 const STATE_PATH = join(CACHE_DIR, 'state.json');
 
-/** Refresh NotebookLM at 20 days against a ~24-day cookie life — before the cliff, not at it. */
-const STALE_AFTER_DAYS = 20;
-/** Both repairs drive a real remote login; never retry one more often than this. */
-const REPAIR_COOLDOWN_MS = 6 * MS_PER_HOUR;
 /** How much notice to give on an agent token that cannot be renewed headlessly. */
 const AGENT_WARN_WITHIN_MS = 7 * MS_PER_DAY;
 const REAUTH_TIMEOUT_MS = 5 * 60 * 1000;
@@ -191,10 +194,7 @@ function readCredentialsFile(path: string): CredentialsFile | null {
  * credential is passed explicitly so the SDK cannot silently fall back to its
  * own Google auto-login, which does not work on this host.
  */
-async function notebookLMAuthWorks(
-  authToken: string,
-  cookies: string,
-): Promise<{ ok: true } | { ok: false; error: string }> {
+async function notebookLMAuthWorks(authToken: string, cookies: string): Promise<CallResult> {
   try {
     const { createNotebookLMAdapter } = await import('../src/infra/notebooklm-client.js');
     const adapter = await createNotebookLMAdapter({ kind: 'token', authToken, cookies });
@@ -205,7 +205,7 @@ async function notebookLMAuthWorks(
   }
 }
 
-async function runReauth(): Promise<{ ok: true } | { ok: false; error: string }> {
+async function runReauth(): Promise<CallResult> {
   try {
     await execFileAsync('bun', ['scripts/notebooklm-reauth.ts'], {
       cwd: REPO_ROOT,
@@ -218,133 +218,62 @@ async function runReauth(): Promise<{ ok: true } | { ok: false; error: string }>
   }
 }
 
-const REAUTH_COMMAND = 'bun scripts/notebooklm-reauth.ts (in ~/dev/claude-plugins/reclaw)';
-
-async function probeNotebookLM(
-  state: RepairState,
-  nowMs: number,
-  dryRun: boolean,
-): Promise<{ probe: Probe; attemptedAtMs: number | null }> {
-  const source = resolveNotebookLMSource(
-    process.env,
+/** The credential the NotebookLM SDK would use right now: its env pair first, then credentials.json. */
+function readNotebookLMSource(nowMs: number): NotebookLMSource {
+  const { NOTEBOOKLM_AUTH_TOKEN, NOTEBOOKLM_COOKIES } = process.env;
+  return resolveNotebookLMSource(
+    { NOTEBOOKLM_AUTH_TOKEN, NOTEBOOKLM_COOKIES },
     readCredentialsFile(join(REPO_ROOT, 'credentials.json')),
     nowMs,
   );
-
-  let probeResult: NotebookLMProbe = 'not-run';
-  let probeError = '';
-  if (source.kind === 'token') {
-    const result = await notebookLMAuthWorks(source.authToken, source.cookies);
-    probeResult = result.ok ? 'ok' : 'failed';
-    if (!result.ok) probeError = result.error;
-  }
-
-  const decision = decideNotebookLMRepair({
-    source,
-    probe: probeResult,
-    staleAfterDays: STALE_AFTER_DAYS,
-    lastAttemptMs: state.lastRepairAttemptMs,
-    cooldownMs: REPAIR_COOLDOWN_MS,
-    nowMs,
-  });
-
-  const ageNote =
-    source.kind === 'token' && source.ageDays !== null
-      ? `credentials.json is ${Math.floor(source.ageDays)} days old`
-      : 'credentials come from the environment';
-
-  const outcome = ((): ProbeOutcome => {
-    if (decision.kind === 'skip') {
-      if (probeResult === 'ok') return { kind: 'healthy', detail: ageNote };
-      // The only faulty-but-skipped paths are env-provided credentials (a re-auth
-      // would write a file the SDK never reads) and an active cooldown.
-      const remedy =
-        source.kind === 'token' && source.origin === 'env'
-          ? 're-issue the NOTEBOOKLM_AUTH_TOKEN / NOTEBOOKLM_COOKIES secrets — they take priority over credentials.json'
-          : `run ${REAUTH_COMMAND} to retry now`;
-      return {
-        kind: 'broken',
-        detail: probeError !== '' ? probeError : decision.reason,
-        remedy,
-      };
-    }
-
-    if (dryRun) {
-      return {
-        kind: probeResult === 'ok' ? 'expiring' : 'broken',
-        detail: `${decision.reason} (repair skipped: --dry-run)`,
-        remedy: `run ${REAUTH_COMMAND}`,
-      };
-    }
-    return { kind: 'unknown', detail: 'repair pending' };
-  })();
-
-  if (decision.kind === 'skip' || dryRun) {
-    return { probe: { id: 'notebooklm', outcome }, attemptedAtMs: null };
-  }
-
-  // Repair: re-authenticate, then re-probe with whatever the script wrote. A
-  // re-auth that "succeeded" but left an unusable credential must not report as
-  // repaired — the script's own verification could pass and the file still be
-  // wrong, so the only claim worth making is one we re-checked.
-  process.stderr.write(`[credential-health] notebooklm: re-authenticating (${decision.reason})\n`);
-  const reauth = await runReauth();
-  if (!reauth.ok) {
-    return {
-      probe: {
-        id: 'notebooklm',
-        outcome: {
-          kind: 'broken',
-          detail: `re-auth failed after ${decision.reason}: ${reauth.error}`,
-          remedy: `run ${REAUTH_COMMAND} by hand — check GOOGLE_EMAIL/GOOGLE_PASSWORD and whether Google is challenging the login`,
-        },
-      },
-      attemptedAtMs: nowMs,
-    };
-  }
-
-  const refreshed = resolveNotebookLMSource(
-    process.env,
-    readCredentialsFile(join(REPO_ROOT, 'credentials.json')),
-    nowMs,
-  );
-  if (refreshed.kind !== 'token') {
-    return {
-      probe: {
-        id: 'notebooklm',
-        outcome: {
-          kind: 'broken',
-          detail: `re-auth reported success but left no usable credential (${refreshed.reason})`,
-          remedy: `run ${REAUTH_COMMAND} by hand`,
-        },
-      },
-      attemptedAtMs: nowMs,
-    };
-  }
-
-  const verify = await notebookLMAuthWorks(refreshed.authToken, refreshed.cookies);
-  return {
-    probe: {
-      id: 'notebooklm',
-      outcome: verify.ok
-        ? { kind: 'repaired', detail: `re-authenticated (${decision.reason})` }
-        : {
-            kind: 'broken',
-            detail: `re-auth ran but the credential still fails: ${verify.error}`,
-            remedy: `run ${REAUTH_COMMAND} by hand and read the verification output`,
-          },
-    },
-    attemptedAtMs: nowMs,
-  };
 }
+
+const notebookLMPorts: NotebookLMPorts = {
+  readSource: readNotebookLMSource,
+  authWorks: notebookLMAuthWorks,
+  reauth: runReauth,
+};
 
 // ─── Garmin ───────────────────────────────────────────────────────────────────
 
-async function probeGarmin(
-  state: RepairState,
-  nowMs: number,
-  dryRun: boolean,
-): Promise<{ probe: Probe; attemptedAtMs: number | null }> {
+/** Verify the cached tokens with a real call; a missing token file is its own verdict. */
+async function runGarminProbe(client: GarminConnect): Promise<GarminProbeRun> {
+  const { garminTokenDir } = await import('./garmin-session.js');
+  const tokenDir = garminTokenDir();
+  if (!existsSync(join(tokenDir, 'oauth2_token.json'))) return { result: 'no-tokens' };
+  try {
+    await client.loadTokenByFile(tokenDir);
+    await withRetry(() => client.getUserProfile(), 3, 2000);
+    return { result: 'ok' };
+  } catch (e) {
+    return { result: 'failed', error: errorMessage(e) };
+  }
+}
+
+async function reloginGarmin(
+  client: GarminConnect,
+  credentials: { email: string; password: string },
+  reason: string,
+): Promise<ProbeOutcome> {
+  const { exportGarminTokens } = await import('./garmin-session.js');
+  process.stderr.write(`[credential-health] garmin: logging in fresh (${reason})\n`);
+  try {
+    await withRetry(() => client.login(credentials.email, credentials.password), 3, 5000);
+    await exportGarminTokens(client);
+    return { kind: 'repaired', detail: `logged in fresh and re-cached tokens (${reason})` };
+  } catch (e) {
+    // This is the branch worth paging for: the cached token is dead AND the
+    // login that garmin-sync relies on to self-heal no longer works.
+    return {
+      kind: 'broken',
+      detail: `cached tokens are dead and a fresh login failed: ${errorMessage(e)}`,
+      remedy:
+        "check GARMIN_EMAIL/GARMIN_PASSWORD in SOPS (reclaw.yaml) — tonight's garmin-sync will fail too",
+    };
+  }
+}
+
+async function probeGarmin(context: CheckContext): Promise<CredentialCheck> {
   const email = process.env.GARMIN_EMAIL;
   const password = process.env.GARMIN_PASSWORD;
 
@@ -362,93 +291,19 @@ async function probeGarmin(
             'GARMIN_EMAIL/GARMIN_PASSWORD are not set, so the cached tokens cannot be verified',
         },
       },
-      attemptedAtMs: null,
+      attempt: { attempted: false },
     };
   }
 
-  const { GarminConnect } = await import('@gooin/garmin-connect');
-  const { exportGarminTokens, garminTokenDir } = await import('./garmin-session.js');
-  const client = new GarminConnect({ username: email, password });
-  const tokenDir = garminTokenDir();
-
-  let probeResult: GarminProbe;
-  let probeError = '';
-  if (!existsSync(join(tokenDir, 'oauth2_token.json'))) {
-    probeResult = 'no-tokens';
-  } else {
-    try {
-      await client.loadTokenByFile(tokenDir);
-      await withRetry(() => client.getUserProfile(), 3, 2000);
-      probeResult = 'ok';
-    } catch (e) {
-      probeResult = 'failed';
-      probeError = errorMessage(e);
-    }
-  }
-
-  const decision = decideGarminRepair({
-    probe: probeResult,
-    lastAttemptMs: state.lastRepairAttemptMs,
-    cooldownMs: REPAIR_COOLDOWN_MS,
-    nowMs,
-  });
-
-  if (decision.kind === 'skip') {
-    const outcome: ProbeOutcome =
-      probeResult === 'ok'
-        ? { kind: 'healthy', detail: 'cached tokens accepted by Garmin' }
-        : {
-            kind: 'broken',
-            detail: probeError !== '' ? probeError : decision.reason,
-            remedy: `${decision.reason} — the 20:00 garmin-sync will retry the login`,
-          };
-    return { probe: { id: 'garmin', outcome }, attemptedAtMs: null };
-  }
-
-  if (dryRun) {
-    return {
-      probe: {
-        id: 'garmin',
-        outcome: {
-          kind: 'broken',
-          detail: `${decision.reason} (login skipped: --dry-run)`,
-          remedy: 'run bun scripts/garmin-fetch.ts to force a fresh login',
-        },
-      },
-      attemptedAtMs: null,
-    };
-  }
-
-  process.stderr.write(`[credential-health] garmin: logging in fresh (${decision.reason})\n`);
-  try {
-    await withRetry(() => client.login(email, password), 3, 5000);
-    await exportGarminTokens(client);
-    return {
-      probe: {
-        id: 'garmin',
-        outcome: {
-          kind: 'repaired',
-          detail: `logged in fresh and re-cached tokens (${decision.reason})`,
-        },
-      },
-      attemptedAtMs: nowMs,
-    };
-  } catch (e) {
-    // This is the branch worth paging for: the cached token is dead AND the
-    // login that garmin-sync relies on to self-heal no longer works.
-    return {
-      probe: {
-        id: 'garmin',
-        outcome: {
-          kind: 'broken',
-          detail: `cached tokens are dead and a fresh login failed: ${errorMessage(e)}`,
-          remedy:
-            "check GARMIN_EMAIL/GARMIN_PASSWORD in SOPS (reclaw.yaml) — tonight's garmin-sync will fail too",
-        },
-      },
-      attemptedAtMs: nowMs,
-    };
-  }
+  const garmin = await import('@gooin/garmin-connect');
+  const client = new garmin.GarminConnect({ username: email, password });
+  return checkGarmin(
+    {
+      probe: () => runGarminProbe(client),
+      relogin: (reason) => reloginGarmin(client, { email, password }, reason),
+    },
+    context,
+  );
 }
 
 // ─── Agent backends ───────────────────────────────────────────────────────────
@@ -715,8 +570,13 @@ async function main(): Promise<void> {
   const nowMs = Date.now();
   const state = readState();
 
-  const notebooklm = await probeNotebookLM(state.notebooklm, nowMs, dryRun);
-  const garmin = await probeGarmin(state.garmin, nowMs, dryRun);
+  const context = (repair: RepairState): CheckContext => ({
+    nowMs,
+    lastAttemptMs: repair.lastRepairAttemptMs,
+    dryRun,
+  });
+  const notebooklm = await checkNotebookLM(notebookLMPorts, context(state.notebooklm));
+  const garmin = await probeGarmin(context(state.garmin));
 
   const backends = backendsInUse();
   const agentProbes: Probe[] = [];
@@ -725,9 +585,14 @@ async function main(): Promise<void> {
 
   writeState({
     notebooklm: {
-      lastRepairAttemptMs: notebooklm.attemptedAtMs ?? state.notebooklm.lastRepairAttemptMs,
+      lastRepairAttemptMs: lastRepairAttemptMs(
+        notebooklm.attempt,
+        state.notebooklm.lastRepairAttemptMs,
+      ),
     },
-    garmin: { lastRepairAttemptMs: garmin.attemptedAtMs ?? state.garmin.lastRepairAttemptMs },
+    garmin: {
+      lastRepairAttemptMs: lastRepairAttemptMs(garmin.attempt, state.garmin.lastRepairAttemptMs),
+    },
   });
 
   const probes: Probe[] = [notebooklm.probe, garmin.probe, ...agentProbes];

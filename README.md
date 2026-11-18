@@ -544,7 +544,7 @@ Leave `RECLAW_PI_PROVIDER` and `RECLAW_PI_MODEL` unset/blank to use Pi's own def
 bun src/main.ts        # start (production runs via systemd --user as `reclaw`)
 bun run test           # vitest unit tests
 bun run test:watch
-bun run build          # tsc --noEmit (type-check only)
+bun run build          # tsc --noEmit: type-checks src/, scripts/ and ops/ (one tsconfig, no emit)
 bun run lint           # biome
 bun run format
 ```
@@ -612,6 +612,7 @@ src/
     agent-environment.ts      # closed subprocess environment + skill grant policy
     vault-path.ts             # branded, strict vault-relative path parser
     error-message.ts          # message of any thrown value, shared by adapters
+    is-record.ts              # unknown → readable-object guard for parsing wire and thrown values
     ...
   infra/                      # I/O adapters
     config.ts                 # env → AppConfig (Zod)

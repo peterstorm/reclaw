@@ -77,6 +77,46 @@ export function parseIngestArgs(
   args: readonly string[],
   defaultModel: WhisperModel = DEFAULT_WHISPER_MODEL,
 ): Result<IngestRequest, string> {
+  const parsed = parseFlags(args, defaultModel);
+  if (!parsed.ok) return parsed;
+  const { positional, flags } = parsed.value;
+
+  if (positional.length !== 1) return err(INGEST_USAGE);
+  const target = parseInstagramTarget(positional[0] as string);
+  if (!target.ok) return target;
+
+  if (target.value.kind === 'post' && flags.limit !== null) {
+    return err('--limit only applies to profiles; a post URL is always one post.');
+  }
+  if (target.value.kind === 'post' && flags.dataset !== null) {
+    return err('--from-dataset ingests a saved profile dataset; give the @handle, not a post URL.');
+  }
+
+  const source: PostSource =
+    flags.dataset === null ? { kind: 'scrape' } : { kind: 'dataset', path: flags.dataset };
+  const profileLimit = parseProfileLimit(source, flags.limit);
+  if (!profileLimit.ok) return profileLimit;
+
+  return ok({
+    target: target.value,
+    source,
+    limit: target.value.kind === 'post' ? 1 : profileLimit.value,
+    keepVideo: flags.keepVideo,
+    force: flags.force,
+    model: flags.model,
+    readScreenText: flags.readScreenText,
+  });
+}
+
+const VALUE_FLAGS = ['--limit', '--model', '--from-dataset'] as const;
+type ValueFlag = (typeof VALUE_FLAGS)[number];
+const isValueFlag = (arg: string): arg is ValueFlag => VALUE_FLAGS.some((f) => f === arg);
+
+/** The positional arguments and the flags, each flag value parsed. */
+function parseFlags(
+  args: readonly string[],
+  defaultModel: WhisperModel,
+): Result<{ positional: readonly string[]; flags: Flags }, string> {
   const positional: string[] = [];
   const flags: Flags = {
     limit: null,
@@ -92,62 +132,49 @@ export function parseIngestArgs(
     if (arg === '--video') flags.keepVideo = true;
     else if (arg === '--force') flags.force = true;
     else if (arg === '--no-screen-text') flags.readScreenText = false;
-    else if (arg === '--limit' || arg === '--model' || arg === '--from-dataset') {
+    else if (isValueFlag(arg)) {
       const value = args[++i];
       if (value === undefined) return err(`${arg} needs a value. ${INGEST_USAGE}`);
-      if (arg === '--limit') {
-        const limit = Number(value);
-        if (!Number.isInteger(limit) || limit < 1) {
-          return err(`--limit must be a positive integer, got "${value}".`);
-        }
-        flags.limit = limit;
-      } else if (arg === '--from-dataset') {
-        if (value.trim().length === 0) return err('--from-dataset needs a file path.');
-        flags.dataset = value;
-      } else {
-        const model = parseWhisperModel(value);
-        if (!model.ok) return model;
-        flags.model = model.value;
-      }
+      const set = setValueFlag(flags, arg, value);
+      if (!set.ok) return set;
     } else if (arg.startsWith('--')) {
       return err(`Unknown option "${arg}". ${INGEST_USAGE}`);
     } else positional.push(arg);
   }
+  return ok({ positional, flags });
+}
 
-  if (positional.length !== 1) return err(INGEST_USAGE);
-  const target = parseInstagramTarget(positional[0] as string);
-  if (!target.ok) return target;
-
-  if (target.value.kind === 'post' && flags.limit !== null) {
-    return err('--limit only applies to profiles; a post URL is always one post.');
+function setValueFlag(flags: Flags, arg: ValueFlag, value: string): Result<void, string> {
+  if (arg === '--limit') {
+    const limit = Number(value);
+    if (!Number.isInteger(limit) || limit < 1) {
+      return err(`--limit must be a positive integer, got "${value}".`);
+    }
+    flags.limit = limit;
+  } else if (arg === '--from-dataset') {
+    if (value.trim().length === 0) return err('--from-dataset needs a file path.');
+    flags.dataset = value;
+  } else {
+    const model = parseWhisperModel(value);
+    if (!model.ok) return model;
+    flags.model = model.value;
   }
-  if (target.value.kind === 'post' && flags.dataset !== null) {
-    return err('--from-dataset ingests a saved profile dataset; give the @handle, not a post URL.');
-  }
+  return ok(undefined);
+}
 
-  const source: PostSource =
-    flags.dataset === null ? { kind: 'scrape' } : { kind: 'dataset', path: flags.dataset };
+/** A profile's post limit: the one given, within the source's cap, or the source's default. */
+function parseProfileLimit(source: PostSource, limit: number | null): Result<number, string> {
   const [maxLimit, defaultLimit] =
     source.kind === 'scrape'
       ? [MAX_PROFILE_LIMIT, DEFAULT_PROFILE_LIMIT]
       : [MAX_DATASET_POSTS, MAX_DATASET_POSTS];
-  if (flags.limit !== null && flags.limit > maxLimit) {
-    return err(
-      source.kind === 'scrape'
-        ? `--limit must be from 1 to ${MAX_PROFILE_LIMIT} when scraping (each post costs Apify credit), got ${flags.limit}.`
-        : `--limit must be from 1 to ${MAX_DATASET_POSTS} for a dataset, got ${flags.limit}.`,
-    );
-  }
-
-  return ok({
-    target: target.value,
-    source,
-    limit: target.value.kind === 'post' ? 1 : (flags.limit ?? defaultLimit),
-    keepVideo: flags.keepVideo,
-    force: flags.force,
-    model: flags.model,
-    readScreenText: flags.readScreenText,
-  });
+  if (limit === null) return ok(defaultLimit);
+  if (limit <= maxLimit) return ok(limit);
+  return err(
+    source.kind === 'scrape'
+      ? `--limit must be from 1 to ${MAX_PROFILE_LIMIT} when scraping (each post costs Apify credit), got ${limit}.`
+      : `--limit must be from 1 to ${MAX_DATASET_POSTS} for a dataset, got ${limit}.`,
+  );
 }
 
 // ─── Planning (pure decisions) ────────────────────────────────────────────────

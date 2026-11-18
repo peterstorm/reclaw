@@ -74,75 +74,87 @@ function extractionFailure(error: unknown): PdfExtractionError {
   };
 }
 
-function appendBounded(
-  current: string,
-  addition: string,
-): { readonly text: string; readonly truncated: boolean } {
+/** Text cut at the text budget; `truncated` once the cut happened. */
+type BoundedText = { readonly text: string; readonly truncated: boolean };
+
+function appendBounded(current: string, addition: string): BoundedText {
   const remaining = MAX_PDF_TEXT_CHARS - current.length;
   if (addition.length <= remaining) return { text: current + addition, truncated: false };
   return { text: current + addition.slice(0, Math.max(remaining, 0)), truncated: true };
+}
+
+/** Both runners refuse an empty or oversized PDF before parsing it. */
+function pdfSizeError(data: Uint8Array): PdfExtractionError | null {
+  return data.byteLength === 0 || data.byteLength > MAX_PDF_BYTES
+    ? { kind: 'invalid-pdf', message: `PDF size must be between 1 and ${MAX_PDF_BYTES} bytes` }
+    : null;
+}
+
+type PdfDocument = Awaited<ReturnType<typeof getDocumentProxy>>;
+
+/** One page's text items joined into lines, stopping at the text budget. */
+function boundedPageText(items: readonly unknown[]): BoundedText {
+  let text = '';
+  for (const item of items) {
+    if (!isPdfTextItem(item)) continue;
+    const appended = appendBounded(text, `${item.str}${item.hasEOL ? '\n' : ' '}`);
+    text = appended.text;
+    if (appended.truncated) return appended;
+  }
+  return { text, truncated: false };
+}
+
+/** Every page's text, blank-line separated; reading stops at the first page that hits the budget. */
+async function collectPdfText(pdf: PdfDocument): Promise<BoundedText> {
+  let text = '';
+  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
+    const page = await pdf.getPage(pageNumber);
+    const pageText = boundedPageText((await page.getTextContent()).items);
+    const trimmed = pageText.text.trim();
+    const separator = text.length === 0 || trimmed.length === 0 ? '' : '\n\n';
+    const appended = appendBounded(text, separator + trimmed);
+    text = appended.text;
+    if (pageText.truncated || appended.truncated) return { text, truncated: true };
+    page.cleanup();
+  }
+  return { text, truncated: false };
+}
+
+function pdfTextResult(
+  collected: BoundedText,
+  totalPages: number,
+): Result<PdfText, PdfExtractionError> {
+  const normalized = collected.text.trim();
+  if (normalized.length === 0) {
+    return err({
+      kind: 'no-text',
+      message: 'The PDF contains no extractable text. Scanned-only PDFs are not supported yet.',
+    });
+  }
+
+  return ok({
+    text: collected.truncated
+      ? `${normalized}\n\n[PDF text truncated at ${MAX_PDF_TEXT_CHARS} characters]`
+      : normalized,
+    totalPages,
+    truncated: collected.truncated,
+  });
 }
 
 /** Worker-only parser: page-by-page extraction stops as soon as a hard budget is reached. */
 async function extractPdfTextInProcess(
   data: Uint8Array,
 ): Promise<Result<PdfText, PdfExtractionError>> {
-  if (data.byteLength === 0 || data.byteLength > MAX_PDF_BYTES) {
-    return err({
-      kind: 'invalid-pdf',
-      message: `PDF size must be between 1 and ${MAX_PDF_BYTES} bytes`,
-    });
-  }
+  const sizeError = pdfSizeError(data);
+  if (sizeError !== null) return err(sizeError);
 
-  let pdf: Awaited<ReturnType<typeof getDocumentProxy>> | null = null;
+  let pdf: PdfDocument | null = null;
   try {
     pdf = await getDocumentProxy(data, { maxImageSize: MAX_PDF_IMAGE_PIXELS });
     if (pdf.numPages > MAX_PDF_PAGES) {
       return err({ kind: 'too-many-pages', pageCount: pdf.numPages, maxPages: MAX_PDF_PAGES });
     }
-
-    let text = '';
-    let truncated = false;
-
-    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
-      const page = await pdf.getPage(pageNumber);
-      const content = await page.getTextContent();
-      let pageText = '';
-      for (const item of content.items) {
-        if (!isPdfTextItem(item)) continue;
-        const appended = appendBounded(pageText, `${item.str}${item.hasEOL ? '\n' : ' '}`);
-        pageText = appended.text;
-        if (appended.truncated) {
-          truncated = true;
-          break;
-        }
-      }
-
-      const separator = text.length === 0 || pageText.trim().length === 0 ? '' : '\n\n';
-      const appended = appendBounded(text, separator + pageText.trim());
-      text = appended.text;
-      if (truncated || appended.truncated) {
-        truncated = true;
-        break;
-      }
-      page.cleanup();
-    }
-
-    const normalized = text.trim();
-    if (normalized.length === 0) {
-      return err({
-        kind: 'no-text',
-        message: 'The PDF contains no extractable text. Scanned-only PDFs are not supported yet.',
-      });
-    }
-
-    return ok({
-      text: truncated
-        ? `${normalized}\n\n[PDF text truncated at ${MAX_PDF_TEXT_CHARS} characters]`
-        : normalized,
-      totalPages: pdf.numPages,
-      truncated,
-    });
+    return pdfTextResult(await collectPdfText(pdf), pdf.numPages);
   } catch (error) {
     return err(extractionFailure(error));
   } finally {
@@ -191,53 +203,56 @@ function workerLimitFailure(
   });
 }
 
-/** Parse an untrusted PDF in a killable process with hard CPU, memory, page, and text limits. */
-export const extractPdfText: PdfTextExtractor = (data) => {
-  if (data.byteLength === 0 || data.byteLength > MAX_PDF_BYTES) {
-    return Promise.resolve(
-      err({
-        kind: 'invalid-pdf',
-        message: `PDF size must be between 1 and ${MAX_PDF_BYTES} bytes`,
-      }),
-    );
-  }
-
-  return new Promise((resolve, reject) => {
-    const child = spawn(
-      'prlimit',
-      [
-        `--as=${PDF_WORKER_MEMORY_BYTES}`,
-        `--cpu=${PDF_WORKER_CPU_SECONDS}`,
-        '--',
-        'bun',
-        import.meta.filename,
-      ],
-      {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        // Bun requires its real HOME for stable startup; service credentials are deliberately omitted.
-        env: {
-          HOME: process.env.HOME ?? '/home/peterstorm',
-          PATH: process.env.PATH ?? '/run/current-system/sw/bin',
-        },
+/** This module, re-run as a worker under prlimit's hard address-space and CPU caps. */
+function spawnPdfWorker(): ChildProcessWithoutNullStreams {
+  return spawn(
+    'prlimit',
+    [
+      `--as=${PDF_WORKER_MEMORY_BYTES}`,
+      `--cpu=${PDF_WORKER_CPU_SECONDS}`,
+      '--',
+      'bun',
+      import.meta.filename,
+    ],
+    {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      // Bun requires its real HOME for stable startup; service credentials are deliberately omitted.
+      env: {
+        HOME: process.env.HOME ?? '/home/peterstorm',
+        PATH: process.env.PATH ?? '/run/current-system/sw/bin',
       },
-    );
+    },
+  );
+}
+
+/** How a closed worker ended: killed at the deadline, stopped by a limit, or reporting a result. */
+function closedWorkerResult(
+  child: ChildProcessWithoutNullStreams,
+  code: number | null,
+  timedOut: boolean,
+  output: Readonly<{ stdout: readonly Buffer[]; stderr: readonly Buffer[] }>,
+): Result<PdfText, PdfExtractionError> {
+  if (timedOut) return err({ kind: 'timeout', timeoutMs: PDF_EXTRACTION_TIMEOUT_MS });
+  if (code !== 0) return workerLimitFailure(child, output.stderr);
+  return parseWorkerResult(Buffer.concat(output.stdout).toString('utf8'));
+}
+
+/** Feed `data` to a fresh worker and settle once, with its result or the deadline's timeout. */
+function runPdfWorker(data: Uint8Array): Promise<Result<PdfText, PdfExtractionError>> {
+  return new Promise((resolve, reject) => {
+    const child = spawnPdfWorker();
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     let timedOut = false;
     let settled = false;
 
-    const finish = (result: Result<PdfText, PdfExtractionError>): void => {
+    const settle = (settleWith: () => void): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
-      resolve(result);
+      settleWith();
     };
-    const fail = (error: Error): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      reject(error);
-    };
+    const fail = (error: Error): void => settle(() => reject(error));
     const timeout = setTimeout(() => {
       timedOut = true;
       child.kill('SIGKILL');
@@ -251,22 +266,21 @@ export const extractPdfText: PdfTextExtractor = (data) => {
       if (!timedOut) fail(new Error(`PDF worker input failed: ${error.message}`));
     });
     child.once('close', (code) => {
-      if (timedOut) {
-        finish(err({ kind: 'timeout', timeoutMs: PDF_EXTRACTION_TIMEOUT_MS }));
-        return;
-      }
-      if (code !== 0) {
-        finish(workerLimitFailure(child, stderr));
-        return;
-      }
       try {
-        finish(parseWorkerResult(Buffer.concat(stdout).toString('utf8')));
+        const result = closedWorkerResult(child, code, timedOut, { stdout, stderr });
+        settle(() => resolve(result));
       } catch (error) {
         fail(error instanceof Error ? error : new Error(String(error)));
       }
     });
     child.stdin.end(data);
   });
+}
+
+/** Parse an untrusted PDF in a killable process with hard CPU, memory, page, and text limits. */
+export const extractPdfText: PdfTextExtractor = (data) => {
+  const sizeError = pdfSizeError(data);
+  return sizeError === null ? runPdfWorker(data) : Promise.resolve(err(sizeError));
 };
 
 export function formatPdfExtractionError(error: PdfExtractionError): string {

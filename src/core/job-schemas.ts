@@ -6,9 +6,11 @@ import {
   MAX_REPLY_CONTEXT_CHARS,
   type PodcastJob,
   type RecurringReminderJob,
+  type RecurringSchedule,
   type ReminderJob,
   type Result,
   type ScheduledJob,
+  assertNever,
   err,
   makeAgentSessionId,
   makeChatJob,
@@ -17,6 +19,7 @@ import {
   makeJobId,
   makePodcastJob,
   makeRecurringReminderJob,
+  makeRecurringSchedule,
   makeReminderJob,
   makeScheduledJob,
   makeSkillId,
@@ -208,11 +211,50 @@ export function parseReminderJob(data: unknown): Result<ReminderJob, string> {
   return withJobError('reminder', makeReminderJob({ ...parsed.data, id: id.value }));
 }
 
+/**
+ * A recurring reminder as BullMQ persists it: the job scheduler's template data
+ * in Redis, which live reminders keep firing from. This shape is frozen — a
+ * cron reminder carries `intervalMs: 0` beside its pattern and description.
+ */
+export type RecurringReminderJobWire = z.infer<typeof RecurringReminderJobSchema>;
+
+type RecurringScheduleWire = Pick<
+  RecurringReminderJobWire,
+  'intervalMs' | 'cronPattern' | 'cronDescription'
+>;
+
+/**
+ * The wire's schedule fields as a schedule that can fire: exactly one of a cron pattern or a
+ * positive interval, then the schedule constructor's checks and defaults.
+ */
+function parseRecurringScheduleWire(
+  wire: RecurringScheduleWire,
+): Result<RecurringSchedule, string> {
+  const cronPattern = wire.cronPattern ?? '';
+  const hasCron = cronPattern.length > 0;
+  const hasInterval = wire.intervalMs > 0;
+
+  if (hasCron === hasInterval) {
+    return err(
+      hasCron
+        ? 'Cannot specify both intervalMs and cronPattern for a recurring reminder.'
+        : 'Either intervalMs or cronPattern must be provided.',
+    );
+  }
+  return makeRecurringSchedule(
+    hasCron
+      ? { kind: 'cron', cronPattern, cronDescription: wire.cronDescription }
+      : { kind: 'interval', intervalMs: wire.intervalMs },
+  );
+}
+
 export function parseRecurringReminderJob(data: unknown): Result<RecurringReminderJob, string> {
   const parsed = RecurringReminderJobSchema.safeParse(data);
   if (!parsed.success) return err(`Invalid recurring reminder job: ${parsed.error.message}`);
   const id = makeJobId(parsed.data.id);
   if (!id.ok) return withJobError('recurring reminder', id);
+  const schedule = parseRecurringScheduleWire(parsed.data);
+  if (!schedule.ok) return withJobError('recurring reminder', schedule);
   return withJobError(
     'recurring reminder',
     makeRecurringReminderJob({
@@ -220,14 +262,38 @@ export function parseRecurringReminderJob(data: unknown): Result<RecurringRemind
       chatId: parsed.data.chatId,
       text: parsed.data.text,
       createdAt: parsed.data.createdAt,
-      intervalMs: parsed.data.intervalMs,
-      ...(parsed.data.cronPattern !== undefined ? { cronPattern: parsed.data.cronPattern } : {}),
-      ...(parsed.data.cronDescription !== undefined
-        ? { cronDescription: parsed.data.cronDescription }
-        : {}),
+      schedule: schedule.value,
       schedulerId: parsed.data.schedulerId,
     }),
   );
+}
+
+/** The persisted form of a recurring reminder, field for field as producers have always written it. */
+export function recurringReminderJobToWire(job: RecurringReminderJob): RecurringReminderJobWire {
+  return {
+    kind: job.kind,
+    id: job.id,
+    chatId: job.chatId,
+    text: job.text,
+    createdAt: job.createdAt,
+    ...recurringScheduleToWire(job.schedule),
+    schedulerId: job.schedulerId,
+  };
+}
+
+function recurringScheduleToWire(schedule: RecurringSchedule): RecurringScheduleWire {
+  switch (schedule.kind) {
+    case 'interval':
+      return { intervalMs: schedule.intervalMs };
+    case 'cron':
+      return {
+        intervalMs: 0,
+        cronPattern: schedule.cronPattern,
+        cronDescription: schedule.cronDescription,
+      };
+    default:
+      return assertNever(schedule);
+  }
 }
 
 export function parseResearchJobData(data: unknown): Result<ResearchJobData, string> {

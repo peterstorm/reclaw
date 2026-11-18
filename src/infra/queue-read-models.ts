@@ -6,7 +6,7 @@
 import type { JobSchedulerJson } from 'bullmq';
 import { parseRecurringReminderJob, parseResearchJobData } from '../core/job-schemas.js';
 import { stateProgress } from '../core/research-types.js';
-import { type Result, err, ok } from '../core/types.js';
+import { type RecurringSchedule, type Result, err, ok } from '../core/types.js';
 
 // ─── Recurring reminders ──────────────────────────────────────────────────────
 
@@ -42,18 +42,39 @@ export function readReminderScheduler(
   const parsed = parseRecurringReminderJob(scheduler.template?.data);
   if (!parsed.ok) return { kind: 'unparseable', schedulerId: id, error: parsed.error };
 
-  const data = parsed.value;
-  const cronPattern = data.cronPattern ?? pattern;
+  const { text, schedule, chatId } = parsed.value;
   return {
     kind: 'reminder',
     info: {
       schedulerId: id,
-      text: data.text,
-      intervalMs: every !== undefined ? Number(every) : 0,
-      ...(cronPattern ? { cronPattern } : {}),
-      ...(data.cronDescription ? { cronDescription: data.cronDescription } : {}),
-      chatId: data.chatId,
+      text,
+      ...schedulerInfoFromSchedule(schedule, { every, pattern }),
+      chatId,
     },
+  };
+}
+
+/** The scheduler's own repeat rule, as BullMQ reports it beside the template. */
+type SchedulerRepeat = Readonly<{ every?: number | undefined; pattern?: string | undefined }>;
+
+/**
+ * The schedule a reminder is listed with. The template's schedule and the scheduler's repeat
+ * rule agree for every reminder `enqueueRecurringReminder` wrote, since both come from one
+ * schedule. When they disagree:
+ *   - the interval is the scheduler's `every`, the rule BullMQ fires on (0 when it has none);
+ *   - a cron template's pattern wins over the scheduler's `pattern`, which is the fallback
+ *     only when the template is an interval;
+ *   - the description comes from a cron template alone.
+ */
+export function schedulerInfoFromSchedule(
+  schedule: RecurringSchedule,
+  scheduler: SchedulerRepeat,
+): Pick<RecurringReminderInfo, 'intervalMs' | 'cronPattern' | 'cronDescription'> {
+  const cronPattern = schedule.kind === 'cron' ? schedule.cronPattern : scheduler.pattern;
+  return {
+    intervalMs: scheduler.every ?? 0,
+    ...(cronPattern ? { cronPattern } : {}),
+    ...(schedule.kind === 'cron' ? { cronDescription: schedule.cronDescription } : {}),
   };
 }
 

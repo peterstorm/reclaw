@@ -143,9 +143,32 @@ export function parseMasterNote(
 ): Result<MasterNote, readonly string[]> {
   const split = splitFrontmatter(markdown);
   if (!split.ok) return err([split.error]);
-  const errors: string[] = [];
 
-  const front = (split.value.front ?? {}) as Record<string, unknown>;
+  const front = parseFront(split.value.front, expected);
+  const sections = h2Sections(split.value.body);
+  const lessons = parseLessons(sections);
+  const cards = parseCards(sections, lessons.value, expected);
+
+  const errors = [...front.errors, ...lessons.errors, ...cards.errors];
+  if (errors.length > 0) return err(errors);
+  return ok({
+    topic: expected,
+    title: front.value.title,
+    minutes: front.value.minutes,
+    lessons: lessons.value,
+    cards: cards.value,
+  });
+}
+
+/** A part of the note as far as it could be read, with every problem found in it. */
+type Checked<T> = Readonly<{ value: T; errors: readonly string[] }>;
+
+function parseFront(
+  rawFront: unknown,
+  expected: TopicSlug,
+): Checked<{ title: string; minutes: number }> {
+  const errors: string[] = [];
+  const front = (rawFront ?? {}) as Record<string, unknown>;
   const meta = (front.curriculum ?? {}) as Record<string, unknown>;
   const title = typeof front.title === 'string' ? front.title : '';
   if (title === '') errors.push('frontmatter: title missing');
@@ -154,9 +177,11 @@ export function parseMasterNote(
   const minutes = typeof meta.minutes === 'number' ? meta.minutes : Number.NaN;
   if (!Number.isInteger(minutes) || minutes <= 0)
     errors.push('frontmatter: curriculum.minutes must be a positive integer');
+  return { value: { title, minutes }, errors };
+}
 
-  const sections = h2Sections(split.value.body);
-
+function parseLessons(sections: readonly Section[]): Checked<readonly Lesson[]> {
+  const errors: string[] = [];
   const lessons: Lesson[] = [];
   for (const section of sections) {
     const m = LESSON_HEADING.exec(section.heading);
@@ -172,7 +197,16 @@ export function parseMasterNote(
     errors.push(
       `expected ${LESSON_BOUNDS.min}–${LESSON_BOUNDS.max} lessons, found ${lessons.length}`,
     );
+  return { value: lessons, errors };
+}
 
+/** The cards of the one "## Recall cards" section, checked against the note's lessons. */
+function parseCards(
+  sections: readonly Section[],
+  lessons: readonly Lesson[],
+  expected: TopicSlug,
+): Checked<readonly RecallCard[]> {
+  const errors: string[] = [];
   const cardSections = sections.filter((s) => CARDS_HEADING.test(s.heading));
   if (cardSections.length !== 1)
     errors.push(`expected exactly one "## Recall cards" section, found ${cardSections.length}`);
@@ -200,6 +234,11 @@ export function parseMasterNote(
       answer,
     });
   }
+  return { value: cards, errors: [...errors, ...cardCountErrors(cards, lessons)] };
+}
+
+function cardCountErrors(cards: readonly RecallCard[], lessons: readonly Lesson[]): string[] {
+  const errors: string[] = [];
   if (cards.length < CARD_BOUNDS.min || cards.length > CARD_BOUNDS.max)
     errors.push(
       `expected ${CARD_BOUNDS.min}–${CARD_BOUNDS.max} recall cards, found ${cards.length}`,
@@ -209,7 +248,5 @@ export function parseMasterNote(
     if (count < CARD_BOUNDS.perLesson)
       errors.push(`Lesson ${lesson.number}: ${count} recall cards, need ≥${CARD_BOUNDS.perLesson}`);
   }
-
-  if (errors.length > 0) return err(errors);
-  return ok({ topic: expected, title, minutes, lessons, cards });
+  return errors;
 }

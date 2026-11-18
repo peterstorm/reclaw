@@ -284,16 +284,50 @@ export type ReminderJob = {
   readonly delayMs: number; // BullMQ delay in milliseconds
 };
 
-/** A recurring reminder job: fires repeatedly via BullMQ job scheduler (interval or cron). */
+/** The shortest interval a recurring reminder may repeat at. */
+export const MIN_RECURRING_INTERVAL_MS = 60_000;
+
+/**
+ * When a recurring reminder fires: a fixed interval, or a cron pattern. Never both, never
+ * neither. Only `makeRecurringSchedule` builds one, so every schedule can fire.
+ */
+export type RecurringSchedule = (
+  | {
+      readonly kind: 'interval';
+      /** BullMQ repeat interval in ms: an integer, at least {@link MIN_RECURRING_INTERVAL_MS}. */
+      readonly intervalMs: number;
+    }
+  | {
+      readonly kind: 'cron';
+      /** Cron expression, trimmed and non-blank, e.g. "0 12 * * 0". */
+      readonly cronPattern: string;
+      /** Human-readable and non-blank, e.g. "every Sunday at 12:00". */
+      readonly cronDescription: string;
+    }
+) & { readonly __brand: 'RecurringSchedule' };
+
+/** A schedule as requested, before `makeRecurringSchedule` checks that it can fire. */
+export type RecurringScheduleSpec =
+  | { readonly kind: 'interval'; readonly intervalMs: number }
+  | {
+      readonly kind: 'cron';
+      readonly cronPattern: string;
+      /** Defaults to the pattern when absent or blank. */
+      readonly cronDescription?: string | undefined;
+    };
+
+/**
+ * A recurring reminder job: fires repeatedly via BullMQ job scheduler. Redis
+ * stores it in a flat wire shape (`intervalMs`, optional cron fields) that
+ * `job-schemas.ts` parses into, and writes from, this type.
+ */
 export type RecurringReminderJob = {
   readonly kind: 'recurring-reminder';
   readonly id: JobId;
   readonly chatId: number;
   readonly text: string;
   readonly createdAt: string; // ISO 8601
-  readonly intervalMs: number; // BullMQ repeat interval in ms (0 when cron-based)
-  readonly cronPattern?: string; // cron expression (e.g. "0 12 * * 0")
-  readonly cronDescription?: string; // human-readable (e.g. "every Sunday at 12:00")
+  readonly schedule: RecurringSchedule;
   readonly schedulerId: string; // Job scheduler ID for cancellation
 };
 
@@ -450,15 +484,14 @@ export function makeReminderJob(params: {
   });
 }
 
-export function makeRecurringReminderJob(
-  params: {
-    id: JobId;
-    chatId: number;
-    text: string;
-    createdAt: string;
-    schedulerId: string;
-  } & Partial<RecurringSchedule>,
-): Result<RecurringReminderJob, string> {
+export function makeRecurringReminderJob(params: {
+  id: JobId;
+  chatId: number;
+  text: string;
+  createdAt: string;
+  schedule: RecurringScheduleSpec;
+  schedulerId: string;
+}): Result<RecurringReminderJob, string> {
   if (params.text.trim().length === 0) {
     return err('Recurring reminder text must not be empty.');
   }
@@ -472,7 +505,7 @@ export function makeRecurringReminderJob(
     return err('schedulerId must not be empty.');
   }
 
-  const schedule = parseRecurringSchedule(params);
+  const schedule = makeRecurringSchedule(params.schedule);
   if (!schedule.ok) return schedule;
 
   return ok({
@@ -481,39 +514,33 @@ export function makeRecurringReminderJob(
     chatId: params.chatId,
     text: params.text,
     createdAt: params.createdAt,
-    ...schedule.value,
+    schedule: schedule.value,
     schedulerId: params.schedulerId,
   });
 }
 
-type RecurringSchedule = Pick<
-  RecurringReminderJob,
-  'intervalMs' | 'cronPattern' | 'cronDescription'
->;
-
-/** Exactly one of a cron pattern or an interval of at least a minute; interval is 0 for cron. */
-function parseRecurringSchedule(
-  params: Partial<RecurringSchedule>,
+/**
+ * A schedule that can fire: an integer interval of at least a minute, or a cron pattern that
+ * is not blank once trimmed. The pattern is kept trimmed; a cron schedule without a
+ * description is described by its pattern. Idempotent on a schedule it already built.
+ */
+export function makeRecurringSchedule(
+  spec: RecurringScheduleSpec,
 ): Result<RecurringSchedule, string> {
-  const cronPattern = params.cronPattern ?? '';
-  const intervalMs = params.intervalMs ?? 0;
-  const hasCron = cronPattern.length > 0;
-  const hasInterval = intervalMs > 0;
-
-  if (!hasCron && !hasInterval) {
-    return err('Either intervalMs or cronPattern must be provided.');
+  switch (spec.kind) {
+    case 'interval':
+      return Number.isInteger(spec.intervalMs) && spec.intervalMs >= MIN_RECURRING_INTERVAL_MS
+        ? ok({ kind: 'interval', intervalMs: spec.intervalMs } as RecurringSchedule)
+        : err('Recurring reminder interval must be at least 1 minute.');
+    case 'cron': {
+      const cronPattern = spec.cronPattern.trim();
+      if (cronPattern.length === 0) return err('Recurring reminder cronPattern must not be empty.');
+      const cronDescription = spec.cronDescription?.trim() ? spec.cronDescription : cronPattern;
+      return ok({ kind: 'cron', cronPattern, cronDescription } as RecurringSchedule);
+    }
+    default:
+      return assertNever(spec);
   }
-  if (hasCron && hasInterval) {
-    return err('Cannot specify both intervalMs and cronPattern for a recurring reminder.');
-  }
-  if (hasInterval && (!Number.isInteger(intervalMs) || intervalMs < 60_000)) {
-    return err('Recurring reminder interval must be at least 1 minute.');
-  }
-
-  return ok({
-    intervalMs,
-    ...(hasCron ? { cronPattern, cronDescription: params.cronDescription ?? cronPattern } : {}),
-  });
 }
 
 export function makeResearchJob(params: {

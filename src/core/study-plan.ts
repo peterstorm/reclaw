@@ -92,22 +92,52 @@ export function foldStudy(
   brokenNotes: ReadonlyMap<TopicSlug, readonly string[]>,
   events: readonly StudyEvent[],
 ): StudyState {
-  const ordered = events
+  const cardIndex = new Map<CardId, RecallCard>();
+  for (const note of notes.values()) for (const c of note.cards) cardIndex.set(c.id, c);
+
+  const log = replayLog(chronological(events), notes, cardIndex);
+  return {
+    curriculum,
+    notes,
+    brokenNotes,
+    lessonsRead: log.lessonsRead,
+    cards: unlockedCards(curriculum.settings, cardIndex, log),
+    rounds: log.rounds,
+    feynmanAt: log.feynmanAt,
+    orphanEvents: log.orphanEvents,
+  };
+}
+
+/** Events by instant; events at the same instant keep their log order. */
+const chronological = (events: readonly StudyEvent[]): readonly StudyEvent[] =>
+  events
     .map((e, i) => ({ e, i, t: Date.parse(e.at) }))
     .sort((a, b) => a.t - b.t || a.i - b.i)
     .map(({ e }) => e);
 
-  const cardIndex = new Map<CardId, RecallCard>();
-  for (const note of notes.values()) for (const c of note.cards) cardIndex.set(c.id, c);
+/** What replaying the study log yields, before cards are scheduled. Read-only once replayed. */
+type ReplayedLog = Readonly<{
+  lessonsRead: ReadonlyMap<string, Date>;
+  rounds: ReadonlyMap<RoundId, Readonly<{ at: Date; cards: readonly CardId[] }>>;
+  suspended: ReadonlyMap<CardId, boolean>;
+  feynmanAt: ReadonlyMap<TopicSlug, Date>;
+  /** Per card, per round: the first instant graded + the last grade given. */
+  gradesByCard: ReadonlyMap<CardId, ReadonlyMap<RoundId, GradeRecord>>;
+  orphanEvents: number;
+}>;
 
+/** The study log folded in order; the maps are filled here and nowhere else. */
+function replayLog(
+  ordered: readonly StudyEvent[],
+  notes: ReadonlyMap<TopicSlug, MasterNote>,
+  cardIndex: ReadonlyMap<CardId, RecallCard>,
+): ReplayedLog {
   const lessonsRead = new Map<string, Date>();
-  const rounds = new Map<RoundId, { at: Date; cards: readonly CardId[] }>();
+  const rounds = new Map<RoundId, Readonly<{ at: Date; cards: readonly CardId[] }>>();
   const suspended = new Map<CardId, boolean>();
   const feynmanAt = new Map<TopicSlug, Date>();
-  // Per card, per round: the first instant graded + the last grade given.
   const gradesByCard = new Map<CardId, Map<RoundId, GradeRecord>>();
   let orphanEvents = 0;
-
   for (const e of ordered) {
     const at = new Date(e.at);
     switch (e.kind) {
@@ -120,17 +150,10 @@ export function foldStudy(
       case 'round-asked':
         rounds.set(e.round, { at, cards: e.cards });
         break;
-      case 'card-graded': {
-        if (!cardIndex.has(e.card)) {
-          orphanEvents++;
-          break;
-        }
-        const perRound = gradesByCard.get(e.card) ?? new Map<RoundId, GradeRecord>();
-        const prior = perRound.get(e.round);
-        perRound.set(e.round, { round: e.round, at: prior?.at ?? at, grade: e.grade });
-        gradesByCard.set(e.card, perRound);
+      case 'card-graded':
+        if (cardIndex.has(e.card)) recordGrade(gradesByCard, e, at);
+        else orphanEvents++;
         break;
-      }
       case 'card-suspended':
         suspended.set(e.card, true);
         break;
@@ -144,37 +167,49 @@ export function foldStudy(
         return assertNever(e);
     }
   }
+  return { lessonsRead, rounds, suspended, feynmanAt, gradesByCard, orphanEvents };
+}
 
+/** A re-grade within a round keeps the round's first grading instant and takes the new grade. */
+function recordGrade(
+  gradesByCard: Map<CardId, Map<RoundId, GradeRecord>>,
+  e: Extract<StudyEvent, { kind: 'card-graded' }>,
+  at: Date,
+): void {
+  const perRound = gradesByCard.get(e.card) ?? new Map<RoundId, GradeRecord>();
+  const prior = perRound.get(e.round);
+  perRound.set(e.round, { round: e.round, at: prior?.at ?? at, grade: e.grade });
+  gradesByCard.set(e.card, perRound);
+}
+
+/** Every card whose lesson has been read, scheduled by FSRS from its grades. */
+function unlockedCards(
+  settings: StudySettings,
+  cardIndex: ReadonlyMap<CardId, RecallCard>,
+  log: ReplayedLog,
+): ReadonlyMap<CardId, CardProgress> {
   const askedIn = new Map<CardId, { round: RoundId; at: Date }>();
-  for (const [round, r] of rounds) for (const id of r.cards) askedIn.set(id, { round, at: r.at });
+  for (const [round, r] of log.rounds) {
+    for (const id of r.cards) askedIn.set(id, { round, at: r.at });
+  }
 
   const cards = new Map<CardId, CardProgress>();
   for (const card of cardIndex.values()) {
-    const unlockedAt = lessonsRead.get(lessonKey(card.topic, card.lesson));
+    const unlockedAt = log.lessonsRead.get(lessonKey(card.topic, card.lesson));
     if (unlockedAt === undefined) continue;
-    const perRound = gradesByCard.get(card.id);
+    const perRound = log.gradesByCard.get(card.id);
     const grades = [...(perRound?.values() ?? [])].sort((a, b) => a.at.getTime() - b.at.getTime());
     const lastAsk = askedIn.get(card.id);
     cards.set(card.id, {
       card,
       unlockedAt,
-      fsrs: scheduleCard(curriculum.settings, unlockedAt, grades),
-      suspended: suspended.get(card.id) ?? false,
+      fsrs: scheduleCard(settings, unlockedAt, grades),
+      suspended: log.suspended.get(card.id) ?? false,
       pending: lastAsk !== undefined && perRound?.has(lastAsk.round) !== true ? lastAsk : null,
       grades,
     });
   }
-
-  return {
-    curriculum,
-    notes,
-    brokenNotes,
-    lessonsRead,
-    cards,
-    rounds,
-    feynmanAt,
-    orphanEvents,
-  };
+  return cards;
 }
 
 // ─── Reading ──────────────────────────────────────────────────────────────────

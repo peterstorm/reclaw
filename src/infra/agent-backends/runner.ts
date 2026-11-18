@@ -9,6 +9,7 @@
 
 import { randomUUID } from 'node:crypto';
 import {
+  type AgentContainment,
   type AgentRunId,
   NO_CONTAINMENT,
   agentScopeUnit,
@@ -148,18 +149,18 @@ type StartedRun = {
   readonly terminate: () => Promise<void>;
 };
 
-/**
- * Contain, spawn and arm one agent run: build argv and environment, wrap them
- * in the configured containment, spawn, deliver the prompt and start the
- * deadline. A failure before the run is live comes back as an AgentFailure,
- * with anything already started torn down.
- */
-async function startRun(
-  backend: AgentBackend,
-  options: AgentOptions,
-): Promise<Result<StartedRun, AgentFailure>> {
-  const { prompt, cwd, allowedTools, timeoutMs, env, resumeSessionId, modelSelection, _spawn } =
-    options;
+/** One run, ready to spawn: its id, its contained invocation, and how to spawn it. */
+type PreparedRun = {
+  readonly runId: AgentRunId;
+  readonly containment: AgentContainment;
+  readonly invocation: ReturnType<typeof containAgentInvocation>;
+  readonly spawnFn: SpawnFn;
+  readonly spawnOptions: SpawnOptions;
+};
+
+/** Build the backend's argv and environment, then wrap them in the configured containment. */
+function prepareRun(backend: AgentBackend, options: AgentOptions): PreparedRun {
+  const { cwd, allowedTools, env, resumeSessionId, modelSelection, _spawn } = options;
 
   const spawnFn: SpawnFn = _spawn ?? getDefaultSpawn();
   const args = backend.buildArgs({
@@ -180,29 +181,20 @@ async function startRun(
 
   const containment = options.containment ?? NO_CONTAINMENT;
   const runId = mintRunId();
-  const invocation = containAgentInvocation(containment, runId, args);
-  const spawnOptions: SpawnOptions = {
-    cwd,
-    stdin: 'pipe',
-    stdout: 'pipe',
-    stderr: 'pipe',
-    env: processEnv,
+  return {
+    runId,
+    containment,
+    invocation: containAgentInvocation(containment, runId, args),
+    spawnFn,
+    spawnOptions: { cwd, stdin: 'pipe', stdout: 'pipe', stderr: 'pipe', env: processEnv },
   };
+}
 
-  const startMs = Date.now();
-
-  let proc: ReturnType<SpawnFn>;
-  try {
-    proc = spawnFn([...invocation.argv], spawnOptions);
-  } catch (spawnErr) {
-    return err(spawnFailure(backend.name, spawnErr));
-  }
-  if (containment.kind === 'systemd-scope') {
-    console.info(`[runner] ${backend.name} run in ${agentScopeUnit(runId)}`);
-  }
-
+/** StartedRun.terminate for `proc`: kill it, then run the containment's teardown, once. */
+function terminatorFor(proc: ReturnType<SpawnFn>, prepared: PreparedRun): () => Promise<void> {
+  const { invocation, spawnFn, spawnOptions } = prepared;
   let teardown: Promise<void> | null = null;
-  const terminate = (): Promise<void> => {
+  return () => {
     teardown ??= (async () => {
       proc.kill();
       if (invocation.teardownArgv !== null) {
@@ -211,6 +203,31 @@ async function startRun(
     })();
     return teardown;
   };
+}
+
+/**
+ * Contain, spawn and arm one agent run: build argv and environment, wrap them
+ * in the configured containment, spawn, deliver the prompt and start the
+ * deadline. A failure before the run is live comes back as an AgentFailure,
+ * with anything already started torn down.
+ */
+async function startRun(
+  backend: AgentBackend,
+  options: AgentOptions,
+): Promise<Result<StartedRun, AgentFailure>> {
+  const prepared = prepareRun(backend, options);
+  const startMs = Date.now();
+
+  let proc: ReturnType<SpawnFn>;
+  try {
+    proc = prepared.spawnFn([...prepared.invocation.argv], prepared.spawnOptions);
+  } catch (spawnErr) {
+    return err(spawnFailure(backend.name, spawnErr));
+  }
+  if (prepared.containment.kind === 'systemd-scope') {
+    console.info(`[runner] ${backend.name} run in ${agentScopeUnit(prepared.runId)}`);
+  }
+  const terminate = terminatorFor(proc, prepared);
 
   // Drain stderr concurrently to prevent pipe deadlocks
   const stderr: Promise<string> = new Response(proc.stderr).text().catch((drainErr) => {
@@ -220,7 +237,7 @@ async function startRun(
 
   // Write prompt to stdin and close
   try {
-    proc.stdin.write(new TextEncoder().encode(prompt));
+    proc.stdin.write(new TextEncoder().encode(options.prompt));
     proc.stdin.end();
   } catch (stdinErr) {
     await terminate();
@@ -233,7 +250,7 @@ async function startRun(
   const timeoutId = setTimeout(() => {
     timedOut = true;
     void terminate();
-  }, timeoutMs);
+  }, options.timeoutMs);
 
   return ok({
     proc,
@@ -243,6 +260,45 @@ async function startRun(
     clearDeadline: () => clearTimeout(timeoutId),
     terminate,
   });
+}
+
+/** A run that exited 0 before its deadline. */
+type CleanExit = { readonly durationMs: number };
+
+/**
+ * Wait for a run whose stdout has ended to exit, and disarm its deadline. A
+ * deadline that fired or a nonzero exit is the run's failure; otherwise the
+ * clean exit and how long the run took.
+ */
+async function awaitCleanExit(
+  backend: AgentBackend,
+  run: StartedRun,
+  timeoutMs: number,
+  rawOutput: string,
+): Promise<Result<CleanExit, AgentFailure>> {
+  const exitCode = await run.proc.exited;
+  run.clearDeadline();
+  const durationMs = Date.now() - run.startMs;
+
+  if (run.timedOut()) {
+    await run.terminate();
+    return err({ kind: 'timeout', backend: backend.name, timeoutMs });
+  }
+
+  if (exitCode !== 0) {
+    const stderrText = await run.stderr;
+    return err(
+      classifyAgentExit(backend.name, exitCode, buildExitDetail(backend, stderrText, rawOutput)),
+    );
+  }
+  return ok({ durationMs });
+}
+
+/** A failure the backend reported inside an exit-0 run, classified and logged. */
+function reportedFailure(backend: AgentBackend, errorMessage: string): AgentResult {
+  const failure = classifyAgentDiagnostic(backend.name, errorMessage);
+  console.warn(`[runner] ${formatAgentFailure(failure)}`);
+  return failed(failure);
 }
 
 // ─── Non-Streaming Runner ─────────────────────────────────────────────────────
@@ -271,30 +327,14 @@ export async function runAgent(backend: AgentBackend, options: AgentOptions): Pr
     return failed({ kind: 'output-read', backend: backend.name, detail: boundedDetail(stdoutErr) });
   }
 
-  const exitCode = await run.proc.exited;
-  run.clearDeadline();
-  const durationMs = Date.now() - run.startMs;
-
-  if (run.timedOut()) {
-    await run.terminate();
-    return failed({ kind: 'timeout', backend: backend.name, timeoutMs: options.timeoutMs });
-  }
-
-  if (exitCode !== 0) {
-    const stderrText = await run.stderr;
-    return failed(
-      classifyAgentExit(backend.name, exitCode, buildExitDetail(backend, stderrText, rawOutput)),
-    );
-  }
+  const exited = await awaitCleanExit(backend, run, options.timeoutMs, rawOutput);
+  if (!exited.ok) return failed(exited.error);
+  const { durationMs } = exited.value;
 
   const parsed = backend.parseResult(rawOutput);
   // A backend-reported failure wins even when an earlier assistant message
   // produced text before a tool/provider failure terminated the turn.
-  if (parsed.errorMessage) {
-    const failure = classifyAgentDiagnostic(backend.name, parsed.errorMessage);
-    console.warn(`[runner] ${formatAgentFailure(failure)}`);
-    return failed(failure);
-  }
+  if (parsed.errorMessage) return reportedFailure(backend, parsed.errorMessage);
   // parseResult returning null means the backend recognised no structured
   // assistant text in a *successful* (exit 0) run — a parser/output-format
   // mismatch, not a real reply. Surface it instead of silently shipping raw
@@ -360,6 +400,113 @@ function streamChunkOf(progress: StreamProgress): StreamChunk {
     : { phase: 'text', text: progress.blockText };
 }
 
+/** Feed each complete stdout line to `onLine`, then any non-blank unterminated tail. */
+async function forEachStdoutLine(
+  stdout: ReadableStream,
+  onLine: (line: string) => void,
+): Promise<void> {
+  const reader = stdout.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+
+    let newlineIdx = buffer.indexOf('\n');
+    while (newlineIdx !== -1) {
+      const line = buffer.slice(0, newlineIdx);
+      buffer = buffer.slice(newlineIdx + 1);
+      onLine(line);
+      newlineIdx = buffer.indexOf('\n');
+    }
+  }
+
+  // Process any remaining buffer content
+  if (buffer.trim() !== '') {
+    onLine(buffer);
+  }
+}
+
+/** Everything a streaming run read from stdout. */
+type StreamTranscript = {
+  readonly lines: readonly string[];
+  readonly progress: StreamProgress;
+  readonly sessionId: string | null;
+};
+
+/**
+ * Read a run's stdout line by line: collect every line, track the session id
+ * and fold each stream delta into the progress handed to `onChunk`.
+ */
+async function readStream(
+  backend: AgentBackend,
+  stdout: ReadableStream,
+  onChunk: OnStreamChunk,
+): Promise<StreamTranscript> {
+  let progress = INITIAL_STREAM_PROGRESS;
+  let sessionId: string | null = null;
+  const lines: string[] = [];
+
+  await forEachStdoutLine(stdout, (line) => {
+    lines.push(line);
+    sessionId = backend.extractSessionId(line) ?? sessionId;
+
+    const delta = backend.extractStreamDelta(line);
+    if (delta === null) return;
+    progress = applyStreamDelta(progress, delta);
+    try {
+      onChunk(streamChunkOf(progress));
+    } catch (cbErr) {
+      // Callback faults must not propagate into the stdout read loop —
+      // a throwing onChunk (e.g. Telegram edit failure) should not abort
+      // an otherwise-healthy stream.
+      console.warn('[runner] onChunk callback threw:', cbErr);
+    }
+  });
+  return { lines, progress, sessionId };
+}
+
+/**
+ * The reply of a streaming run that exited 0: the backend's parsed final text,
+ * or the text accumulated from deltas when the parse found none.
+ */
+function streamedReply(
+  backend: AgentBackend,
+  transcript: StreamTranscript,
+  rawOutput: string,
+  durationMs: number,
+): AgentResult {
+  const { progress } = transcript;
+  // Unlike the non-streaming path, a null parse here is less alarming — we still
+  // have the deltas accumulated during streaming — but it does mean the final
+  // message-end frame was missing/unparseable, so warn for the same diagnostic
+  // reason (silent format drift otherwise looks like a healthy short reply).
+  const parsed = backend.parseResult(rawOutput);
+  // A backend-reported failure wins even if partial text streamed before the
+  // provider rejected the turn. Treating narration as success would suppress
+  // retries and could persist an incomplete response.
+  if (parsed.errorMessage) return reportedFailure(backend, parsed.errorMessage);
+  if (parsed.text === null) {
+    if (progress.text.length === 0) {
+      const detail = 'produced no assistant text on exit-0 stream';
+      console.warn(`[runner] ${backend.name} protocol error: ${detail}`);
+      return failed({ kind: 'protocol', backend: backend.name, detail });
+    }
+    console.warn(
+      `[runner] ${backend.name}.parseResult found no final assistant text on exit-0 stream; falling back to ${progress.text.length} accumulated bytes`,
+    );
+  }
+  const output = parsed.text ?? progress.text;
+
+  // Use parseResult sessionId if streaming didn't capture one
+  const sessionId = transcript.sessionId ?? parsed.sessionId;
+
+  return { ok: true, output, sessionId, durationMs };
+}
+
 /**
  * Execute an agent subprocess with line-by-line streaming.
  *
@@ -377,121 +524,22 @@ export async function runAgentStreaming(
   const started = await startRun(backend, options);
   if (!started.ok) return failed(started.error);
   const run = started.value;
-  const timeout = (): AgentResult =>
-    failed({ kind: 'timeout', backend: backend.name, timeoutMs: options.timeoutMs });
 
-  let progress = INITIAL_STREAM_PROGRESS;
-  let sessionId: string | null = null;
-  const collectedLines: string[] = [];
-
-  const emitChunk = (): void => {
-    try {
-      onChunk(streamChunkOf(progress));
-    } catch (cbErr) {
-      // Callback faults must not propagate into the stdout read loop —
-      // a throwing onChunk (e.g. Telegram edit failure) should not abort
-      // an otherwise-healthy stream.
-      console.warn('[runner] onChunk callback threw:', cbErr);
-    }
-  };
-
-  const processLine = (line: string): void => {
-    collectedLines.push(line);
-
-    // Extract session ID
-    const extractedSessionId = backend.extractSessionId(line);
-    if (extractedSessionId !== null) {
-      sessionId = extractedSessionId;
-    }
-
-    const delta = backend.extractStreamDelta(line);
-    if (delta !== null) {
-      progress = applyStreamDelta(progress, delta);
-      emitChunk();
-    }
-  };
-
-  // Read stdout line by line
+  let transcript: StreamTranscript;
   try {
-    const reader = run.proc.stdout.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-
-      let newlineIdx = buffer.indexOf('\n');
-      while (newlineIdx !== -1) {
-        const line = buffer.slice(0, newlineIdx);
-        buffer = buffer.slice(newlineIdx + 1);
-        processLine(line);
-        newlineIdx = buffer.indexOf('\n');
-      }
-    }
-
-    // Process any remaining buffer content
-    if (buffer.trim() !== '') {
-      processLine(buffer);
-    }
+    transcript = await readStream(backend, run.proc.stdout, onChunk);
   } catch (readErr) {
     run.clearDeadline();
     await run.terminate();
-    if (run.timedOut()) return timeout();
+    if (run.timedOut()) {
+      return failed({ kind: 'timeout', backend: backend.name, timeoutMs: options.timeoutMs });
+    }
     return failed({ kind: 'output-read', backend: backend.name, detail: boundedDetail(readErr) });
   }
 
-  const exitCode = await run.proc.exited;
-  run.clearDeadline();
-  const durationMs = Date.now() - run.startMs;
-
-  if (run.timedOut()) {
-    await run.terminate();
-    return timeout();
-  }
-
-  if (exitCode !== 0) {
-    const stderrText = await run.stderr;
-    return failed(
-      classifyAgentExit(
-        backend.name,
-        exitCode,
-        buildExitDetail(backend, stderrText, collectedLines.join('\n')),
-      ),
-    );
-  }
-
   // Use backend.parseResult for final text; fall back to accumulated text.
-  // Unlike the non-streaming path, a null parse here is less alarming — we still
-  // have the deltas accumulated during streaming — but it does mean the final
-  // message-end frame was missing/unparseable, so warn for the same diagnostic
-  // reason (silent format drift otherwise looks like a healthy short reply).
-  const rawCollected = collectedLines.join('\n');
-  const parsed = backend.parseResult(rawCollected);
-  // A backend-reported failure wins even if partial text streamed before the
-  // provider rejected the turn. Treating narration as success would suppress
-  // retries and could persist an incomplete response.
-  if (parsed.errorMessage) {
-    const failure = classifyAgentDiagnostic(backend.name, parsed.errorMessage);
-    console.warn(`[runner] ${formatAgentFailure(failure)}`);
-    return failed(failure);
-  }
-  if (parsed.text === null) {
-    if (progress.text.length === 0) {
-      const detail = 'produced no assistant text on exit-0 stream';
-      console.warn(`[runner] ${backend.name} protocol error: ${detail}`);
-      return failed({ kind: 'protocol', backend: backend.name, detail });
-    }
-    console.warn(
-      `[runner] ${backend.name}.parseResult found no final assistant text on exit-0 stream; falling back to ${progress.text.length} accumulated bytes`,
-    );
-  }
-  const output = parsed.text ?? progress.text;
-
-  // Use parseResult sessionId if streaming didn't capture one
-  const finalSessionId = sessionId ?? parsed.sessionId;
-
-  return { ok: true, output, sessionId: finalSessionId, durationMs };
+  const rawOutput = transcript.lines.join('\n');
+  const exited = await awaitCleanExit(backend, run, options.timeoutMs, rawOutput);
+  if (!exited.ok) return failed(exited.error);
+  return streamedReply(backend, transcript, rawOutput, exited.value.durationMs);
 }

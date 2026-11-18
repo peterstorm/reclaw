@@ -1,6 +1,9 @@
+import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import {
   MAX_REPLY_CONTEXT_CHARS,
+  MIN_RECURRING_INTERVAL_MS,
+  type RecurringScheduleSpec,
   chatJobSourcePaths,
   emptySkillRegistry,
   err,
@@ -12,6 +15,7 @@ import {
   makeChatJob as makeChatJobCore,
   makeJobId,
   makeRecurringReminderJob,
+  makeRecurringSchedule,
   makeReplyContext,
   makeResearchJob,
   makeScheduledJob,
@@ -873,57 +877,165 @@ describe('makeRecurringReminderJob', () => {
     schedulerId: 'telegram:1001:recurring',
   };
 
-  it('builds an interval job with no cron fields', () => {
-    expect(makeRecurringReminderJob({ ...base, intervalMs: 7_200_000 })).toEqual(
-      ok({ kind: 'recurring-reminder', ...base, intervalMs: 7_200_000 }),
+  // The wire forms (both / neither of interval and cron, a defaulted description)
+  // are parsed in job-schemas.ts; the factory takes the schedule union.
+
+  it('builds an interval job', () => {
+    const schedule = { kind: 'interval', intervalMs: 7_200_000 } as const;
+    expect(makeRecurringReminderJob({ ...base, schedule })).toEqual(
+      ok({ kind: 'recurring-reminder', ...base, schedule }),
     );
   });
 
-  it('builds a cron job that carries intervalMs 0', () => {
+  it('builds a cron job carrying its pattern and description', () => {
+    const schedule = {
+      kind: 'cron',
+      cronPattern: '0 12 * * 0',
+      cronDescription: 'every Sunday at 12:00',
+    } as const;
+    expect(makeRecurringReminderJob({ ...base, schedule })).toEqual(
+      ok({ kind: 'recurring-reminder', ...base, schedule }),
+    );
+  });
+
+  it('rejects a cron schedule with an empty pattern', () => {
     expect(
       makeRecurringReminderJob({
         ...base,
-        cronPattern: '0 12 * * 0',
+        schedule: { kind: 'cron', cronPattern: '', cronDescription: 'never' },
+      }),
+    ).toEqual(err('Recurring reminder cronPattern must not be empty.'));
+  });
+
+  it.each([59_999, 1, 0, -60_000, 90_000.5])(
+    'rejects interval %d (under a minute or fractional)',
+    (ms) => {
+      expect(
+        makeRecurringReminderJob({ ...base, schedule: { kind: 'interval', intervalMs: ms } }),
+      ).toEqual(err('Recurring reminder interval must be at least 1 minute.'));
+    },
+  );
+
+  it('accepts an interval of exactly one minute', () => {
+    expect(
+      makeRecurringReminderJob({ ...base, schedule: { kind: 'interval', intervalMs: 60_000 } }).ok,
+    ).toBe(true);
+  });
+
+  it('rejects a blank cron pattern through the schedule constructor', () => {
+    expect(
+      makeRecurringReminderJob({
+        ...base,
+        schedule: { kind: 'cron', cronPattern: '  \t', cronDescription: 'never' },
+      }),
+    ).toEqual(err('Recurring reminder cronPattern must not be empty.'));
+  });
+
+  it('checks the job fields before the schedule', () => {
+    expect(
+      makeRecurringReminderJob({
+        ...base,
+        text: ' ',
+        schedule: { kind: 'interval', intervalMs: 1 },
+      }),
+    ).toEqual(err('Recurring reminder text must not be empty.'));
+  });
+});
+
+// ─── makeRecurringSchedule ─────────────────────────────────────────────────────
+
+describe('makeRecurringSchedule', () => {
+  const INTERVAL_ERROR = err('Recurring reminder interval must be at least 1 minute.');
+  const CRON_ERROR = err('Recurring reminder cronPattern must not be empty.');
+  const blank = fc.constantFrom('', ' ', '\t', '\n', '  \t \n ');
+  const cronPattern = fc.string({ minLength: 1, maxLength: 30 }).filter((s) => s.trim() !== '');
+
+  const specArb: fc.Arbitrary<RecurringScheduleSpec> = fc.oneof(
+    fc
+      .oneof(fc.integer(), fc.double({ noNaN: true }))
+      .map((intervalMs) => ({ kind: 'interval' as const, intervalMs })),
+    fc
+      .record(
+        {
+          cronPattern: fc.oneof(cronPattern, blank),
+          cronDescription: fc.oneof(fc.string({ maxLength: 40 }), blank),
+        },
+        { requiredKeys: ['cronPattern'] },
+      )
+      .map((cron) => ({ kind: 'cron' as const, ...cron })),
+  );
+
+  it('keeps an interval of at least a minute', () => {
+    expect(makeRecurringSchedule({ kind: 'interval', intervalMs: 3_600_000 })).toEqual(
+      ok({ kind: 'interval', intervalMs: 3_600_000 }),
+    );
+    expect(MIN_RECURRING_INTERVAL_MS).toBe(60_000);
+  });
+
+  it('trims the cron pattern and keeps the description', () => {
+    expect(
+      makeRecurringSchedule({
+        kind: 'cron',
+        cronPattern: '  0 12 * * 0 ',
         cronDescription: 'every Sunday at 12:00',
       }),
     ).toEqual(
-      ok({
-        kind: 'recurring-reminder',
-        ...base,
-        intervalMs: 0,
-        cronPattern: '0 12 * * 0',
-        cronDescription: 'every Sunday at 12:00',
+      ok({ kind: 'cron', cronPattern: '0 12 * * 0', cronDescription: 'every Sunday at 12:00' }),
+    );
+  });
+
+  it.each([undefined, '', '   '])('describes a cron schedule by its pattern when given %j', (d) => {
+    const spec: RecurringScheduleSpec =
+      d === undefined
+        ? { kind: 'cron', cronPattern: ' 0 9 * * 1-5' }
+        : { kind: 'cron', cronPattern: ' 0 9 * * 1-5', cronDescription: d };
+    expect(makeRecurringSchedule(spec)).toEqual(
+      ok({ kind: 'cron', cronPattern: '0 9 * * 1-5', cronDescription: '0 9 * * 1-5' }),
+    );
+  });
+
+  it('property: an interval is accepted exactly when it is an integer of at least a minute', () => {
+    fc.assert(
+      fc.property(fc.oneof(fc.integer(), fc.double({ noNaN: true })), (intervalMs) => {
+        const result = makeRecurringSchedule({ kind: 'interval', intervalMs });
+        const fires = Number.isInteger(intervalMs) && intervalMs >= MIN_RECURRING_INTERVAL_MS;
+        expect(result).toEqual(fires ? ok({ kind: 'interval', intervalMs }) : INTERVAL_ERROR);
       }),
     );
   });
 
-  it('defaults cronDescription to the cron pattern', () => {
-    const r = makeRecurringReminderJob({ ...base, cronPattern: '0 9 * * 1-5' });
-    expect(r.ok && r.value.cronDescription).toBe('0 9 * * 1-5');
-  });
-
-  it('rejects a job with both an interval and a cron pattern', () => {
-    expect(
-      makeRecurringReminderJob({ ...base, intervalMs: 7_200_000, cronPattern: '0 12 * * 0' }),
-    ).toEqual(err('Cannot specify both intervalMs and cronPattern for a recurring reminder.'));
-  });
-
-  it('rejects a job with neither an interval nor a cron pattern', () => {
-    expect(makeRecurringReminderJob(base)).toEqual(
-      err('Either intervalMs or cronPattern must be provided.'),
-    );
-    expect(makeRecurringReminderJob({ ...base, intervalMs: 0, cronPattern: '' })).toEqual(
-      err('Either intervalMs or cronPattern must be provided.'),
+  it('property: a blank cron pattern is always rejected, whatever the description', () => {
+    fc.assert(
+      fc.property(blank, fc.option(fc.string(), { nil: undefined }), (pattern, description) => {
+        const spec: RecurringScheduleSpec =
+          description === undefined
+            ? { kind: 'cron', cronPattern: pattern }
+            : { kind: 'cron', cronPattern: pattern, cronDescription: description };
+        expect(makeRecurringSchedule(spec)).toEqual(CRON_ERROR);
+      }),
     );
   });
 
-  it.each([59_999, 1, 90_000.5])('rejects interval %d (under a minute or fractional)', (ms) => {
-    expect(makeRecurringReminderJob({ ...base, intervalMs: ms })).toEqual(
-      err('Recurring reminder interval must be at least 1 minute.'),
+  it('property: an accepted cron schedule has a trimmed pattern and a non-blank description', () => {
+    fc.assert(
+      fc.property(specArb, (spec) => {
+        const result = makeRecurringSchedule(spec);
+        if (!result.ok || result.value.kind !== 'cron') return;
+        const { cronPattern: pattern, cronDescription } = result.value;
+        expect(pattern).toBe(pattern.trim());
+        expect(pattern).not.toBe('');
+        expect(cronDescription.trim()).not.toBe('');
+      }),
     );
   });
 
-  it('accepts an interval of exactly one minute', () => {
-    expect(makeRecurringReminderJob({ ...base, intervalMs: 60_000 }).ok).toBe(true);
+  it('property: constructing an accepted schedule again returns it unchanged (idempotent)', () => {
+    fc.assert(
+      fc.property(specArb, (spec) => {
+        const once = makeRecurringSchedule(spec);
+        if (!once.ok) return;
+        expect(makeRecurringSchedule(once.value)).toEqual(once);
+      }),
+    );
   });
 });

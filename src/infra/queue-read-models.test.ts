@@ -1,9 +1,15 @@
 import type { JobSchedulerJson } from 'bullmq';
 import { describe, expect, it } from 'vitest';
 import {
+  type RecurringSchedule,
+  type RecurringScheduleSpec,
+  makeRecurringSchedule,
+} from '../core/types.js';
+import {
   UNKNOWN_ACTIVE_RESEARCH,
   parseActiveResearch,
   readReminderScheduler,
+  schedulerInfoFromSchedule,
 } from './queue-read-models.js';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
@@ -95,6 +101,72 @@ describe('readReminderScheduler', () => {
       scheduler({ every: 3600000, template: { data: { text: 'x' } } }),
     );
     expect(reading).toMatchObject({ kind: 'unparseable', schedulerId: 'sched-001' });
+  });
+});
+
+// ─── schedulerInfoFromSchedule ────────────────────────────────────────────────
+
+describe('schedulerInfoFromSchedule', () => {
+  const schedule = (spec: RecurringScheduleSpec): RecurringSchedule => {
+    const made = makeRecurringSchedule(spec);
+    if (!made.ok) throw new Error(made.error);
+    return made.value;
+  };
+  const hourly = schedule({ kind: 'interval', intervalMs: 3_600_000 });
+  const sundays = schedule({
+    kind: 'cron',
+    cronPattern: '0 12 * * 0',
+    cronDescription: 'every Sunday',
+  });
+
+  it('reports an interval schedule the scheduler agrees with', () => {
+    expect(schedulerInfoFromSchedule(hourly, { every: 3_600_000 })).toEqual({
+      intervalMs: 3_600_000,
+    });
+  });
+
+  it('reports a cron schedule the scheduler agrees with, with its description', () => {
+    expect(schedulerInfoFromSchedule(sundays, { pattern: '0 12 * * 0' })).toEqual({
+      intervalMs: 0,
+      cronPattern: '0 12 * * 0',
+      cronDescription: 'every Sunday',
+    });
+  });
+
+  it('takes the interval from the scheduler, which is what BullMQ fires on', () => {
+    expect(schedulerInfoFromSchedule(hourly, { every: 7_200_000 })).toEqual({
+      intervalMs: 7_200_000,
+    });
+    expect(schedulerInfoFromSchedule(sundays, { every: 7_200_000 })).toEqual({
+      intervalMs: 7_200_000,
+      cronPattern: '0 12 * * 0',
+      cronDescription: 'every Sunday',
+    });
+  });
+
+  it('reports no interval when the scheduler has none, whatever the template says', () => {
+    expect(schedulerInfoFromSchedule(hourly, { pattern: '0 9 * * *' })).toEqual({
+      intervalMs: 0,
+      cronPattern: '0 9 * * *',
+    });
+  });
+
+  it('takes the pattern and description from a cron template over the scheduler pattern', () => {
+    expect(schedulerInfoFromSchedule(sundays, { pattern: '0 9 * * *' })).toEqual({
+      intervalMs: 0,
+      cronPattern: '0 12 * * 0',
+      cronDescription: 'every Sunday',
+    });
+  });
+
+  it('falls back to the scheduler pattern only when the template is an interval', () => {
+    expect(schedulerInfoFromSchedule(hourly, { every: 3_600_000, pattern: '0 9 * * *' })).toEqual({
+      intervalMs: 3_600_000,
+      cronPattern: '0 9 * * *',
+    });
+    expect(schedulerInfoFromSchedule(hourly, { every: 3_600_000, pattern: '' })).toEqual({
+      intervalMs: 3_600_000,
+    });
   });
 });
 

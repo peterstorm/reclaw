@@ -67,7 +67,7 @@ const fakeNotebookLM = (script: ResearchDepsScript): NotebookLMAdapter => ({
 });
 
 const fakeResearchLLM = (script: ResearchDepsScript): ResearchLLMAdapter => ({
-  deriveTopic: vi.fn().mockResolvedValue(script.derivedTopic),
+  deriveTopic: vi.fn().mockResolvedValue({ ok: true, value: script.derivedTopic }),
   generateQuestions: vi.fn().mockResolvedValue({ ok: true, value: ['Q1?', 'Q2?', 'Q3?'] }),
   reformulateQuery: vi.fn().mockResolvedValue({ ok: true, value: script.reformulatedQuery }),
   rephraseQuestion: vi.fn().mockResolvedValue({ ok: true, value: script.rephrasedQuestion }),

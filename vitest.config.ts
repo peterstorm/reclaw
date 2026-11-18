@@ -12,11 +12,4 @@ export default defineConfig({
       exclude: ['src/**/*.test.ts'],
     },
   },
-  resolve: {
-    alias: {
-      '@core': '/home/peterstorm/dev/claude-plugins/reclaw/src/core',
-      '@infra': '/home/peterstorm/dev/claude-plugins/reclaw/src/infra',
-      '@orchestration': '/home/peterstorm/dev/claude-plugins/reclaw/src/orchestration',
-    },
-  },
 });
