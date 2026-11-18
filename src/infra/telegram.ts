@@ -4,7 +4,7 @@ import type { TelegramUserId } from '../core/types.js';
 import type { PdfTextExtractor } from './pdf-text.js';
 import {
   type IncomingHandler,
-  type IngressGate,
+  type IngressLifecycle,
   type TelegramIncomingDisposition,
   type TelegramIncomingMessage,
   createIngressGate,
@@ -30,7 +30,7 @@ export type TelegramAdapter = TelegramSender & {
 
 function createPollingLifecycle(
   bot: Bot,
-  gate: IngressGate,
+  gate: IngressLifecycle,
   onFatalError: ((err: unknown) => void) | undefined,
 ): Pick<TelegramAdapter, 'start' | 'stop'> {
   let pollingPromise: Promise<void> | null = null;
@@ -93,20 +93,20 @@ export function createTelegramAdapter(config: {
   pdfTextExtractor?: PdfTextExtractor;
 }): TelegramAdapter {
   const bot = new Bot(config.token);
-  const gate = createIngressGate();
+  const { updates, lifecycle } = createIngressGate();
   const sender = createTelegramSender(bot.api);
 
   // grammY otherwise considers a middleware error handled and advances its
   // getUpdates offset. Rethrowing stops polling before the failed update is
   // confirmed; systemd can restart us and Telegram will redeliver it.
   bot.catch((err) => {
-    gate.markFailed();
+    lifecycle.markFailed();
     console.error('[telegram] Middleware failed; polling stopped before acknowledging the update');
     throw err;
   });
 
   registerIngressHandlers(bot, {
-    gate,
+    gate: updates,
     files: { api: bot.api, token: config.token },
     authorizedUserIds: new Set(config.authorizedUserIds as readonly number[]),
     attachmentDir: config.attachmentDir ?? DEFAULT_ATTACHMENT_DIR,
@@ -116,8 +116,8 @@ export function createTelegramAdapter(config: {
   });
 
   return {
-    ...createPollingLifecycle(bot, gate, config.onFatalError),
+    ...createPollingLifecycle(bot, lifecycle, config.onFatalError),
     ...sender,
-    onMessage: gate.setHandler,
+    onMessage: lifecycle.setHandler,
   };
 }

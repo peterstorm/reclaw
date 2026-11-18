@@ -48,26 +48,42 @@ export type IncomingHandler = (
 ) => Promise<TelegramIncomingDisposition | undefined>;
 
 /**
- * The ingress acknowledgement state shared by every update handler and the
- * polling lifecycle. A failed or refused update must stay unacknowledged, so
- * `stop()` reads `hasFailed()` to decide whether it may confirm the offset.
+ * Where the ingress is in its life. A failed or refused update must stay
+ * unacknowledged, so once `failed` the polling lifecycle never confirms the
+ * offset; `stopRequested` remembers whether a stop had begun, because a
+ * polling error after that is expected, not fatal.
  */
-export type IngressGate = {
-  readonly setHandler: (handler: IncomingHandler) => void;
-  readonly requireHandler: () => IncomingHandler;
-  /** Throws (and marks the ingress failed) once the adapter is stopping. */
-  readonly ensureAccepting: () => void;
-  readonly markFailed: () => void;
-  /** Run one accepted update; a failure marks the ingress failed and propagates. */
+type IngressPhase =
+  | { readonly kind: 'accepting' }
+  | { readonly kind: 'stopping' }
+  | { readonly kind: 'failed'; readonly stopRequested: boolean };
+
+/** The gate as the per-update handlers see it: admit, run and route one update. */
+export type UpdateGate = {
+  /** Throws (and fails the ingress) once a stop has been requested. */
+  readonly admit: () => void;
+  /** Run one admitted update; a failure fails the ingress and propagates. */
   readonly track: (chatId: number, operation: () => Promise<void>) => Promise<void>;
-  /** Stop accepting updates and resolve once every tracked update has settled. */
+  readonly requireHandler: () => IncomingHandler;
+};
+
+/** The gate as the adapter and polling lifecycle see it. */
+export type IngressLifecycle = {
+  readonly setHandler: (handler: IncomingHandler) => void;
+  readonly markFailed: () => void;
+  /** Stop admitting updates and resolve once every tracked update has settled. */
   readonly drain: () => Promise<void>;
   readonly hasFailed: () => boolean;
   readonly isStopping: () => boolean;
 };
 
+type IngressGate = {
+  readonly updates: UpdateGate;
+  readonly lifecycle: IngressLifecycle;
+};
+
 export type IngressDeps = {
-  readonly gate: IngressGate;
+  readonly gate: UpdateGate;
   readonly files: TelegramFileSource;
   readonly authorizedUserIds: ReadonlySet<number>;
   readonly attachmentDir: string;
@@ -83,10 +99,25 @@ type TelegramReplyMessage = {
   readonly from?: { readonly id: number; readonly is_bot?: boolean };
 };
 
+/** The fields of a grammY update context the ingress reads; tests pass plain objects. */
 type UpdateContext = {
   readonly from: { readonly id: number } | undefined;
   readonly chat: { readonly id: number };
   readonly update: { readonly update_id: number };
+};
+
+type MessageBase = { readonly caption?: string; readonly reply_to_message?: TelegramReplyMessage };
+
+export type TextUpdate = UpdateContext & {
+  readonly message: { readonly text: string; readonly reply_to_message?: TelegramReplyMessage };
+};
+
+export type DocumentUpdate = UpdateContext & {
+  readonly message: MessageBase & { readonly document: TelegramDocument };
+};
+
+export type PhotoUpdate = UpdateContext & {
+  readonly message: MessageBase & { readonly photo: readonly { readonly file_id: string }[] };
 };
 
 type AcceptedUpdate = {
@@ -142,33 +173,40 @@ function createActiveUpdates() {
   };
 }
 
+function isStopRequested(phase: IngressPhase): boolean {
+  return phase.kind === 'stopping' || (phase.kind === 'failed' && phase.stopRequested);
+}
+
+/** A failure is final: it keeps whether a stop had already been requested. */
+function failedPhase(phase: IngressPhase): IngressPhase {
+  return { kind: 'failed', stopRequested: isStopRequested(phase) };
+}
+
+/** A stop request never clears a failure. */
+function stoppingPhase(phase: IngressPhase): IngressPhase {
+  return phase.kind === 'failed' ? { kind: 'failed', stopRequested: true } : { kind: 'stopping' };
+}
+
 export function createIngressGate(): IngressGate {
   let handler: IncomingHandler | null = null;
-  let failed = false;
-  let stopping = false;
+  let phase: IngressPhase = { kind: 'accepting' };
   const active = createActiveUpdates();
-  return {
-    setHandler: (next) => {
-      handler = next;
-    },
-    requireHandler: () => {
-      if (handler === null) throw new Error('Telegram message handler is not registered');
-      return handler;
-    },
-    ensureAccepting: () => {
-      if (!stopping) return;
-      failed = true;
+  const fail = (): void => {
+    phase = failedPhase(phase);
+  };
+
+  const updates: UpdateGate = {
+    admit: () => {
+      if (!isStopRequested(phase)) return;
+      fail();
       throw new Error('Telegram ingress is stopping');
-    },
-    markFailed: () => {
-      failed = true;
     },
     track: async (chatId, operation) => {
       active.enter();
       try {
         await operation();
       } catch (err) {
-        failed = true;
+        fail();
         console.error(
           `[telegram] Update handling failed for chatId=${chatId}:`,
           err instanceof Error ? err.message : err,
@@ -178,13 +216,26 @@ export function createIngressGate(): IngressGate {
         active.leave();
       }
     },
+    requireHandler: () => {
+      if (handler === null) throw new Error('Telegram message handler is not registered');
+      return handler;
+    },
+  };
+
+  const lifecycle: IngressLifecycle = {
+    setHandler: (next) => {
+      handler = next;
+    },
+    markFailed: fail,
     drain: () => {
-      stopping = true;
+      phase = stoppingPhase(phase);
       return active.settled();
     },
-    hasFailed: () => failed,
-    isStopping: () => stopping,
+    hasFailed: () => phase.kind === 'failed',
+    isStopping: () => isStopRequested(phase),
   };
+
+  return { updates, lifecycle };
 }
 
 // ─── Shared update steps ──────────────────────────────────────────────────────
@@ -214,7 +265,7 @@ function acceptUpdate(
     );
     return undefined;
   }
-  deps.gate.ensureAccepting();
+  deps.gate.admit();
   return { updateId: updateId.value, userId, chatId };
 }
 
@@ -355,7 +406,7 @@ function spoolDocumentText(
   });
 }
 
-function receiveDocument(deps: IngressDeps, upload: DocumentUpload): Promise<void> {
+function routeDocument(deps: IngressDeps, upload: DocumentUpload): Promise<void> {
   const parsed = parseSupportedDocument(upload.document.file_name, upload.document.mime_type);
   if (parsed.ok) return spoolDocumentText(deps, upload, parsed.value);
   if (parsed.error.kind === 'conflicting-document-metadata') {
@@ -364,49 +415,57 @@ function receiveDocument(deps: IngressDeps, upload: DocumentUpload): Promise<voi
   return storeOpaqueUpload(deps, upload);
 }
 
+// ─── Per-update handlers ──────────────────────────────────────────────────────
+
+/** FR-001: hand an authorized text message to the handler. */
+export async function receiveText(deps: IngressDeps, ctx: TextUpdate): Promise<void> {
+  const accepted = acceptUpdate(deps, ctx, 'text');
+  if (accepted === undefined) return;
+  const handler = deps.gate.requireHandler();
+  const message = incomingMessage(accepted, ctx.message.text, ctx.message.reply_to_message, {});
+  await deps.gate.track(accepted.chatId, async () => {
+    await handler(message);
+  });
+}
+
+/** Route an authorized document to text extraction or opaque upload storage. */
+export async function receiveDocument(deps: IngressDeps, ctx: DocumentUpdate): Promise<void> {
+  const accepted = acceptUpdate(deps, ctx, 'document');
+  if (accepted === undefined) return;
+  await routeDocument(deps, {
+    accepted,
+    document: ctx.message.document,
+    caption: ctx.message.caption ?? '',
+    reply: ctx.message.reply_to_message,
+  });
+}
+
+/**
+ * Spool an authorized photo's largest size, named after its update, and hand it to the handler.
+ * NFR-013: log chatId only, never file paths or captions.
+ */
+export async function receivePhoto(deps: IngressDeps, ctx: PhotoUpdate): Promise<void> {
+  const accepted = acceptUpdate(deps, ctx, 'photo');
+  if (accepted === undefined) return;
+  const handler = deps.gate.requireHandler();
+  const largest = ctx.message.photo.at(-1);
+  if (!largest) return;
+  const caption = ctx.message.caption ?? '';
+  const reply = ctx.message.reply_to_message;
+  await deps.gate.track(accepted.chatId, async () => {
+    const photo = await downloadPhoto(deps.files, largest.file_id);
+    const filePath = join(deps.attachmentDir, `${accepted.updateId}.${photo.extension}`);
+    await writeSpooledFile(deps.attachmentDir, filePath, photo.data);
+    const message = incomingMessage(accepted, caption, reply, { imagePaths: [filePath] });
+    await deliverSpooledFile(deps, handler, filePath, message);
+  });
+}
+
 // ─── Registration ─────────────────────────────────────────────────────────────
 
 /** FR-001: route text, document and photo messages from authorized users to the handler. */
 export function registerIngressHandlers(bot: Bot, deps: IngressDeps): void {
-  bot.on('message:text', async (ctx) => {
-    const accepted = acceptUpdate(deps, ctx, 'text');
-    if (accepted === undefined) return;
-    const handler = deps.gate.requireHandler();
-    const message = incomingMessage(accepted, ctx.message.text, ctx.message.reply_to_message, {});
-    await deps.gate.track(accepted.chatId, async () => {
-      await handler(message);
-    });
-  });
-
-  bot.on('message:document', async (ctx) => {
-    const accepted = acceptUpdate(deps, ctx, 'document');
-    if (accepted === undefined) return;
-    await receiveDocument(deps, {
-      accepted,
-      document: ctx.message.document,
-      caption: ctx.message.caption ?? '',
-      reply: ctx.message.reply_to_message,
-    });
-  });
-
-  // NFR-013: log chatId only, never file paths or captions.
-  bot.on('message:photo', async (ctx) => {
-    const accepted = acceptUpdate(deps, ctx, 'photo');
-    if (accepted === undefined) return;
-    const handler = deps.gate.requireHandler();
-    const largest = ctx.message.photo.at(-1);
-    if (!largest) return;
-    const caption = ctx.message.caption ?? '';
-    const reply = ctx.message.reply_to_message;
-    await deps.gate.track(accepted.chatId, async () => {
-      const filePath = await downloadPhoto(
-        deps.files,
-        largest.file_id,
-        accepted.updateId,
-        deps.attachmentDir,
-      );
-      const message = incomingMessage(accepted, caption, reply, { imagePaths: [filePath] });
-      await deliverSpooledFile(deps, handler, filePath, message);
-    });
-  });
+  bot.on('message:text', (ctx) => receiveText(deps, ctx));
+  bot.on('message:document', (ctx) => receiveDocument(deps, ctx));
+  bot.on('message:photo', (ctx) => receivePhoto(deps, ctx));
 }

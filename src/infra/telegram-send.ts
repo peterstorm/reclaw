@@ -1,4 +1,5 @@
 import type { Api } from 'grammy';
+import { errorMessage } from '../core/error-message.js';
 import { markdownToTelegramHtml } from '../core/markdown-to-telegram.js';
 
 export type SendOptions = { readonly html?: boolean; readonly plain?: boolean };
@@ -30,15 +31,11 @@ const CHUNK_DELAY_MS = 200;
 /** Maximum retries for 429 rate-limit responses. */
 const RATE_LIMIT_MAX_RETRIES = 3;
 
-/** Default backoff schedule (seconds) when retry_after is not available. */
+/** Backoff schedule (seconds) when a 429's retry_after is not positive. */
 const RATE_LIMIT_BACKOFF_S = [1, 2, 4] as const;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 /** "message is not modified" is harmless: the content already matches. */
@@ -60,8 +57,10 @@ function getRateLimitRetryAfter(err: unknown): number | null {
 }
 
 /**
- * Execute an async operation with retry on 429 rate-limit errors.
- * Uses Telegram's retry_after hint when available, otherwise exponential backoff.
+ * Execute an async operation with retry on 429 rate-limit errors that carry a
+ * numeric retry_after: wait that many seconds, or the backoff schedule when it
+ * is not positive. Any other error, a 429 without retry_after included, is
+ * rethrown at once.
  */
 async function withRateLimitRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
   for (let attempt = 0; attempt <= RATE_LIMIT_MAX_RETRIES; attempt++) {

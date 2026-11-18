@@ -11,6 +11,7 @@
 
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
+import { errorMessage } from '../core/error-message.js';
 import { err, ok } from '../core/types.js';
 import type { Result } from '../core/types.js';
 import type { VaultNote } from '../core/vault-content.js';
@@ -62,11 +63,6 @@ type PreparedVaultNote = {
   readonly note: VaultNote;
   readonly absolutePath: VaultFilePath;
 };
-
-/** The message of a thrown value, whatever was thrown. */
-function describeError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 /** Open the vault rooted at basePath, its path error already formatted. */
 async function openWorkspace(basePath: string): Promise<Result<VaultWorkspace, string>> {
@@ -138,7 +134,7 @@ async function writeNotesWithRetry(
 
   // Exhausted retries
   throw new Error(
-    `Failed to write vault notes after ${maxRetries} attempts: ${describeError(lastError)}`,
+    `Failed to write vault notes after ${maxRetries} attempts: ${errorMessage(lastError)}`,
   );
 }
 
@@ -165,7 +161,7 @@ const writeNotes: VaultWriterAdapter['writeNotes'] = async (notes, basePath) => 
     await writeNotesWithRetry(prepared.value, MAX_WRITE_RETRIES);
     return ok(hubPath);
   } catch (e) {
-    return err(`Vault write failed: ${describeError(e)}`);
+    return err(`Vault write failed: ${errorMessage(e)}`);
   }
 };
 
@@ -181,7 +177,7 @@ const writeEmergencyNote: VaultWriterAdapter['writeEmergencyNote'] = async (note
     await writeVaultNote(target);
     return ok(target.absolutePath);
   } catch (e) {
-    return err(`Emergency note write failed: ${describeError(e)}`);
+    return err(`Emergency note write failed: ${errorMessage(e)}`);
   }
 };
 
@@ -199,7 +195,7 @@ const appendToNote: VaultWriterAdapter['appendToNote'] = async (
     await fs.appendFile(target.value, content, 'utf8');
     return ok(undefined);
   } catch (e) {
-    return err(`Failed to append to note: ${describeError(e)}`);
+    return err(`Failed to append to note: ${errorMessage(e)}`);
   }
 };
 

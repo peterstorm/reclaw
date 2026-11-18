@@ -7,9 +7,17 @@ import type { JobSchedulerJson } from 'bullmq';
 import { parseRecurringReminderJob, parseResearchJobData } from '../core/job-schemas.js';
 import { stateProgress } from '../core/research-types.js';
 import { type Result, err, ok } from '../core/types.js';
-import type { RecurringReminderInfo, ResearchStatus } from './queue.js';
 
 // ─── Recurring reminders ──────────────────────────────────────────────────────
+
+export type RecurringReminderInfo = {
+  readonly schedulerId: string;
+  readonly text: string;
+  readonly intervalMs: number;
+  readonly cronPattern?: string;
+  readonly cronDescription?: string;
+  readonly chatId: number;
+};
 
 export type ReminderSchedulerReading =
   /** No repeat rule or no id: not a reminder this adapter lists. */
@@ -51,7 +59,17 @@ export function readReminderScheduler(
 
 // ─── Research status ──────────────────────────────────────────────────────────
 
-export type ActiveResearch = NonNullable<ResearchStatus['active']>;
+export type ActiveResearch = {
+  readonly topic: string;
+  readonly state: string;
+  readonly progress: number;
+  readonly startedAt: string;
+};
+
+export type ResearchStatus = {
+  readonly active: ActiveResearch | null;
+  readonly waiting: number;
+};
 
 export const UNKNOWN_ACTIVE_RESEARCH: ActiveResearch = {
   topic: '(unknown)',

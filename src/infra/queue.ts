@@ -14,6 +14,8 @@ import {
 } from '../core/types.js';
 import { createActivityResultRepository } from './activity-store.js';
 import {
+  type RecurringReminderInfo,
+  type ResearchStatus,
   UNKNOWN_ACTIVE_RESEARCH,
   parseActiveResearch,
   readReminderScheduler,
@@ -21,26 +23,10 @@ import {
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type RecurringReminderInfo = {
-  readonly schedulerId: string;
-  readonly text: string;
-  readonly intervalMs: number;
-  readonly cronPattern?: string;
-  readonly cronDescription?: string;
-  readonly chatId: number;
-};
+// The read-model shapes live beside their pure translation; callers keep importing them from here.
+export type { RecurringReminderInfo, ResearchStatus };
 
 export type ChatEnqueueDisposition = 'retained' | 'terminal-duplicate';
-
-export type ResearchStatus = {
-  readonly active: {
-    readonly topic: string;
-    readonly state: string;
-    readonly progress: number;
-    readonly startedAt: string;
-  } | null;
-  readonly waiting: number;
-};
 
 export type Queues = {
   readonly chat: Queue;

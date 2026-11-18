@@ -12,81 +12,114 @@
 import { assertNever } from '../../core/types.js';
 import type { AgentBackend, AgentModelSelection, StreamDelta } from './types.js';
 
-// ─── Pi JSON Event Types ──────────────────────────────────────────────────────
+// ─── Pi JSON events ───────────────────────────────────────────────────────────
+//
+// Pi's `--mode json` lines are wire data: each is parsed once into the shape
+// reclaw reads, and anything that does not fit is skipped, never cast.
 
-type PiSessionEvent = {
-  readonly type: 'session';
-  readonly id: string;
-};
+type WireRecord = Readonly<Record<string, unknown>>;
 
-type PiMessageEndEvent = {
-  readonly type: 'message_end';
-  readonly message: {
-    readonly role?: string;
-    readonly stopReason?: string;
-    readonly errorMessage?: string;
-    readonly content: ReadonlyArray<{ readonly type: string; readonly text?: string }>;
-  };
-};
+const isWireRecord = (value: unknown): value is WireRecord =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
 
-/** The assistant message event kinds reclaw streams; Pi emits others (tool calls, ends) too. */
-const PI_STREAMED_EVENT_TYPES = [
-  'text_delta',
-  'thinking_delta',
-  'thinking_start',
-  'text_start',
-] as const;
-type PiStreamedEventType = (typeof PI_STREAMED_EVENT_TYPES)[number];
+const optionalString = (value: unknown): string | undefined =>
+  typeof value === 'string' ? value : undefined;
 
-type PiMessageUpdateEvent = {
-  readonly type: 'message_update';
-  readonly assistantMessageEvent: {
-    /** Wire value, unchecked until parseStreamedEventType. */
-    readonly type?: unknown;
-    readonly delta?: string;
-  };
-};
-
-// ─── Implementation ───────────────────────────────────────────────────────────
-
-const tryParseJson = (line: string): unknown | null => {
+/** One JSON line as an object, or null for blank, non-JSON and non-object lines. */
+const parseJsonLine = (line: string): WireRecord | null => {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
   try {
-    return JSON.parse(line);
+    const parsed: unknown = JSON.parse(trimmed);
+    return isWireRecord(parsed) ? parsed : null;
   } catch {
     return null;
   }
 };
 
-const isSessionEvent = (parsed: unknown): parsed is PiSessionEvent =>
-  typeof parsed === 'object' &&
-  parsed !== null &&
-  (parsed as Record<string, unknown>).type === 'session' &&
-  typeof (parsed as Record<string, unknown>).id === 'string';
+const parseSessionId = (event: WireRecord): string | null =>
+  event.type === 'session' && typeof event.id === 'string' ? event.id : null;
 
-const isMessageEndEvent = (parsed: unknown): parsed is PiMessageEndEvent =>
-  typeof parsed === 'object' &&
-  parsed !== null &&
-  (parsed as Record<string, unknown>).type === 'message_end' &&
-  typeof (parsed as Record<string, unknown>).message === 'object' &&
-  (parsed as Record<string, unknown>).message !== null &&
-  Array.isArray(((parsed as Record<string, unknown>).message as Record<string, unknown>).content);
+/** A message_end, reduced to what parseResult reads: its text blocks and failure fields. */
+type PiMessageEnd = {
+  readonly role: string | undefined;
+  readonly stopReason: string | undefined;
+  readonly errorMessage: string | undefined;
+  readonly texts: readonly string[];
+};
+
+const parseMessageEnd = (event: WireRecord): PiMessageEnd | null => {
+  if (event.type !== 'message_end' || !isWireRecord(event.message)) return null;
+  const { role, stopReason, errorMessage, content } = event.message;
+  if (!Array.isArray(content)) return null;
+  const blocks: readonly unknown[] = content;
+  return {
+    role: optionalString(role),
+    stopReason: optionalString(stopReason),
+    errorMessage: optionalString(errorMessage),
+    texts: blocks.flatMap((block) =>
+      isWireRecord(block) && block.type === 'text' && typeof block.text === 'string'
+        ? [block.text]
+        : [],
+    ),
+  };
+};
 
 // Pi emits a message_end for EVERY message in the turn — including an echo of
 // the user's own prompt (role: "user"). Only assistant messages are candidate
 // replies; without this filter, an errored/empty assistant turn makes the
 // user's prompt the last text-bearing message_end and it gets parroted back.
-const isAssistantMessageEnd = (event: PiMessageEndEvent): boolean =>
-  event.message.role === 'assistant';
+const isAssistantMessageEnd = (event: PiMessageEnd): boolean => event.role === 'assistant';
 
-const isMessageUpdateEvent = (parsed: unknown): parsed is PiMessageUpdateEvent =>
-  typeof parsed === 'object' &&
-  parsed !== null &&
-  (parsed as Record<string, unknown>).type === 'message_update' &&
-  typeof (parsed as Record<string, unknown>).assistantMessageEvent === 'object' &&
-  (parsed as Record<string, unknown>).assistantMessageEvent !== null;
+type PiStream = 'text' | 'thinking';
 
-const parseStreamedEventType = (value: unknown): PiStreamedEventType | null =>
-  PI_STREAMED_EVENT_TYPES.find((streamed) => streamed === value) ?? null;
+/** A streamed message_update, parsed once: only a delta carries text, and it is a string. */
+type PiStreamedEvent =
+  | { readonly kind: 'delta'; readonly stream: PiStream; readonly delta: string }
+  | { readonly kind: 'block-start'; readonly stream: PiStream };
+
+type PiStreamedKind = Pick<PiStreamedEvent, 'kind' | 'stream'>;
+
+/**
+ * The one list of the assistant message event kinds reclaw streams, keyed by
+ * their wire `type`. Pi emits other kinds (tool calls, message ends) too; they
+ * stream nothing.
+ */
+const PI_STREAMED_KINDS: ReadonlyMap<unknown, PiStreamedKind> = new Map<unknown, PiStreamedKind>([
+  ['text_delta', { kind: 'delta', stream: 'text' }],
+  ['thinking_delta', { kind: 'delta', stream: 'thinking' }],
+  ['text_start', { kind: 'block-start', stream: 'text' }],
+  ['thinking_start', { kind: 'block-start', stream: 'thinking' }],
+]);
+
+/** A delta event's text: Pi omits an empty delta; any other non-string is malformed. */
+const parseDeltaText = (delta: unknown): string | null => {
+  if (delta === undefined) return '';
+  return typeof delta === 'string' ? delta : null;
+};
+
+const parseStreamedEvent = (event: WireRecord): PiStreamedEvent | null => {
+  if (event.type !== 'message_update' || !isWireRecord(event.assistantMessageEvent)) return null;
+  const { type, delta } = event.assistantMessageEvent;
+  const streamed = PI_STREAMED_KINDS.get(type);
+  if (streamed === undefined) return null;
+  if (streamed.kind === 'block-start') return { kind: 'block-start', stream: streamed.stream };
+  const text = parseDeltaText(delta);
+  return text === null ? null : { kind: 'delta', stream: streamed.stream, delta: text };
+};
+
+const toStreamDelta = (event: PiStreamedEvent): StreamDelta => {
+  switch (event.kind) {
+    case 'block-start':
+      return { type: 'block_start', blockType: event.stream };
+    case 'delta':
+      return event.stream === 'text'
+        ? { type: 'text', text: event.delta }
+        : { type: 'thinking', thinking: event.delta };
+    default:
+      return assertNever(event);
+  }
+};
 
 // ─── AgentBackend Implementation ──────────────────────────────────────────────
 
@@ -150,30 +183,22 @@ export const piBackend: AgentBackend = {
     let errorMessage: string | null = null;
 
     for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
+      const parsed = parseJsonLine(line);
+      if (parsed === null) continue;
 
-      const parsed = tryParseJson(trimmed);
-      if (!parsed) continue;
+      sessionId = parseSessionId(parsed) ?? sessionId;
 
-      if (isSessionEvent(parsed)) {
-        sessionId = parsed.id;
-      }
-
-      if (isMessageEndEvent(parsed) && isAssistantMessageEnd(parsed)) {
+      const messageEnd = parseMessageEnd(parsed);
+      if (messageEnd !== null && isAssistantMessageEnd(messageEnd)) {
         // Pi reports provider failures (429s, auth errors) inside an exit-0
         // run via stopReason: "error" on the assistant message.
-        if (parsed.message.stopReason === 'error') {
-          errorMessage = parsed.message.errorMessage?.trim() || 'pi reported an agent error';
+        if (messageEnd.stopReason === 'error') {
+          errorMessage = messageEnd.errorMessage?.trim() || 'pi reported an agent error';
           continue;
         }
 
-        const textParts = parsed.message.content.flatMap((block) =>
-          block.type === 'text' && typeof block.text === 'string' ? [block.text] : [],
-        );
-
-        if (textParts.length > 0) {
-          messageTexts.push(textParts.join('\n'));
+        if (messageEnd.texts.length > 0) {
+          messageTexts.push(messageEnd.texts.join('\n'));
         }
       }
     }
@@ -188,43 +213,13 @@ export const piBackend: AgentBackend = {
   },
 
   extractStreamDelta(line: string): StreamDelta | null {
-    const trimmed = line.trim();
-    if (!trimmed) return null;
-
-    const parsed = tryParseJson(trimmed);
-    if (!parsed) return null;
-
-    if (!isMessageUpdateEvent(parsed)) return null;
-
-    const event = parsed.assistantMessageEvent;
-    const eventType = parseStreamedEventType(event.type);
-    if (eventType === null) return null;
-
-    switch (eventType) {
-      case 'text_delta':
-        return { type: 'text', text: event.delta ?? '' };
-      case 'thinking_delta':
-        return { type: 'thinking', thinking: event.delta ?? '' };
-      case 'thinking_start':
-        return { type: 'block_start', blockType: 'thinking' };
-      case 'text_start':
-        return { type: 'block_start', blockType: 'text' };
-      default:
-        return assertNever(eventType);
-    }
+    const parsed = parseJsonLine(line);
+    const event = parsed === null ? null : parseStreamedEvent(parsed);
+    return event === null ? null : toStreamDelta(event);
   },
 
   extractSessionId(line: string): string | null {
-    const trimmed = line.trim();
-    if (!trimmed) return null;
-
-    const parsed = tryParseJson(trimmed);
-    if (!parsed) return null;
-
-    if (isSessionEvent(parsed)) {
-      return parsed.id;
-    }
-
-    return null;
+    const parsed = parseJsonLine(line);
+    return parsed === null ? null : parseSessionId(parsed);
   },
 };

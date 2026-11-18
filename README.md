@@ -609,25 +609,26 @@ src/
     permissions.ts            # backend-neutral tool policy
     agent-environment.ts      # closed subprocess environment + skill grant policy
     vault-path.ts             # branded, strict vault-relative path parser
+    error-message.ts          # message of any thrown value, shared by adapters
     ...
   infra/                      # I/O adapters
     config.ts                 # env → AppConfig (Zod)
     vault-workspace.ts        # canonical root containment + symlink escape checks
     telegram.ts               # grammy adapter: polling lifecycle + handler wiring
-    telegram-ingress.ts       # authorized-update gate, in-flight accounting, message handlers
+    telegram-ingress.ts       # ingress gate (phase + update/lifecycle views), per-update handlers, spooling
     telegram-send.ts          # send/edit/chunked send, rate-limit retry, HTML fallback
-    telegram-download.ts      # photo + size-capped document downloads
+    telegram-download.ts      # fetch-only photo + size-capped document downloads (returns bytes, never writes)
     telegram-spool.ts         # attachment spool dir + atomic writes
     document-text.ts          # supported-document policy, decoding, and untrusted envelope
     pdf-text.ts               # confined PDF.js extraction used by document ingress
     upload-store.ts           # atomic persistent opaque-file storage + metadata sidecars
     queue.ts                  # BullMQ source queues + delivery outbox
-    queue-read-models.ts      # pure BullMQ record → queue view projections
+    queue-read-models.ts      # pure BullMQ record → queue view projections and their types
     activity-store.ts         # immutable Redis ActivityResult repository
     session-store.ts          # Redis generation transitions + revision CAS
     shared-redis.ts           # one Redis connection for several stores, opened lazily, closed once
     quota-tracker.ts          # NotebookLM daily quota
-    skill-watcher.ts          # chokidar on skills/*.yaml
+    skill-watcher.ts          # chokidar on skills/*.yaml + per-file debounce/ready settle tracker
     agent-backends/           # claude + pi backends behind one runner (spawn, parse, stream)
     notebooklm-client.ts      # research/podcast adapter
     research-llm-client.ts    # Gemini for research summarization

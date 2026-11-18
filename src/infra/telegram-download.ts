@@ -1,7 +1,6 @@
-import { join } from 'node:path';
 import type { Api } from 'grammy';
-import type { TelegramUpdateId } from '../core/types.js';
-import { writeSpooledFile } from './telegram-spool.js';
+
+// Fetch only: every download returns bytes, and the ingress decides where they go.
 
 /** Where Telegram files are fetched from: the Bot API plus the token that authorises the file URL. */
 export type TelegramFileSource = {
@@ -18,6 +17,9 @@ export type DownloadLimit = {
 export type DownloadedBody =
   | { readonly kind: 'complete'; readonly data: Uint8Array }
   | { readonly kind: 'too-large' };
+
+/** A downloaded photo: its bytes and a safe file extension (from Telegram's path, else `jpg`). */
+export type DownloadedPhoto = { readonly data: Uint8Array; readonly extension: string };
 
 const DOCUMENT_DOWNLOAD_TIMEOUT_MS = 20_000;
 
@@ -67,22 +69,20 @@ function photoExtension(telegramFilePath: string): string {
   return /^[a-z0-9]{1,5}$/.test(candidate) ? candidate : 'jpg';
 }
 
-/** Download one photo into the attachment spool, named after its update; returns the spool path. */
+/** Download one photo into memory. */
 export async function downloadPhoto(
   source: TelegramFileSource,
   fileId: string,
-  updateId: TelegramUpdateId,
-  attachmentDir: string,
-): Promise<string> {
+): Promise<DownloadedPhoto> {
   const file = await resolveFile(source, fileId);
   const response = await fetch(file.url);
   if (!response.ok) {
     throw new Error(`Photo download failed: ${response.status}`);
   }
-  const buffer = Buffer.from(await response.arrayBuffer());
-  const filePath = join(attachmentDir, `${updateId}.${photoExtension(file.filePath)}`);
-  await writeSpooledFile(attachmentDir, filePath, buffer);
-  return filePath;
+  return {
+    data: new Uint8Array(await response.arrayBuffer()),
+    extension: photoExtension(file.filePath),
+  };
 }
 
 /** Download one document into memory, refusing (without reading further) past `limit.maxBytes`. */

@@ -5,6 +5,7 @@
  * No subprocess lifecycle logic — that belongs in the shared runner.
  */
 
+import { match } from 'ts-pattern';
 import { assertNever } from '../../core/types.js';
 import type { AgentBackend, AgentModelSelection, StreamDelta } from './types.js';
 
@@ -63,7 +64,14 @@ function parseJsonRecord(line: string): Record<string, unknown> | null {
   return isRecord(parsed) ? parsed : null;
 }
 
-/** A stream-json line, reduced to what parseResult reads from it. */
+/** A stream_event line's event, reduced to the kinds reclaw reads; the one reader of that shape. */
+type ClaudeStreamEvent =
+  | { readonly kind: 'message-start' }
+  | { readonly kind: 'block-start'; readonly blockType: 'thinking' | 'text' }
+  | { readonly kind: 'text-delta'; readonly text: string }
+  | { readonly kind: 'thinking-delta'; readonly thinking: string };
+
+/** A stream-json line, reduced to what parseResult and extractStreamDelta read from it. */
 type ClaudeFrame =
   | {
       readonly kind: 'agent-error';
@@ -71,8 +79,7 @@ type ClaudeFrame =
       readonly errorMessage: string;
     }
   | { readonly kind: 'result'; readonly sessionId: string | null; readonly result: string | null }
-  | { readonly kind: 'message-start' }
-  | { readonly kind: 'text-delta'; readonly text: string };
+  | ClaudeStreamEvent;
 
 function parseResultFrame(record: Record<string, unknown>): ClaudeFrame {
   const sessionId = typeof record.session_id === 'string' ? record.session_id : null;
@@ -96,23 +103,42 @@ function parseResultFrame(record: Record<string, unknown>): ClaudeFrame {
   return { kind: 'result', sessionId, result };
 }
 
-function parseStreamEventFrame(record: Record<string, unknown>): ClaudeFrame | null {
-  const event = record.event;
-  if (!isRecord(event)) return null;
-  if (event.type === 'message_start') return { kind: 'message-start' };
-  if (event.type !== 'content_block_delta') return null;
+/** content_block_start: a new thinking or text block opens; any other block is not streamed. */
+function parseBlockStart(contentBlock: unknown): ClaudeStreamEvent | null {
+  if (!isRecord(contentBlock)) return null;
+  if (contentBlock.type === 'thinking') return { kind: 'block-start', blockType: 'thinking' };
+  if (contentBlock.type === 'text') return { kind: 'block-start', blockType: 'text' };
+  return null;
+}
 
-  const delta = event.delta;
-  return isRecord(delta) && delta.type === 'text_delta' && typeof delta.text === 'string'
-    ? { kind: 'text-delta', text: delta.text }
-    : null;
+/** content_block_delta: thinking or text content; any other delta is not streamed. */
+function parseBlockDelta(delta: unknown): ClaudeStreamEvent | null {
+  if (!isRecord(delta)) return null;
+  if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string') {
+    return { kind: 'thinking-delta', thinking: delta.thinking };
+  }
+  if (delta.type === 'text_delta' && typeof delta.text === 'string') {
+    return { kind: 'text-delta', text: delta.text };
+  }
+  return null;
+}
+
+function parseStreamEvent(event: unknown): ClaudeStreamEvent | null {
+  if (!isRecord(event)) return null;
+  // A wire value: every other event type (message_delta, ping, ...) streams nothing.
+  return match(event.type)
+    .returnType<ClaudeStreamEvent | null>()
+    .with('message_start', () => ({ kind: 'message-start' }))
+    .with('content_block_start', () => parseBlockStart(event.content_block))
+    .with('content_block_delta', () => parseBlockDelta(event.delta))
+    .otherwise(() => null);
 }
 
 function parseClaudeFrame(line: string): ClaudeFrame | null {
   const record = parseJsonRecord(line);
   if (record === null) return null;
   if (record.type === 'result') return parseResultFrame(record);
-  return record.type === 'stream_event' ? parseStreamEventFrame(record) : null;
+  return record.type === 'stream_event' ? parseStreamEvent(record.event) : null;
 }
 
 /**
@@ -151,6 +177,10 @@ function parseClaudeOutput(rawOutput: string): ReturnType<AgentBackend['parseRes
       case 'text-delta':
         // A text delta before any message_start opens a message of its own.
         lastMessageText = (lastMessageText ?? '') + frame.text;
+        break;
+      case 'block-start':
+      case 'thinking-delta':
+        // Streamed to the live view only; the reply is built from text deltas.
         break;
       default:
         return assertNever(frame);
@@ -202,41 +232,23 @@ export const claudeBackend: AgentBackend = {
   parseResult: parseClaudeOutput,
 
   extractStreamDelta(line: string): StreamDelta | null {
-    const parsed = parseJsonRecord(line);
-    if (parsed === null) return null;
-    if (parsed.type !== 'stream_event') return null;
+    const record = parseJsonRecord(line);
+    if (record === null || record.type !== 'stream_event') return null;
+    const event = parseStreamEvent(record.event);
+    if (event === null) return null;
 
-    const event = parsed.event;
-    if (!isRecord(event)) return null;
-
-    // Handle content_block_start — signals a new thinking or text block
-    if (event.type === 'content_block_start') {
-      const contentBlock = event.content_block;
-      if (!isRecord(contentBlock)) return null;
-      if (contentBlock.type === 'thinking') {
-        return { type: 'block_start', blockType: 'thinking' };
-      }
-      if (contentBlock.type === 'text') {
-        return { type: 'block_start', blockType: 'text' };
-      }
-      return null;
+    switch (event.kind) {
+      case 'message-start':
+        return null;
+      case 'block-start':
+        return { type: 'block_start', blockType: event.blockType };
+      case 'thinking-delta':
+        return { type: 'thinking', thinking: event.thinking };
+      case 'text-delta':
+        return { type: 'text', text: event.text };
+      default:
+        return assertNever(event);
     }
-
-    // Handle content_block_delta — text or thinking content
-    if (event.type !== 'content_block_delta') return null;
-
-    const delta = event.delta;
-    if (!isRecord(delta)) return null;
-
-    if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string') {
-      return { type: 'thinking', thinking: delta.thinking };
-    }
-
-    if (delta.type === 'text_delta' && typeof delta.text === 'string') {
-      return { type: 'text', text: delta.text };
-    }
-
-    return null;
   },
 
   extractSessionId(line: string): string | null {
