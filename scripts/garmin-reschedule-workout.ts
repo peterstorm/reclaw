@@ -90,7 +90,8 @@ async function moveSchedule(
   toDate: string,
 ): Promise<number | undefined> {
   console.error(`[INFO] Deleting schedule ${scheduleId}...`);
-  // DELETE https://connectapi.garmin.com/workout-service/schedule/<scheduleId>
+  // The SDK's own unschedule call, so deleting a schedule needs no cast to reach the
+  // client's private HTTP transport.
   await client.unscheduleWorkout(scheduleId);
   console.error('[INFO] Schedule deleted');
 

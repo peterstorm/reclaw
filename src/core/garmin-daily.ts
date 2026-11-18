@@ -7,7 +7,8 @@
 // change to their contract.
 //
 // Every record is parsed, never cast (garmin-record.ts): a field of the wrong type
-// reads exactly as a missing one. Field shapes come from the vault notes
+// reads exactly as a missing one, and every extractor returns a Read — its value and
+// the drift it met, for garmin-fetch to warn about. Field shapes come from the vault notes
 // reclaw/gotchas/garmin-api-gotchas (list vs detail activity fields, HR zones, the
 // time series, lactate threshold, training status) and
 // reclaw/skills/workout-json-reference (workout steps, end conditions, exerciseSets),
@@ -15,6 +16,8 @@
 
 import { z } from 'zod';
 import {
+  type Read,
+  type RecordReader,
   bool,
   field,
   keyed,
@@ -24,6 +27,7 @@ import {
   num,
   readList,
   readRecord,
+  reading,
   str,
 } from './garmin-record.js';
 
@@ -162,7 +166,11 @@ export type TrainingReadinessSummary = {
 };
 
 type HrTimeSeriesPoint = {
-  /** The sample's `directTimestamp` as sent: absent from the JSON when the row has none. */
+  /**
+   * The row's `directTimestamp`: 0 when the activity has no `directTimestamp` metric;
+   * null when the row's element is null; absent from the JSON when that element is
+   * missing (or not a number).
+   */
   readonly timestamp: number | null | undefined;
   readonly heartRate: number;
 };
@@ -201,14 +209,14 @@ export type CalendarWorkout = {
   readonly workoutId: number | null | undefined;
 };
 
-/** The prose of a workout's detail record. */
-export type WorkoutDescription = {
+/** What a calendar workout's detail record adds to it: its prose and its steps. */
+export type WorkoutDetail = {
   readonly description: string | null;
   readonly provider: string | null;
+  readonly steps: readonly WorkoutStep[];
 };
 
-export type ScheduledWorkout = CalendarWorkout &
-  WorkoutDescription & { readonly steps: readonly WorkoutStep[] };
+export type ScheduledWorkout = CalendarWorkout & WorkoutDetail;
 
 export type GarminDailyData = {
   readonly date: string;
@@ -241,30 +249,32 @@ const sleepRecord = z.object({
   }),
 });
 
-export const extractSleep = (raw: unknown): SleepSummary => {
-  const daily = readRecord(sleepRecord, raw, 'sleep record').dailySleepDTO;
-  return {
-    score: daily?.sleepScores?.overall?.value ?? null,
-    durationSeconds: daily?.sleepTimeSeconds ?? null,
-    deepSleepSeconds: daily?.deepSleepSeconds ?? null,
-    lightSleepSeconds: daily?.lightSleepSeconds ?? null,
-    remSleepSeconds: daily?.remSleepSeconds ?? null,
-    awakeSleepSeconds: daily?.awakeSleepSeconds ?? null,
-    startTime: daily?.sleepStartTimestampLocal ?? null,
-    endTime: daily?.sleepEndTimestampLocal ?? null,
-  };
-};
+export const extractSleep = (raw: unknown): Read<SleepSummary> =>
+  reading((record) => {
+    const daily = record(sleepRecord, raw, 'sleep record').dailySleepDTO;
+    return {
+      score: daily?.sleepScores?.overall?.value ?? null,
+      durationSeconds: daily?.sleepTimeSeconds ?? null,
+      deepSleepSeconds: daily?.deepSleepSeconds ?? null,
+      lightSleepSeconds: daily?.lightSleepSeconds ?? null,
+      remSleepSeconds: daily?.remSleepSeconds ?? null,
+      awakeSleepSeconds: daily?.awakeSleepSeconds ?? null,
+      startTime: daily?.sleepStartTimestampLocal ?? null,
+      endTime: daily?.sleepEndTimestampLocal ?? null,
+    };
+  });
 
 const heartRateRecord = z.object({ restingHeartRate: num, maxHeartRate: num, minHeartRate: num });
 
-export const extractHeartRate = (raw: unknown): HeartRateSummary => {
-  const hr = readRecord(heartRateRecord, raw, 'heart rate record');
-  return {
-    restingHeartRate: hr.restingHeartRate ?? null,
-    maxHeartRate: hr.maxHeartRate ?? null,
-    minHeartRate: hr.minHeartRate ?? null,
-  };
-};
+export const extractHeartRate = (raw: unknown): Read<HeartRateSummary> =>
+  reading((record) => {
+    const hr = record(heartRateRecord, raw, 'heart rate record');
+    return {
+      restingHeartRate: hr.restingHeartRate ?? null,
+      maxHeartRate: hr.maxHeartRate ?? null,
+      minHeartRate: hr.minHeartRate ?? null,
+    };
+  });
 
 // ─── Activities ───────────────────────────────────────────────────────────────
 
@@ -304,39 +314,40 @@ const activityRecord = z.object({
 });
 
 /** An activity from either the list endpoint (flat fields) or the detail endpoint (nested DTOs). */
-export const extractActivity = (raw: unknown): ActivitySummary => {
-  const a = readRecord(activityRecord, raw, 'activity record');
-  const summary = a.summaryDTO ?? a;
-  return {
-    activityId: a.activityId,
-    activityName: a.activityName ?? 'Unknown',
-    activityType: (a.activityTypeDTO ?? a.activityType)?.typeKey ?? 'unknown',
-    startTime: summary.startTimeLocal ?? '',
-    durationSeconds: summary.duration ?? 0,
-    distance: summary.distance ?? null,
-    averageHR: summary.averageHR ?? null,
-    maxHR: summary.maxHR ?? null,
-    calories: summary.calories ?? null,
-    averageSpeed: summary.averageSpeed ?? null,
-    description: a.description ?? null,
-    elevationGain: summary.elevationGain ?? null,
-    averageRunningCadence:
-      summary.averageRunCadence ?? summary.averageRunningCadenceInStepsPerMinute ?? null,
-    aerobicTrainingEffect: summary.trainingEffect ?? summary.aerobicTrainingEffect ?? null,
-    anaerobicTrainingEffect: summary.anaerobicTrainingEffect ?? null,
-    vo2MaxValue: summary.vO2MaxValue ?? null,
-    perceivedExertion: a.perceivedExertion ?? null,
-    feelScore: a.feelScore ?? null,
-    hrZones: extractHrZones(a.hrZones),
-    splits: extractSplits(a.splitSummaries),
-    hrTimeSeries: null,
-    lapSplits: null,
-    associatedWorkoutId: a.metadataDTO?.associatedWorkoutId ?? null,
-    associatedWorkout: null,
-    completedSets: null,
-    raw,
-  };
-};
+export const extractActivity = (raw: unknown): Read<ActivitySummary> =>
+  reading((record) => {
+    const a = record(activityRecord, raw, 'activity record');
+    const summary = a.summaryDTO ?? a;
+    return {
+      activityId: a.activityId,
+      activityName: a.activityName ?? 'Unknown',
+      activityType: (a.activityTypeDTO ?? a.activityType)?.typeKey ?? 'unknown',
+      startTime: summary.startTimeLocal ?? '',
+      durationSeconds: summary.duration ?? 0,
+      distance: summary.distance ?? null,
+      averageHR: summary.averageHR ?? null,
+      maxHR: summary.maxHR ?? null,
+      calories: summary.calories ?? null,
+      averageSpeed: summary.averageSpeed ?? null,
+      description: a.description ?? null,
+      elevationGain: summary.elevationGain ?? null,
+      averageRunningCadence:
+        summary.averageRunCadence ?? summary.averageRunningCadenceInStepsPerMinute ?? null,
+      aerobicTrainingEffect: summary.trainingEffect ?? summary.aerobicTrainingEffect ?? null,
+      anaerobicTrainingEffect: summary.anaerobicTrainingEffect ?? null,
+      vo2MaxValue: summary.vO2MaxValue ?? null,
+      perceivedExertion: a.perceivedExertion ?? null,
+      feelScore: a.feelScore ?? null,
+      hrZones: hrZonesOf(record, a.hrZones),
+      splits: splitsOf(record, a.splitSummaries),
+      hrTimeSeries: null,
+      lapSplits: null,
+      associatedWorkoutId: a.metadataDTO?.associatedWorkoutId ?? null,
+      associatedWorkout: null,
+      completedSets: null,
+      raw,
+    };
+  });
 
 const listedActivityRecord = z.object({ activityId: num, startTimeLocal: str });
 
@@ -344,13 +355,15 @@ const listedActivityRecord = z.object({ activityId: num, startTimeLocal: str });
 export type ListedActivity = { readonly activityId: number | null; readonly record: unknown };
 
 /** The activity list's entries that started on `date` (YYYY-MM-DD, local). */
-export const activitiesOn = (response: unknown, date: string): readonly ListedActivity[] =>
-  readList(response, 'activity list').flatMap((record) => {
-    const entry = readRecord(listedActivityRecord, record, 'activity list entry');
-    return (entry.startTimeLocal ?? '').startsWith(date)
-      ? [{ activityId: entry.activityId ?? null, record }]
-      : [];
-  });
+export const activitiesOn = (response: unknown, date: string): Read<readonly ListedActivity[]> =>
+  reading((record) =>
+    readList(response, 'activity list').flatMap((raw) => {
+      const entry = record(listedActivityRecord, raw, 'activity list entry');
+      return (entry.startTimeLocal ?? '').startsWith(date)
+        ? [{ activityId: entry.activityId ?? null, record: raw }]
+        : [];
+    }),
+  );
 
 const STRENGTH_ACTIVITY_TYPES: ReadonlySet<string> = new Set([
   'strength_training',
@@ -373,21 +386,25 @@ const zoneTimesRecord = z.object({
 });
 
 /** Extract HR zone times from the activity list summary (hrTimeInZone_1..5 fields) */
-export const extractHrZonesFromSummary = (raw: unknown): readonly HrZone[] | null => {
-  const times = readRecord(zoneTimesRecord, raw, 'activity list entry');
-  if (times.hrTimeInZone_1 == null) return null;
-  return ([1, 2, 3, 4, 5] as const).map((zone) => ({
-    zone,
-    seconds: Math.round(times[`hrTimeInZone_${zone}`] ?? 0),
-  }));
-};
+export const extractHrZonesFromSummary = (raw: unknown): Read<readonly HrZone[] | null> =>
+  reading((record) => {
+    const times = record(zoneTimesRecord, raw, 'activity list entry');
+    if (times.hrTimeInZone_1 == null) return null;
+    return ([1, 2, 3, 4, 5] as const).map((zone) => ({
+      zone,
+      seconds: Math.round(times[`hrTimeInZone_${zone}`] ?? 0),
+    }));
+  });
 
 const hrZoneRecord = z.object({ zoneNumber: num, secsInZone: num });
 
-const extractHrZones = (zones: readonly unknown[] | null | undefined): readonly HrZone[] | null => {
+const hrZonesOf = (
+  record: RecordReader,
+  zones: readonly unknown[] | null | undefined,
+): readonly HrZone[] | null => {
   if (!zones?.length) return null;
   return zones.map((raw) => {
-    const z = readRecord(hrZoneRecord, raw, 'HR zone');
+    const z = record(hrZoneRecord, raw, 'HR zone');
     return { zone: z.zoneNumber, seconds: z.secsInZone ?? 0 };
   });
 };
@@ -400,10 +417,13 @@ const splitRecord = z.object({
   splitType: str,
 });
 
-const extractSplits = (splits: readonly unknown[] | null | undefined): readonly Split[] | null => {
+const splitsOf = (
+  record: RecordReader,
+  splits: readonly unknown[] | null | undefined,
+): readonly Split[] | null => {
   if (!splits?.length) return null;
   return splits.map((raw) => {
-    const s = readRecord(splitRecord, raw, 'split summary');
+    const s = record(splitRecord, raw, 'split summary');
     return {
       distance: s.distance ?? 0,
       duration: s.duration ?? 0,
@@ -418,25 +438,26 @@ const activityDetailsRecord = z.object({ metricDescriptors: list, activityDetail
 const metricDescriptorRecord = z.object({ key: str });
 const metricsRowRecord = z.object({ metrics: listOf(num) });
 
-export const extractHrTimeSeries = (raw: unknown): readonly HrTimeSeriesPoint[] | null => {
-  const details = readRecord(activityDetailsRecord, raw, 'activity details');
-  const descriptors = details.metricDescriptors;
-  const rows = details.activityDetailMetrics;
-  if (!descriptors?.length || !rows?.length) return null;
+export const extractHrTimeSeries = (raw: unknown): Read<readonly HrTimeSeriesPoint[] | null> =>
+  reading((record) => {
+    const details = record(activityDetailsRecord, raw, 'activity details');
+    const descriptors = details.metricDescriptors;
+    const rows = details.activityDetailMetrics;
+    if (!descriptors?.length || !rows?.length) return null;
 
-  // Find positional indices from metric descriptors
-  const keyOf = (d: unknown) => readRecord(metricDescriptorRecord, d, 'metric descriptor').key;
-  const hrIdx = descriptors.findIndex((d) => keyOf(d) === 'directHeartRate');
-  const tsIdx = descriptors.findIndex((d) => keyOf(d) === 'directTimestamp');
-  if (hrIdx === -1) return null;
+    // Find positional indices from metric descriptors
+    const keyOf = (d: unknown) => record(metricDescriptorRecord, d, 'metric descriptor').key;
+    const hrIdx = descriptors.findIndex((d) => keyOf(d) === 'directHeartRate');
+    const tsIdx = descriptors.findIndex((d) => keyOf(d) === 'directTimestamp');
+    if (hrIdx === -1) return null;
 
-  return rows.flatMap((row) => {
-    const values = readRecord(metricsRowRecord, row, 'metrics row').metrics;
-    const hr = values?.[hrIdx];
-    if (values == null || hr == null || hr === 0) return [];
-    return [{ timestamp: tsIdx !== -1 ? values[tsIdx] : 0, heartRate: hr }];
+    return rows.flatMap((row) => {
+      const values = record(metricsRowRecord, row, 'metrics row').metrics;
+      const hr = values?.[hrIdx];
+      if (values == null || hr == null || hr === 0) return [];
+      return [{ timestamp: tsIdx !== -1 ? values[tsIdx] : 0, heartRate: hr }];
+    });
   });
-};
 
 const lapsRecord = z.object({ lapDTOs: list });
 
@@ -453,26 +474,27 @@ const lapRecord = z.object({
   averagePower: num,
 });
 
-export const extractLapSplits = (raw: unknown): readonly LapSplit[] | null => {
-  const laps = readRecord(lapsRecord, raw, 'lap splits').lapDTOs;
-  if (!laps?.length) return null;
-  return laps.map((rawLap, i) => {
-    const lap = readRecord(lapRecord, rawLap, 'lap');
-    return {
-      lapIndex: i + 1,
-      distance: lap.distance ?? 0,
-      duration: lap.duration ?? 0,
-      movingDuration: lap.movingDuration ?? null,
-      averageSpeed: lap.averageSpeed ?? null,
-      averageHR: lap.averageHR ?? null,
-      maxHR: lap.maxHR ?? null,
-      averageRunCadence: lap.averageRunCadence ?? null,
-      elevationGain: lap.elevationGain ?? null,
-      elevationLoss: lap.elevationLoss ?? null,
-      averagePower: lap.averagePower ?? null,
-    };
+export const extractLapSplits = (raw: unknown): Read<readonly LapSplit[] | null> =>
+  reading((record) => {
+    const laps = record(lapsRecord, raw, 'lap splits').lapDTOs;
+    if (!laps?.length) return null;
+    return laps.map((rawLap, i) => {
+      const lap = record(lapRecord, rawLap, 'lap');
+      return {
+        lapIndex: i + 1,
+        distance: lap.distance ?? 0,
+        duration: lap.duration ?? 0,
+        movingDuration: lap.movingDuration ?? null,
+        averageSpeed: lap.averageSpeed ?? null,
+        averageHR: lap.averageHR ?? null,
+        maxHR: lap.maxHR ?? null,
+        averageRunCadence: lap.averageRunCadence ?? null,
+        elevationGain: lap.elevationGain ?? null,
+        elevationLoss: lap.elevationLoss ?? null,
+        averagePower: lap.averagePower ?? null,
+      };
+    });
   });
-};
 
 // ─── Workouts ─────────────────────────────────────────────────────────────────
 
@@ -499,17 +521,23 @@ const workoutStepRecord = z.object({
 });
 
 /** Every segment's steps, in order, each segment read as it is reached. */
-function* segmentSteps(workout: z.output<typeof workoutRecord>): Generator<unknown> {
+function* segmentSteps(
+  record: RecordReader,
+  workout: z.output<typeof workoutRecord>,
+): Generator<unknown> {
   for (const segment of workout.workoutSegments ?? []) {
-    yield* readRecord(workoutSegmentRecord, segment, 'workout segment').workoutSteps ?? [];
+    yield* record(workoutSegmentRecord, segment, 'workout segment').workoutSteps ?? [];
   }
 }
 
 /** A prescribed step; repeat groups are flattened into their children, in order. */
-const associatedSteps = (steps: Iterable<unknown>): readonly AssociatedWorkoutStep[] =>
+const associatedSteps = (
+  record: RecordReader,
+  steps: Iterable<unknown>,
+): readonly AssociatedWorkoutStep[] =>
   [...steps].flatMap((raw) => {
-    const s = readRecord(workoutStepRecord, raw, 'workout step');
-    if (s.type === 'RepeatGroupDTO') return associatedSteps(s.workoutSteps ?? []);
+    const s = record(workoutStepRecord, raw, 'workout step');
+    if (s.type === 'RepeatGroupDTO') return associatedSteps(record, s.workoutSteps ?? []);
     const weight = s.weightValue ?? null;
     return [
       {
@@ -524,14 +552,15 @@ const associatedSteps = (steps: Iterable<unknown>): readonly AssociatedWorkoutSt
     ];
   });
 
-export const extractAssociatedWorkout = (raw: unknown): AssociatedWorkout => {
-  const workout = readRecord(workoutRecord, raw, 'workout');
-  return {
-    workoutName: workout.workoutName ?? 'Unknown',
-    description: workout.description ?? null,
-    steps: associatedSteps(segmentSteps(workout)),
-  };
-};
+export const extractAssociatedWorkout = (raw: unknown): Read<AssociatedWorkout> =>
+  reading((record) => {
+    const workout = record(workoutRecord, raw, 'workout');
+    return {
+      workoutName: workout.workoutName ?? 'Unknown',
+      description: workout.description ?? null,
+      steps: associatedSteps(record, segmentSteps(record, workout)),
+    };
+  });
 
 const exerciseSetsRecord = z.object({ exerciseSets: list });
 
@@ -552,25 +581,26 @@ const kilograms = (grams: number | null | undefined): number | null => {
   return grams === 0 ? 0 : grams / 1000;
 };
 
-export const extractCompletedSets = (raw: unknown): readonly CompletedSet[] | null => {
-  const sets = readRecord(exerciseSetsRecord, raw, 'exercise sets').exerciseSets;
-  if (!sets?.length) return null;
-  return sets.map((rawSet, i) => {
-    const s = readRecord(exerciseSetRecord, rawSet, 'exercise set');
-    const primary = s.exercises?.[0];
-    return {
-      setIndex: i,
-      wktStepIndex: s.wktStepIndex ?? null,
-      setType: s.setType ?? 'UNKNOWN',
-      category: primary?.category ?? null,
-      exerciseName: primary?.name ?? null,
-      reps: s.repetitionCount ?? null,
-      weightKg: kilograms(s.weight),
-      durationSeconds: s.duration ?? null,
-      startTime: s.startTime ?? null,
-    };
+export const extractCompletedSets = (raw: unknown): Read<readonly CompletedSet[] | null> =>
+  reading((record) => {
+    const sets = record(exerciseSetsRecord, raw, 'exercise sets').exerciseSets;
+    if (!sets?.length) return null;
+    return sets.map((rawSet, i) => {
+      const s = record(exerciseSetRecord, rawSet, 'exercise set');
+      const primary = s.exercises?.[0];
+      return {
+        setIndex: i,
+        wktStepIndex: s.wktStepIndex ?? null,
+        setType: s.setType ?? 'UNKNOWN',
+        category: primary?.category ?? null,
+        exerciseName: primary?.name ?? null,
+        reps: s.repetitionCount ?? null,
+        weightKg: kilograms(s.weight),
+        durationSeconds: s.duration ?? null,
+        startTime: s.startTime ?? null,
+      };
+    });
   });
-};
 
 /**
  * One workout step. Garmin puts the step's length in `endConditionValue`, in the
@@ -578,8 +608,8 @@ export const extractCompletedSets = (raw: unknown): readonly CompletedSet[] | nu
  * End Conditions): meters for `distance` (id 3), seconds for `time` (id 2). A
  * step ended by anything else (lap button, iterations, reps) has neither.
  */
-const workoutStep = (raw: unknown): WorkoutStep => {
-  const s = readRecord(workoutStepRecord, raw, 'workout step');
+const workoutStep = (record: RecordReader, raw: unknown): WorkoutStep => {
+  const s = record(workoutStepRecord, raw, 'workout step');
   const condition = s.endCondition?.conditionTypeKey;
   const value = s.endConditionValue ?? null;
   return {
@@ -590,26 +620,61 @@ const workoutStep = (raw: unknown): WorkoutStep => {
   };
 };
 
-/**
- * Every segment's steps, in order. Lazy, so a caller that stops at a malformed
- * segment keeps the steps read before it.
- */
-export function* workoutSteps(detail: unknown): Generator<WorkoutStep> {
-  for (const step of segmentSteps(readRecord(workoutRecord, detail, 'workout'))) {
-    yield workoutStep(step);
+/** Every segment's steps, in order, each read as it is reached. */
+function* scheduledSteps(
+  record: RecordReader,
+  workout: z.output<typeof workoutRecord>,
+): Generator<WorkoutStep> {
+  for (const step of segmentSteps(record, workout)) yield workoutStep(record, step);
+}
+
+/** What `items` yields until one fails to read, and that failure's message (null when none did). */
+function readUntilMalformed<T>(items: Iterable<T>): {
+  readonly read: readonly T[];
+  readonly malformed: string | null;
+} {
+  let read: readonly T[] = [];
+  try {
+    for (const item of items) read = [...read, item];
+    return { read, malformed: null };
+  } catch (e) {
+    return { read, malformed: e instanceof Error ? e.message : String(e) };
   }
 }
 
-export const workoutDescription = (detail: unknown): WorkoutDescription => {
-  const workout = readRecord(workoutRecord, detail, 'workout');
-  return { description: workout.description ?? null, provider: workout.workoutProvider ?? null };
+/** A calendar workout's detail as far as it reads; `malformed` is what stopped its steps, if anything did. */
+export type WorkoutDetailRead = {
+  readonly detail: WorkoutDetail;
+  readonly malformed: string | null;
 };
+
+/** The detail of a calendar workout with no detail record read. */
+export const NO_WORKOUT_DETAIL: WorkoutDetail = { description: null, provider: null, steps: [] };
+
+/**
+ * A workout detail record, read once: its description and provider, then every
+ * segment's steps in order. A malformed segment or step ends the steps there — the
+ * steps before it are kept, and `malformed` says why. A missing record throws.
+ */
+export const extractScheduledWorkoutDetail = (response: unknown): Read<WorkoutDetailRead> =>
+  reading((record) => {
+    const workout = record(workoutRecord, response, 'workout');
+    const steps = readUntilMalformed(scheduledSteps(record, workout));
+    return {
+      detail: {
+        description: workout.description ?? null,
+        provider: workout.workoutProvider ?? null,
+        steps: steps.read,
+      },
+      malformed: steps.malformed,
+    };
+  });
 
 const calendarRecord = z.object({ calendarItems: list });
 
 /** The calendar's items, each read with {@link workoutOn} as it is reached. */
-export const calendarItems = (calendar: unknown): readonly unknown[] =>
-  readRecord(calendarRecord, calendar, 'calendar').calendarItems ?? [];
+export const calendarItems = (calendar: unknown): Read<readonly unknown[]> =>
+  reading((record) => record(calendarRecord, calendar, 'calendar').calendarItems ?? []);
 
 const calendarItemRecord = z.object({
   itemType: str,
@@ -621,11 +686,36 @@ const calendarItemRecord = z.object({
   workoutId: num,
 });
 
+/** What a calendar workout's detail is fetched by. */
+export type WorkoutDetailId =
+  | { readonly kind: 'id'; readonly workoutId: number }
+  /** Garmin sent no id, or 0: there is no detail to fetch. */
+  | { readonly kind: 'none' }
+  /** Garmin sent an id that is not a number: the detail cannot be fetched. */
+  | { readonly kind: 'not-a-number' };
+
+/** A calendar workout on the fetched date, and what its detail is fetched by. */
+export type ListedWorkout = {
+  readonly workout: CalendarWorkout;
+  readonly detailId: WorkoutDetailId;
+};
+
+/** What a workout's detail is fetched by, from its parsed id and whether that id drifted. */
+const workoutDetailId = (
+  workoutId: number | null | undefined,
+  drift: readonly string[],
+): WorkoutDetailId => {
+  if (workoutId) return { kind: 'id', workoutId };
+  if (drift.includes('calendar item.workoutId')) return { kind: 'not-a-number' };
+  return { kind: 'none' };
+};
+
 /** The calendar item when it is a workout on `date` (YYYY-MM-DD); null for anything else. */
-export const workoutOn = (raw: unknown, date: string): CalendarWorkout | null => {
-  const item = readRecord(calendarItemRecord, raw, 'calendar item');
-  if (item.itemType !== 'workout' || item.date !== date) return null;
-  return {
+export const workoutOn = (raw: unknown, date: string): Read<ListedWorkout | null> => {
+  const { value: item, drift } = readRecord(calendarItemRecord, raw, 'calendar item');
+  if (item.itemType !== 'workout' || item.date !== date) return { value: null, drift };
+  const detailId = workoutDetailId(item.workoutId, drift);
+  const workout: CalendarWorkout = {
     title: item.title ?? null,
     date: item.date,
     duration: item.duration ?? null,
@@ -634,6 +724,7 @@ export const workoutOn = (raw: unknown, date: string): CalendarWorkout | null =>
     itemType: item.itemType,
     workoutId: item.workoutId,
   };
+  return { value: { workout, detailId }, drift };
 };
 
 // ─── Training metrics ─────────────────────────────────────────────────────────
@@ -648,33 +739,37 @@ const readinessRecord = z.object({
 });
 
 /** The day's readiness: the after-wakeup entry when there is one, else the first; null for none. */
-export const extractTrainingReadiness = (response: unknown): TrainingReadinessSummary | null => {
-  const entries: readonly unknown[] = Array.isArray(response) ? response : [response];
-  const isAfterWakeup = (entry: unknown) =>
-    readRecord(readinessRecord, entry, 'training readiness entry').inputContext ===
-    'AFTER_WAKEUP_RESET';
-  const entry = entries.find(isAfterWakeup) ?? entries[0];
-  if (!entry) return null;
+export const extractTrainingReadiness = (
+  response: unknown,
+): Read<TrainingReadinessSummary | null> =>
+  reading((record) => {
+    const entries: readonly unknown[] = Array.isArray(response) ? response : [response];
+    const isAfterWakeup = (entry: unknown) =>
+      record(readinessRecord, entry, 'training readiness entry').inputContext ===
+      'AFTER_WAKEUP_RESET';
+    const entry = entries.find(isAfterWakeup) ?? entries[0];
+    if (!entry) return null;
 
-  const r = readRecord(readinessRecord, entry, 'training readiness entry');
-  return {
-    score: r.score ?? null,
-    level: r.level ?? null,
-    sleepScore: r.sleepScore ?? null,
-    recoveryTime: r.recoveryTime != null ? Math.round((r.recoveryTime / 60) * 10) / 10 : null,
-    hrvStatus: r.hrvFactorFeedback ?? null,
-    raw: entry,
-  };
-};
+    const r = record(readinessRecord, entry, 'training readiness entry');
+    return {
+      score: r.score ?? null,
+      level: r.level ?? null,
+      sleepScore: r.sleepScore ?? null,
+      recoveryTime: r.recoveryTime != null ? Math.round((r.recoveryTime / 60) * 10) / 10 : null,
+      hrvStatus: r.hrvFactorFeedback ?? null,
+      raw: entry,
+    };
+  });
 
 const personalInfoRecord = z.object({
   biometricProfile: nested({ vo2Max: num, vo2MaxCycling: num }),
 });
 
-export const extractVo2Max = (info: unknown): Vo2MaxSummary => {
-  const bio = readRecord(personalInfoRecord, info, 'personal info').biometricProfile;
-  return { running: bio?.vo2Max ?? null, cycling: bio?.vo2MaxCycling ?? null };
-};
+export const extractVo2Max = (info: unknown): Read<Vo2MaxSummary> =>
+  reading((record) => {
+    const bio = record(personalInfoRecord, info, 'personal info').biometricProfile;
+    return { running: bio?.vo2Max ?? null, cycling: bio?.vo2MaxCycling ?? null };
+  });
 
 const userSettingsRecord = z.object({
   userData: nested({
@@ -691,18 +786,19 @@ const pacePerKm = (metersPerSecond: number): string => {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 };
 
-export const extractLactateThreshold = (settings: unknown): LactateThreshold => {
-  const ud = readRecord(userSettingsRecord, settings, 'user settings').userData;
-  const ltSpeedRaw = ud?.lactateThresholdSpeed ?? null;
-  // Garmin stores lactateThresholdSpeed with a ×0.1 scaling factor
-  const ltSpeedMps = ltSpeedRaw != null ? ltSpeedRaw * 10 : null;
-  return {
-    heartRate: ud?.lactateThresholdHeartRate ?? null,
-    speedMps: ltSpeedMps,
-    pacePerKm: ltSpeedMps != null && ltSpeedMps > 0 ? pacePerKm(ltSpeedMps) : null,
-    autoDetected: ud?.thresholdHeartRateAutoDetected ?? false,
-  };
-};
+export const extractLactateThreshold = (settings: unknown): Read<LactateThreshold> =>
+  reading((record) => {
+    const ud = record(userSettingsRecord, settings, 'user settings').userData;
+    const ltSpeedRaw = ud?.lactateThresholdSpeed ?? null;
+    // Garmin stores lactateThresholdSpeed with a ×0.1 scaling factor
+    const ltSpeedMps = ltSpeedRaw != null ? ltSpeedRaw * 10 : null;
+    return {
+      heartRate: ud?.lactateThresholdHeartRate ?? null,
+      speedMps: ltSpeedMps,
+      pacePerKm: ltSpeedMps != null && ltSpeedMps > 0 ? pacePerKm(ltSpeedMps) : null,
+      autoDetected: ud?.thresholdHeartRateAutoDetected ?? false,
+    };
+  });
 
 const TRAINING_STATUS_NAMES: Record<number, string> = {
   0: 'NOT_APPLICABLE',
@@ -726,12 +822,16 @@ export const codeName = (
 const trainingStatusRecord = z.object({
   /** Keyed by device id; the first device's entry is the one read. */
   latestTrainingStatusData: keyed,
+  /**
+   * Not keyed: the older response shape's one flat device entry, read whole as the
+   * device entry. `keyed` here only means "some record, its fields read later".
+   */
   mostRecentTrainingStatus: keyed,
 });
 
 const statusCode = field(z.union([z.number(), z.string()]));
 
-const deviceStatus = nested({
+const deviceStatusRecord = z.object({
   trainingStatus: statusCode,
   fitnessTrend: statusCode,
   acuteTrainingLoadDTO: nested({
@@ -744,37 +844,41 @@ const deviceStatus = nested({
 });
 
 /** Training status with ACWR, from the first (usually only) device's entry. */
-export const extractTrainingStatus = (raw: unknown): TrainingStatusSummary => {
-  const status = readRecord(trainingStatusRecord, raw, 'training status');
-  const deviceEntry: unknown = status.latestTrainingStatusData
-    ? Object.values(status.latestTrainingStatusData)[0]
-    : (status.mostRecentTrainingStatus ?? raw);
-  const device = deviceStatus.parse(deviceEntry);
-  const acute = device?.acuteTrainingLoadDTO;
+export const extractTrainingStatus = (raw: unknown): Read<TrainingStatusSummary> =>
+  reading((record) => {
+    const status = record(trainingStatusRecord, raw, 'training status');
+    const deviceEntry: unknown = status.latestTrainingStatusData
+      ? Object.values(status.latestTrainingStatusData)[0]
+      : (status.mostRecentTrainingStatus ?? raw);
+    // No device entry (an empty keyed record) reads as one with no fields.
+    const device =
+      deviceEntry == null ? undefined : record(deviceStatusRecord, deviceEntry, 'device status');
+    const acute = device?.acuteTrainingLoadDTO;
 
-  return {
-    trainingStatus: codeName(device?.trainingStatus ?? null, TRAINING_STATUS_NAMES),
-    fitnessTrend: codeName(device?.fitnessTrend ?? null, FITNESS_TREND_NAMES),
-    acuteTrainingLoad: acute
-      ? {
-          acwrPercent: acute.acwrPercent ?? null,
-          acwrStatus: acute.acwrStatus ?? null,
-          dailyAcuteChronicWorkloadRatio: acute.dailyAcuteChronicWorkloadRatio ?? null,
-          dailyTrainingLoadAcute: acute.dailyTrainingLoadAcute ?? null,
-          dailyTrainingLoadChronic: acute.dailyTrainingLoadChronic ?? null,
-        }
-      : null,
-    raw: deviceEntry,
-  };
-};
+    return {
+      trainingStatus: codeName(device?.trainingStatus ?? null, TRAINING_STATUS_NAMES),
+      fitnessTrend: codeName(device?.fitnessTrend ?? null, FITNESS_TREND_NAMES),
+      acuteTrainingLoad: acute
+        ? {
+            acwrPercent: acute.acwrPercent ?? null,
+            acwrStatus: acute.acwrStatus ?? null,
+            dailyAcuteChronicWorkloadRatio: acute.dailyAcuteChronicWorkloadRatio ?? null,
+            dailyTrainingLoadAcute: acute.dailyTrainingLoadAcute ?? null,
+            dailyTrainingLoadChronic: acute.dailyTrainingLoadChronic ?? null,
+          }
+        : null,
+      raw: deviceEntry,
+    };
+  });
 
 const hrvRecord = z.object({ hrvSummary: nested({ weeklyAvg: num, lastNightAvg: num }) });
 
-export const extractHrv = (raw: unknown): HrvSummary => {
-  const summary = readRecord(hrvRecord, raw, 'HRV record').hrvSummary;
-  return {
-    weeklyAverage: summary?.weeklyAvg ?? null,
-    lastNight: summary?.lastNightAvg ?? null,
-    raw,
-  };
-};
+export const extractHrv = (raw: unknown): Read<HrvSummary> =>
+  reading((record) => {
+    const summary = record(hrvRecord, raw, 'HRV record').hrvSummary;
+    return {
+      weeklyAverage: summary?.weeklyAvg ?? null,
+      lastNight: summary?.lastNightAvg ?? null,
+      raw,
+    };
+  });

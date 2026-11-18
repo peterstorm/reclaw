@@ -308,6 +308,125 @@ export function decideGarminRepair(input: {
   return applyCooldown(reason, lastAttemptMs, cooldownMs, nowMs);
 }
 
+// ─── Repairable credential verdicts ───────────────────────────────────────────
+
+export const REAUTH_COMMAND = 'bun scripts/notebooklm-reauth.ts (in ~/dev/claude-plugins/reclaw)';
+
+/** A probe's result; only a failed probe carries the error it failed with. */
+type ProbeRunOf<P extends NotebookLMProbe | GarminProbe> =
+  | { readonly result: Exclude<P, 'failed'> }
+  | { readonly result: 'failed'; readonly error: string };
+
+export type NotebookLMProbeRun = ProbeRunOf<NotebookLMProbe>;
+export type GarminProbeRun = ProbeRunOf<GarminProbe>;
+
+/** What a repairable credential's check ends in: a verdict now, or a repair whose result is the verdict. */
+export type CheckPlan =
+  | { readonly kind: 'report'; readonly outcome: ProbeOutcome }
+  | { readonly kind: 'repair'; readonly reason: string };
+
+/** Why a skipped credential is broken: the probe's own error when it has one, else the decision's reason. */
+function brokenDetail(run: NotebookLMProbeRun | GarminProbeRun, reason: string): string {
+  return run.result === 'failed' && run.error !== '' ? run.error : reason;
+}
+
+/** The verdict when no repair runs: the probe passed, or the repair is vetoed. */
+function unrepairedNotebookLMOutcome(
+  source: NotebookLMSource,
+  run: NotebookLMProbeRun,
+  reason: string,
+): ProbeOutcome {
+  if (run.result === 'ok') {
+    const ageNote =
+      source.kind === 'token' && source.ageDays !== null
+        ? `credentials.json is ${Math.floor(source.ageDays)} days old`
+        : 'credentials come from the environment';
+    return { kind: 'healthy', detail: ageNote };
+  }
+  // The only faulty-but-skipped paths are env-provided credentials (a re-auth
+  // would write a file the SDK never reads) and an active cooldown.
+  const remedy =
+    source.kind === 'token' && source.origin === 'env'
+      ? 're-issue the NOTEBOOKLM_AUTH_TOKEN / NOTEBOOKLM_COOKIES secrets — they take priority over credentials.json'
+      : `run ${REAUTH_COMMAND} to retry now`;
+  return { kind: 'broken', detail: brokenDetail(run, reason), remedy };
+}
+
+/**
+ * Where a NotebookLM check ends: a skipped repair reports the probe's verdict, a
+ * dry run reports the fault it would have repaired (still working: expiring), and
+ * anything else re-authenticates.
+ */
+export function planNotebookLMCheck(input: {
+  readonly source: NotebookLMSource;
+  readonly run: NotebookLMProbeRun;
+  readonly decision: RepairDecision;
+  readonly dryRun: boolean;
+}): CheckPlan {
+  const { source, run, decision, dryRun } = input;
+  if (decision.kind === 'skip') {
+    return { kind: 'report', outcome: unrepairedNotebookLMOutcome(source, run, decision.reason) };
+  }
+  if (!dryRun) return { kind: 'repair', reason: decision.reason };
+  return {
+    kind: 'report',
+    outcome: {
+      kind: run.result === 'ok' ? 'expiring' : 'broken',
+      detail: `${decision.reason} (repair skipped: --dry-run)`,
+      remedy: `run ${REAUTH_COMMAND}`,
+    },
+  };
+}
+
+/**
+ * Where a Garmin check ends: a skipped repair reports the cached tokens' verdict
+ * (the 20:00 garmin-sync retries a rejected one), a dry run reports the login it
+ * skipped, and anything else logs in fresh.
+ */
+export function planGarminCheck(input: {
+  readonly run: GarminProbeRun;
+  readonly decision: RepairDecision;
+  readonly dryRun: boolean;
+}): CheckPlan {
+  const { run, decision, dryRun } = input;
+  if (decision.kind === 'skip') {
+    return {
+      kind: 'report',
+      outcome:
+        run.result === 'ok'
+          ? { kind: 'healthy', detail: 'cached tokens accepted by Garmin' }
+          : {
+              kind: 'broken',
+              detail: brokenDetail(run, decision.reason),
+              remedy: `${decision.reason} — the 20:00 garmin-sync will retry the login`,
+            },
+    };
+  }
+  if (!dryRun) return { kind: 'repair', reason: decision.reason };
+  return {
+    kind: 'report',
+    outcome: {
+      kind: 'broken',
+      detail: `${decision.reason} (login skipped: --dry-run)`,
+      remedy: 'run bun scripts/garmin-fetch.ts to force a fresh login',
+    },
+  };
+}
+
+/** Whether this run attempted a credential's repair; only an attempt has a time. */
+export type RepairAttempt =
+  | { readonly attempted: false }
+  | { readonly attempted: true; readonly atMs: number };
+
+/** A repairable credential's verdict, and whether this run attempted its repair. */
+export type CredentialCheck = { readonly probe: Probe; readonly attempt: RepairAttempt };
+
+/** The repair attempt the cooldown counts from: this run's when it made one, else the one before. */
+export const lastRepairAttemptMs = (
+  attempt: RepairAttempt,
+  previousMs: number | null,
+): number | null => (attempt.attempted ? attempt.atMs : previousMs);
+
 // ─── OAuth expiry classification ──────────────────────────────────────────────
 
 /**
