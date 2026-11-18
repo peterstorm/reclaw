@@ -7,15 +7,15 @@ Started 2026-10-18 with the learning context; add other contexts as they are nam
 
 Code: `src/core/{curriculum,master-note,study-log,study-plan,curriculum-moc}.ts`,
 `src/orchestration/learn-command.ts`, `scripts/learn.ts`, skills `learn-*` and
-`curriculum-builder`. Vault: `learning/curriculum/`.
+`curriculum-builder`. Vault: `<vault>/learning/curriculum/`.
 
 | Term | Meaning | Not to be confused with |
 |---|---|---|
-| **Curriculum** | The parsed registry (`learning/curriculum/registry.yaml`): domains, subdomains, topics, settings. List order is study order. | A study *plan* (a computed decision) |
+| **Curriculum** | The parsed registry (`<vault>/learning/curriculum/registry.yaml`): domains, subdomains, topics, settings. List order is study order. | A study *plan* (a computed decision) |
 | **Domain / Subdomain** | Grouping of topics (`ai-engineering`, `inference-infra`, `software-engineering`; subdomains within). Also the note folder. | Reclaw's skill "domains" in cortex-prune |
 | **Topic** | One curriculum entry (slug, title, outcome, prereqs, sources, gaps, position). | A Telegram topic or a research notebook |
 | **Position** | 0-based index of a topic in study order. Prereqs always have a lower position. | — |
-| **Master note** | The learning note for a topic at `learning/curriculum/<domain>/<slug>.md`, in the authoring-guide format. | The older reference-style "agentic systems master note" |
+| **Master note** | The learning note for a topic at `<vault>/learning/curriculum/<domain>/<slug>.md`, in the authoring-guide format. | The older reference-style "agentic systems master note" |
 | **Built** | A topic whose master note exists (valid or broken). | Read |
 | **Lesson** | One `## Lesson N — …` section of a master note: a ~12-minute sitting with pretest questions. | A *session* (an agent conversation) |
 | **Pretest** | The "guess first" questions opening a lesson, answered before reading. | Recall cards |
@@ -52,7 +52,7 @@ Host side: `~/.dotfiles/roles/reclaw/default.nix` (agents slice, worker caps).
 Code: `src/core/instagram-*.ts`, `src/orchestration/instagram-ingest.ts`,
 `src/infra/{apify-instagram,instagram-media,instagram-vault,whisper-transcriber,tesseract-text-reader}.ts`,
 `scripts/ig-ingest.ts` + `scripts/ig-transcribe.py`, skill `ig-ingest`.
-Vault: `media/instagram/<handle>/<shortcode>.md`, `media/instagram/MOC.md`.
+Vault: `<vault>/media/instagram/<handle>/<shortcode>.md`, `<vault>/media/instagram/MOC.md`.
 
 | Term | Meaning | Not to be confused with |
 |---|---|---|

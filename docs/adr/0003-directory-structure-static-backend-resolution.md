@@ -5,7 +5,7 @@ Accepted
 
 ## Context
 
-Reclaw's agent subprocess infrastructure was a single monolithic file (`src/infra/claude-subprocess.ts`) containing CLI arg building, environment cleanup, output parsing, stream delta extraction, and subprocess lifecycle management — all tightly coupled to the Claude CLI format.
+Reclaw's agent subprocess infrastructure was a single monolithic file (src/infra/claude-subprocess.ts) containing CLI arg building, environment cleanup, output parsing, stream delta extraction, and subprocess lifecycle management — all tightly coupled to the Claude CLI format.
 
 Introducing a second backend (pi) required decomposing this monolith into multiple cohesive modules. Two structural questions arose:
 
@@ -25,13 +25,13 @@ Forces at play:
    - Pros: Clear module boundary; related files co-located; barrel export controls public surface; no dead code lingering; directory name communicates purpose at a glance
    - Cons: Deeper import paths; more files to navigate (7 files vs 1); deleting old file removes git blame history at that path
 
-2. **Flat files in `src/infra/` (e.g., `claude-backend.ts`, `pi-backend.ts`, `agent-runner.ts`, `agent-types.ts`)**
+2. **Flat files in `src/infra/` (e.g., `claude-backend.ts`, `pi-backend.ts`, agent-runner.ts, agent-types.ts)**
    - Pros: Shallow imports; fewer directories; keeps existing organizational pattern
    - Cons: Pollutes `src/infra/` with 7+ new files; no encapsulation boundary; related files scattered among unrelated infrastructure; naming collisions more likely as infra grows
 
 3. **Keep old monolith as a re-exporting shim that delegates to new modules**
    - Pros: Zero import-path changes for consumers; git blame preserved at original path
-   - Cons: Dead indirection layer; shim must be maintained; confusing to new developers who find the old file but real logic lives elsewhere; consumers already need type changes (`permissionFlags` → `allowedTools`) so import path changes are unavoidable anyway
+   - Cons: Dead indirection layer; shim must be maintained; confusing to new developers who find the old file but real logic lives elsewhere; consumers already need type changes (permissionFlags → `allowedTools`) so import path changes are unavoidable anyway
 
 4. **Dynamic per-request backend resolution (resolve backend from config on each `runAgent` call)**
    - Pros: Could theoretically support mixed backends or runtime switching
@@ -58,7 +58,7 @@ src/infra/agent-backends/
 └── runner.test.ts
 ```
 
-The old `src/infra/claude-subprocess.ts` and `src/infra/claude-subprocess.test.ts` are deleted entirely — no shim, no re-export wrapper.
+The old src/infra/claude-subprocess.ts and src/infra/claude-subprocess.test.ts are deleted entirely — no shim, no re-export wrapper.
 
 ### Static Resolution
 
@@ -88,6 +88,6 @@ const backend = resolveBackend(config);  // called once at startup
 
 **Negative:**
 - Switching backends requires a process restart (acceptable for a systemd-managed service where restarts are cheap and config changes are infrequent).
-- Git blame history at `src/infra/claude-subprocess.ts` is no longer directly navigable — developers must use `git log --follow` or check the commit that introduced `agent-backends/`.
-- Deeper import paths (`../infra/agent-backends/index.js` vs `../infra/claude-subprocess.js`) — mitigated by the barrel export making imports uniform.
+- Git blame history at src/infra/claude-subprocess.ts is no longer directly navigable — developers must use `git log --follow` or check the commit that introduced `src/infra/agent-backends/`.
+- Deeper import paths (../infra/agent-backends/index.js vs ../infra/claude-subprocess.js) — mitigated by the barrel export making imports uniform.
 - Cannot run mixed backends in a single process (e.g., Claude for scheduled jobs, Pi for chat) — no current requirement for this, and session isolation makes it architecturally inadvisable.

@@ -22,11 +22,11 @@ A single-user personal AI agent accessible via Telegram chat, capable of on-dema
 **Why this priority:** Core interaction loop; all other features depend on the messaging bridge working.
 
 **Acceptance Scenarios:**
-- Given I am the authenticated user, When I send a text message to the bot, Then I receive an AI-generated response within 60 seconds
-- Given I am the authenticated user, When I send a message while a previous request is still processing, Then both requests complete independently and responses are delivered in order of completion
-- Given an unauthorized Telegram user sends a message, When the bot receives it, Then the message is silently ignored with no response
-- Given the AI subprocess fails or times out, When I am waiting for a response, Then I receive an error message indicating the failure
-- Given the AI subprocess produces a very long response, When the response exceeds Telegram's message size limit, Then the response is split across multiple messages preserving readability
+- AS-001: Given I am the authenticated user, When I send a text message to the bot, Then I receive an AI-generated response within 60 seconds
+- AS-002: Given I am the authenticated user, When I send a message while a previous request is still processing, Then both requests complete independently and responses are delivered in order of completion
+- AS-003: Given an unauthorized Telegram user sends a message, When the bot receives it, Then the message is silently ignored with no response
+- AS-004: Given the AI subprocess fails or times out, When I am waiting for a response, Then I receive an error message indicating the failure
+- AS-005: Given the AI subprocess produces a very long response, When the response exceeds Telegram's message size limit, Then the response is split across multiple messages preserving readability
 
 ### US2: [P1] Morning Briefing
 
@@ -37,9 +37,9 @@ A single-user personal AI agent accessible via Telegram chat, capable of on-dema
 **Why this priority:** Primary scheduled task demonstrating the cron+queue+agent pipeline end-to-end.
 
 **Acceptance Scenarios:**
-- Given the configured briefing time has arrived, When the scheduler fires, Then a briefing job is queued and the result is delivered to my Telegram chat within 5 minutes
-- Given the briefing job fails mid-execution, When the failure is detected, Then I receive a notification that the briefing failed
-- Given the system was down at the scheduled time, When the system comes back online within the task's validity window (e.g., morning briefing before noon), Then the missed briefing is delivered late; if the validity window has passed, the task is skipped silently
+- AS-006: Given the configured briefing time has arrived, When the scheduler fires, Then a briefing job is queued and the result is delivered to my Telegram chat within 5 minutes
+- AS-007: Given the briefing job fails mid-execution, When the failure is detected, Then I receive a notification that the briefing failed
+- AS-008: Given the system was down at the scheduled time, When the system comes back online within the task's validity window (e.g., morning briefing before noon), Then the missed briefing is delivered late; if the validity window has passed, the task is skipped silently
 
 ### US3: [P2] HN AI Digest
 
@@ -50,9 +50,9 @@ A single-user personal AI agent accessible via Telegram chat, capable of on-dema
 **Why this priority:** Second scheduled task, validates the pattern is generalizable beyond a single task type.
 
 **Acceptance Scenarios:**
-- Given the configured digest schedule has triggered, When the digest job runs, Then I receive a curated summary of top AI-related HN posts in my Telegram chat
-- Given no notable AI posts exist in the period, When the digest runs, Then I receive a short message indicating nothing notable was found
-- Given the HN source is unreachable, When the digest job runs, Then I receive a failure notification rather than stale or empty data
+- AS-009: Given the configured digest schedule has triggered, When the digest job runs, Then I receive a curated summary of top AI-related HN posts in my Telegram chat
+- AS-010: Given no notable AI posts exist in the period, When the digest runs, Then I receive a short message indicating nothing notable was found
+- AS-011: Given the HN source is unreachable, When the digest job runs, Then I receive a failure notification rather than stale or empty data
 
 ### US4: [P1] Agent Workspace and Memory (Cortex)
 
@@ -63,11 +63,11 @@ A single-user personal AI agent accessible via Telegram chat, capable of on-dema
 **Why this priority:** Without persistence the agent is stateless per-request, severely limiting usefulness for both chat and scheduled tasks. Cortex provides semantic recall rather than flat-file scanning, enabling the agent to surface the most relevant memories for each context.
 
 **Acceptance Scenarios:**
-- Given previous interactions have been extracted into Cortex, When a new request is processed, Then the agent receives ranked memory context (~300-500 tokens) injected via `load-surface` before the AI subprocess starts
-- Given the agent needs to search for specific past information during a conversation, When it invokes Cortex `recall`, Then it receives semantically relevant memories matching the query
-- Given a chat session has completed, When the system runs Cortex `extract` on the session transcript, Then new memories are automatically captured and stored
-- Given the agent's personality configuration is defined in the workspace, When any job executes, Then the agent's behavior reflects the configured personality
-- Given the system restarts, When a new job runs, Then the Cortex SQLite database and all previously persisted workspace data are still available
+- AS-012: Given previous interactions have been extracted into Cortex, When a new request is processed, Then the agent receives ranked memory context (~300-500 tokens) injected via `load-surface` before the AI subprocess starts
+- AS-013: Given the agent needs to search for specific past information during a conversation, When it invokes Cortex `recall`, Then it receives semantically relevant memories matching the query
+- AS-014: Given a chat session has completed, When the system runs Cortex `extract` on the session transcript, Then new memories are automatically captured and stored
+- AS-015: Given the agent's personality configuration is defined in the workspace, When any job executes, Then the agent's behavior reflects the configured personality
+- AS-016: Given the system restarts, When a new job runs, Then the Cortex SQLite database and all previously persisted workspace data are still available
 
 ### US5: [P2] Job Queue Reliability
 
@@ -78,9 +78,9 @@ A single-user personal AI agent accessible via Telegram chat, capable of on-dema
 **Why this priority:** Reliability layer; without it, messages during downtime or crashes are permanently lost.
 
 **Acceptance Scenarios:**
-- Given a chat message arrives while the worker is busy, When the worker becomes available, Then the queued message is processed
-- Given the worker process crashes mid-job, When it restarts, Then the failed job is retried up to 3 times with exponential backoff (30s, 60s, 120s); after exhausting retries the job is dead-lettered and the user is notified
-- Given the queue service restarts, When it comes back online, Then pending jobs are still present and processed
+- AS-017: Given a chat message arrives while the worker is busy, When the worker becomes available, Then the queued message is processed
+- AS-018: Given the worker process crashes mid-job, When it restarts, Then the failed job is retried up to 3 times with exponential backoff (30s, 60s, 120s); after exhausting retries the job is dead-lettered and the user is notified
+- AS-019: Given the queue service restarts, When it comes back online, Then pending jobs are still present and processed
 
 ### US6: [P2] Permission Profiles
 
@@ -91,9 +91,9 @@ A single-user personal AI agent accessible via Telegram chat, capable of on-dema
 **Why this priority:** Security boundary between interactive and automated work; important but not blocking core functionality.
 
 **Acceptance Scenarios:**
-- Given I send a chat message, When the agent processes it, Then only the restricted capability set is available
-- Given a scheduled task executes, When the agent processes it, Then the broader capability set is available
-- Given a chat request attempts to use a restricted capability, When the agent encounters the restriction, Then a graceful response is returned explaining the limitation
+- AS-020: Given I send a chat message, When the agent processes it, Then only the restricted capability set is available
+- AS-021: Given a scheduled task executes, When the agent processes it, Then the broader capability set is available
+- AS-022: Given a chat request attempts to use a restricted capability, When the agent encounters the restriction, Then a graceful response is returned explaining the limitation
 
 ---
 
@@ -202,17 +202,17 @@ Measurable outcomes that define "done":
 
 Explicitly NOT part of this feature:
 
-- Web dashboard or any UI beyond Telegram
-- Multi-user support or any user management
-- Weather/rain alerts (v2 feature)
-- Reddit hardware watcher (v2 feature)
-- Long-lived AI sessions or multi-turn conversation continuity beyond workspace file memory
-- MCP server integrations
-- Custom OAuth or API key authentication flows (auth handled via mounted `~/.claude/` config directory)
-- Voice or media message handling (text only)
-- Admin commands via Telegram (e.g., /restart, /status)
-- Monitoring dashboards or alerting beyond Telegram error notifications
-- Automated backup of workspace data
+- OOS-001: Web dashboard or any UI beyond Telegram
+- OOS-002: Multi-user support or any user management
+- OOS-003: Weather/rain alerts (v2 feature)
+- OOS-004: Reddit hardware watcher (v2 feature)
+- OOS-005: Long-lived AI sessions or multi-turn conversation continuity beyond workspace file memory
+- OOS-006: MCP server integrations
+- OOS-007: Custom OAuth or API key authentication flows (auth handled via mounted `~/.claude/` config directory)
+- OOS-008: Voice or media message handling (text only)
+- OOS-009: Admin commands via Telegram (e.g., /restart, /status)
+- OOS-010: Monitoring dashboards or alerting beyond Telegram error notifications
+- OOS-011: Automated backup of workspace data
 
 ---
 

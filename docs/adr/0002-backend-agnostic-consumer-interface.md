@@ -30,7 +30,7 @@ The forces at play:
    - Pros: Naming accurately reflects the abstraction; no conceptual mismatch for new contributors.
    - Cons: Touches every consumer and test file; high-churn diff with zero runtime benefit; violates NFR-100's spirit of minimal disruption; rollback diff is noisy.
 
-3. **Per-backend permission modules (`claude-permissions.ts`, `pi-permissions.ts`)**
+3. **Per-backend permission modules (claude-permissions.ts, pi-permissions.ts)**
    - Each backend has its own permission function returning pre-formatted flags.
    - Pros: Simple dispatch — no translation layer.
    - Cons: Duplicates policy logic (which tools are allowed per profile); adding a tool to a profile requires editing N files; violates DRY on the _policy_ dimension.
@@ -54,7 +54,7 @@ Concrete implementation:
   - `ChatDeps.runClaudeStreaming: (options: AgentOptions, onChunk: OnStreamChunk) => Promise<AgentResult>`
   - `ScheduledDeps.runClaude: (options: AgentOptions) => Promise<AgentResult>`
 - **`main.ts`** wires backend-bound `runAgent`/`runAgentStreaming` closures into the existing `runClaude`/`runClaudeStreaming` DI slots.
-- **Invariant:** Consumers never import from `agent-backends/` for anything except types. They never see the backend identity.
+- **Invariant:** Consumers never import from `src/infra/agent-backends/` for anything except types. They never see the backend identity.
 
 ## Consequences
 

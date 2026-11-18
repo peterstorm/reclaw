@@ -125,116 +125,62 @@
     ],
     "sourceRoots": [
       "src"
+    ],
+    "externalNames": [
+      {
+        "names": [
+          "INCRBY"
+        ],
+        "reason": "Redis command; the source calls it through the ioredis method incrby, so the upper-case name appears only in comments and tests"
+      },
+      {
+        "names": [
+          "setInterval",
+          "MaxListenersExceededWarning"
+        ],
+        "reason": "JavaScript/Node.js runtime global and process warning, named as what reclaw avoids or what its tests trigger"
+      },
+      {
+        "names": [
+          "getUpdates"
+        ],
+        "reason": "Telegram Bot API method grammY calls on reclaw's behalf; reclaw never names it in code"
+      },
+      {
+        "names": [
+          "Content-Length"
+        ],
+        "reason": "HTTP header of Telegram file downloads; the source reads it lower-case through Headers.get('content-length')"
+      },
+      {
+        "names": [
+          "openat"
+        ],
+        "reason": "POSIX syscall ADR 0006 names as the race-free alternative it does not adopt"
+      },
+      {
+        "names": [
+          "Machine",
+          "JobLike",
+          "runStateMachine",
+          "QueueBackend",
+          "adaptBullMQJob"
+        ],
+        "reason": "exports of the Fugue framework (@fuguejs/framework) the 2026-08-14 architecture review evaluated; reclaw does not depend on it"
+      },
+      {
+        "names": [
+          "inference-infra",
+          "software-engineering"
+        ],
+        "reason": "curriculum domain slugs defined in the Obsidian vault's curriculum registry, not in the repository"
+      },
+      {
+        "names": [
+          "aider"
+        ],
+        "reason": "third-party coding-agent CLI ADR 0002 names as a possible future backend"
+      }
     ]
-  },
-  "switchTotalityBaseline": [
-    "src/core/podcast-request.ts::format",
-    "src/core/podcast-request.ts::length",
-    "src/core/skill-quality.ts::signal.status",
-    "src/core/study-plan.ts::e.kind",
-    "src/infra/agent-backends/pi-backend.ts::event.type",
-    "src/infra/vault-workspace.ts::error.kind",
-    "src/orchestration/learn-command.ts::name",
-    "src/orchestration/scheduler.ts::decision.action"
-  ],
-  "discriminantBranchingBaseline": [
-    "src/infra/agent-backends/runner.ts::delta.type"
-  ],
-  "duplicateBlockBaseline": [
-    "src/infra/telegram.ts::src/infra/telegram.ts@efea554f",
-    "src/main.test.ts::src/orchestration/message-router.test.ts@47772a04",
-    "src/orchestration/message-router.test.ts::src/main.test.ts@47772a04",
-    "src/orchestration/research-handler.test.ts::src/orchestration/research-states.test.ts@0fb9caad",
-    "src/orchestration/research-handler.test.ts::src/orchestration/research-states.test.ts@7a90b4e7",
-    "src/orchestration/research-handler.test.ts::src/orchestration/research-states.test.ts@942c2422",
-    "src/orchestration/research-states.test.ts::src/orchestration/research-handler.test.ts@0fb9caad",
-    "src/orchestration/research-states.test.ts::src/orchestration/research-handler.test.ts@7a90b4e7",
-    "src/orchestration/research-states.test.ts::src/orchestration/research-handler.test.ts@942c2422",
-    "src/orchestration/scheduler.test.ts::src/orchestration/scheduler.test.ts@1d4fa7f6",
-    "src/orchestration/scheduler.test.ts::src/orchestration/scheduler.test.ts@77748918",
-    "src/orchestration/worker.test.ts::src/orchestration/worker.test.ts@2aeccd5a",
-    "src/orchestration/worker.test.ts::src/orchestration/worker.test.ts@2aeccd5a",
-    "src/orchestration/worker.test.ts::src/orchestration/worker.test.ts@2aeccd5a",
-    "src/orchestration/worker.test.ts::src/orchestration/worker.test.ts@2aeccd5a",
-    "src/orchestration/worker.test.ts::src/orchestration/worker.test.ts@2aeccd5a",
-    "src/orchestration/worker.test.ts::src/orchestration/worker.test.ts@f1adec3d"
-  ],
-  "wireCastBaseline": [
-    "ops/zyxel-dhcp.ts::as Record<string, unknown>",
-    "ops/zyxel-dhcp.ts::as Record<string, unknown>",
-    "ops/zyxel-dhcp.ts::as Record<string, unknown>",
-    "ops/zyxel-dhcp.ts::as { RSAPublicKey: string }",
-    "scripts/commute-weather.ts::as OpenMeteoResponse",
-    "scripts/dotslash-contacts.ts::as Contact",
-    "scripts/garmin-schedule-workout.ts::workout: Record<string, unknown>",
-    "scripts/notebooklm-reauth.ts::as { browsers: ReadonlyArray<{ name: string; revision: string }> }"
-  ],
-  "docReferenceBaseline": [
-    ".claude/plans/2026-02-26-personal-agent.md::/home/peterstorm/dev/claude-plugins/reclaw/.claude/specs/2026-02-26-personal-agent/spec.md",
-    ".claude/plans/2026-03-03-deep-research.md::/home/peterstorm/dev/claude-plugins/reclaw/.claude/specs/2026-03-03-deep-research/spec.md",
-    ".claude/plans/2026-05-18-pi-backend.md::.claude/specs/2026-05-18-pi-backend/spec.md",
-    "CONTEXT.md::CODE",
-    "CONTEXT.md::ai-engineering",
-    "CONTEXT.md::inference-infra",
-    "CONTEXT.md::learning/curriculum/",
-    "CONTEXT.md::learning/curriculum/registry.yaml",
-    "CONTEXT.md::media/instagram/MOC.md",
-    "CONTEXT.md::software-engineering",
-    "README.md::CLAUDE_BINARY_PATH",
-    "README.md::INCRBY",
-    "README.md::SESSION_IDLE_TIMEOUT_MS",
-    "README.md::TELEGRAM_BOT_TOKEN",
-    "README.md::TIMEZONE",
-    "README.md::learning/curriculum/",
-    "README.md::learning/curriculum/.state/study-log.jsonl",
-    "README.md::reclaw/skills/learning-loop.md",
-    "README.md::setInterval",
-    "docs/adr/0001-strategy-pattern-shared-runner-lifecycle.md::claude-subprocess.ts",
-    "docs/adr/0001-strategy-pattern-shared-runner-lifecycle.md::run-claude.ts",
-    "docs/adr/0001-strategy-pattern-shared-runner-lifecycle.md::run-pi.ts",
-    "docs/adr/0002-backend-agnostic-consumer-interface.md::agent-backends/",
-    "docs/adr/0002-backend-agnostic-consumer-interface.md::aider",
-    "docs/adr/0002-backend-agnostic-consumer-interface.md::claude-permissions.ts",
-    "docs/adr/0002-backend-agnostic-consumer-interface.md::pi-permissions.ts",
-    "docs/adr/0003-directory-structure-static-backend-resolution.md::../infra/agent-backends/index.js",
-    "docs/adr/0003-directory-structure-static-backend-resolution.md::../infra/claude-subprocess.js",
-    "docs/adr/0003-directory-structure-static-backend-resolution.md::agent-backends/",
-    "docs/adr/0003-directory-structure-static-backend-resolution.md::agent-runner.ts",
-    "docs/adr/0003-directory-structure-static-backend-resolution.md::agent-types.ts",
-    "docs/adr/0003-directory-structure-static-backend-resolution.md::permissionFlags",
-    "docs/adr/0003-directory-structure-static-backend-resolution.md::src/infra/claude-subprocess.test.ts",
-    "docs/adr/0003-directory-structure-static-backend-resolution.md::src/infra/claude-subprocess.ts",
-    "docs/adr/0003-directory-structure-static-backend-resolution.md::src/infra/claude-subprocess.ts",
-    "docs/adr/0003-directory-structure-static-backend-resolution.md::src/infra/claude-subprocess.ts",
-    "docs/adr/0004-operational-conventions-multi-backend.md::.pi/settings.json",
-    "docs/adr/0004-operational-conventions-multi-backend.md::AGENT_MODEL",
-    "docs/adr/0004-operational-conventions-multi-backend.md::AGENT_MODEL",
-    "docs/adr/0004-operational-conventions-multi-backend.md::AGENT_PROVIDER",
-    "docs/adr/0006-canonical-vault-path-confinement.md::openat",
-    "docs/adr/0007-durable-telegram-ingress-acknowledgement.md::getUpdates",
-    "docs/adr/0007-durable-telegram-ingress-acknowledgement.md::getUpdates",
-    "docs/adr/0012-persistent-opaque-telegram-uploads.md::Content-Length",
-    "docs/architecture-review-2026-08-14.md::JobLike",
-    "docs/architecture-review-2026-08-14.md::Machine",
-    "docs/architecture-review-2026-08-14.md::MaxListenersExceededWarning",
-    "docs/architecture-review-2026-08-14.md::QueueBackend",
-    "docs/architecture-review-2026-08-14.md::adaptBullMQJob",
-    "docs/architecture-review-2026-08-14.md::agent-failed",
-    "docs/architecture-review-2026-08-14.md::agentCli",
-    "docs/architecture-review-2026-08-14.md::core/infra/orchestration",
-    "docs/architecture-review-2026-08-14.md::credentials.json.bak",
-    "docs/architecture-review-2026-08-14.md::credentials.json.bak",
-    "docs/architecture-review-2026-08-14.md::invalid-session",
-    "docs/architecture-review-2026-08-14.md::invalid-session",
-    "docs/architecture-review-2026-08-14.md::nonzero-exit",
-    "docs/architecture-review-2026-08-14.md::notebookLm",
-    "docs/architecture-review-2026-08-14.md::output-limit-exceeded",
-    "docs/architecture-review-2026-08-14.md::protocol-drift",
-    "docs/architecture-review-2026-08-14.md::provider-auth-failed",
-    "docs/architecture-review-2026-08-14.md::runStateMachine",
-    "docs/architecture-review-2026-08-14.md::runStateMachine",
-    "docs/architecture-review-2026-08-14.md::runStateMachine",
-    "docs/architecture-review-2026-08-14.md::spawn-failed",
-    "docs/architecture-review-2026-08-14.md::telegramDelivery"
-  ]
+  }
 }

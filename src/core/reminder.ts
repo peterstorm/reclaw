@@ -210,7 +210,9 @@ const DAY_DISPLAY: Record<string, string> = {
   '*': 'day',
 };
 
-const TIME_KEYWORDS: Record<string, { hour: number; minute: number }> = {
+type ClockTime = Readonly<{ hour: number; minute: number }>;
+
+const TIME_KEYWORDS: Record<string, ClockTime> = {
   noon: { hour: 12, minute: 0 },
   midnight: { hour: 0, minute: 0 },
   morning: { hour: 9, minute: 0 },
@@ -218,13 +220,42 @@ const TIME_KEYWORDS: Record<string, { hour: number; minute: number }> = {
   night: { hour: 21, minute: 0 },
 };
 
+/** A cron reminder with no time fires at 09:00. */
+const DEFAULT_CRON_TIME: ClockTime = { hour: 9, minute: 0 };
+
+/** A time read from `words`, and the index of the first word after it. */
+type CronTime = Readonly<{ time: ClockTime; next: number }>;
+
+/**
+ * Parse the optional time starting at `words[idx]`: "at <keyword|clock>" or a bare
+ * time keyword. No time there means the 09:00 default and nothing consumed.
+ * (`words[i]` is undefined exactly when i is past the end.)
+ */
+function parseCronTime(words: readonly string[], idx: number): Result<CronTime, string> {
+  const timeWord = words[idx]?.toLowerCase();
+  if (timeWord === 'at') {
+    const timeStr = words[idx + 1]?.toLowerCase();
+    if (timeStr === undefined) return err('Expected a time after "at".');
+    const keyword = TIME_KEYWORDS[timeStr];
+    if (keyword) return ok({ time: keyword, next: idx + 2 });
+    // Clock time: "9am", "14:30", "3:30pm"
+    const clock = parseClockTime(timeStr);
+    if (!clock.ok) return err(`Invalid time: "${words[idx + 1]}".`);
+    return ok({ time: clock.value, next: idx + 2 });
+  }
+  // A time keyword without "at"
+  const keyword = timeWord === undefined ? undefined : TIME_KEYWORDS[timeWord];
+  return ok(keyword ? { time: keyword, next: idx + 1 } : { time: DEFAULT_CRON_TIME, next: idx });
+}
+
+const twoDigits = (n: number): string => String(n).padStart(2, '0');
+
 /**
  * Parse a cron-based recurring reminder: "Sunday at noon water plants"
  * Supports: day names, weekday/weekend/daily, time as clock or keyword.
  */
 function parseCronRecurring(input: string): Result<RecurringParsed, string> {
-  const trimmed = input.trim();
-  const words = trimmed.split(/\s+/);
+  const words = input.trim().split(/\s+/);
   const [dayWord] = words;
   if (words.length < 2 || dayWord === undefined) return err('Not a cron pattern.');
 
@@ -233,72 +264,30 @@ function parseCronRecurring(input: string): Result<RecurringParsed, string> {
   const dayOfWeek = DAY_MAP[dayKey];
   if (dayOfWeek === undefined) return err('Not a cron pattern.');
 
-  let idx = 1;
-  let hour = 9;
-  let minute = 0;
-  let hasExplicitTime = false;
-
-  // Try to match time: "at <time>" or a time keyword
-  // `words[idx]` is undefined exactly when idx is past the end.
-  const timeWord = words[idx]?.toLowerCase();
-  if (timeWord === 'at') {
-    idx++;
-    const timeStr = words[idx]?.toLowerCase();
-    if (timeStr === undefined) return err('Expected a time after "at".');
-
-    const timeKw = TIME_KEYWORDS[timeStr];
-    if (timeKw) {
-      hour = timeKw.hour;
-      minute = timeKw.minute;
-      hasExplicitTime = true;
-      idx++;
-    } else {
-      // Try clock time: "9am", "14:30", "3:30pm"
-      const clockResult = parseClockTime(timeStr);
-      if (clockResult.ok) {
-        hour = clockResult.value.hour;
-        minute = clockResult.value.minute;
-        hasExplicitTime = true;
-        idx++;
-      } else {
-        return err(`Invalid time: "${words[idx]}".`);
-      }
-    }
-  } else if (timeWord !== undefined) {
-    // Check if next word is a time keyword without "at"
-    const timeKw = TIME_KEYWORDS[timeWord];
-    if (timeKw) {
-      hour = timeKw.hour;
-      minute = timeKw.minute;
-      hasExplicitTime = true;
-      idx++;
-    }
-  }
+  const cronTime = parseCronTime(words, 1);
+  if (!cronTime.ok) return err(cronTime.error);
+  const { time, next } = cronTime.value;
 
   // Strip optional "to" separator
-  if (words[idx]?.toLowerCase() === 'to') {
-    idx++;
-  }
-
-  const text = words.slice(idx).join(' ').trim();
+  const textStart = words[next]?.toLowerCase() === 'to' ? next + 1 : next;
+  const text = words.slice(textStart).join(' ').trim();
   if (text.length === 0) {
     return err('Recurring reminder message must not be empty.');
   }
 
-  const cronPattern = `${minute} ${hour} * * ${dayOfWeek}`;
   const dayDisplay = DAY_DISPLAY[dayOfWeek] ?? dayKey;
-  const timeDisplay = hasExplicitTime
-    ? `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
-    : '09:00';
-  const cronDescription = `every ${dayDisplay} at ${timeDisplay}`;
-
-  return ok({ type: 'cron', cronPattern, cronDescription, text });
+  return ok({
+    type: 'cron',
+    cronPattern: `${time.minute} ${time.hour} * * ${dayOfWeek}`,
+    cronDescription: `every ${dayDisplay} at ${twoDigits(time.hour)}:${twoDigits(time.minute)}`,
+    text,
+  });
 }
 
 /**
  * Parse a clock time string: "9am", "14:30", "3:30pm", "noon" etc.
  */
-function parseClockTime(input: string): Result<{ hour: number; minute: number }, string> {
+function parseClockTime(input: string): Result<ClockTime, string> {
   const pattern = /^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/;
   const match = pattern.exec(input.toLowerCase());
   if (!match) return err('Invalid clock time.');
@@ -391,27 +380,34 @@ export function parseRemindCommand(input: string, now: Date): Result<ParsedRemin
     return err('Input must start with /remind.');
   }
 
-  // Check for recurring: "every <duration|day> [at <time>] <message>"
-  if (withoutPrefix.toLowerCase().startsWith('every ')) {
-    const afterEvery = withoutPrefix.slice(6); // skip "every "
-    const recurResult = parseRecurringReminder(afterEvery);
-    if (!recurResult.ok) return err(recurResult.error);
+  // Recurring: "every <duration|day> [at <time>] <message>"
+  return withoutPrefix.toLowerCase().startsWith('every ')
+    ? parseRecurringRemind(withoutPrefix.slice('every '.length))
+    : parseOneShotRemind(withoutPrefix, now);
+}
 
-    if (recurResult.value.type === 'cron') {
-      return ok({
-        cronPattern: recurResult.value.cronPattern,
-        cronDescription: recurResult.value.cronDescription,
-        text: recurResult.value.text,
-        kind: 'cron-recurring',
-      });
-    }
+/** The recurring form of /remind, after "every ". */
+function parseRecurringRemind(afterEvery: string): Result<ParsedReminder, string> {
+  const recurResult = parseRecurringReminder(afterEvery);
+  if (!recurResult.ok) return err(recurResult.error);
+
+  if (recurResult.value.type === 'cron') {
     return ok({
-      intervalMs: recurResult.value.intervalMs,
+      cronPattern: recurResult.value.cronPattern,
+      cronDescription: recurResult.value.cronDescription,
       text: recurResult.value.text,
-      kind: 'recurring',
+      kind: 'cron-recurring',
     });
   }
+  return ok({
+    intervalMs: recurResult.value.intervalMs,
+    text: recurResult.value.text,
+    kind: 'recurring',
+  });
+}
 
+/** The one-shot form of /remind: a leading duration or clock time, else a natural-language date. */
+function parseOneShotRemind(withoutPrefix: string, now: Date): Result<ParsedReminder, string> {
   // Split into time-spec and message (for duration/absolute parsing)
   const spaceIdx = withoutPrefix.indexOf(' ');
   if (spaceIdx === -1) {

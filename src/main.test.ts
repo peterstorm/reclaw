@@ -1,5 +1,6 @@
 import { type MockInstance, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type SkillRegistry, makeTelegramUpdateId } from './core/types.js';
+import { fakeQueueOperations } from './infra/__fixtures__/queue-operations.js';
 import type { AppConfig } from './infra/config.js';
 import type { TelegramIncomingDisposition, TelegramIncomingMessage } from './infra/telegram.js';
 import { type BootstrapDeps, bootstrap } from './main.js';
@@ -84,22 +85,7 @@ function makeMockQueues() {
     },
     podcast: { close: vi.fn().mockResolvedValue(undefined), on: vi.fn() },
     delivery: { close: vi.fn().mockResolvedValue(undefined), on: vi.fn() },
-    activityResults: {
-      find: vi.fn().mockResolvedValue(null),
-      saveIfAbsent: vi.fn(),
-    },
-    deliveryOutbox: { enqueue: vi.fn().mockResolvedValue(undefined) },
-    enqueueChat: vi.fn().mockResolvedValue(undefined),
-    enqueueScheduled: vi.fn().mockResolvedValue(undefined),
-    isScheduledJobKnown: vi.fn().mockResolvedValue(false),
-    isScheduledJobCompleted: vi.fn().mockResolvedValue(false),
-    markScheduledJobCompleted: vi.fn().mockResolvedValue(undefined),
-    enqueueReminder: vi.fn().mockResolvedValue(undefined),
-    enqueueRecurringReminder: vi.fn().mockResolvedValue('recur:123'),
-    listRecurringReminders: vi.fn().mockResolvedValue([]),
-    cancelRecurringReminder: vi.fn().mockResolvedValue(true),
-    enqueueResearch: vi.fn().mockResolvedValue(undefined),
-    getResearchQueuePosition: vi.fn().mockResolvedValue(1),
+    ...fakeQueueOperations(),
   };
 }
 

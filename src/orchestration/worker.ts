@@ -1,48 +1,27 @@
 import { UnrecoverableError } from 'bullmq';
 import { match } from 'ts-pattern';
+import { parseDeliveryJob } from '../core/activity.js';
+import { parseQuotaExhaustedMessage } from '../core/agent-failure.js';
 import {
-  type ActivityResultRepository,
-  type DeliveryOutbox,
-  type TelegramDeliveryOperation,
-  makeActivityId,
-  makeChatSessionDelivery,
-  makeCortexDelivery,
-  makeFileCleanupDelivery,
-  makeTelegramBatchDelivery,
-  parseDeliveryJob,
-} from '../core/activity.js';
-import {
-  type AgentFailure,
-  agentFailurePolicy,
-  formatAgentFailure,
-  parseQuotaExhaustedMessage,
-} from '../core/agent-failure.js';
-import {
-  parseChatJob,
   parsePodcastJob,
   parseRecurringReminderJob,
   parseReminderJob,
   parseResearchJobData,
-  parseScheduledJob,
 } from '../core/job-schemas.js';
-import { splitMessage } from '../core/message-splitter.js';
 import type { ResearchJobData } from '../core/research-types.js';
-import {
-  type ChatJob,
-  type JobResult,
-  type PodcastJob,
-  type RecurringReminderJob,
-  type ReminderJob,
-  type ScheduledJob,
-  chatJobSourcePaths,
-} from '../core/types.js';
+import type { JobResult, PodcastJob, RecurringReminderJob, ReminderJob } from '../core/types.js';
 import type { AppConfig } from '../infra/config.js';
-import type { SessionStore } from '../infra/session-store.js';
 import { type TelegramAdapter, removeSpooledFile } from '../infra/telegram.js';
-import type { ChatActivityOutcome } from './chat-handler.js';
 import { handleDeliveryJob } from './delivery-handler.js';
 import type { ResearchJobLike } from './research-handler.js';
-import type { ScheduledActivityOutcome } from './scheduled-handler.js';
+import {
+  type ChatQueueDeps,
+  type ScheduledQueueDeps,
+  processChatJob,
+  processScheduledJob,
+  removeFailedChatSources,
+} from './worker-activity.js';
+import { superviseWorkers } from './worker-lifecycle.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -80,31 +59,30 @@ export type WorkerFactory = (
   },
 ) => BullWorkerLike;
 
-type WorkerDeps = {
-  readonly redisConnection: { host: string; port: number };
-  readonly chatHandler: (job: ChatJob) => Promise<ChatActivityOutcome>;
-  readonly scheduledHandler: (job: ScheduledJob) => Promise<ScheduledActivityOutcome>;
-  readonly reminderHandler: (job: ReminderJob) => Promise<JobResult>;
-  readonly recurringReminderHandler: (job: RecurringReminderJob) => Promise<JobResult>;
-  readonly researchHandler: (
-    job: ResearchJobLike,
-  ) => Promise<{ hubPath: string | null; topic: string }>;
-  readonly podcastHandler: (job: PodcastJob) => Promise<JobResult>;
-  readonly telegram: TelegramAdapter;
-  readonly sessionStore: SessionStore;
-  readonly activityResults: ActivityResultRepository;
-  readonly deliveryOutbox: DeliveryOutbox;
-  readonly triggerCortexExtraction?: (sessionId: string, cwd: string) => Promise<void>;
-  readonly config: AppConfig;
-  /** Injected for testing. Defaults to BullMQ Worker constructor. */
-  readonly workerFactory?: WorkerFactory;
-  /** Called when a scheduled job completes successfully — triggers dependent resolution. */
-  readonly onScheduledJobCompleted: (job: ScheduledJob) => Promise<void>;
-  /** Sets a Redis completion marker for catch-up crash recovery. */
-  readonly markScheduledJobCompleted: (jobId: string) => Promise<void>;
-  /** Worker connection-readiness deadline. Primarily shortened in tests. */
-  readonly readyTimeoutMs?: number;
-};
+/** The chat and scheduled activity queues' needs, plus the four lighter queues' and the runtime's. */
+type WorkerDeps = ChatQueueDeps &
+  ScheduledQueueDeps & {
+    readonly redisConnection: { host: string; port: number };
+    readonly reminderHandler: (job: ReminderJob) => Promise<JobResult>;
+    readonly recurringReminderHandler: (job: RecurringReminderJob) => Promise<JobResult>;
+    readonly researchHandler: (
+      job: ResearchJobLike,
+    ) => Promise<{ hubPath: string | null; topic: string }>;
+    readonly podcastHandler: (job: PodcastJob) => Promise<JobResult>;
+    readonly telegram: TelegramAdapter;
+    readonly config: AppConfig;
+    /** Injected for testing. Defaults to BullMQ Worker constructor. */
+    readonly workerFactory?: WorkerFactory;
+    /** Worker connection-readiness deadline. Primarily shortened in tests. */
+    readonly readyTimeoutMs?: number;
+  };
+
+type QueueProcessor = Parameters<WorkerFactory>[1];
+type QueueJob = Parameters<QueueProcessor>[0];
+type WorkerTuning = Pick<
+  Parameters<WorkerFactory>[2],
+  'lockDuration' | 'stalledInterval' | 'limiter'
+>;
 
 // ─── Dead letter notification (pure helper for testing) ───────────────────────
 
@@ -143,14 +121,6 @@ export function formatDeadLetterMessage(
 export function chatIdOrFallback(data: unknown, fallback: readonly number[]): readonly number[] {
   const id = (data as Record<string, unknown> | null | undefined)?.chatId;
   return typeof id === 'number' ? [id] : fallback;
-}
-
-function throwAgentFailure(failure: AgentFailure): never {
-  const message = formatAgentFailure(failure);
-  if (!agentFailurePolicy(failure).retryable) {
-    throw new UnrecoverableError(message);
-  }
-  throw new Error(message);
 }
 
 // ─── Default BullMQ worker factory ───────────────────────────────────────────
@@ -237,6 +207,205 @@ function attachDeadLetterHandler(opts: DeadLetterOpts): void {
   });
 }
 
+// ─── Queue specs ──────────────────────────────────────────────────────────────
+
+/** One queue's worker: what it runs, how it is tuned, and who hears of its final failure. */
+type QueueSpec = {
+  readonly kind: string;
+  readonly queueName: string;
+  readonly processor: QueueProcessor;
+  readonly tuning: WorkerTuning;
+  readonly deadLetter: Pick<DeadLetterOpts, 'getChatIds' | 'defaultMaxAttempts' | 'onFinalFailure'>;
+};
+
+/**
+ * Lock duration must exceed the longest possible job runtime, otherwise
+ * BullMQ marks the job as stalled and re-queues it mid-execution.
+ */
+const lockFor = (ms: number): WorkerTuning => ({ lockDuration: ms, stalledInterval: ms });
+
+const LONG_LOCK_MS = 20 * 60 * 1000; // 20 minutes
+// 60 minutes: base pipeline (~10min) + artifact generation (up to 2×15min) + margin
+const RESEARCH_LOCK_MS = 60 * 60 * 1000;
+
+/** Notify the job's own chat, or every authorized user when the data names none. */
+const jobChatOrAuthorizedUsers = (config: AppConfig): QueueSpec['deadLetter'] => ({
+  getChatIds: (data) => chatIdOrFallback(data, config.authorizedUserIds),
+});
+
+/** FR-015: concurrency=1 (set for every queue in createWorkers). */
+function chatQueue(deps: WorkerDeps): QueueSpec {
+  return {
+    kind: 'chat',
+    queueName: 'reclaw-chat',
+    processor: processChatJob(deps),
+    tuning: {
+      ...lockFor(LONG_LOCK_MS),
+      // Cap processing at 10 chat jobs/minute. concurrency=1 already
+      // serializes execution; this adds back-pressure so a typo storm or
+      // automation glitch doesn't burn Claude API spend / Telegram quota
+      // by replaying a long backlog at full speed.
+      limiter: { max: 10, duration: 60_000 },
+    },
+    deadLetter: {
+      ...jobChatOrAuthorizedUsers(deps.config),
+      onFinalFailure: removeFailedChatSources,
+    },
+  };
+}
+
+/** FR-015: concurrency=1. FR-005: dead letters go to all authorized users' chats. */
+function scheduledQueue(deps: WorkerDeps): QueueSpec {
+  return {
+    kind: 'scheduled',
+    queueName: 'reclaw-scheduled',
+    processor: processScheduledJob(deps),
+    tuning: lockFor(LONG_LOCK_MS),
+    deadLetter: { getChatIds: () => deps.config.authorizedUserIds },
+  };
+}
+
+/** Lightweight — no AI subprocess. */
+function reminderQueue(deps: WorkerDeps): QueueSpec {
+  const processor: QueueProcessor = async (job) => {
+    const data = job.data;
+    if (typeof data !== 'object' || data === null) {
+      throw new Error('Invalid reminder job data: not an object');
+    }
+    const kind = (data as Record<string, unknown>).kind;
+    console.info(`[worker:reminder] Processing job ${job.id ?? 'unknown'} kind=${kind}`);
+    const result = await match(kind)
+      .with('reminder', () => {
+        const parsed = parseReminderJob(data);
+        if (!parsed.ok) throw new Error(parsed.error);
+        return deps.reminderHandler(parsed.value);
+      })
+      .with('recurring-reminder', () => {
+        const parsed = parseRecurringReminderJob(data);
+        if (!parsed.ok) throw new Error(parsed.error);
+        return deps.recurringReminderHandler(parsed.value);
+      })
+      .otherwise((k) => {
+        throw new Error(`Invalid reminder job data: unexpected kind "${String(k)}"`);
+      });
+    // One-shot reminders retry on failure; recurring reminders do NOT retry
+    // because the next scheduled occurrence fires anyway (double-delivery risk).
+    if (!result.ok && kind !== 'recurring-reminder') {
+      throw new Error(result.error);
+    }
+    return result;
+  };
+  return {
+    kind: 'reminder',
+    queueName: 'reclaw-reminder',
+    processor,
+    tuning: {},
+    deadLetter: jobChatOrAuthorizedUsers(deps.config),
+  };
+}
+
+/** The delivery outbox: one durable side effect per job, checkpointed through job data. */
+function deliveryQueue(deps: WorkerDeps): QueueSpec {
+  const { telegram, sessionStore, triggerCortexExtraction } = deps;
+  const processor: QueueProcessor = async (job) => {
+    const parsed = parseDeliveryJob(job.data);
+    if (!parsed.ok) throw new Error(parsed.error);
+    return handleDeliveryJob(
+      parsed.value,
+      async (next) => {
+        // BullMQ's Job.updateData mutates `this.data`; invoking an extracted
+        // method loses the Job receiver under Bun and fails after the
+        // external operation has already succeeded.
+        await job.updateData?.(next);
+      },
+      {
+        telegram,
+        sessionStore,
+        removeFile: removeSpooledFile,
+        ...(triggerCortexExtraction === undefined ? {} : { triggerCortexExtraction }),
+      },
+    );
+  };
+  return {
+    kind: 'delivery',
+    queueName: 'reclaw-delivery',
+    processor,
+    tuning: {},
+    deadLetter: { ...jobChatOrAuthorizedUsers(deps.config), defaultMaxAttempts: 8 },
+  };
+}
+
+/** Wrap the BullMQ job's checkpoint methods for the research pipeline (SC-002/SC-003). */
+function researchJobLike(job: QueueJob, data: ResearchJobData): ResearchJobLike {
+  const updateData = job.updateData;
+  const updateProgress = job.updateProgress;
+  return {
+    data,
+    updateData:
+      updateData === undefined ? async () => {} : (next: ResearchJobData) => updateData(next),
+    updateProgress:
+      updateProgress === undefined
+        ? async () => {}
+        : (progress: number) => updateProgress(progress),
+  };
+}
+
+/** AD-1: concurrency=1, long lock for SC-009. */
+function researchQueue(deps: WorkerDeps): QueueSpec {
+  const processor: QueueProcessor = async (job) => {
+    const parsed = parseResearchJobData(job.data);
+    if (!parsed.ok) throw new Error(parsed.error);
+    const jobId = job.id ?? 'unknown';
+    console.info(
+      `[worker:research] Processing job ${jobId} prompt="${parsed.value.prompt.slice(0, 60)}"`,
+    );
+    const startMs = Date.now();
+    try {
+      const result = await deps.researchHandler(researchJobLike(job, parsed.value));
+      console.info(
+        `[worker:research] Job ${jobId} completed in ${Math.round((Date.now() - startMs) / 1000)}s — hubPath=${result.hubPath}`,
+      );
+      return result;
+    } catch (err) {
+      const elapsed = Math.round((Date.now() - startMs) / 1000);
+      console.error(
+        `[worker:research] Job ${jobId} failed after ${elapsed}s:`,
+        err instanceof Error ? err.message : err,
+      );
+      throw err;
+    }
+  };
+  return {
+    kind: 'research',
+    queueName: 'reclaw-research',
+    processor,
+    tuning: lockFor(RESEARCH_LOCK_MS),
+    deadLetter: { ...jobChatOrAuthorizedUsers(deps.config), defaultMaxAttempts: 3 },
+  };
+}
+
+/** Long lock for artifact generation. */
+function podcastQueue(deps: WorkerDeps): QueueSpec {
+  const processor: QueueProcessor = async (job) => {
+    const parsed = parsePodcastJob(job.data);
+    if (!parsed.ok) throw new Error(parsed.error);
+    const podcastJob = parsed.value;
+    console.info(
+      `[worker:podcast] Processing job ${job.id ?? 'unknown'} note="${podcastJob.notePath}"`,
+    );
+    const result = await deps.podcastHandler(podcastJob);
+    if (!result.ok) throw new Error(result.error);
+    return result;
+  };
+  return {
+    kind: 'podcast',
+    queueName: 'reclaw-podcast',
+    processor,
+    tuning: lockFor(LONG_LOCK_MS),
+    deadLetter: { ...jobChatOrAuthorizedUsers(deps.config), defaultMaxAttempts: 1 },
+  };
+}
+
 // ─── Factory ──────────────────────────────────────────────────────────────────
 
 /**
@@ -251,513 +420,30 @@ function attachDeadLetterHandler(opts: DeadLetterOpts): void {
 export function createWorkers(deps: WorkerDeps): Workers {
   const {
     redisConnection,
-    chatHandler,
-    scheduledHandler,
-    reminderHandler,
-    recurringReminderHandler,
-    researchHandler,
-    podcastHandler,
     telegram,
-    sessionStore,
-    activityResults,
-    deliveryOutbox,
-    triggerCortexExtraction,
-    config,
     workerFactory = defaultWorkerFactory,
-    onScheduledJobCompleted,
-    markScheduledJobCompleted,
     readyTimeoutMs = 10_000,
   } = deps;
+  const connection = { host: redisConnection.host, port: redisConnection.port };
+  const specs = [
+    chatQueue(deps),
+    scheduledQueue(deps),
+    reminderQueue(deps),
+    deliveryQueue(deps),
+    researchQueue(deps),
+    podcastQueue(deps),
+  ];
 
-  const connection = {
-    host: redisConnection.host,
-    port: redisConnection.port,
-  };
-
-  // Lock duration must exceed the longest possible job runtime, otherwise
-  // BullMQ marks the job as stalled and re-queues it mid-execution.
-  const longLockMs = 20 * 60 * 1000; // 20 minutes
-
-  // ── Chat worker (FR-015: concurrency=1) ──────────────────────────────────
-
-  const chatWorker = workerFactory(
-    'reclaw-chat',
-    async (job) => {
-      const parsed = parseChatJob(job.data);
-      if (!parsed.ok) throw new Error(parsed.error);
-      const chatJob = parsed.value;
-      console.info(
-        `[worker:chat] Processing job ${job.id ?? 'unknown'} for chatId=${chatJob.chatId}`,
-      );
-      const activityId = makeActivityId('chat', chatJob.id);
-      let activity = await activityResults.find(activityId);
-      const reusedActivity = activity !== null;
-      let drainPreviews: () => Promise<void> = async () => {};
-
-      if (activity === null) {
-        const outcome = await chatHandler(chatJob);
-        if (outcome.kind === 'failed') {
-          throwAgentFailure(outcome.failure);
-        }
-        drainPreviews = outcome.drainPreviews;
-
-        const deliveries = [
-          ...(outcome.sessionId === null
-            ? []
-            : [
-                makeChatSessionDelivery({
-                  activityId,
-                  chatId: chatJob.chatId,
-                  expectedGeneration: outcome.conversationGeneration,
-                  expectedRevision: outcome.conversationRevision,
-                  backend: outcome.conversationBackend,
-                  sessionId: outcome.sessionId,
-                  lastActivityAt: new Date().toISOString(),
-                }),
-              ]),
-          ...(outcome.telegramOperations.length === 0
-            ? []
-            : [
-                makeTelegramBatchDelivery({
-                  activityId,
-                  chatId: chatJob.chatId,
-                  operations: outcome.telegramOperations,
-                  conversationReference:
-                    outcome.sessionId === null
-                      ? null
-                      : { backend: outcome.conversationBackend, sessionId: outcome.sessionId },
-                }),
-              ]),
-          ...(outcome.sessionId === null || triggerCortexExtraction === undefined
-            ? []
-            : [
-                makeCortexDelivery({
-                  activityId,
-                  sessionId: outcome.sessionId,
-                  cwd: config.workspacePath,
-                }),
-              ]),
-          ...(outcome.sourcePaths.length === 0
-            ? []
-            : [makeFileCleanupDelivery({ activityId, paths: outcome.sourcePaths })]),
-        ];
-
-        activity = await activityResults.saveIfAbsent({
-          schemaVersion: 1,
-          id: activityId,
-          sourceKind: 'chat',
-          sourceJobId: chatJob.id,
-          completedAt: new Date().toISOString(),
-          outcome: { kind: 'chat-completed', response: outcome.response },
-          deliveries,
-        });
-      }
-
-      if (activity.sourceKind !== 'chat' || activity.outcome.kind !== 'chat-completed') {
-        throw new Error(`Activity identity collision for chat job ${chatJob.id}`);
-      }
-
-      // A source job can be redelivered after its original cleanup delivery has
-      // already completed. The cached activity prevents agent re-execution, and
-      // this direct confined cleanup prevents the recreated stable spool path
-      // from becoming orphaned behind an already-completed delivery ID.
-      if (reusedActivity) {
-        await Promise.all(chatJobSourcePaths(chatJob).map((path) => removeSpooledFile(path)));
-      }
-
-      // ActivityResult is already durable. Telegram preview failure or a crash
-      // while draining cannot cause the expensive activity to run again.
-      await drainPreviews();
-
-      // The next serialized chat job may start as soon as this processor
-      // returns, so conversation state is a critical CAS commit. Generation and
-      // revision prevent /new or a delayed older delivery from overwriting the
-      // selected lineage.
-      for (const delivery of activity.deliveries) {
-        if (delivery.kind === 'chat-session' && delivery.schemaVersion === 2) {
-          await sessionStore.commitSession({
-            chatId: delivery.chatId,
-            expectedGeneration: delivery.expectedGeneration,
-            expectedRevision: delivery.expectedRevision,
-            backend: delivery.backend,
-            sessionId: delivery.sessionId,
-            lastActivityAt: delivery.lastActivityAt,
-          });
-        }
-      }
-      await deliveryOutbox.enqueue(activity.deliveries);
-      return activity.outcome;
-    },
-    {
+  const entries = specs.map((spec) => {
+    const worker = workerFactory(spec.queueName, spec.processor, {
       connection,
       concurrency: 1,
-      lockDuration: longLockMs,
-      stalledInterval: longLockMs,
-      // Cap processing at 10 chat jobs/minute. concurrency=1 already
-      // serializes execution; this adds back-pressure so a typo storm or
-      // automation glitch doesn't burn Claude API spend / Telegram quota
-      // by replaying a long backlog at full speed.
-      limiter: { max: 10, duration: 60_000 },
+      ...spec.tuning,
       autorun: false,
-    },
-  );
-
-  attachDeadLetterHandler({
-    worker: chatWorker,
-    jobKind: 'chat',
-    telegram,
-    getChatIds: (data) => chatIdOrFallback(data, config.authorizedUserIds),
-    onFinalFailure: async (data) => {
-      const parsed = parseChatJob(data);
-      if (!parsed.ok) return;
-      await Promise.all(chatJobSourcePaths(parsed.value).map((path) => removeSpooledFile(path)));
-    },
+    });
+    attachDeadLetterHandler({ worker, jobKind: spec.kind, telegram, ...spec.deadLetter });
+    return [spec.kind, worker] as const;
   });
 
-  // ── Scheduled worker (FR-015: concurrency=1) ─────────────────────────────
-
-  const scheduledWorker = workerFactory(
-    'reclaw-scheduled',
-    async (job) => {
-      const parsed = parseScheduledJob(job.data);
-      if (!parsed.ok) throw new Error(parsed.error);
-      const scheduledJob = parsed.value;
-      console.info(
-        `[worker:scheduled] Processing job ${job.id ?? 'unknown'} skill=${scheduledJob.skillId}`,
-      );
-      const activityId = makeActivityId('scheduled', scheduledJob.id);
-      let activity = await activityResults.find(activityId);
-
-      if (activity === null) {
-        const outcome = await scheduledHandler(scheduledJob);
-
-        // A skip is a successful non-event and has no activity result because
-        // no expensive execution occurred. A genuine failure remains retryable.
-        if (outcome.kind === 'failed') {
-          if (outcome.cause.kind === 'agent') {
-            throwAgentFailure(outcome.cause.failure);
-          }
-          throw new Error(outcome.cause.message);
-        }
-        if (outcome.kind === 'skipped') {
-          return outcome;
-        }
-
-        const chunks = outcome.suppressed ? [] : splitMessage(outcome.response);
-        const deliveries = [
-          ...config.authorizedUserIds.flatMap((chatId) =>
-            chunks.length === 0
-              ? []
-              : [
-                  makeTelegramBatchDelivery({
-                    activityId,
-                    chatId,
-                    operations: chunks.map(
-                      (text): TelegramDeliveryOperation => ({
-                        kind: 'send',
-                        text,
-                        format: 'markdown',
-                      }),
-                    ),
-                    conversationReference:
-                      outcome.sessionId === null
-                        ? null
-                        : { backend: outcome.sessionBackend, sessionId: outcome.sessionId },
-                  }),
-                ],
-          ),
-          ...(outcome.sessionId === null || triggerCortexExtraction === undefined
-            ? []
-            : [
-                makeCortexDelivery({
-                  activityId,
-                  sessionId: outcome.sessionId,
-                  cwd: config.workspacePath,
-                }),
-              ]),
-        ];
-
-        activity = await activityResults.saveIfAbsent({
-          schemaVersion: 1,
-          id: activityId,
-          sourceKind: 'scheduled',
-          sourceJobId: scheduledJob.id,
-          completedAt: new Date().toISOString(),
-          outcome: {
-            kind: 'scheduled-completed',
-            response: outcome.response,
-            suppressed: outcome.suppressed,
-          },
-          deliveries,
-        });
-      }
-
-      if (activity.sourceKind !== 'scheduled' || activity.outcome.kind !== 'scheduled-completed') {
-        throw new Error(`Activity identity collision for scheduled job ${scheduledJob.id}`);
-      }
-
-      // From this point onward retries reuse the immutable result. Redis marker,
-      // outbox, or dependent fan-out failures cannot rerun the agent activity.
-      await deliveryOutbox.enqueue(activity.deliveries);
-      await markScheduledJobCompleted(scheduledJob.id);
-      await onScheduledJobCompleted(scheduledJob);
-      return activity.outcome;
-    },
-    {
-      connection,
-      concurrency: 1,
-      lockDuration: longLockMs,
-      stalledInterval: longLockMs,
-      autorun: false,
-    },
-  );
-
-  // FR-005: Deliver to all authorized users' chats
-  attachDeadLetterHandler({
-    worker: scheduledWorker,
-    jobKind: 'scheduled',
-    telegram,
-    getChatIds: () => config.authorizedUserIds,
-  });
-
-  // ── Reminder worker (concurrency=1, lightweight — no AI subprocess) ─────
-
-  const reminderWorker = workerFactory(
-    'reclaw-reminder',
-    async (job) => {
-      const data = job.data;
-      if (typeof data !== 'object' || data === null) {
-        throw new Error('Invalid reminder job data: not an object');
-      }
-      const kind = (data as Record<string, unknown>).kind;
-      console.info(`[worker:reminder] Processing job ${job.id ?? 'unknown'} kind=${kind}`);
-      const result = await match(kind)
-        .with('reminder', () => {
-          const parsed = parseReminderJob(data);
-          if (!parsed.ok) throw new Error(parsed.error);
-          return reminderHandler(parsed.value);
-        })
-        .with('recurring-reminder', () => {
-          const parsed = parseRecurringReminderJob(data);
-          if (!parsed.ok) throw new Error(parsed.error);
-          return recurringReminderHandler(parsed.value);
-        })
-        .otherwise((k) => {
-          throw new Error(`Invalid reminder job data: unexpected kind "${String(k)}"`);
-        });
-      // One-shot reminders retry on failure; recurring reminders do NOT retry
-      // because the next scheduled occurrence fires anyway (double-delivery risk).
-      if (!result.ok && kind !== 'recurring-reminder') {
-        throw new Error(result.error);
-      }
-      return result;
-    },
-    { connection, concurrency: 1, autorun: false },
-  );
-
-  attachDeadLetterHandler({
-    worker: reminderWorker,
-    jobKind: 'reminder',
-    telegram,
-    getChatIds: (data) => chatIdOrFallback(data, config.authorizedUserIds),
-  });
-
-  // ── Delivery outbox worker ────────────────────────────────────────────────
-
-  const deliveryWorker = workerFactory(
-    'reclaw-delivery',
-    async (job) => {
-      const parsed = parseDeliveryJob(job.data);
-      if (!parsed.ok) throw new Error(parsed.error);
-      const delivery = parsed.value;
-
-      return handleDeliveryJob(
-        delivery,
-        async (next) => {
-          // BullMQ's Job.updateData mutates `this.data`; invoking an extracted
-          // method loses the Job receiver under Bun and fails after the
-          // external operation has already succeeded.
-          await job.updateData?.(next);
-        },
-        {
-          telegram,
-          sessionStore,
-          removeFile: removeSpooledFile,
-          ...(triggerCortexExtraction === undefined ? {} : { triggerCortexExtraction }),
-        },
-      );
-    },
-    { connection, concurrency: 1, autorun: false },
-  );
-
-  attachDeadLetterHandler({
-    worker: deliveryWorker,
-    jobKind: 'delivery',
-    telegram,
-    getChatIds: (data) => chatIdOrFallback(data, config.authorizedUserIds),
-    defaultMaxAttempts: 8,
-  });
-
-  // ── Research worker (AD-1: concurrency=1, long lock for SC-009) ──────────
-  // 60 minutes: base pipeline (~10min) + artifact generation (up to 2×15min) + margin
-  const researchLockMs = 60 * 60 * 1000;
-
-  const researchWorker = workerFactory(
-    'reclaw-research',
-    async (job) => {
-      const parsed = parseResearchJobData(job.data);
-      if (!parsed.ok) throw new Error(parsed.error);
-      // Construct ResearchJobLike wrapping real BullMQ job methods for checkpointing (SC-002/SC-003)
-      const researchJobData = parsed.value;
-      console.info(
-        `[worker:research] Processing job ${job.id ?? 'unknown'} prompt="${researchJobData.prompt.slice(0, 60)}"`,
-      );
-      const updateData = job.updateData;
-      const updateProgress = job.updateProgress;
-      const jobLike: ResearchJobLike = {
-        data: researchJobData,
-        updateData:
-          updateData === undefined ? async () => {} : (data: ResearchJobData) => updateData(data),
-        updateProgress:
-          updateProgress === undefined
-            ? async () => {}
-            : (progress: number) => updateProgress(progress),
-      };
-      const startMs = Date.now();
-      try {
-        const result = await researchHandler(jobLike);
-        console.info(
-          `[worker:research] Job ${job.id ?? 'unknown'} completed in ${Math.round((Date.now() - startMs) / 1000)}s — hubPath=${result.hubPath}`,
-        );
-        return result;
-      } catch (err) {
-        const elapsed = Math.round((Date.now() - startMs) / 1000);
-        console.error(
-          `[worker:research] Job ${job.id ?? 'unknown'} failed after ${elapsed}s:`,
-          err instanceof Error ? err.message : err,
-        );
-        throw err;
-      }
-    },
-    {
-      connection,
-      concurrency: 1,
-      lockDuration: researchLockMs,
-      stalledInterval: researchLockMs,
-      autorun: false,
-    },
-  );
-
-  attachDeadLetterHandler({
-    worker: researchWorker,
-    jobKind: 'research',
-    telegram,
-    getChatIds: (data) => chatIdOrFallback(data, config.authorizedUserIds),
-    defaultMaxAttempts: 3,
-  });
-
-  // ── Podcast worker (concurrency=1, long lock for artifact generation) ───
-  const podcastLockMs = 20 * 60 * 1000; // 20 minutes
-
-  const podcastWorker = workerFactory(
-    'reclaw-podcast',
-    async (job) => {
-      const parsed = parsePodcastJob(job.data);
-      if (!parsed.ok) throw new Error(parsed.error);
-      const podcastJob = parsed.value;
-      console.info(
-        `[worker:podcast] Processing job ${job.id ?? 'unknown'} note="${podcastJob.notePath}"`,
-      );
-      const result = await podcastHandler(podcastJob);
-      if (!result.ok) throw new Error(result.error);
-      return result;
-    },
-    {
-      connection,
-      concurrency: 1,
-      lockDuration: podcastLockMs,
-      stalledInterval: podcastLockMs,
-      autorun: false,
-    },
-  );
-
-  attachDeadLetterHandler({
-    worker: podcastWorker,
-    jobKind: 'podcast',
-    telegram,
-    getChatIds: (data) => chatIdOrFallback(data, config.authorizedUserIds),
-    defaultMaxAttempts: 1,
-  });
-
-  // ─── Public API ───────────────────────────────────────────────────────────
-
-  const workerEntries = [
-    ['chat', chatWorker],
-    ['scheduled', scheduledWorker],
-    ['reminder', reminderWorker],
-    ['delivery', deliveryWorker],
-    ['research', researchWorker],
-    ['podcast', podcastWorker],
-  ] as const;
-
-  let startPromise: Promise<void> | null = null;
-  let stopPromise: Promise<void> | null = null;
-  let stopRequested = false;
-  const runPromises: Promise<void>[] = [];
-
-  const stop = (): Promise<void> => {
-    stopRequested = true;
-    if (stopPromise !== null) return stopPromise;
-
-    stopPromise = (async () => {
-      await Promise.all(workerEntries.map(([, worker]) => worker.close()));
-      await Promise.allSettled(runPromises);
-    })();
-    return stopPromise;
-  };
-
-  const start = (): Promise<void> => {
-    if (startPromise !== null) return startPromise;
-    if (stopRequested)
-      return Promise.reject(new Error('Workers cannot start after shutdown has begun'));
-
-    startPromise = (async () => {
-      let timeout: ReturnType<typeof setTimeout> | undefined;
-      try {
-        await Promise.race([
-          Promise.all(workerEntries.map(([, worker]) => worker.waitUntilReady())),
-          new Promise<never>((_, reject) => {
-            timeout = setTimeout(
-              () => reject(new Error(`BullMQ workers were not ready within ${readyTimeoutMs}ms`)),
-              readyTimeoutMs,
-            );
-          }),
-        ]);
-
-        if (stopRequested) throw new Error('Worker startup was cancelled by shutdown');
-
-        for (const [kind, worker] of workerEntries) {
-          const runPromise = worker.run();
-          runPromises.push(runPromise);
-          void runPromise.catch((err: unknown) => {
-            if (!stopRequested) {
-              console.error(`[worker:${kind}] Run loop terminated unexpectedly:`, err);
-            }
-          });
-        }
-      } catch (err) {
-        try {
-          await stop();
-        } catch (stopErr) {
-          console.error('[worker] Failed to close workers after startup failure:', stopErr);
-        }
-        throw err;
-      } finally {
-        if (timeout !== undefined) clearTimeout(timeout);
-      }
-    })();
-    return startPromise;
-  };
-
-  return { start, stop } as const;
+  return superviseWorkers(entries, readyTimeoutMs);
 }

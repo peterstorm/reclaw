@@ -5,6 +5,7 @@
  * No subprocess lifecycle logic — that belongs in the shared runner.
  */
 
+import { assertNever } from '../../core/types.js';
 import type { AgentBackend, AgentModelSelection, StreamDelta } from './types.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -46,6 +47,121 @@ function enabledClaudeBuiltins(allowedTools: readonly string[]): readonly string
   ];
 }
 
+// ─── Output parsing ───────────────────────────────────────────────────────────
+
+/** One stream-json line as a JSON object, or null for blank, non-JSON and non-object lines. */
+function parseJsonRecord(line: string): Record<string, unknown> | null {
+  const trimmed = line.trim();
+  if (trimmed === '') return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+  return isRecord(parsed) ? parsed : null;
+}
+
+/** A stream-json line, reduced to what parseResult reads from it. */
+type ClaudeFrame =
+  | {
+      readonly kind: 'agent-error';
+      readonly sessionId: string | null;
+      readonly errorMessage: string;
+    }
+  | { readonly kind: 'result'; readonly sessionId: string | null; readonly result: string | null }
+  | { readonly kind: 'message-start' }
+  | { readonly kind: 'text-delta'; readonly text: string };
+
+function parseResultFrame(record: Record<string, unknown>): ClaudeFrame {
+  const sessionId = typeof record.session_id === 'string' ? record.session_id : null;
+  const result = typeof record.result === 'string' ? record.result : null;
+  const subtype = typeof record.subtype === 'string' ? record.subtype : null;
+
+  // Agent-level failure inside an otherwise-parseable stream. The CLI signals
+  // this with is_error:true and/or a non-success subtype (e.g.
+  // "error_during_execution", "error_max_turns"). Capture the human-readable
+  // reason so the runner can surface *why* it failed instead of an opaque
+  // "exited with code N:". The `result` string is then the error, not
+  // assistant text.
+  if (record.is_error === true || (subtype !== null && subtype !== 'success')) {
+    const resultText = result !== null && result.trim() !== '' ? result.trim() : null;
+    return {
+      kind: 'agent-error',
+      sessionId,
+      errorMessage: resultText ?? subtype ?? 'unknown agent error',
+    };
+  }
+  return { kind: 'result', sessionId, result };
+}
+
+function parseStreamEventFrame(record: Record<string, unknown>): ClaudeFrame | null {
+  const event = record.event;
+  if (!isRecord(event)) return null;
+  if (event.type === 'message_start') return { kind: 'message-start' };
+  if (event.type !== 'content_block_delta') return null;
+
+  const delta = event.delta;
+  return isRecord(delta) && delta.type === 'text_delta' && typeof delta.text === 'string'
+    ? { kind: 'text-delta', text: delta.text }
+    : null;
+}
+
+function parseClaudeFrame(line: string): ClaudeFrame | null {
+  const record = parseJsonRecord(line);
+  if (record === null) return null;
+  if (record.type === 'result') return parseResultFrame(record);
+  return record.type === 'stream_event' ? parseStreamEventFrame(record) : null;
+}
+
+/**
+ * Fold the stream-json output into the run's reply. Each message_start begins
+ * a new assistant message and its text deltas accumulate into it. Only the LAST
+ * message's text is the reply: intermediate messages (stop_reason: tool_use)
+ * carry narration that must not reach the user.
+ */
+function parseClaudeOutput(rawOutput: string): ReturnType<AgentBackend['parseResult']> {
+  let sessionId: string | null = null;
+  let errorMessage: string | null = null;
+  let lastMessageText: string | null = null;
+  let sawMessageStart = false;
+
+  for (const line of rawOutput.split('\n')) {
+    const frame = parseClaudeFrame(line);
+    if (frame === null) continue;
+
+    switch (frame.kind) {
+      case 'agent-error':
+        sessionId = frame.sessionId ?? sessionId;
+        errorMessage = frame.errorMessage;
+        break;
+      case 'result':
+        sessionId = frame.sessionId ?? sessionId;
+        // The result field concatenates ALL messages, so it is only the reply
+        // when no streaming events were captured.
+        if (!sawMessageStart && frame.result !== null) {
+          return { text: frame.result, sessionId, errorMessage: null };
+        }
+        break;
+      case 'message-start':
+        sawMessageStart = true;
+        lastMessageText = '';
+        break;
+      case 'text-delta':
+        // A text delta before any message_start opens a message of its own.
+        lastMessageText = (lastMessageText ?? '') + frame.text;
+        break;
+      default:
+        return assertNever(frame);
+    }
+  }
+
+  return { text: lastMessageText || null, sessionId, errorMessage };
+}
+
+// ─── Backend ──────────────────────────────────────────────────────────────────
+
 export const claudeBackend: AgentBackend = {
   name: 'claude',
 
@@ -83,121 +199,11 @@ export const claudeBackend: AgentBackend = {
     return rest;
   },
 
-  parseResult(rawOutput: string): {
-    text: string | null;
-    sessionId: string | null;
-    errorMessage?: string | null;
-  } {
-    const lines = rawOutput.split('\n');
-    let sessionId: string | null = null;
-    let errorMessage: string | null = null;
-
-    // Track per-message text via streaming events.
-    // Each message_start begins a new message; text_delta within content_block_delta
-    // accumulates text for the current message. Only the LAST message's text is
-    // returned — intermediate messages (stop_reason: tool_use) contain narration
-    // that shouldn't be sent to the user.
-    const messageTexts: string[][] = [];
-    let sawMessageStart = false;
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (trimmed === '') continue;
-
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(trimmed);
-      } catch {
-        continue;
-      }
-
-      if (!isRecord(parsed)) continue;
-
-      // Extract session_id from result event
-      if (parsed.type === 'result') {
-        if (typeof parsed.session_id === 'string') {
-          sessionId = parsed.session_id;
-        }
-
-        // Agent-level failure inside an otherwise-parseable stream. The CLI
-        // signals this with is_error:true and/or a non-success subtype
-        // (e.g. "error_during_execution", "error_max_turns"). Capture the
-        // human-readable reason so the runner can surface *why* it failed
-        // instead of an opaque "exited with code N:". Do NOT treat the
-        // `result` string as assistant text in this case — it's the error.
-        const isError = parsed.is_error === true;
-        const subtype = typeof parsed.subtype === 'string' ? parsed.subtype : null;
-        if (isError || (subtype !== null && subtype !== 'success')) {
-          const resultText =
-            typeof parsed.result === 'string' && parsed.result.trim() !== ''
-              ? parsed.result.trim()
-              : null;
-          errorMessage = resultText ?? subtype ?? 'unknown agent error';
-          continue;
-        }
-
-        // If we tracked messages via streaming events, DON'T use the result
-        // field (it's the concatenation of ALL messages). Fall through to
-        // return the last message's text below.
-        // If no streaming events were captured, use the result field as fallback.
-        if (!sawMessageStart && typeof parsed.result === 'string') {
-          return { text: parsed.result, sessionId, errorMessage: null };
-        }
-        continue;
-      }
-
-      // Track streaming events for message boundaries
-      if (parsed.type !== 'stream_event') continue;
-      const event = parsed.event;
-      if (!isRecord(event)) continue;
-
-      // message_start — new assistant message begins
-      if (event.type === 'message_start') {
-        sawMessageStart = true;
-        messageTexts.push([]);
-        continue;
-      }
-
-      // content_block_delta with text_delta — accumulate text for current message
-      if (event.type === 'content_block_delta') {
-        const delta = event.delta;
-        if (!isRecord(delta)) continue;
-        if (delta.type === 'text_delta' && typeof delta.text === 'string') {
-          if (messageTexts.length === 0) {
-            // Edge case: text delta before any message_start
-            messageTexts.push([]);
-          }
-          messageTexts[messageTexts.length - 1]?.push(delta.text);
-        }
-      }
-    }
-
-    // Return only the LAST message's text — that's the actual response to the user
-    const lastMessage = messageTexts.at(-1);
-    if (lastMessage !== undefined) {
-      const lastMessageText = lastMessage.join('');
-      return {
-        text: lastMessageText.length > 0 ? lastMessageText : null,
-        sessionId,
-        errorMessage,
-      };
-    }
-
-    return { text: null, sessionId, errorMessage };
-  },
+  parseResult: parseClaudeOutput,
 
   extractStreamDelta(line: string): StreamDelta | null {
-    const trimmed = line.trim();
-    if (trimmed === '') return null;
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(trimmed);
-    } catch {
-      return null;
-    }
-
-    if (!isRecord(parsed)) return null;
+    const parsed = parseJsonRecord(line);
+    if (parsed === null) return null;
     if (parsed.type !== 'stream_event') return null;
 
     const event = parsed.event;
@@ -234,17 +240,8 @@ export const claudeBackend: AgentBackend = {
   },
 
   extractSessionId(line: string): string | null {
-    const trimmed = line.trim();
-    if (trimmed === '') return null;
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(trimmed);
-    } catch {
-      return null;
-    }
-
-    if (!isRecord(parsed)) return null;
+    const parsed = parseJsonRecord(line);
+    if (parsed === null) return null;
     if (parsed.type !== 'result') return null;
 
     if (typeof parsed.session_id === 'string') {

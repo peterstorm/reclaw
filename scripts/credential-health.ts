@@ -60,6 +60,7 @@ import {
   MS_PER_DAY,
   MS_PER_HOUR,
   type NotebookLMProbe,
+  type PiProviderAuth,
   type Probe,
   type ProbeOutcome,
   classifyApiKeyProbe,
@@ -157,6 +158,13 @@ function tail(text: string, lines = 3, maxChars = 300): string {
   return trimmed.length > maxChars ? `${trimmed.slice(0, maxChars)}…` : trimmed;
 }
 
+/** Why a failed execFile failed: the tail of its stderr when it wrote any, else the error itself. */
+function subprocessFailure(e: unknown): string {
+  const stderr =
+    typeof (e as { stderr?: unknown }).stderr === 'string' ? (e as { stderr: string }).stderr : '';
+  return stderr !== '' ? tail(stderr) : errorMessage(e);
+}
+
 /**
  * Retry a flaky remote call before believing its failure. Mirrors the retry
  * garmin-fetch puts around the same call: a transient blip must not be read as
@@ -214,11 +222,7 @@ async function runReauth(): Promise<{ ok: true } | { ok: false; error: string }>
     });
     return { ok: true };
   } catch (e) {
-    const stderr =
-      typeof (e as { stderr?: unknown }).stderr === 'string'
-        ? (e as { stderr: string }).stderr
-        : '';
-    return { ok: false, error: stderr !== '' ? tail(stderr) : errorMessage(e) };
+    return { ok: false, error: subprocessFailure(e) };
   }
 }
 
@@ -559,6 +563,67 @@ function piProviderEntry(provider: string): unknown {
   }
 }
 
+type PiTarget = { provider: string; model: string };
+type StaticKeyAuth = Extract<PiProviderAuth, { kind: 'static-key' }>;
+
+/**
+ * Resolve the key exactly the way the runtime does. models.json may hold a
+ * literal key or a `!command` (pi evaluates the latter and its print-api-key
+ * subcommand is the authoritative resolver — desktop-vllm stores
+ * `!cat ~/.config/ds4-flash/api-key`, which a literal read would misreport as
+ * an invalid key). Fall back to the literal value only when the subcommand is
+ * unavailable and the stored value is not a command. A key that cannot be
+ * resolved is already the verdict.
+ */
+async function resolvePiApiKey(
+  target: PiTarget,
+  auth: StaticKeyAuth,
+): Promise<{ ok: true; apiKey: string } | { ok: false; outcome: ProbeOutcome }> {
+  try {
+    const { stdout } = await execFileAsync(
+      'pi',
+      ['auth', 'print-api-key', '--provider', target.provider, '--model', target.model],
+      { timeout: PI_PROBE_TIMEOUT_MS, env: process.env },
+    );
+    const resolved = stdout.trim();
+    return { ok: true, apiKey: resolved !== '' ? resolved : auth.apiKey };
+  } catch (e) {
+    const isMissing = (e as { code?: unknown }).code === 'ENOENT';
+    if (!auth.apiKey.startsWith('!') && !isMissing) return { ok: true, apiKey: auth.apiKey };
+    return {
+      ok: false,
+      outcome: isMissing
+        ? {
+            kind: 'unknown',
+            detail: '`pi` is not on PATH, so the api key could not be resolved',
+          }
+        : {
+            kind: 'broken',
+            detail: `the provider's api key could not be resolved: ${errorMessage(e)}`,
+            remedy: 'fix the `apiKey` (a `!command`) for the provider in ~/.pi/agent/models.json',
+          },
+    };
+  }
+}
+
+/** GET /models with the resolved key: 200 proves the key is accepted AND the engine is serving. */
+async function probePiApiKey(target: PiTarget, auth: StaticKeyAuth): Promise<Probe> {
+  const key = await resolvePiApiKey(target, auth);
+  if (!key.ok) return { id: 'agent-pi', outcome: key.outcome };
+  try {
+    const res = await fetch(`${auth.baseUrl.replace(/\/+$/, '')}/models`, {
+      headers: { Authorization: `Bearer ${key.apiKey}` },
+      signal: AbortSignal.timeout(PI_PROBE_TIMEOUT_MS),
+    });
+    return { id: 'agent-pi', outcome: classifyApiKeyProbe({ status: res.status, error: null }) };
+  } catch (e) {
+    return {
+      id: 'agent-pi',
+      outcome: classifyApiKeyProbe({ status: null, error: errorMessage(e) }),
+    };
+  }
+}
+
 /**
  * Probe the pi backend by asking it for a bearer token with 30 minutes of life
  * left: `pi auth print-bearer-token` refreshes an expired token on the way, so a
@@ -568,8 +633,7 @@ function piProviderEntry(provider: string): unknown {
  * A key-authenticated provider (e.g. a local vLLM server) has no OAuth token to
  * produce — `print-bearer-token` fails on it even when the provider is perfectly
  * healthy. For those, probe the endpoint the runtime actually talks to instead
- * (GET /models with the configured key): 200 proves the key is accepted AND the
- * engine is serving.
+ * (probePiApiKey).
  *
  * Neither the bearer token nor the apiKey may ever reach a log line or a
  * Telegram message; only the probe verdict is used.
@@ -587,59 +651,12 @@ async function probePiToken(): Promise<Probe> {
     };
   }
 
-  const remedy = `re-authenticate the \`${target.provider}\` provider in an interactive \`pi\` session on the homelab`;
-
   const auth = resolvePiProviderAuth(piProviderEntry(target.provider));
-  if (auth.kind === 'static-key') {
-    // Resolve the key exactly the way the runtime does. models.json may hold a
-    // literal key or a `!command` (pi evaluates the latter and its
-    // print-api-key subcommand is the authoritative resolver — desktop-vllm
-    // stores `!cat ~/.config/ds4-flash/api-key`, which a literal read would
-    // misreport as an invalid key). Fall back to the literal value only when
-    // the subcommand is unavailable and the stored value is not a command.
-    let apiKey = auth.apiKey;
-    try {
-      const { stdout } = await execFileAsync(
-        'pi',
-        ['auth', 'print-api-key', '--provider', target.provider, '--model', target.model],
-        { timeout: PI_PROBE_TIMEOUT_MS, env: process.env },
-      );
-      const resolved = stdout.trim();
-      if (resolved !== '') apiKey = resolved;
-    } catch (e) {
-      if (auth.apiKey.startsWith('!') || (e as { code?: unknown }).code === 'ENOENT') {
-        const isMissing = (e as { code?: unknown }).code === 'ENOENT';
-        return {
-          id: 'agent-pi',
-          outcome: isMissing
-            ? {
-                kind: 'unknown',
-                detail: '`pi` is not on PATH, so the api key could not be resolved',
-              }
-            : {
-                kind: 'broken',
-                detail: `the provider's api key could not be resolved: ${errorMessage(e)}`,
-                remedy:
-                  'fix the `apiKey` (a `!command`) for the provider in ~/.pi/agent/models.json',
-              },
-        };
-      }
-    }
+  return auth.kind === 'static-key' ? probePiApiKey(target, auth) : probePiBearerToken(target);
+}
 
-    try {
-      const res = await fetch(`${auth.baseUrl.replace(/\/+$/, '')}/models`, {
-        headers: { Authorization: `Bearer ${apiKey}` },
-        signal: AbortSignal.timeout(PI_PROBE_TIMEOUT_MS),
-      });
-      return { id: 'agent-pi', outcome: classifyApiKeyProbe({ status: res.status, error: null }) };
-    } catch (e) {
-      return {
-        id: 'agent-pi',
-        outcome: classifyApiKeyProbe({ status: null, error: errorMessage(e) }),
-      };
-    }
-  }
-
+async function probePiBearerToken(target: PiTarget): Promise<Probe> {
+  const remedy = `re-authenticate the \`${target.provider}\` provider in an interactive \`pi\` session on the homelab`;
   try {
     await execFileAsync(
       'pi',
@@ -670,15 +687,11 @@ async function probePiToken(): Promise<Probe> {
         },
       };
     }
-    const stderr =
-      typeof (e as { stderr?: unknown }).stderr === 'string'
-        ? (e as { stderr: string }).stderr
-        : '';
     return {
       id: 'agent-pi',
       outcome: {
         kind: 'broken',
-        detail: `${target.provider} token could not be produced: ${stderr !== '' ? tail(stderr) : errorMessage(e)}`,
+        detail: `${target.provider} token could not be produced: ${subprocessFailure(e)}`,
         remedy,
       },
     };

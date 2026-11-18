@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import type { Result } from '../core/types.js';
-import { err, ok } from '../core/types.js';
+import { assertNever, err, ok } from '../core/types.js';
 import type { VaultFilePath, VaultRelativePath } from '../core/vault-path.js';
 
 export type VaultPathError =
@@ -178,5 +178,7 @@ export function formatVaultPathError(error: VaultPathError): string {
       return `Vault path escapes the configured root: ${error.path}`;
     case 'filesystem-error':
       return `Vault path resolution failed for "${error.path}": ${error.cause}`;
+    default:
+      return assertNever(error);
   }
 }

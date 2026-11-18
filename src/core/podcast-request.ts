@@ -1,4 +1,4 @@
-import { type Result, err, ok } from './types.js';
+import { type Result, assertNever, err, ok } from './types.js';
 import { type VaultRelativePath, parseVaultRelativePath } from './vault-path.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -25,6 +25,8 @@ export function audioFormatToCode(format: AudioFormat): 0 | 1 | 2 | 3 {
       return 2;
     case 'debate':
       return 3;
+    default:
+      return assertNever(format);
   }
 }
 
@@ -37,6 +39,8 @@ export function audioLengthToCode(length: AudioLength): 1 | 2 | 3 {
       return 2;
     case 'long':
       return 3;
+    default:
+      return assertNever(length);
   }
 }
 

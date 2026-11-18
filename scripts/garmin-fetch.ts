@@ -204,6 +204,8 @@ const yesterday = (): Date => {
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
 /** Retries a flaky call with backoff. Garmin's preauth/profile endpoints intermittently 400/5xx on transient blips. */
 const withRetry = async <T>(
   label: string,
@@ -218,9 +220,8 @@ const withRetry = async <T>(
     } catch (e) {
       lastErr = e;
       if (i < attempts - 1) {
-        const msg = e instanceof Error ? e.message : String(e);
         console.error(
-          `[WARN] ${label} attempt ${i + 1}/${attempts} failed: ${msg}, retrying in ${delayMs}ms...`,
+          `[WARN] ${label} attempt ${i + 1}/${attempts} failed: ${errorText(e)}, retrying in ${delayMs}ms...`,
         );
         await delay(delayMs);
       }
@@ -237,7 +238,7 @@ const tryFetch = async <T>(
   try {
     return await fn();
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
+    const msg = errorText(e);
     errors.push(`${label}: ${msg}`);
     console.error(`[WARN] Failed to fetch ${label}: ${msg}`);
     return null;
@@ -454,6 +455,111 @@ const extractCompletedSets = (raw: Record<string, unknown>): readonly CompletedS
     };
   });
 };
+const extractVo2Max = (info: Record<string, unknown>): Vo2MaxSummary => {
+  const bio = info.biometricProfile as Record<string, unknown> | undefined;
+  return {
+    running: (bio?.vo2Max as number) ?? null,
+    cycling: (bio?.vo2MaxCycling as number) ?? null,
+  };
+};
+
+const extractLactateThreshold = (settings: Record<string, unknown>): LactateThreshold => {
+  const ud = settings.userData as Record<string, unknown> | undefined;
+  const lthr = (ud?.lactateThresholdHeartRate as number | undefined) ?? null;
+  const ltSpeedRaw = (ud?.lactateThresholdSpeed as number | undefined) ?? null;
+  const autoDetected = (ud?.thresholdHeartRateAutoDetected as boolean) ?? false;
+
+  // Garmin stores lactateThresholdSpeed with a ×0.1 scaling factor
+  const ltSpeedMps = ltSpeedRaw != null ? ltSpeedRaw * 10 : null;
+  const pacePerKm =
+    ltSpeedMps != null && ltSpeedMps > 0
+      ? `${Math.floor(1000 / ltSpeedMps / 60)}:${String(Math.round((1000 / ltSpeedMps) % 60)).padStart(2, '0')}`
+      : null;
+
+  return { heartRate: lthr, speedMps: ltSpeedMps, pacePerKm, autoDetected };
+};
+
+const TRAINING_STATUS_NAMES: Record<number, string> = {
+  0: 'NOT_APPLICABLE',
+  1: 'DETRAINING',
+  2: 'RECOVERY',
+  3: 'MAINTAINING',
+  4: 'PRODUCTIVE',
+  5: 'PEAKING',
+  6: 'OVERREACHING',
+  7: 'UNPRODUCTIVE',
+};
+
+const FITNESS_TREND_NAMES: Record<number, string> = { 0: 'DECLINING', 1: 'STEADY', 2: 'IMPROVING' };
+
+/** A numeric Garmin code by its name (an unmapped number as its digits); a string or null as-is. */
+const codeName = (code: number | string | null, names: Record<number, string>): string | null =>
+  typeof code === 'number' ? (names[code] ?? String(code)) : code;
+
+const extractAcuteTrainingLoad = (
+  acuteDto: Record<string, unknown> | undefined,
+): AcuteTrainingLoad | null =>
+  acuteDto
+    ? {
+        acwrPercent: (acuteDto.acwrPercent as number) ?? null,
+        acwrStatus: (acuteDto.acwrStatus as string) ?? null,
+        dailyAcuteChronicWorkloadRatio: (acuteDto.dailyAcuteChronicWorkloadRatio as number) ?? null,
+        dailyTrainingLoadAcute: (acuteDto.dailyTrainingLoadAcute as number) ?? null,
+        dailyTrainingLoadChronic: (acuteDto.dailyTrainingLoadChronic as number) ?? null,
+      }
+    : null;
+
+/** Training status with ACWR, from the first (usually only) device's entry. */
+const extractTrainingStatus = (raw: Record<string, unknown>): TrainingStatusSummary => {
+  const latestData = raw.latestTrainingStatusData as
+    | Record<string, Record<string, unknown>>
+    | undefined;
+  const deviceEntry = latestData
+    ? Object.values(latestData)[0]
+    : ((raw.mostRecentTrainingStatus ?? raw) as Record<string, unknown>);
+
+  return {
+    trainingStatus: codeName(
+      (deviceEntry?.trainingStatus as number | string | null) ?? null,
+      TRAINING_STATUS_NAMES,
+    ),
+    fitnessTrend: codeName(
+      (deviceEntry?.fitnessTrend as number | string | null) ?? null,
+      FITNESS_TREND_NAMES,
+    ),
+    acuteTrainingLoad: extractAcuteTrainingLoad(
+      deviceEntry?.acuteTrainingLoadDTO as Record<string, unknown> | undefined,
+    ),
+    raw: deviceEntry,
+  };
+};
+
+const extractHrv = (raw: Record<string, unknown>): HrvSummary => {
+  const summary = raw.hrvSummary as Record<string, unknown> | undefined;
+  return {
+    weeklyAverage: (summary?.weeklyAvg as number) ?? null,
+    lastNight: (summary?.lastNightAvg as number) ?? null,
+    raw,
+  };
+};
+
+/** Collects the steps of every segment into `steps`, in order. */
+const appendWorkoutSteps = (detail: Record<string, unknown>, steps: WorkoutStep[]): void => {
+  const segments = detail.workoutSegments as Array<Record<string, unknown>> | undefined;
+  if (!segments?.length) return;
+  for (const seg of segments) {
+    const segSteps = seg.workoutSteps as Array<Record<string, unknown>> | undefined;
+    if (!segSteps?.length) continue;
+    for (const s of segSteps) {
+      steps.push({
+        description: (s.description as string) ?? null,
+        stepType: ((s.stepType as Record<string, unknown>)?.stepTypeKey as string) ?? 'unknown',
+        distance: (s.endConditionValue as number) ?? null,
+        duration: (s.endConditionValue as number) ?? null,
+      });
+    }
+  }
+};
 
 const STRENGTH_ACTIVITY_TYPES = new Set([
   'strength_training',
@@ -463,39 +569,29 @@ const STRENGTH_ACTIVITY_TYPES = new Set([
   'training',
 ]);
 
-// --- Main ---
+// --- Garmin I/O ---
 
-async function main(): Promise<void> {
-  const email = process.env.GARMIN_EMAIL;
-  const password = process.env.GARMIN_PASSWORD;
+const TOKEN_DIR = join(process.env.HOME ?? '/home/peterstorm', '.cache', 'garmin');
+const DATA_DIR = join(TOKEN_DIR, 'daily');
 
-  if (!email || !password) {
-    console.error('[FATAL] GARMIN_EMAIL and GARMIN_PASSWORD env vars required');
-    process.exit(1);
-  }
-
-  const tokenDir = join(process.env.HOME ?? '/home/peterstorm', '.cache', 'garmin');
-  const dataDir = join(tokenDir, 'daily');
-  await mkdir(dataDir, { recursive: true });
-
-  const client = new GarminConnect({ username: email, password: password });
-
+/** Reuse the cached tokens when Garmin still accepts them; otherwise log in fresh and cache new ones. */
+async function authenticate(client: GarminConnect, email: string, password: string): Promise<void> {
   const freshLogin = async (): Promise<void> => {
     // Garmin's preauth endpoint intermittently 400s on transient blips — worth retrying
     // before treating it as a real auth failure.
     await withRetry('login', () => client.login(email, password), 3, 5000);
-    await client.exportTokenToFile(tokenDir);
-    await chmod(join(tokenDir, 'oauth1_token.json'), 0o600);
-    await chmod(join(tokenDir, 'oauth2_token.json'), 0o600);
+    await client.exportTokenToFile(TOKEN_DIR);
+    await chmod(join(TOKEN_DIR, 'oauth1_token.json'), 0o600);
+    await chmod(join(TOKEN_DIR, 'oauth2_token.json'), 0o600);
     console.error('[INFO] Login successful, tokens cached');
   };
 
   // Try loading cached tokens first
-  const hasTokens = existsSync(join(tokenDir, 'oauth2_token.json'));
+  const hasTokens = existsSync(join(TOKEN_DIR, 'oauth2_token.json'));
   if (hasTokens) {
     console.error('[INFO] Loading cached tokens...');
     try {
-      await client.loadTokenByFile(tokenDir);
+      await client.loadTokenByFile(TOKEN_DIR);
       // Verify tokens work with a lightweight call — retry first, since a transient
       // failure here shouldn't fall through to a full re-login (the flakier path).
       await withRetry('getUserProfile', () => client.getUserProfile(), 3, 2000);
@@ -508,382 +604,315 @@ async function main(): Promise<void> {
     console.error('[INFO] No cached tokens, logging in...');
     await freshLogin();
   }
+}
 
-  const dateArg = process.argv[2];
-  const date = dateArg ? new Date(`${dateArg}T00:00:00`) : yesterday();
-  const dateStr = formatDate(date);
-  const errors: string[] = [];
+/** One optional enrichment call, paced like every other call: a failure is a warning, not a fetch error. */
+const enrich = async <T>(warning: string, fn: () => Promise<T>): Promise<T | null> => {
+  try {
+    await delay(300);
+    return await fn();
+  } catch (e) {
+    console.error(`[WARN] ${warning}: ${errorText(e)}`);
+    return null;
+  }
+};
 
-  console.error(`[INFO] Fetching data for ${dateStr}...`);
+/** The activity's detail record, enriched with HR series, laps, prescription and sets. Throws when the detail call fails. */
+async function fetchActivityDetail(
+  client: GarminConnect,
+  act: Record<string, unknown>,
+  summaryHrZones: readonly HrZone[] | null,
+): Promise<ActivitySummary> {
+  const detail = (await client.getActivity({
+    activityId: act.activityId as number,
+  })) as unknown as Record<string, unknown>;
+  const extracted = extractActivity(detail);
+  // Merge summary HR zones if detail didn't have them
+  const activity =
+    !extracted.hrZones && summaryHrZones ? { ...extracted, hrZones: summaryHrZones } : extracted;
+  const activityUrl = `${client.url.ACTIVITY}${act.activityId as number}`;
 
-  // Fetch all data with individual error handling
+  const hrTimeSeries = await enrich(
+    `Failed to fetch HR time series for activity ${act.activityId}`,
+    async () =>
+      extractHrTimeSeries(
+        await client.get<Record<string, unknown>>(`${activityUrl}/details`, {
+          params: { maxChartSize: 1000, maxPolylineSize: 1000 },
+        }),
+      ),
+  );
+  // Per-km lap splits
+  const lapSplits = await enrich(
+    `Failed to fetch lap splits for activity ${act.activityId}`,
+    async () =>
+      extractLapSplits(await client.get<Record<string, unknown>>(`${activityUrl}/splits`)),
+  );
+  // The workout prescription, if this activity links to one
+  const associatedWorkout = activity.associatedWorkoutId
+    ? await enrich(`Failed to fetch associated workout ${activity.associatedWorkoutId}`, async () =>
+        extractAssociatedWorkout(
+          (await client.getWorkoutDetail({
+            workoutId: String(activity.associatedWorkoutId),
+          })) as unknown as Record<string, unknown>,
+        ),
+      )
+    : null;
+  // Per-set actuals (reps + weight) for strength-style activities
+  const completedSets = STRENGTH_ACTIVITY_TYPES.has(activity.activityType)
+    ? await enrich(`Failed to fetch exerciseSets for activity ${act.activityId}`, async () =>
+        extractCompletedSets(
+          await client.get<Record<string, unknown>>(`${activityUrl}/exerciseSets`),
+        ),
+      )
+    : null;
+
+  return { ...activity, hrTimeSeries, lapSplits, associatedWorkout, completedSets };
+}
+
+/** Appends the target date's activities (from the 20 most recent) to `activities` as each one lands. */
+async function collectActivities(
+  client: GarminConnect,
+  dateStr: string,
+  activities: ActivitySummary[],
+): Promise<void> {
+  const raw = (await client.getActivities(0, 20)) as unknown as Array<Record<string, unknown>>;
+  const todayActivities = raw.filter((a) => {
+    const start = (a.startTimeLocal as string) ?? '';
+    return start.startsWith(dateStr);
+  });
+
+  for (const act of todayActivities) {
+    // Extract HR zone times from summary list (not available in detail endpoint)
+    const summaryHrZones = extractHrZonesFromSummary(act);
+    try {
+      activities.push(await fetchActivityDetail(client, act, summaryHrZones));
+    } catch {
+      // Fall back to summary data
+      activities.push(extractActivity(act));
+    }
+    await delay(300);
+  }
+}
+
+async function fetchTrainingReadiness(
+  client: GarminConnect,
+  dateStr: string,
+): Promise<TrainingReadinessSummary | null> {
+  const readinessUrl = `${client.url.GC_API}/metrics-service/metrics/trainingreadiness/${dateStr}`;
+  const raw = await client.get<unknown>(readinessUrl);
+  const items = Array.isArray(raw) ? raw : [raw];
+  // Prefer the after-wakeup entry if available
+  const entry = (items.find(
+    (i: Record<string, unknown>) => i.inputContext === 'AFTER_WAKEUP_RESET',
+  ) ?? items[0]) as Record<string, unknown> | undefined;
+  if (!entry) return null;
+  return extractTrainingReadiness(entry);
+}
+
+/** A calendar workout, with the description and steps of its workout detail when that call succeeds. */
+async function fetchScheduledWorkout(
+  client: GarminConnect,
+  item: Record<string, unknown>,
+): Promise<ScheduledWorkout> {
+  let description: string | null = null;
+  let provider: string | null = null;
+  const steps: WorkoutStep[] = [];
+  const workoutId = item.workoutId as number | null;
+
+  if (workoutId) {
+    try {
+      await delay(300);
+      const detail = (await client.getWorkoutDetail({
+        workoutId: String(workoutId),
+      })) as unknown as Record<string, unknown>;
+      description = (detail.description as string) ?? null;
+      provider = (detail.workoutProvider as string) ?? null;
+      appendWorkoutSteps(detail, steps);
+    } catch (e) {
+      console.error(`[WARN] Failed to fetch workout detail ${workoutId}: ${errorText(e)}`);
+    }
+  }
+
+  return {
+    title: (item.title as string) ?? null,
+    date: item.date as string,
+    duration: (item.duration as number) ?? null,
+    distance: (item.distance as number) ?? null,
+    sportTypeKey: (item.sportTypeKey as string) ?? null,
+    itemType: item.itemType as string,
+    workoutId,
+    description,
+    provider,
+    steps,
+  };
+}
+
+/** Appends the target date's calendar workouts to `scheduledWorkouts` as each one lands. */
+async function collectScheduledWorkouts(
+  client: GarminConnect,
+  date: Date,
+  dateStr: string,
+  scheduledWorkouts: ScheduledWorkout[],
+): Promise<void> {
+  const cal = (await client.getCalendar(date.getFullYear(), date.getMonth())) as unknown as Record<
+    string,
+    unknown
+  >;
+  const items = cal.calendarItems as Array<Record<string, unknown>> | undefined;
+  if (!items?.length) return;
+  for (const item of items) {
+    if (item.itemType !== 'workout') continue;
+    if ((item.date as string) !== dateStr) continue;
+    scheduledWorkouts.push(await fetchScheduledWorkout(client, item));
+  }
+}
+
+/** Sleep, steps and heart rate: the daily wellness summaries. */
+async function fetchWellness(client: GarminConnect, date: Date, errors: string[]) {
   const sleep = await tryFetch(
     'sleep',
-    async () => {
-      const raw = (await client.getSleepData(date)) as unknown as Record<string, unknown>;
-      return extractSleep(raw);
-    },
+    async () =>
+      extractSleep((await client.getSleepData(date)) as unknown as Record<string, unknown>),
     errors,
   );
-
   await delay(300);
-
   const steps = await tryFetch('steps', () => client.getSteps(date), errors);
-
   await delay(300);
-
   const heartRate = await tryFetch(
     'heartRate',
-    async () => {
-      const raw = (await client.getHeartRate(date)) as unknown as Record<string, unknown>;
-      return extractHeartRate(raw);
-    },
+    async () =>
+      extractHeartRate((await client.getHeartRate(date)) as unknown as Record<string, unknown>),
     errors,
   );
+  return { sleep, steps, heartRate };
+}
 
-  await delay(300);
-
-  // Fetch activities — get recent ones and filter to target date
-  const activities: ActivitySummary[] = [];
-  await tryFetch(
-    'activities',
-    async () => {
-      const raw = (await client.getActivities(0, 20)) as unknown as Array<Record<string, unknown>>;
-      const todayActivities = raw.filter((a) => {
-        const start = (a.startTimeLocal as string) ?? '';
-        return start.startsWith(dateStr);
-      });
-
-      for (const act of todayActivities) {
-        // Extract HR zone times from summary list (not available in detail endpoint)
-        const summaryHrZones: readonly HrZone[] | null = extractHrZonesFromSummary(act);
-
-        // Fetch full detail for each activity
-        try {
-          const detail = (await client.getActivity({
-            activityId: act.activityId as number,
-          })) as unknown as Record<string, unknown>;
-          const activity = extractActivity(detail);
-          // Merge summary HR zones if detail didn't have them
-          if (!activity.hrZones && summaryHrZones) {
-            (activity as { hrZones: readonly HrZone[] | null }).hrZones = summaryHrZones;
-          }
-
-          // Fetch HR time series from activity details endpoint
-          let hrTimeSeries: readonly HrTimeSeriesPoint[] | null = null;
-          try {
-            await delay(300);
-            const detailsUrl = `${client.url.ACTIVITY}${act.activityId as number}/details`;
-            const detailsRaw = await client.get<Record<string, unknown>>(detailsUrl, {
-              params: { maxChartSize: 1000, maxPolylineSize: 1000 },
-            });
-            hrTimeSeries = extractHrTimeSeries(detailsRaw);
-          } catch (e) {
-            const msg = e instanceof Error ? e.message : String(e);
-            console.error(
-              `[WARN] Failed to fetch HR time series for activity ${act.activityId}: ${msg}`,
-            );
-          }
-
-          // Fetch per-km lap splits
-          let lapSplits: readonly LapSplit[] | null = null;
-          try {
-            await delay(300);
-            const splitsUrl = `${client.url.ACTIVITY}${act.activityId as number}/splits`;
-            const splitsRaw = await client.get<Record<string, unknown>>(splitsUrl);
-            lapSplits = extractLapSplits(splitsRaw);
-          } catch (e) {
-            const msg = e instanceof Error ? e.message : String(e);
-            console.error(
-              `[WARN] Failed to fetch lap splits for activity ${act.activityId}: ${msg}`,
-            );
-          }
-
-          // Fetch associated workout prescription if this activity links to one
-          let associatedWorkout: AssociatedWorkout | null = null;
-          if (activity.associatedWorkoutId) {
-            try {
-              await delay(300);
-              const workoutRaw = (await client.getWorkoutDetail({
-                workoutId: String(activity.associatedWorkoutId),
-              })) as unknown as Record<string, unknown>;
-              associatedWorkout = extractAssociatedWorkout(workoutRaw);
-            } catch (e) {
-              const msg = e instanceof Error ? e.message : String(e);
-              console.error(
-                `[WARN] Failed to fetch associated workout ${activity.associatedWorkoutId}: ${msg}`,
-              );
-            }
-          }
-
-          // Fetch per-set actuals (reps + weight) for strength-style activities
-          let completedSets: readonly CompletedSet[] | null = null;
-          if (STRENGTH_ACTIVITY_TYPES.has(activity.activityType)) {
-            try {
-              await delay(300);
-              const setsUrl = `${client.url.ACTIVITY}${act.activityId as number}/exerciseSets`;
-              const setsRaw = await client.get<Record<string, unknown>>(setsUrl);
-              completedSets = extractCompletedSets(setsRaw);
-            } catch (e) {
-              const msg = e instanceof Error ? e.message : String(e);
-              console.error(
-                `[WARN] Failed to fetch exerciseSets for activity ${act.activityId}: ${msg}`,
-              );
-            }
-          }
-
-          activities.push({
-            ...activity,
-            hrTimeSeries,
-            lapSplits,
-            associatedWorkout,
-            completedSets,
-          });
-        } catch {
-          // Fall back to summary data
-          activities.push(extractActivity(act));
-        }
-        await delay(300);
-      }
-    },
-    errors,
-  );
-
-  await delay(300);
-
-  // VO2 Max + Lactate Threshold from personal info
+/** VO2 max, lactate threshold, training status, readiness and HRV. */
+async function fetchTrainingMetrics(
+  client: GarminConnect,
+  date: Date,
+  dateStr: string,
+  errors: string[],
+) {
+  // VO2 Max from personal info
   const vo2Max = await tryFetch(
     'vo2Max',
-    async () => {
-      const info = (await client.getPersonalInfo()) as unknown as Record<string, unknown>;
-      const bio = info.biometricProfile as Record<string, unknown> | undefined;
-      return {
-        running: (bio?.vo2Max as number) ?? null,
-        cycling: (bio?.vo2MaxCycling as number) ?? null,
-      };
-    },
+    async () =>
+      extractVo2Max((await client.getPersonalInfo()) as unknown as Record<string, unknown>),
     errors,
   );
-
   // Lactate threshold from user settings (same login, separate call)
   await delay(300);
   const lactateThreshold = await tryFetch(
     'lactateThreshold',
-    async () => {
-      const settings = (await client.getUserSettings()) as unknown as Record<string, unknown>;
-      const ud = settings.userData as Record<string, unknown> | undefined;
-      const lthr = (ud?.lactateThresholdHeartRate as number | undefined) ?? null;
-      const ltSpeedRaw = (ud?.lactateThresholdSpeed as number | undefined) ?? null;
-      const autoDetected = (ud?.thresholdHeartRateAutoDetected as boolean) ?? false;
-
-      // Garmin stores lactateThresholdSpeed with a ×0.1 scaling factor
-      const ltSpeedMps = ltSpeedRaw != null ? ltSpeedRaw * 10 : null;
-      const pacePerKm =
-        ltSpeedMps != null && ltSpeedMps > 0
-          ? `${Math.floor(1000 / ltSpeedMps / 60)}:${String(Math.round((1000 / ltSpeedMps) % 60)).padStart(2, '0')}`
-          : null;
-
-      return { heartRate: lthr, speedMps: ltSpeedMps, pacePerKm, autoDetected };
-    },
+    async () =>
+      extractLactateThreshold(
+        (await client.getUserSettings()) as unknown as Record<string, unknown>,
+      ),
     errors,
   );
-
   await delay(300);
-
-  // Training status with ACWR
   const trainingStatus = await tryFetch(
     'trainingStatus',
-    async () => {
-      const raw = (await client.getTrainingStatus(date)) as unknown as Record<string, unknown>;
-      const latestData = raw.latestTrainingStatusData as
-        | Record<string, Record<string, unknown>>
-        | undefined;
-      // Get the first (usually only) device's status
-      const deviceEntry = latestData
-        ? Object.values(latestData)[0]
-        : ((raw.mostRecentTrainingStatus ?? raw) as Record<string, unknown>);
-
-      const acuteDto = deviceEntry?.acuteTrainingLoadDTO as Record<string, unknown> | undefined;
-      const acuteTrainingLoad: AcuteTrainingLoad | null = acuteDto
-        ? {
-            acwrPercent: (acuteDto.acwrPercent as number) ?? null,
-            acwrStatus: (acuteDto.acwrStatus as string) ?? null,
-            dailyAcuteChronicWorkloadRatio:
-              (acuteDto.dailyAcuteChronicWorkloadRatio as number) ?? null,
-            dailyTrainingLoadAcute: (acuteDto.dailyTrainingLoadAcute as number) ?? null,
-            dailyTrainingLoadChronic: (acuteDto.dailyTrainingLoadChronic as number) ?? null,
-          }
-        : null;
-
-      const statusCode = (deviceEntry?.trainingStatus as number | string | null) ?? null;
-      const statusMap: Record<number, string> = {
-        0: 'NOT_APPLICABLE',
-        1: 'DETRAINING',
-        2: 'RECOVERY',
-        3: 'MAINTAINING',
-        4: 'PRODUCTIVE',
-        5: 'PEAKING',
-        6: 'OVERREACHING',
-        7: 'UNPRODUCTIVE',
-      };
-      const trainingStatusStr =
-        typeof statusCode === 'number' ? (statusMap[statusCode] ?? String(statusCode)) : statusCode;
-      const fitnessTrendCode = (deviceEntry?.fitnessTrend as number | string | null) ?? null;
-      const trendMap: Record<number, string> = { 0: 'DECLINING', 1: 'STEADY', 2: 'IMPROVING' };
-      const fitnessTrend =
-        typeof fitnessTrendCode === 'number'
-          ? (trendMap[fitnessTrendCode] ?? String(fitnessTrendCode))
-          : fitnessTrendCode;
-
-      return {
-        trainingStatus: trainingStatusStr,
-        fitnessTrend,
-        acuteTrainingLoad,
-        raw: deviceEntry,
-      };
-    },
+    async () =>
+      extractTrainingStatus(
+        (await client.getTrainingStatus(date)) as unknown as Record<string, unknown>,
+      ),
     errors,
   );
-
   await delay(300);
-
-  // Training readiness
   const trainingReadiness = await tryFetch(
     'trainingReadiness',
-    async () => {
-      const readinessUrl = `${client.url.GC_API}/metrics-service/metrics/trainingreadiness/${dateStr}`;
-      const raw = await client.get<unknown>(readinessUrl);
-      const items = Array.isArray(raw) ? raw : [raw];
-      // Prefer the after-wakeup entry if available
-      const entry = (items.find(
-        (i: Record<string, unknown>) => i.inputContext === 'AFTER_WAKEUP_RESET',
-      ) ?? items[0]) as Record<string, unknown> | undefined;
-      if (!entry) return null;
-      return extractTrainingReadiness(entry);
-    },
+    () => fetchTrainingReadiness(client, dateStr),
     errors,
   );
-
   await delay(300);
-
-  // HRV
   const hrv = await tryFetch(
     'hrv',
-    async () => {
-      const raw = (await client.getHRVData(date)) as unknown as Record<string, unknown>;
-      const summary = raw.hrvSummary as Record<string, unknown> | undefined;
-      return {
-        weeklyAverage: (summary?.weeklyAvg as number) ?? null,
-        lastNight: (summary?.lastNightAvg as number) ?? null,
-        raw,
-      };
-    },
+    async () => extractHrv((await client.getHRVData(date)) as unknown as Record<string, unknown>),
     errors,
   );
+  return { vo2Max, lactateThreshold, trainingStatus, trainingReadiness, hrv };
+}
+
+/** Every data type for one day, in Garmin's rate-limit-friendly order; a failed type lands in `errors`. */
+async function fetchDailyData(
+  client: GarminConnect,
+  date: Date,
+  dateStr: string,
+): Promise<GarminDailyData> {
+  const errors: string[] = [];
+  const wellness = await fetchWellness(client, date, errors);
+  await delay(300);
+
+  // Fetch activities — get recent ones and filter to target date
+  const activities: ActivitySummary[] = [];
+  await tryFetch('activities', () => collectActivities(client, dateStr, activities), errors);
+  await delay(300);
+
+  const metrics = await fetchTrainingMetrics(client, date, dateStr, errors);
 
   // Scheduled workouts from calendar
   const scheduledWorkouts: ScheduledWorkout[] = [];
   await tryFetch(
     'scheduledWorkouts',
-    async () => {
-      const cal = (await client.getCalendar(
-        date.getFullYear(),
-        date.getMonth(),
-      )) as unknown as Record<string, unknown>;
-      const items = cal.calendarItems as Array<Record<string, unknown>> | undefined;
-      if (items?.length) {
-        for (const item of items) {
-          if (item.itemType !== 'workout') continue;
-          if ((item.date as string) !== dateStr) continue;
-
-          let description: string | null = null;
-          let provider: string | null = null;
-          const steps: WorkoutStep[] = [];
-          const workoutId = item.workoutId as number | null;
-
-          // Fetch workout detail for description and steps
-          if (workoutId) {
-            try {
-              await delay(300);
-              const detail = (await client.getWorkoutDetail({
-                workoutId: String(workoutId),
-              })) as unknown as Record<string, unknown>;
-              description = (detail.description as string) ?? null;
-              provider = (detail.workoutProvider as string) ?? null;
-              const segments = detail.workoutSegments as Array<Record<string, unknown>> | undefined;
-              if (segments?.length) {
-                for (const seg of segments) {
-                  const segSteps = seg.workoutSteps as Array<Record<string, unknown>> | undefined;
-                  if (segSteps?.length) {
-                    for (const s of segSteps) {
-                      steps.push({
-                        description: (s.description as string) ?? null,
-                        stepType:
-                          ((s.stepType as Record<string, unknown>)?.stepTypeKey as string) ??
-                          'unknown',
-                        distance: (s.endConditionValue as number) ?? null,
-                        duration: (s.endConditionValue as number) ?? null,
-                      });
-                    }
-                  }
-                }
-              }
-            } catch (e) {
-              const msg = e instanceof Error ? e.message : String(e);
-              console.error(`[WARN] Failed to fetch workout detail ${workoutId}: ${msg}`);
-            }
-          }
-
-          scheduledWorkouts.push({
-            title: (item.title as string) ?? null,
-            date: item.date as string,
-            duration: (item.duration as number) ?? null,
-            distance: (item.distance as number) ?? null,
-            sportTypeKey: (item.sportTypeKey as string) ?? null,
-            itemType: item.itemType as string,
-            workoutId,
-            description,
-            provider,
-            steps,
-          });
-        }
-      }
-    },
+    () => collectScheduledWorkouts(client, date, dateStr, scheduledWorkouts),
     errors,
   );
 
-  // Build output
-  const data: GarminDailyData = {
+  return {
     date: dateStr,
     fetchedAt: new Date().toISOString(),
-    sleep,
-    steps,
-    heartRate,
+    sleep: wellness.sleep,
+    steps: wellness.steps,
+    heartRate: wellness.heartRate,
     activities,
-    vo2Max,
-    lactateThreshold,
-    trainingStatus,
-    trainingReadiness,
-    hrv,
+    vo2Max: metrics.vo2Max,
+    lactateThreshold: metrics.lactateThreshold,
+    trainingStatus: metrics.trainingStatus,
+    trainingReadiness: metrics.trainingReadiness,
+    hrv: metrics.hrv,
     scheduledWorkouts,
     errors,
   };
+}
 
+// --- Main ---
+
+async function main(): Promise<void> {
+  const email = process.env.GARMIN_EMAIL;
+  const password = process.env.GARMIN_PASSWORD;
+
+  if (!email || !password) {
+    console.error('[FATAL] GARMIN_EMAIL and GARMIN_PASSWORD env vars required');
+    process.exit(1);
+  }
+
+  await mkdir(DATA_DIR, { recursive: true });
+  const client = new GarminConnect({ username: email, password: password });
+  await authenticate(client, email, password);
+
+  const dateArg = process.argv[2];
+  const date = dateArg ? new Date(`${dateArg}T00:00:00`) : yesterday();
+  const dateStr = formatDate(date);
+  console.error(`[INFO] Fetching data for ${dateStr}...`);
+
+  const data = await fetchDailyData(client, date, dateStr);
   const json = JSON.stringify(data, null, 2);
 
   // Write daily file (always) and latest (only for default yesterday mode)
-  const dailyPath = join(dataDir, `${dateStr}.json`);
+  const dailyPath = join(DATA_DIR, `${dateStr}.json`);
   await writeFile(dailyPath, json);
   console.error(`[INFO] Data written to ${dailyPath}`);
 
   if (!dateArg) {
-    const latestPath = join(tokenDir, 'latest.json');
+    const latestPath = join(TOKEN_DIR, 'latest.json');
     await writeFile(latestPath, json);
     console.error(`[INFO] Latest updated at ${latestPath}`);
   }
 
-  if (errors.length > 0) {
-    console.error(`[WARN] ${errors.length} fetch error(s): ${errors.join('; ')}`);
+  if (data.errors.length > 0) {
+    console.error(`[WARN] ${data.errors.length} fetch error(s): ${data.errors.join('; ')}`);
   }
 
   // Output to stdout for callers that want it

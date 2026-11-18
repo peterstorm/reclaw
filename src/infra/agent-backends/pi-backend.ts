@@ -9,6 +9,7 @@
  * modelSelection (mapped to --provider/--model), and loads all features (no --no-extensions or --no-skills flags).
  */
 
+import { assertNever } from '../../core/types.js';
 import type { AgentBackend, AgentModelSelection, StreamDelta } from './types.js';
 
 // ─── Pi JSON Event Types ──────────────────────────────────────────────────────
@@ -28,10 +29,20 @@ type PiMessageEndEvent = {
   };
 };
 
+/** The assistant message event kinds reclaw streams; Pi emits others (tool calls, ends) too. */
+const PI_STREAMED_EVENT_TYPES = [
+  'text_delta',
+  'thinking_delta',
+  'thinking_start',
+  'text_start',
+] as const;
+type PiStreamedEventType = (typeof PI_STREAMED_EVENT_TYPES)[number];
+
 type PiMessageUpdateEvent = {
   readonly type: 'message_update';
   readonly assistantMessageEvent: {
-    readonly type: 'text_delta' | 'thinking_delta' | 'thinking_start' | 'text_start';
+    /** Wire value, unchecked until parseStreamedEventType. */
+    readonly type?: unknown;
     readonly delta?: string;
   };
 };
@@ -73,6 +84,9 @@ const isMessageUpdateEvent = (parsed: unknown): parsed is PiMessageUpdateEvent =
   (parsed as Record<string, unknown>).type === 'message_update' &&
   typeof (parsed as Record<string, unknown>).assistantMessageEvent === 'object' &&
   (parsed as Record<string, unknown>).assistantMessageEvent !== null;
+
+const parseStreamedEventType = (value: unknown): PiStreamedEventType | null =>
+  PI_STREAMED_EVENT_TYPES.find((streamed) => streamed === value) ?? null;
 
 // ─── AgentBackend Implementation ──────────────────────────────────────────────
 
@@ -183,8 +197,10 @@ export const piBackend: AgentBackend = {
     if (!isMessageUpdateEvent(parsed)) return null;
 
     const event = parsed.assistantMessageEvent;
+    const eventType = parseStreamedEventType(event.type);
+    if (eventType === null) return null;
 
-    switch (event.type) {
+    switch (eventType) {
       case 'text_delta':
         return { type: 'text', text: event.delta ?? '' };
       case 'thinking_delta':
@@ -194,7 +210,7 @@ export const piBackend: AgentBackend = {
       case 'text_start':
         return { type: 'block_start', blockType: 'text' };
       default:
-        return null;
+        return assertNever(eventType);
     }
   },
 

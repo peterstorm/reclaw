@@ -13,6 +13,7 @@ import {
   parsePodcastCommand,
 } from '../core/podcast-request.js';
 import {
+  type ParsedReminder,
   formatReminderConfirmation,
   formatReminderList,
   isRemindListCommand,
@@ -25,8 +26,11 @@ import type { SourceMeta } from '../core/research-types.js';
 import {
   type AgentBackendName,
   type JobId,
+  type Result,
+  type SkillConfig,
   type SkillRegistry,
   type TelegramIngressKind,
+  err,
   makeChatJob,
   makePodcastJob,
   makeRecurringReminderJob,
@@ -35,12 +39,13 @@ import {
   makeSkillId,
   makeTelegramIngressJobId,
   makeTelegramUserId,
+  ok,
 } from '../core/types.js';
 import type { NotebookLMAdapter } from '../infra/notebooklm-client.js';
 import type { Queues } from '../infra/queue.js';
 import type { QuotaTracker } from '../infra/quota-tracker.js';
 import { appendAskAnswer } from '../infra/research-qa-writer.js';
-import { findNotebookByTopic } from '../infra/research-vault-lookup.js';
+import { type NotebookLookup, findNotebookByTopic } from '../infra/research-vault-lookup.js';
 import type { SessionStore } from '../infra/session-store.js';
 import type {
   TelegramAdapter,
@@ -249,49 +254,62 @@ async function routeRemindCommand(msg: IncomingMessage, deps: MessageRouterDeps)
     return;
   }
 
-  if (parseResult.value.kind === 'recurring' || parseResult.value.kind === 'cron-recurring') {
-    const recurParsed = parseResult.value;
-    const jobId = ingressJobId(msg, 'recurring');
-    const recurringResult = makeRecurringReminderJob({
-      id: jobId,
-      chatId: msg.chatId,
-      text: recurParsed.text,
-      createdAt: new Date().toISOString(),
-      ...(recurParsed.kind === 'cron-recurring'
-        ? { cronPattern: recurParsed.cronPattern, cronDescription: recurParsed.cronDescription }
-        : { intervalMs: recurParsed.intervalMs }),
-      schedulerId: jobId,
-    });
+  const reminder = parseResult.value;
+  const enqueued =
+    reminder.kind === 'recurring' || reminder.kind === 'cron-recurring'
+      ? await enqueueRecurringReminder(msg, deps, reminder)
+      : await enqueueOneShotReminder(msg, deps, reminder);
+  await deps.telegram.sendMessage(
+    msg.chatId,
+    enqueued.ok ? formatReminderConfirmation(reminder, now) : enqueued.error,
+  );
+}
 
-    if (!recurringResult.ok) {
-      await deps.telegram.sendMessage(
-        msg.chatId,
-        `Cannot create recurring reminder: ${recurringResult.error}`,
-      );
-      return;
-    }
+type RecurringReminder = Extract<ParsedReminder, { kind: 'recurring' | 'cron-recurring' }>;
+type OneShotReminder = Exclude<ParsedReminder, RecurringReminder>;
 
-    await deps.queues.enqueueRecurringReminder(recurringResult.value);
-    await deps.telegram.sendMessage(msg.chatId, formatReminderConfirmation(parseResult.value, now));
-    return;
+/** Enqueue a recurring reminder; err carries the message to send instead of a confirmation. */
+async function enqueueRecurringReminder(
+  msg: IncomingMessage,
+  deps: MessageRouterDeps,
+  reminder: RecurringReminder,
+): Promise<Result<undefined, string>> {
+  const jobId = ingressJobId(msg, 'recurring');
+  const recurringResult = makeRecurringReminderJob({
+    id: jobId,
+    chatId: msg.chatId,
+    text: reminder.text,
+    createdAt: new Date().toISOString(),
+    ...(reminder.kind === 'cron-recurring'
+      ? { cronPattern: reminder.cronPattern, cronDescription: reminder.cronDescription }
+      : { intervalMs: reminder.intervalMs }),
+    schedulerId: jobId,
+  });
+  if (!recurringResult.ok) {
+    return err(`Cannot create recurring reminder: ${recurringResult.error}`);
   }
+  await deps.queues.enqueueRecurringReminder(recurringResult.value);
+  return ok(undefined);
+}
 
-  const parsed = parseResult.value;
+/** Enqueue a one-shot reminder; err carries the message to send instead of a confirmation. */
+async function enqueueOneShotReminder(
+  msg: IncomingMessage,
+  deps: MessageRouterDeps,
+  reminder: OneShotReminder,
+): Promise<Result<undefined, string>> {
   const reminderResult = makeReminderJob({
     id: ingressJobId(msg, 'reminder'),
     chatId: msg.chatId,
-    text: parsed.text,
+    text: reminder.text,
     createdAt: new Date().toISOString(),
-    delayMs: parsed.delayMs,
+    delayMs: reminder.delayMs,
   });
-
   if (!reminderResult.ok) {
-    await deps.telegram.sendMessage(msg.chatId, `Cannot create reminder: ${reminderResult.error}`);
-    return;
+    return err(`Cannot create reminder: ${reminderResult.error}`);
   }
-
   await deps.queues.enqueueReminder(reminderResult.value);
-  await deps.telegram.sendMessage(msg.chatId, formatReminderConfirmation(parseResult.value, now));
+  return ok(undefined);
 }
 
 // ─── /research-status ────────────────────────────────────────────────────────
@@ -410,53 +428,22 @@ async function routeHelpCommand(msg: IncomingMessage, deps: MessageRouterDeps): 
 // ─── /ask <topic-slug> <question> ────────────────────────────────────────────
 
 async function runAsk(msg: IncomingMessage, deps: MessageRouterDeps): Promise<void> {
-  if (deps.getNotebookLM === undefined || deps.vaultBasePath === undefined) {
-    await deps.telegram.sendMessage(
-      msg.chatId,
-      '/ask is not wired up — NotebookLM adapter or vault path missing.',
-    );
+  const target = await resolveAskTarget(msg, deps);
+  if (!target.ok) {
+    await deps.telegram.sendMessage(msg.chatId, target.error);
     return;
   }
+  const { notebookLM, lookup, question, vaultBasePath } = target.value;
 
-  const parsed = parseAskCommand(msg.text);
-  if (!parsed.ok) {
-    await deps.telegram.sendMessage(msg.chatId, parsed.error);
-    return;
-  }
+  await deps.telegram.sendMessage(msg.chatId, `Asking notebook: ${lookup.topic}…`);
 
-  const lookup = await findNotebookByTopic(deps.vaultBasePath, parsed.value.slug);
-  if (!lookup.ok) {
-    await deps.telegram.sendMessage(msg.chatId, lookup.error);
-    return;
-  }
-
-  const hasQuota = await deps.quotaTracker.hasQuota(1);
-  if (!hasQuota) {
-    await deps.telegram.sendMessage(
-      msg.chatId,
-      'Daily NotebookLM chat quota exhausted. Try again tomorrow.',
-    );
-    return;
-  }
-
-  const notebookLM = await deps.getNotebookLM();
-  if (notebookLM === null) {
-    await deps.telegram.sendMessage(
-      msg.chatId,
-      'NotebookLM is not configured on this reclaw instance.',
-    );
-    return;
-  }
-
-  await deps.telegram.sendMessage(msg.chatId, `Asking notebook: ${lookup.value.topic}…`);
-
-  const chatResult = await notebookLM.chat(lookup.value.notebookId, parsed.value.question);
+  const chatResult = await notebookLM.chat(lookup.notebookId, question);
   if (!chatResult.ok) {
     await deps.telegram.sendMessage(msg.chatId, `NotebookLM error: ${chatResult.error.message}`);
     return;
   }
 
-  const sourcesResult = await notebookLM.listSources(lookup.value.notebookId);
+  const sourcesResult = await notebookLM.listSources(lookup.notebookId);
   if (!sourcesResult.ok) {
     await deps.telegram.sendMessage(
       msg.chatId,
@@ -468,41 +455,77 @@ async function runAsk(msg: IncomingMessage, deps: MessageRouterDeps): Promise<vo
   const passageMap = extractPassageToSourceMap(chatResult.value.rawData, sources);
   const resolution = resolveAnswerCitations(chatResult.value.text, sources, passageMap);
   const { resolvedText } = resolution;
-  const cited = citedSourceIndicesOf(resolution);
+  const citedSources = citedInOrder(sources, citedSourceIndicesOf(resolution));
 
   // Complete the best-effort Q&A write before acknowledging the update. A
   // vault failure does not suppress an otherwise valid answer, but it is no
   // longer detached from ingress lifecycle and process shutdown.
-  const citedSources = [...cited]
-    .sort((a, b) => a - b)
-    .map((i) => sources[i])
-    .filter((s): s is SourceMeta => s !== undefined);
-
   const persisted = await appendAskAnswer({
-    vaultBasePath: deps.vaultBasePath,
-    lookup: lookup.value,
-    question: parsed.value.question,
+    vaultBasePath,
+    lookup,
+    question,
     resolvedAnswer: resolvedText,
     citedSources,
   });
   if (!persisted.ok) console.error(`[router] /ask: failed to persist Q&A: ${persisted.error}`);
 
-  const reply = formatAskReply(resolvedText, sources, cited, lookup.value);
-  const chunks = splitMessage(reply);
-  await deps.telegram.sendChunkedMessage(msg.chatId, chunks);
+  const reply = formatAskReply(resolvedText, citedSources, lookup);
+  await deps.telegram.sendChunkedMessage(msg.chatId, splitMessage(reply));
 }
+
+type AskTarget = {
+  readonly notebookLM: NotebookLMAdapter;
+  readonly lookup: NotebookLookup;
+  readonly question: string;
+  readonly vaultBasePath: string;
+};
+
+/**
+ * Everything /ask needs before it spends a NotebookLM chat: wiring, a parsed
+ * command, the topic's notebook, quota, and an adapter. err carries the reply.
+ */
+async function resolveAskTarget(
+  msg: IncomingMessage,
+  deps: MessageRouterDeps,
+): Promise<Result<AskTarget, string>> {
+  if (deps.getNotebookLM === undefined || deps.vaultBasePath === undefined) {
+    return err('/ask is not wired up — NotebookLM adapter or vault path missing.');
+  }
+  const parsed = parseAskCommand(msg.text);
+  if (!parsed.ok) return err(parsed.error);
+
+  const lookup = await findNotebookByTopic(deps.vaultBasePath, parsed.value.slug);
+  if (!lookup.ok) return err(lookup.error);
+
+  const hasQuota = await deps.quotaTracker.hasQuota(1);
+  if (!hasQuota) return err('Daily NotebookLM chat quota exhausted. Try again tomorrow.');
+
+  const notebookLM = await deps.getNotebookLM();
+  if (notebookLM === null) return err('NotebookLM is not configured on this reclaw instance.');
+
+  return ok({
+    notebookLM,
+    lookup: lookup.value,
+    question: parsed.value.question,
+    vaultBasePath: deps.vaultBasePath,
+  });
+}
+
+/** The cited sources in source-index order; indices with no source are dropped. */
+const citedInOrder = (
+  sources: readonly SourceMeta[],
+  citedSourceIndices: ReadonlySet<number>,
+): readonly SourceMeta[] =>
+  [...citedSourceIndices]
+    .sort((a, b) => a - b)
+    .map((i) => sources[i])
+    .filter((s): s is SourceMeta => s !== undefined);
 
 function formatAskReply(
   resolvedText: string,
-  sources: ReadonlyArray<{ readonly title: string; readonly url: string }>,
-  citedSourceIndices: ReadonlySet<number>,
+  cited: ReadonlyArray<{ readonly title: string; readonly url: string }>,
   lookup: { readonly topic: string; readonly hubVaultPath: string },
 ): string {
-  const cited = [...citedSourceIndices]
-    .sort((a, b) => a - b)
-    .map((i) => sources[i])
-    .filter((s): s is { readonly title: string; readonly url: string } => s !== undefined);
-
   const sourcesSection =
     cited.length > 0
       ? `\n\nSources:\n${cited.map((s) => `• ${s.title}\n  ${s.url}`).join('\n')}`
@@ -621,50 +644,18 @@ async function routeDlqCommand(msg: IncomingMessage, deps: MessageRouterDeps): P
 // ─── /run <skill-id> — manual skill trigger ──────────────────────────────────
 
 async function routeRunCommand(msg: IncomingMessage, deps: MessageRouterDeps): Promise<void> {
-  if (deps.getSkillRegistry === undefined) {
-    await deps.telegram.sendMessage(msg.chatId, 'Skill registry not available — /run is disabled.');
+  const skill = resolveRunSkill(msg.text, deps.getSkillRegistry);
+  if (!skill.ok) {
+    await deps.telegram.sendMessage(msg.chatId, skill.error);
     return;
   }
 
-  const parts = msg.text.trim().split(/\s+/);
-  const rawSkillId = parts[1];
-  if (!rawSkillId || rawSkillId === '') {
-    await deps.telegram.sendMessage(
-      msg.chatId,
-      'Usage: /run <skill-id>\nUse /status to see how many skills are loaded; check workspace/skills/ for IDs.',
-    );
-    return;
-  }
-
-  const skillIdResult = makeSkillId(rawSkillId);
-  if (!skillIdResult.ok) {
-    await deps.telegram.sendMessage(
-      msg.chatId,
-      `Invalid skill id "${rawSkillId}": ${skillIdResult.error}`,
-    );
-    return;
-  }
-
-  const registry = deps.getSkillRegistry();
-  const skill = registry.get(skillIdResult.value);
-  if (skill === undefined) {
-    const known = [...registry.keys()].slice(0, 20).join(', ');
-    await deps.telegram.sendMessage(msg.chatId, `Unknown skill "${rawSkillId}". Known: ${known}`);
-    return;
-  }
-
-  const triggeredAt = new Date();
-  triggeredAt.setMilliseconds(0);
-  const triggeredIso = triggeredAt.toISOString();
-  const validUntilIso = new Date(
-    triggeredAt.getTime() + skill.validityWindowMinutes * 60 * 1000,
-  ).toISOString();
-
+  const runWindow = manualRunWindow(new Date(), skill.value.validityWindowMinutes);
   const scheduledJobResult = makeScheduledJob({
     id: ingressJobId(msg, 'run'),
-    skillId: skill.id,
-    triggeredAt: triggeredIso,
-    validUntil: validUntilIso,
+    skillId: skill.value.id,
+    triggeredAt: runWindow.triggeredAt,
+    validUntil: runWindow.validUntil,
     trigger: 'manual',
   });
 
@@ -679,6 +670,45 @@ async function routeRunCommand(msg: IncomingMessage, deps: MessageRouterDeps): P
   await deps.queues.enqueueScheduled(scheduledJobResult.value);
   await deps.telegram.sendMessage(
     msg.chatId,
-    `Triggered "${skill.id}" — output will arrive in chat when it completes.`,
+    `Triggered "${skill.value.id}" — output will arrive in chat when it completes.`,
   );
+}
+
+/** Resolve the skill a /run command names; err carries the reply. */
+function resolveRunSkill(
+  text: string,
+  getSkillRegistry: (() => SkillRegistry) | undefined,
+): Result<SkillConfig, string> {
+  if (getSkillRegistry === undefined) {
+    return err('Skill registry not available — /run is disabled.');
+  }
+  const rawSkillId = text.trim().split(/\s+/)[1];
+  if (!rawSkillId || rawSkillId === '') {
+    return err(
+      'Usage: /run <skill-id>\nUse /status to see how many skills are loaded; check workspace/skills/ for IDs.',
+    );
+  }
+  const skillIdResult = makeSkillId(rawSkillId);
+  if (!skillIdResult.ok) return err(`Invalid skill id "${rawSkillId}": ${skillIdResult.error}`);
+
+  const registry = getSkillRegistry();
+  const skill = registry.get(skillIdResult.value);
+  if (skill === undefined) {
+    const known = [...registry.keys()].slice(0, 20).join(', ');
+    return err(`Unknown skill "${rawSkillId}". Known: ${known}`);
+  }
+  return ok(skill);
+}
+
+/** A manual run triggers at `now` (whole seconds) and stays valid for the skill's window. */
+function manualRunWindow(
+  now: Date,
+  validityWindowMinutes: number,
+): { readonly triggeredAt: string; readonly validUntil: string } {
+  const triggeredAt = new Date(now);
+  triggeredAt.setMilliseconds(0);
+  return {
+    triggeredAt: triggeredAt.toISOString(),
+    validUntil: new Date(triggeredAt.getTime() + validityWindowMinutes * 60 * 1000).toISOString(),
+  };
 }

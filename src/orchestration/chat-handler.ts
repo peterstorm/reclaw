@@ -5,6 +5,7 @@ import {
   agentFailurePolicy,
   formatAgentFailure,
 } from '../core/agent-failure.js';
+import { selectExecutionConversation } from '../core/chat-conversation.js';
 import { markdownToTelegramHtml } from '../core/markdown-to-telegram.js';
 import { splitHtml } from '../core/message-splitter.js';
 import { getAllowedTools } from '../core/permissions.js';
@@ -13,6 +14,7 @@ import { type StreamState, createStreamState, processChunk } from '../core/strea
 import {
   type ChatJob,
   type ClaudeSessionId,
+  type ConversationTarget,
   chatJobSourcePaths,
   makeClaudeSessionId,
 } from '../core/types.js';
@@ -94,73 +96,101 @@ export function planChatTelegramCompletion(
  * FR-016: Timeout enforced by runClaudeStreaming.
  */
 export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<ChatActivityOutcome> {
-  // 1. Load personality — fallback to empty string on any read error (FR-009)
-  let personality = '';
+  const personality = await loadPersonality(deps.config.personalityPath);
+  const conversation = selectExecutionConversation(
+    await deps.sessionStore.getCurrent(job.chatId),
+    job.conversation,
+  );
+  const statusMsgId = await sendStatusMessage(job.chatId, deps.telegram);
+  const status = createStatusStream(job.chatId, deps.telegram, statusMsgId);
+
+  const result = await runChatAgent(job, deps, personality, conversation, status);
+
+  // FR-012: the user-facing error is sent by the worker's dead-letter handler
+  // after the final retry attempt — see formatDeadLetterMessage. Sending here
+  // would produce one duplicate "Sorry" message per BullMQ retry attempt. The
+  // stale status message is left as-is: it is untracked (never persisted).
+  if (!result.ok) {
+    return { kind: 'failed', failure: result.failure };
+  }
+
+  // Session commit, delivery, Cortex extraction, and source-file cleanup are
+  // persisted by the worker as independently retryable delivery items (ADR-0009).
+  return {
+    kind: 'completed',
+    response: result.output,
+    sessionId: sessionLineageOf(result.sessionId, job.chatId),
+    conversationGeneration: conversation.generation,
+    conversationRevision: conversation.revision,
+    conversationBackend: conversation.backend,
+    telegramOperations: planChatTelegramCompletion(statusMsgId, result.output),
+    sourcePaths: chatJobSourcePaths(job),
+    drainPreviews: status.drain,
+  };
+}
+
+/** FR-009: the personality file shapes behavior; a read error falls back to none. */
+async function loadPersonality(personalityPath: string): Promise<string> {
   try {
-    personality = await fs.readFile(deps.config.personalityPath, 'utf-8');
+    return await fs.readFile(personalityPath, 'utf-8');
   } catch (error) {
     console.warn(
-      `[chat] Personality unavailable at ${deps.config.personalityPath}; continuing without it:`,
+      `[chat] Personality unavailable at ${personalityPath}; continuing without it:`,
       error instanceof Error ? error.message : error,
     );
+    return '';
   }
+}
 
-  // 2. Rebase queued work onto the latest session only while its captured
-  // generation/backend is still current. If /new or an explicit reply advanced
-  // the generation, execute against the immutable ingress snapshot instead.
-  const currentConversation = await deps.sessionStore.getCurrent(job.chatId);
-  const executionConversation =
-    currentConversation.generation === job.conversation.generation &&
-    currentConversation.backend === job.conversation.backend
-      ? currentConversation
-      : job.conversation;
-  const isResuming = executionConversation.sessionId !== null;
-
-  // 3. Build prompt — skip personality on resume (already in the agent's context)
-  const prompt = buildChatPrompt(
-    isResuming ? '' : personality,
-    job.text,
-    job.imagePaths,
-    job.documentPaths,
-    job.replyContext,
-    job.storedUploads,
-  );
-  const resumeSessionId = executionConversation.sessionId ?? undefined;
-
-  // 4. Get allowed tools for chat profile (pure, FR-011)
-  const allowedTools = getAllowedTools('chat');
-
-  // 5. Send the status message for live streaming
-  let statusMsgId: number | null = null;
+/** Send the live status message; null means the turn continues without streaming. */
+async function sendStatusMessage(
+  chatId: number,
+  telegram: TelegramAdapter,
+): Promise<number | null> {
   try {
-    statusMsgId = await deps.telegram.sendMessage(job.chatId, '<i>…</i>', { html: true });
+    return await telegram.sendMessage(chatId, '<i>…</i>', { html: true });
   } catch (err) {
     console.warn(
-      `[chat] Failed to send status message for chatId=${job.chatId}:`,
+      `[chat] Failed to send status message for chatId=${chatId}:`,
       err instanceof Error ? err.message : err,
     );
-    // Continue without streaming — completion falls back to all-send operations
+    // Completion falls back to all-send operations.
+    return null;
   }
+}
 
-  // 6. Stream state (pure) + status edits (shell). The status message is the
-  // only tracked Telegram message; the worker persists ActivityResult before
-  // waiting for these best-effort edits to settle.
+type StatusStream = {
+  readonly onChunk: OnStreamChunk;
+  /** Restart the throttle so a retry re-streams against a fresh clock. */
+  readonly restart: () => void;
+  /** Settle every best-effort status edit issued so far. */
+  readonly drain: () => Promise<void>;
+};
+
+/**
+ * Stream state (pure processChunk) + status edits (shell). The status message is
+ * the only tracked Telegram message; the worker persists ActivityResult before
+ * draining these best-effort edits.
+ */
+function createStatusStream(
+  chatId: number,
+  telegram: TelegramAdapter,
+  statusMsgId: number | null,
+): StatusStream {
   let stream: StreamState = createStreamState();
   const pendingEffects: Promise<unknown>[] = [];
 
   const onChunk = (chunk: StreamChunk): void => {
     if (statusMsgId === null) return;
-
     const { state: nextState, effects } = processChunk(stream, chunk, { nowMs: Date.now() });
     stream = nextState;
-
     for (const effect of effects) {
       pendingEffects.push(
-        deps.telegram
-          .editMessage(job.chatId, statusMsgId, `<i>${effect.preview}</i>`, { html: true })
+        telegram
+          .editMessage(chatId, statusMsgId, `<i>${effect.preview}</i>`, { html: true })
           .catch((error) => {
             console.warn(
-              `[chat] Status edit failed for chatId=${job.chatId}:`,
+              `[chat] Status edit failed for chatId=${chatId}:`,
               error instanceof Error ? error.message : error,
             );
           }),
@@ -168,82 +198,90 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<ChatA
     }
   };
 
-  // 7. Run the streaming subprocess
-  console.info(`[chat] Running Claude for chatId=${job.chatId} resume=${isResuming}`);
-  const claudeOptions = {
-    prompt,
-    cwd: deps.config.workspacePath,
-    allowedTools,
-    timeoutMs: deps.config.chatTimeoutMs,
-    ...(resumeSessionId ? { resumeSessionId } : {}),
-    backend: executionConversation.backend,
+  return {
+    onChunk,
+    restart: () => {
+      stream = createStreamState();
+    },
+    drain: async () => {
+      await Promise.all(pendingEffects);
+    },
   };
-  let result = await deps.runClaudeStreaming(claudeOptions, onChunk);
+}
 
+const chatPrompt = (job: ChatJob, personality: string): string =>
+  buildChatPrompt(
+    personality,
+    job.text,
+    job.imagePaths,
+    job.documentPaths,
+    job.replyContext,
+    job.storedUploads,
+  );
+
+/** FR-011 chat permission profile; FR-016 timeout is enforced by runClaudeStreaming. */
+const chatAgentOptions = (
+  config: AppConfig,
+  conversation: ConversationTarget,
+  prompt: string,
+  resumeSessionId: string | undefined,
+): AgentOptions => ({
+  prompt,
+  cwd: config.workspacePath,
+  allowedTools: getAllowedTools('chat'),
+  timeoutMs: config.chatTimeoutMs,
+  ...(resumeSessionId ? { resumeSessionId } : {}),
+  backend: conversation.backend,
+});
+
+/**
+ * Run the agent on the selected conversation. A resumed turn skips the
+ * personality (already in the agent's context) and is retried fresh only when
+ * the typed failure proves the persisted session itself is unusable; provider
+ * and transport failures retain lineage and are left to BullMQ rather than
+ * causing duplicate fresh execution.
+ */
+async function runChatAgent(
+  job: ChatJob,
+  deps: ChatDeps,
+  personality: string,
+  conversation: ConversationTarget,
+  status: StatusStream,
+): Promise<AgentResult> {
+  const isResuming = conversation.sessionId !== null;
+  console.info(`[chat] Running Claude for chatId=${job.chatId} resume=${isResuming}`);
+  const result = await deps.runClaudeStreaming(
+    chatAgentOptions(
+      deps.config,
+      conversation,
+      chatPrompt(job, isResuming ? '' : personality),
+      conversation.sessionId ?? undefined,
+    ),
+    status.onChunk,
+  );
   console.info(
     `[chat] Claude finished for chatId=${job.chatId} ok=${result.ok}${result.ok ? ` duration=${result.durationMs}ms` : ` error=${formatAgentFailure(result.failure)}`}`,
   );
 
-  // 8. Retry without resume only when the typed failure proves the persisted
-  // session itself is unusable. Provider and transport failures retain lineage
-  // and are left to BullMQ rather than causing duplicate fresh execution.
-  if (!result.ok && isResuming && agentFailurePolicy(result.failure).mayRetryWithoutSession) {
-    console.info(`[chat] Invalid session for chatId=${job.chatId}, retrying fresh`);
-    // Reset the status state so the retry re-streams against a fresh clock.
-    stream = createStreamState();
-    const freshPrompt = buildChatPrompt(
-      personality,
-      job.text,
-      job.imagePaths,
-      job.documentPaths,
-      job.replyContext,
-      job.storedUploads,
-    );
-    result = await deps.runClaudeStreaming(
-      {
-        prompt: freshPrompt,
-        cwd: deps.config.workspacePath,
-        allowedTools,
-        timeoutMs: deps.config.chatTimeoutMs,
-        backend: executionConversation.backend,
-      },
-      onChunk,
-    );
+  if (result.ok || !isResuming || !agentFailurePolicy(result.failure).mayRetryWithoutSession) {
+    return result;
   }
+  console.info(`[chat] Invalid session for chatId=${job.chatId}, retrying fresh`);
+  status.restart();
+  return deps.runClaudeStreaming(
+    chatAgentOptions(deps.config, conversation, chatPrompt(job, personality), undefined),
+    status.onChunk,
+  );
+}
 
-  // 9. Handle failure (FR-012)
-  // The user-facing error is sent by the worker's dead-letter handler after the
-  // final retry attempt — see formatDeadLetterMessage. Sending here would
-  // produce one duplicate "Sorry" message per BullMQ retry attempt. The stale
-  // status message is left as-is: it is untracked (never persisted), matching
-  // the previous placeholder behavior.
-  if (!result.ok) {
-    return { kind: 'failed', failure: result.failure };
-  }
-
-  const parsedSessionId = result.sessionId === null ? null : makeClaudeSessionId(result.sessionId);
-  if (parsedSessionId !== null && !parsedSessionId.ok) {
-    console.warn(
-      `[chat] Backend returned a malformed session id for chatId=${job.chatId}; continuing without session lineage:`,
-      parsedSessionId.error,
-    );
-  }
-  const sessionId = parsedSessionId?.ok ? parsedSessionId.value : null;
-
-  // 10. Completed outcome — session commit, delivery, Cortex extraction, and
-  // source-file cleanup are persisted by the worker as independently retryable
-  // delivery items (ADR-0009).
-  return {
-    kind: 'completed',
-    response: result.output,
-    sessionId,
-    conversationGeneration: executionConversation.generation,
-    conversationRevision: executionConversation.revision,
-    conversationBackend: executionConversation.backend,
-    telegramOperations: planChatTelegramCompletion(statusMsgId, result.output),
-    sourcePaths: chatJobSourcePaths(job),
-    drainPreviews: async () => {
-      await Promise.all(pendingEffects);
-    },
-  };
+/** A malformed backend session id drops session lineage instead of failing the turn. */
+function sessionLineageOf(rawSessionId: string | null, chatId: number): ClaudeSessionId | null {
+  if (rawSessionId === null) return null;
+  const parsed = makeClaudeSessionId(rawSessionId);
+  if (parsed.ok) return parsed.value;
+  console.warn(
+    `[chat] Backend returned a malformed session id for chatId=${chatId}; continuing without session lineage:`,
+    parsed.error,
+  );
+  return null;
 }

@@ -6,7 +6,7 @@ Accepted; subprocess environment and Claude/Pi permission-argument details super
 ## Context
 Reclaw needs to support multiple agent backends (`claude -p` and `pi -p`) for subprocess invocations, switchable via environment variable. The two backends differ only in CLI argument format, environment variable cleanup, and output parsing — but share identical subprocess lifecycle concerns: spawning, stdin delivery, stdout/stderr draining, timeout enforcement, exit-code handling, and streaming accumulation.
 
-The existing implementation (`claude-subprocess.ts`) is a monolith that interleaves Claude-specific arg construction, Claude-specific output parsing, and generic subprocess management into tightly coupled functions. Adding a second backend by duplicating this file would create a maintenance hazard: any bug fix to timeout handling, stdin delivery, or stream accumulation would need to be applied in two places.
+The existing implementation (claude-subprocess.ts) is a monolith that interleaves Claude-specific arg construction, Claude-specific output parsing, and generic subprocess management into tightly coupled functions. Adding a second backend by duplicating this file would create a maintenance hazard: any bug fix to timeout handling, stdin delivery, or stream accumulation would need to be applied in two places.
 
 The key forces are:
 - **Duplication risk:** Subprocess lifecycle logic (timeout, kill, stdin pipe, line-by-line stdout reading, exit-code branching) is ~60% of the existing code and identical for both backends.
@@ -19,7 +19,7 @@ The key forces are:
    - Pros: Zero duplication of lifecycle logic; backends are tiny pure-function modules (~40-50 lines); runner is tested once; adding a new backend requires only implementing the `AgentBackend` interface; clear separation of concerns.
    - Cons: Slightly more indirection — callers go through runner → backend interface rather than calling a single function; requires defining and maintaining the `AgentBackend` interface contract.
 
-2. **Duplicate-and-diverge: Separate `run-claude.ts` and `run-pi.ts` modules**
+2. **Duplicate-and-diverge: Separate run-claude.ts and run-pi.ts modules**
    - Pros: No shared abstraction needed; each backend is fully self-contained; simpler mental model for a single backend in isolation.
    - Cons: ~100 lines of duplicated subprocess lifecycle code; bug fixes must be applied twice; stream accumulation state logic duplicated; higher risk of subtle behavioral drift between backends; no enforcement that both backends return the same result shape.
 

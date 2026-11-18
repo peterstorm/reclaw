@@ -226,6 +226,15 @@ export function err<E>(error: E): Result<never, E> {
   return { ok: false, error };
 }
 
+/**
+ * Totality proof for the `default` arm of a switch over a union: it only
+ * type-checks while every variant has its own arm, so adding a variant is a
+ * compile error here instead of a silently uncovered case.
+ */
+export function assertNever(x: never): never {
+  throw new Error(`unreachable: ${JSON.stringify(x)}`);
+}
+
 // ─── Job Discriminated Union ───────────────────────────────────────────────────
 
 /** A chat job: user sent a Telegram message, optionally with spooled attachments. */
@@ -464,6 +473,31 @@ export function makeRecurringReminderJob(params: {
     return err('schedulerId must not be empty.');
   }
 
+  const schedule = parseRecurringSchedule(params);
+  if (!schedule.ok) return schedule;
+
+  return ok({
+    kind: 'recurring-reminder',
+    id: params.id,
+    chatId: params.chatId,
+    text: params.text,
+    createdAt: params.createdAt,
+    ...schedule.value,
+    schedulerId: params.schedulerId,
+  });
+}
+
+type RecurringSchedule = Pick<
+  RecurringReminderJob,
+  'intervalMs' | 'cronPattern' | 'cronDescription'
+>;
+
+/** Exactly one of a cron pattern or an interval of at least a minute; interval is 0 for cron. */
+function parseRecurringSchedule(params: {
+  intervalMs?: number;
+  cronPattern?: string;
+  cronDescription?: string;
+}): Result<RecurringSchedule, string> {
   const cronPattern = params.cronPattern ?? '';
   const intervalMs = params.intervalMs ?? 0;
   const hasCron = cronPattern.length > 0;
@@ -475,27 +509,13 @@ export function makeRecurringReminderJob(params: {
   if (hasCron && hasInterval) {
     return err('Cannot specify both intervalMs and cronPattern for a recurring reminder.');
   }
-
-  if (hasInterval && !hasCron) {
-    if (!Number.isInteger(intervalMs) || intervalMs < 60_000) {
-      return err('Recurring reminder interval must be at least 1 minute.');
-    }
+  if (hasInterval && (!Number.isInteger(intervalMs) || intervalMs < 60_000)) {
+    return err('Recurring reminder interval must be at least 1 minute.');
   }
 
   return ok({
-    kind: 'recurring-reminder',
-    id: params.id,
-    chatId: params.chatId,
-    text: params.text,
-    createdAt: params.createdAt,
     intervalMs,
-    ...(hasCron
-      ? {
-          cronPattern,
-          cronDescription: params.cronDescription ?? cronPattern,
-        }
-      : {}),
-    schedulerId: params.schedulerId,
+    ...(hasCron ? { cronPattern, cronDescription: params.cronDescription ?? cronPattern } : {}),
   });
 }
 

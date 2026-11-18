@@ -7,6 +7,7 @@ import {
   type SkillConfig,
   type SkillId,
   type SkillRegistry,
+  assertNever,
   makeJobId,
   makeScheduledJob,
 } from '../core/types.js';
@@ -281,6 +282,8 @@ export function createScheduler(
           });
         }
         return;
+      default:
+        assertNever(decision);
     }
   }
 

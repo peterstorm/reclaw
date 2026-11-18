@@ -22,11 +22,11 @@ A Telegram-triggered deep research capability for reclaw that leverages Notebook
 **Why P1:** Core interaction; the entire feature is gated on the user being able to trigger research and receive results.
 
 **Acceptance Scenarios:**
-- Given I send a Telegram message `/research {topic}`, When the chat handler detects the `/research` prefix, Then the topic is extracted from the message, a research job is enqueued on the dedicated research queue, and I receive a confirmation message acknowledging the topic (without invoking the Claude subprocess)
-- Given a research job is running, When I send another `/research Y` message, Then the second job is queued behind the first (concurrency=1) and I am informed of the queue position
-- Given the research pipeline completes successfully, When the results are ready, Then I receive a Telegram summary containing: questions answered, citation count, source count, quota usage, quality grade, and a link to the vault hub note
-- Given the research pipeline fails at an early stage (e.g., notebook creation), When recovery is not possible, Then I receive a Telegram error message with the topic name and the failure reason
-- Given the research pipeline partially succeeds (e.g., 3 of 5 questions answered), When the pipeline completes, Then partial results are written to the vault and the summary indicates which questions were skipped
+- AS-001: Given I send a Telegram message `/research {topic}`, When the chat handler detects the `/research` prefix, Then the topic is extracted from the message, a research job is enqueued on the dedicated research queue, and I receive a confirmation message acknowledging the topic (without invoking the Claude subprocess)
+- AS-002: Given a research job is running, When I send another `/research Y` message, Then the second job is queued behind the first (concurrency=1) and I am informed of the queue position
+- AS-003: Given the research pipeline completes successfully, When the results are ready, Then I receive a Telegram summary containing: questions answered, citation count, source count, quota usage, quality grade, and a link to the vault hub note
+- AS-004: Given the research pipeline fails at an early stage (e.g., notebook creation), When recovery is not possible, Then I receive a Telegram error message with the topic name and the failure reason
+- AS-005: Given the research pipeline partially succeeds (e.g., 3 of 5 questions answered), When the pipeline completes, Then partial results are written to the vault and the summary indicates which questions were skipped
 
 ### US2: [P1] Vault Output as Knowledge Graph
 
@@ -37,11 +37,11 @@ A Telegram-triggered deep research capability for reclaw that leverages Notebook
 **Why P1:** The vault output is the primary deliverable. Without structured, interlinked notes, the feature is just a chatbot wrapper.
 
 **Acceptance Scenarios:**
-- Given a research job completes, When vault notes are written, Then a hub note exists at `Notes/Research/{topic-slug}/_index.md` linking to all source and Q&A notes
-- Given NotebookLM returned responses with `[N]` citation markers, When citations are resolved, Then each `[N]` is replaced with a `[[Source Title#Passage N]]` wikilink pointing to the corresponding source note
-- Given sources were ingested, When source notes are written, Then each source note contains frontmatter with source metadata (URL, type, notebook ID, date, topics) and an `up` link to the hub note
-- Given Q&A notes are written, When I open a Q&A note in Obsidian, Then the note contains the question as a heading, the answer body with resolved wikilink citations, and a sources section listing all cited source notes
-- Given the hub note is created, When I view it in Obsidian, Then it lists all source notes and Q&A notes as wikilinks, displays the research topic and date, and includes the quality grade from the pipeline
+- AS-006: Given a research job completes, When vault notes are written, Then a hub note exists at `Notes/Research/{topic-slug}/_index.md` linking to all source and Q&A notes
+- AS-007: Given NotebookLM returned responses with `[N]` citation markers, When citations are resolved, Then each `[N]` is replaced with a `[[Source Title#Passage N]]` wikilink pointing to the corresponding source note
+- AS-008: Given sources were ingested, When source notes are written, Then each source note contains frontmatter with source metadata (URL, type, notebook ID, date, topics) and an `up` link to the hub note
+- AS-009: Given Q&A notes are written, When I open a Q&A note in Obsidian, Then the note contains the question as a heading, the answer body with resolved wikilink citations, and a sources section listing all cited source notes
+- AS-010: Given the hub note is created, When I view it in Obsidian, Then it lists all source notes and Q&A notes as wikilinks, displays the research topic and date, and includes the quality grade from the pipeline
 
 ### US3: [P2] User-Provided Source Hints
 
@@ -52,9 +52,9 @@ A Telegram-triggered deep research capability for reclaw that leverages Notebook
 **Why P2:** Enhances research quality but not required for the core pipeline to function.
 
 **Acceptance Scenarios:**
-- Given I send `/research X https://youtube.com/abc`, When the pipeline processes source hints, Then the YouTube URL is added as an explicit source in the notebook alongside web-search-discovered sources
-- Given I provide multiple source hint URLs, When sources are added, Then all valid hint URLs are added to the notebook (up to the per-notebook source limit)
-- Given a source hint URL is invalid or unreachable, When the pipeline attempts to add it, Then the invalid source is skipped and the pipeline continues with remaining sources; the failure is noted in the summary
+- AS-011: Given I send `/research X https://youtube.com/abc`, When the pipeline processes source hints, Then the YouTube URL is added as an explicit source in the notebook alongside web-search-discovered sources
+- AS-012: Given I provide multiple source hint URLs, When sources are added, Then all valid hint URLs are added to the notebook (up to the per-notebook source limit)
+- AS-013: Given a source hint URL is invalid or unreachable, When the pipeline attempts to add it, Then the invalid source is skipped and the pipeline continues with remaining sources; the failure is noted in the summary
 
 ### US4: [P2] Crash Recovery and Quota Preservation
 
@@ -65,9 +65,9 @@ A Telegram-triggered deep research capability for reclaw that leverages Notebook
 **Why P2:** Critical for production reliability. NotebookLM quota is the scarcest resource; wasting it on re-execution defeats the purpose.
 
 **Acceptance Scenarios:**
-- Given the reclaw process crashes during the "querying" state (3 of 5 questions already answered), When the process restarts, Then the job resumes from the checkpointed state and only queries the remaining 2 questions
-- Given a job has completed notebook creation and source ingestion, When a failure occurs during vault writing, Then the retry does NOT recreate the notebook or re-query NotebookLM
-- Given a job fails permanently, When the failure is reported, Then the Telegram notification includes which state failed and how many NotebookLM chats were consumed
+- AS-014: Given the reclaw process crashes during the "querying" state (3 of 5 questions already answered), When the process restarts, Then the job resumes from the checkpointed state and only queries the remaining 2 questions
+- AS-015: Given a job has completed notebook creation and source ingestion, When a failure occurs during vault writing, Then the retry does NOT recreate the notebook or re-query NotebookLM
+- AS-016: Given a job fails permanently, When the failure is reported, Then the Telegram notification includes which state failed and how many NotebookLM chats were consumed
 
 ### US5: [P2] Research Recall via Cortex
 
@@ -78,8 +78,8 @@ A Telegram-triggered deep research capability for reclaw that leverages Notebook
 **Why P2:** Builds on existing Cortex integration; valuable for long-term usefulness but not blocking the core pipeline.
 
 **Acceptance Scenarios:**
-- Given a research job completes, When the notification step runs, Then the topic, key metrics, and hub note path are stored in Cortex via `/remember`
-- Given I later ask the agent "what do you know about AI agents in production?", When Cortex surfaces relevant memories, Then the agent references the research output and vault path
+- AS-017: Given a research job completes, When the notification step runs, Then the topic, key metrics, and hub note path are stored in Cortex via `/remember`
+- AS-018: Given I later ask the agent "what do you know about AI agents in production?", When Cortex surfaces relevant memories, Then the agent references the research output and vault path
 
 ### US6: [P3] Quality Evaluation and Warnings
 
@@ -90,10 +90,10 @@ A Telegram-triggered deep research capability for reclaw that leverages Notebook
 **Why P3:** Useful signal but not blocking core functionality. The vault output is valuable even without quality grading.
 
 **Acceptance Scenarios:**
-- Given all questions were answered with citations, When quality is evaluated, Then the grade is "good" and no warnings appear in the summary
-- Given fewer than half the questions were answered, When quality is evaluated, Then a warning surfaces in the Telegram summary indicating low completeness
-- Given answers have fewer than 1 citation on average, When quality is evaluated, Then a warning surfaces indicating answers may not be grounded in sources
-- Given answers cite only 1 source despite many being available, When quality is evaluated, Then a warning surfaces indicating low source diversity
+- AS-019: Given all questions were answered with citations, When quality is evaluated, Then the grade is "good" and no warnings appear in the summary
+- AS-020: Given fewer than half the questions were answered, When quality is evaluated, Then a warning surfaces in the Telegram summary indicating low completeness
+- AS-021: Given answers have fewer than 1 citation on average, When quality is evaluated, Then a warning surfaces indicating answers may not be grounded in sources
+- AS-022: Given answers cite only 1 source despite many being available, When quality is evaluated, Then a warning surfaces indicating low source diversity
 
 ### US7: [P3] Observability and Decision Tracing
 
@@ -104,8 +104,8 @@ A Telegram-triggered deep research capability for reclaw that leverages Notebook
 **Why P3:** Essential for production debugging but does not affect the user-facing output.
 
 **Acceptance Scenarios:**
-- Given a research job completes or fails, When I inspect the job data in the queue backing store, Then I see a chronological list of trace events with: state, timestamp, duration, outcome (success/retry/skip/fail), and detail text
-- Given the pipeline is in progress, When I check job progress, Then the current state and completion percentage are available via the queue's progress reporting
+- AS-023: Given a research job completes or fails, When I inspect the job data in the queue backing store, Then I see a chronological list of trace events with: state, timestamp, duration, outcome (success/retry/skip/fail), and detail text
+- AS-024: Given the pipeline is in progress, When I check job progress, Then the current state and completion percentage are available via the queue's progress reporting
 
 ---
 
@@ -230,18 +230,18 @@ A Telegram-triggered deep research capability for reclaw that leverages Notebook
 
 Explicitly NOT part of this feature:
 
-- Audio/podcast generation (NotebookLM's artifact feature for generating audio overviews -- defer to a later phase)
-- Per-request source count configuration (e.g., "research X, depth 20" -- fixed at 10 discovered sources for v1)
-- Automatic notebook cleanup or TTL-based garbage collection (100-notebook quota is sufficient for initial usage)
-- Playwright-based auto-login for cookie refresh (start with manual cookie management via environment variables)
-- Homelab-watchdog health check for NotebookLM authentication status
-- Dataview dashboard queries in hub notes (nice-to-have, not core)
-- Multi-notebook synthesis or parallel topic exploration (linear pipeline only for v1)
-- Semantic circuit breaker as a reusable abstraction (inline quality check in querying state is sufficient)
-- Interactive research sessions (follow-up questions to the same notebook after initial research completes)
-- Research job cancellation via Telegram command
-- Multi-user support or access control beyond the existing single-user model
-- Deduplication of research topics (running "research X" twice creates two separate notebooks and vault folders)
+- OOS-001: Audio/podcast generation (NotebookLM's artifact feature for generating audio overviews -- defer to a later phase)
+- OOS-002: Per-request source count configuration (e.g., "research X, depth 20" -- fixed at 10 discovered sources for v1)
+- OOS-003: Automatic notebook cleanup or TTL-based garbage collection (100-notebook quota is sufficient for initial usage)
+- OOS-004: Playwright-based auto-login for cookie refresh (start with manual cookie management via environment variables)
+- OOS-005: Homelab-watchdog health check for NotebookLM authentication status
+- OOS-006: Dataview dashboard queries in hub notes (nice-to-have, not core)
+- OOS-007: Multi-notebook synthesis or parallel topic exploration (linear pipeline only for v1)
+- OOS-008: Semantic circuit breaker as a reusable abstraction (inline quality check in querying state is sufficient)
+- OOS-009: Interactive research sessions (follow-up questions to the same notebook after initial research completes)
+- OOS-010: Research job cancellation via Telegram command
+- OOS-011: Multi-user support or access control beyond the existing single-user model
+- OOS-012: Deduplication of research topics (running "research X" twice creates two separate notebooks and vault folders)
 
 ---
 

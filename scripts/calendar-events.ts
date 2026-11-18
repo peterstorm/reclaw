@@ -46,7 +46,7 @@ const getProperty = (vevent: string, prop: string): string | null => {
   const match = vevent.match(regex);
   if (!match) return null;
   // Return the value after the last colon in the match (handles params like TZID=...)
-  const full = match[1];
+  const full = match[1] ?? '';
   const colonIdx = full.indexOf(':');
   // If there are params (e.g. TZID=Europe/Copenhagen:20260303T130000), split at ":"
   // If no params (e.g. just 20260303T130000), the full string is the value
@@ -122,80 +122,79 @@ const isInRange = (eventDate: string, dates: Set<string>, allDayEndDate?: string
   return false;
 };
 
+/** The entries one VEVENT contributes to the target dates: one per day for a multi-day all-day event. */
+const entriesOnDates = (vevent: string, targetDates: Set<string>): CalendarEvent[] => {
+  const event = parseVevent(vevent);
+  if (!event) return [];
+
+  // For multi-day all-day events, get the end date
+  const dtend = getProperty(vevent, 'DTEND');
+  const endParsed = dtend ? parseDtValue(dtend) : null;
+  const allDayEndDate = event.isAllDay && endParsed ? endParsed.date : undefined;
+
+  if (!isInRange(event.date, targetDates, allDayEndDate)) return [];
+  if (!(event.isAllDay && allDayEndDate && allDayEndDate > event.date)) return [event];
+
+  const span = dateRange(event.date, allDayEndDate);
+  span.pop(); // DTEND exclusive
+  return span.filter((d) => targetDates.has(d)).map((d) => ({ ...event, date: d }));
+};
+
+/** By date, then all-day first, then by start time. */
+const compareEvents = (a: CalendarEvent, b: CalendarEvent): number => {
+  const dateCmp = a.date.localeCompare(b.date);
+  if (dateCmp !== 0) return dateCmp;
+  if (a.isAllDay && !b.isAllDay) return -1;
+  if (!a.isAllDay && b.isAllDay) return 1;
+  return (a.startTime ?? '').localeCompare(b.startTime ?? '');
+};
+
 // --- Main ---
 
-async function main(): Promise<void> {
-  const args = process.argv.slice(2);
+function exitWithUsage(args: readonly string[]): never {
+  console.error('Usage: calendar-events.ts <date> [end-date]');
+  console.error('  <date>       Single date (YYYY-MM-DD) or start of range');
+  console.error('  [end-date]   Optional end of range (inclusive)');
+  console.error('');
+  console.error('Examples:');
+  console.error('  calendar-events.ts 2026-03-22          # single day');
+  console.error('  calendar-events.ts 2026-03-16 2026-03-22  # week range');
+  process.exit(args.includes('--help') ? 0 : 1);
+}
 
-  if (args.length === 0 || args.includes('--help')) {
-    console.error('Usage: calendar-events.ts <date> [end-date]');
-    console.error('  <date>       Single date (YYYY-MM-DD) or start of range');
-    console.error('  [end-date]   Optional end of range (inclusive)');
-    console.error('');
-    console.error('Examples:');
-    console.error('  calendar-events.ts 2026-03-22          # single day');
-    console.error('  calendar-events.ts 2026-03-16 2026-03-22  # week range');
-    process.exit(args.includes('--help') ? 0 : 1);
-  }
-
-  const fromDate = args[0];
-  const toDate = args[1] ?? fromDate;
-  const targetDates = new Set(dateRange(fromDate, toDate));
-
-  let files: string[];
+/** The calendar's .ics files; an unreadable directory prints an empty list and exits 0. */
+async function listIcsFiles(): Promise<string[]> {
   try {
-    files = (await readdir(CALENDAR_DIR)).filter((f) => f.endsWith('.ics'));
+    return (await readdir(CALENDAR_DIR)).filter((f) => f.endsWith('.ics'));
   } catch {
     console.error(`[ERROR] Cannot read calendar directory: ${CALENDAR_DIR}`);
     console.log('[]');
     process.exit(0);
   }
+}
+
+async function main(): Promise<void> {
+  const args = process.argv.slice(2);
+  const fromDate = args[0];
+  if (fromDate === undefined || args.includes('--help')) exitWithUsage(args);
+
+  const toDate = args[1] ?? fromDate;
+  const targetDates = new Set(dateRange(fromDate, toDate));
+  const files = await listIcsFiles();
 
   const events: CalendarEvent[] = [];
-
   for (const file of files) {
     try {
       const content = await readFile(join(CALENDAR_DIR, file), 'utf-8');
-      const vevents = extractVevents(content);
-
-      for (const vevent of vevents) {
-        const event = parseVevent(vevent);
-        if (!event) continue;
-
-        // For multi-day all-day events, get the end date
-        const dtend = getProperty(vevent, 'DTEND');
-        const endParsed = dtend ? parseDtValue(dtend) : null;
-        const allDayEndDate = event.isAllDay && endParsed ? endParsed.date : undefined;
-
-        if (isInRange(event.date, targetDates, allDayEndDate)) {
-          // For multi-day events in range, emit one entry per day in range
-          if (event.isAllDay && allDayEndDate && allDayEndDate > event.date) {
-            const span = dateRange(event.date, allDayEndDate);
-            span.pop(); // DTEND exclusive
-            for (const d of span) {
-              if (targetDates.has(d)) {
-                events.push({ ...event, date: d });
-              }
-            }
-          } else {
-            events.push(event);
-          }
-        }
+      for (const vevent of extractVevents(content)) {
+        events.push(...entriesOnDates(vevent, targetDates));
       }
     } catch {
       // Skip unreadable files
     }
   }
 
-  // Sort by date, then all-day first, then by start time
-  events.sort((a, b) => {
-    const dateCmp = a.date.localeCompare(b.date);
-    if (dateCmp !== 0) return dateCmp;
-    if (a.isAllDay && !b.isAllDay) return -1;
-    if (!a.isAllDay && b.isAllDay) return 1;
-    return (a.startTime ?? '').localeCompare(b.startTime ?? '');
-  });
-
+  events.sort(compareEvents);
   console.log(JSON.stringify(events, null, 2));
 }
 

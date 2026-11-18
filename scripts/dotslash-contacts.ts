@@ -47,18 +47,42 @@ const fetchContactsRaw = (): string => {
   return r.stdout ?? '';
 };
 
+/**
+ * A contact is the stored record itself, extra fields and key order included:
+ * the caller prints it as-is, so the parser checks the record and keeps it.
+ */
+const isContact = (value: unknown): value is Contact =>
+  typeof value === 'object' &&
+  value !== null &&
+  'email' in value &&
+  typeof value.email === 'string' &&
+  'message' in value &&
+  typeof value.message === 'string' &&
+  'timestamp' in value &&
+  typeof value.timestamp === 'string' &&
+  'ip' in value &&
+  typeof value.ip === 'string';
+
+// The warnings never echo the line: it holds a sender's email and message.
+const parseContactLine = (line: string): Contact | null => {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(line);
+  } catch {
+    console.error('[WARN] skipping a contacts.jsonl line that is not JSON');
+    return null;
+  }
+  if (isContact(raw)) return raw;
+  console.error('[WARN] skipping a contact record without string email/message/timestamp/ip');
+  return null;
+};
+
 const parseContacts = (raw: string): Contact[] =>
   raw
     .split('\n')
     .map((l) => l.trim())
     .filter((l) => l.length > 0)
-    .map((l) => {
-      try {
-        return JSON.parse(l) as Contact;
-      } catch {
-        return null;
-      }
-    })
+    .map(parseContactLine)
     .filter((c): c is Contact => c !== null);
 
 async function main(): Promise<void> {
@@ -73,10 +97,8 @@ async function main(): Promise<void> {
 
   console.log(JSON.stringify(fresh, null, 2));
 
-  if (!dryRun && fresh.length > 0) {
-    const newest = fresh[fresh.length - 1].timestamp;
-    await writeState(newest);
-  }
+  const newest = fresh.at(-1);
+  if (!dryRun && newest) await writeState(newest.timestamp);
 }
 
 main().catch((e) => {

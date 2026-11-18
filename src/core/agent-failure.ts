@@ -84,9 +84,6 @@ export type AgentFailurePolicy = {
   readonly mayRetryWithoutSession: boolean;
 };
 
-const includesAny = (value: string, fragments: readonly string[]): boolean =>
-  fragments.some((fragment) => value.includes(fragment));
-
 export const normalizeAgentFailureDetail = (detail: string): string => {
   const normalized = detail
     .trim()
@@ -97,64 +94,78 @@ export const normalizeAgentFailureDetail = (detail: string): string => {
   return (normalized === '' ? 'no diagnostic detail' : normalized).slice(0, 800);
 };
 
-/**
- * Classify diagnostics emitted by either backend. Unknown text stays explicit
- * and retryable; it never implies that discarding conversation state is safe.
- */
-export function classifyAgentDiagnostic(backend: string, rawDetail: string): AgentFailure {
-  const detail = normalizeAgentFailureDetail(rawDetail);
-  const lower = detail.toLowerCase();
+/** The failure kinds a diagnostic's wording alone can establish. */
+type DiagnosticKind = Extract<
+  AgentFailure['kind'],
+  | 'provider-quota-exhausted'
+  | 'session-invalid'
+  | 'provider-billing'
+  | 'provider-rate-limited'
+  | 'provider-authentication'
+  | 'provider-unavailable'
+  | 'configuration'
+>;
 
+type DiagnosticRule = Readonly<{
+  kind: DiagnosticKind;
+  matches: (lowerDetail: string) => boolean;
+}>;
+
+const mentionsAny =
+  (fragments: readonly string[]) =>
+  (lowerDetail: string): boolean =>
+    fragments.some((fragment) => lowerDetail.includes(fragment));
+
+const mentionsSession = mentionsAny(['session', 'conversation', 'resume']);
+const invalidatesSession = mentionsAny([
+  'not found',
+  'no conversation found',
+  'no session found',
+  'does not exist',
+  'invalid',
+  'expired',
+  'unknown',
+  'failed to resume',
+  'cannot resume',
+  "can't resume",
+]);
+
+/** Ordered: the first rule whose wording matches decides the kind. */
+const DIAGNOSTIC_RULES: readonly DiagnosticRule[] = [
   // First: Claude's wording mentions "session" ("hit your session limit") and must never be
   // read as an invalid conversation session.
-  if (includesAny(lower, ['hit your', 'usage limit', 'weekly limit', 'out of extra usage'])) {
-    return { kind: 'provider-quota-exhausted', backend, detail };
-  }
-
-  const mentionsSession = includesAny(lower, ['session', 'conversation', 'resume']);
-  const invalidatesSession = includesAny(lower, [
-    'not found',
-    'no conversation found',
-    'no session found',
-    'does not exist',
-    'invalid',
-    'expired',
-    'unknown',
-    'failed to resume',
-    'cannot resume',
-    "can't resume",
-  ]);
-  if (mentionsSession && invalidatesSession) {
-    return { kind: 'session-invalid', backend, detail };
-  }
-
-  if (
-    includesAny(lower, [
+  {
+    kind: 'provider-quota-exhausted',
+    matches: mentionsAny(['hit your', 'usage limit', 'weekly limit', 'out of extra usage']),
+  },
+  {
+    kind: 'session-invalid',
+    matches: (lower) => mentionsSession(lower) && invalidatesSession(lower),
+  },
+  {
+    kind: 'provider-billing',
+    matches: mentionsAny([
       'credit balance',
       'insufficient credit',
       'billing limit',
       'payment required',
       'quota is permanently',
-    ])
-  ) {
-    return { kind: 'provider-billing', backend, detail };
-  }
-
-  if (
-    includesAny(lower, [
+    ]),
+  },
+  {
+    kind: 'provider-rate-limited',
+    matches: mentionsAny([
       'rate limit',
       'rate_limit',
       'too many requests',
       '429',
       'quota exceeded',
       'resource exhausted',
-    ])
-  ) {
-    return { kind: 'provider-rate-limited', backend, detail };
-  }
-
-  if (
-    includesAny(lower, [
+    ]),
+  },
+  {
+    kind: 'provider-authentication',
+    matches: mentionsAny([
       'unauthorized',
       'authentication failed',
       'authentication error',
@@ -163,13 +174,11 @@ export function classifyAgentDiagnostic(backend: string, rawDetail: string): Age
       'incorrect api key',
       'not authenticated',
       '401',
-    ])
-  ) {
-    return { kind: 'provider-authentication', backend, detail };
-  }
-
-  if (
-    includesAny(lower, [
+    ]),
+  },
+  {
+    kind: 'provider-unavailable',
+    matches: mentionsAny([
       'overloaded',
       'service unavailable',
       'temporarily unavailable',
@@ -187,13 +196,11 @@ export function classifyAgentDiagnostic(backend: string, rawDetail: string): Age
       '502',
       '503',
       '504',
-    ])
-  ) {
-    return { kind: 'provider-unavailable', backend, detail };
-  }
-
-  if (
-    includesAny(lower, [
+    ]),
+  },
+  {
+    kind: 'configuration',
+    matches: mentionsAny([
       'unknown model',
       'model not found',
       'unknown provider',
@@ -201,12 +208,19 @@ export function classifyAgentDiagnostic(backend: string, rawDetail: string): Age
       'missing api key',
       'command not found',
       'enoent',
-    ])
-  ) {
-    return { kind: 'configuration', backend, detail };
-  }
+    ]),
+  },
+];
 
-  return { kind: 'backend-reported', backend, detail };
+/**
+ * Classify diagnostics emitted by either backend. Unknown text stays explicit
+ * and retryable; it never implies that discarding conversation state is safe.
+ */
+export function classifyAgentDiagnostic(backend: string, rawDetail: string): AgentFailure {
+  const detail = normalizeAgentFailureDetail(rawDetail);
+  const lower = detail.toLowerCase();
+  const rule = DIAGNOSTIC_RULES.find((candidate) => candidate.matches(lower));
+  return { kind: rule?.kind ?? 'backend-reported', backend, detail };
 }
 
 /** Unknown nonzero exits retain process metadata unless their detail is classifiable. */

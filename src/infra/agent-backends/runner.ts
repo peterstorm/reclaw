@@ -23,8 +23,16 @@ import {
   formatAgentFailure,
   normalizeAgentFailureDetail,
 } from '../../core/agent-failure.js';
-import { type Result, err, ok } from '../../core/types.js';
-import type { AgentBackend, AgentOptions, AgentResult, OnStreamChunk, SpawnFn } from './types.js';
+import { type Result, assertNever, err, ok } from '../../core/types.js';
+import type {
+  AgentBackend,
+  AgentOptions,
+  AgentResult,
+  OnStreamChunk,
+  SpawnFn,
+  StreamChunk,
+  StreamDelta,
+} from './types.js';
 
 // ─── Default Spawn ────────────────────────────────────────────────────────────
 
@@ -303,6 +311,56 @@ export async function runAgent(backend: AgentBackend, options: AgentOptions): Pr
 // ─── Streaming Runner ─────────────────────────────────────────────────────────
 
 /**
+ * What a streaming run has seen so far. The block accumulators feed the
+ * consumer, which renders only the current block; `text` spans every block and
+ * backs the exit-0 protocol fallback. Thinking is never read across blocks, so
+ * it is not accumulated globally.
+ */
+type StreamProgress = {
+  readonly phase: 'thinking' | 'text';
+  readonly blockThinking: string;
+  readonly blockText: string;
+  readonly text: string;
+};
+
+const INITIAL_STREAM_PROGRESS: StreamProgress = {
+  phase: 'thinking',
+  blockThinking: '',
+  blockText: '',
+  text: '',
+};
+
+function applyStreamDelta(progress: StreamProgress, delta: StreamDelta): StreamProgress {
+  switch (delta.type) {
+    case 'block_start':
+      return delta.blockType === 'thinking'
+        ? { ...progress, phase: 'thinking', blockThinking: '' }
+        : { ...progress, phase: 'text', blockText: '' };
+    case 'thinking':
+      return {
+        ...progress,
+        phase: 'thinking',
+        blockThinking: progress.blockThinking + delta.thinking,
+      };
+    case 'text':
+      return {
+        ...progress,
+        phase: 'text',
+        blockText: progress.blockText + delta.text,
+        text: progress.text + delta.text,
+      };
+    default:
+      return assertNever(delta);
+  }
+}
+
+function streamChunkOf(progress: StreamProgress): StreamChunk {
+  return progress.phase === 'thinking'
+    ? { phase: 'thinking', thinking: progress.blockThinking }
+    : { phase: 'text', text: progress.blockText };
+}
+
+/**
  * Execute an agent subprocess with line-by-line streaming.
  *
  * FR-102: Streaming with callbacks — onChunk receives StreamChunk with the
@@ -322,23 +380,13 @@ export async function runAgentStreaming(
   const timeout = (): AgentResult =>
     failed({ kind: 'timeout', backend: backend.name, timeoutMs: options.timeoutMs });
 
-  // Streaming accumulators. The global text accumulator backs the exit-0
-  // protocol fallback; thinking is never read globally (the consumer renders
-  // only the current block), so it is not accumulated here.
-  let accumulatedText = '';
-  let currentBlockThinking = '';
-  let currentBlockText = '';
-  let currentPhase: 'thinking' | 'text' = 'thinking';
+  let progress = INITIAL_STREAM_PROGRESS;
   let sessionId: string | null = null;
   const collectedLines: string[] = [];
 
   const emitChunk = (): void => {
     try {
-      onChunk(
-        currentPhase === 'thinking'
-          ? { phase: 'thinking', thinking: currentBlockThinking }
-          : { phase: 'text', text: currentBlockText },
-      );
+      onChunk(streamChunkOf(progress));
     } catch (cbErr) {
       // Callback faults must not propagate into the stdout read loop —
       // a throwing onChunk (e.g. Telegram edit failure) should not abort
@@ -356,27 +404,10 @@ export async function runAgentStreaming(
       sessionId = extractedSessionId;
     }
 
-    // Extract stream delta
     const delta = backend.extractStreamDelta(line);
     if (delta !== null) {
-      if (delta.type === 'block_start') {
-        currentPhase = delta.blockType;
-        if (delta.blockType === 'thinking') {
-          currentBlockThinking = '';
-        } else {
-          currentBlockText = '';
-        }
-        emitChunk();
-      } else if (delta.type === 'thinking') {
-        currentBlockThinking += delta.thinking;
-        currentPhase = 'thinking';
-        emitChunk();
-      } else if (delta.type === 'text') {
-        accumulatedText += delta.text;
-        currentBlockText += delta.text;
-        currentPhase = 'text';
-        emitChunk();
-      }
+      progress = applyStreamDelta(progress, delta);
+      emitChunk();
     }
   };
 
@@ -448,16 +479,16 @@ export async function runAgentStreaming(
     return failed(failure);
   }
   if (parsed.text === null) {
-    if (accumulatedText.length === 0) {
+    if (progress.text.length === 0) {
       const detail = 'produced no assistant text on exit-0 stream';
       console.warn(`[runner] ${backend.name} protocol error: ${detail}`);
       return failed({ kind: 'protocol', backend: backend.name, detail });
     }
     console.warn(
-      `[runner] ${backend.name}.parseResult found no final assistant text on exit-0 stream; falling back to ${accumulatedText.length} accumulated bytes`,
+      `[runner] ${backend.name}.parseResult found no final assistant text on exit-0 stream; falling back to ${progress.text.length} accumulated bytes`,
     );
   }
-  const output = parsed.text ?? accumulatedText;
+  const output = parsed.text ?? progress.text;
 
   // Use parseResult sessionId if streaming didn't capture one
   const finalSessionId = sessionId ?? parsed.sessionId;

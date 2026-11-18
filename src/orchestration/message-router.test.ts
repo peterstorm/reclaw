@@ -8,6 +8,7 @@ import {
   type ConversationRevision,
   makeTelegramUpdateId,
 } from '../core/types.js';
+import { fakeQueueOperations } from '../infra/__fixtures__/queue-operations.js';
 import type { NotebookLMAdapter } from '../infra/notebooklm-client.js';
 import type { Queues } from '../infra/queue.js';
 import type { QuotaTracker } from '../infra/quota-tracker.js';
@@ -71,25 +72,7 @@ const makeQueues = (): Queues => ({
   research: {} as Queues['research'],
   podcast: {} as Queues['podcast'],
   delivery: {} as Queues['delivery'],
-  activityResults: {
-    find: vi.fn().mockResolvedValue(null),
-    saveIfAbsent: vi.fn(),
-  },
-  deliveryOutbox: { enqueue: vi.fn().mockResolvedValue(undefined) },
-  enqueueChat: vi.fn().mockResolvedValue(undefined),
-  enqueueScheduled: vi.fn().mockResolvedValue(undefined),
-  isScheduledJobKnown: vi.fn().mockResolvedValue(false),
-  isScheduledJobCompleted: vi.fn().mockResolvedValue(false),
-  markScheduledJobCompleted: vi.fn().mockResolvedValue(undefined),
-  enqueueReminder: vi.fn().mockResolvedValue(undefined),
-  enqueueRecurringReminder: vi.fn().mockResolvedValue('sched-id'),
-  listRecurringReminders: vi.fn().mockResolvedValue([]),
-  cancelRecurringReminder: vi.fn().mockResolvedValue(true),
-  enqueueResearch: vi.fn().mockResolvedValue(undefined),
-  getResearchQueuePosition: vi.fn().mockResolvedValue(1),
-  getResearchStatus: vi.fn().mockResolvedValue({ active: null, waiting: 0 }),
-  enqueuePodcast: vi.fn().mockResolvedValue(undefined),
-  deadLetters: fakeDeadLetterStore([]),
+  ...fakeQueueOperations(),
 });
 
 const makeQuotaTracker = (): QuotaTracker => ({
