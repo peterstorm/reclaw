@@ -117,7 +117,11 @@ const RegistrySchema = z.object({
 
 // ─── Parser (pure) ────────────────────────────────────────────────────────────
 
-export function parseCurriculum(yamlText: string): Result<Curriculum, readonly string[]> {
+type Registry = z.infer<typeof RegistrySchema>;
+type RegistryTopic = Registry['topics'][number];
+
+/** YAML text → schema-valid registry; cross-entry invariants are checked separately. */
+function parseRegistry(yamlText: string): Result<Registry, readonly string[]> {
   let raw: unknown;
   try {
     raw = parseYaml(yamlText);
@@ -128,53 +132,84 @@ export function parseCurriculum(yamlText: string): Result<Curriculum, readonly s
   if (!parsed.success) {
     return err(parsed.error.issues.map((i) => `registry ${i.path.join('.')}: ${i.message}`));
   }
+  return ok(parsed.data);
+}
 
+/** First study position of each slug, plus one error per later duplicate. */
+function indexSlugs(topics: readonly RegistryTopic[]): Readonly<{
+  positionBySlug: ReadonlyMap<string, number>;
+  errors: readonly string[];
+}> {
+  const positionBySlug = new Map<string, number>();
   const errors: string[] = [];
-  const domains: Domain[] = parsed.data.domains.map((d) => ({
+  topics.forEach((t, i) => {
+    if (positionBySlug.has(t.slug)) errors.push(`topic ${t.slug}: duplicate slug`);
+    else positionBySlug.set(t.slug, i);
+  });
+  return { positionBySlug, errors };
+}
+
+/** A topic's placement (declared domain + subdomain) and prerequisite-order violations. */
+function topicErrors(
+  t: RegistryTopic,
+  position: number,
+  domainById: ReadonlyMap<string, Domain>,
+  positionBySlug: ReadonlyMap<string, number>,
+): readonly string[] {
+  const errors: string[] = [];
+  const domain = domainById.get(t.domain);
+  if (domain === undefined) {
+    errors.push(`topic ${t.slug}: unknown domain "${t.domain}"`);
+  } else if (!domain.subdomains.some((s) => s.id === t.subdomain)) {
+    errors.push(`topic ${t.slug}: unknown subdomain "${t.subdomain}" in domain "${t.domain}"`);
+  }
+  for (const p of t.prereqs) {
+    const pPos = positionBySlug.get(p);
+    if (pPos === undefined) errors.push(`topic ${t.slug}: unknown prereq "${p}"`);
+    else if (pPos >= position)
+      errors.push(`topic ${t.slug}: prereq "${p}" must appear earlier in study order`);
+  }
+  return errors;
+}
+
+const toTopic = (t: RegistryTopic, position: number): Topic => ({
+  slug: t.slug as TopicSlug,
+  title: t.title,
+  domain: t.domain as DomainId,
+  subdomain: t.subdomain,
+  outcome: t.outcome,
+  prereqs: t.prereqs as TopicSlug[],
+  sources: t.sources,
+  gaps: t.gaps,
+  position,
+});
+
+export function parseCurriculum(yamlText: string): Result<Curriculum, readonly string[]> {
+  const parsed = parseRegistry(yamlText);
+  if (!parsed.ok) return err(parsed.error);
+  const registry = parsed.value;
+
+  const domains: Domain[] = registry.domains.map((d) => ({
     id: d.id as DomainId,
     title: d.title,
     subdomains: d.subdomains,
   }));
   const domainById = new Map(domains.map((d) => [d.id as string, d]));
-  if (domainById.size !== domains.length) errors.push('registry: duplicate domain id');
-
-  const positionBySlug = new Map<string, number>();
-  parsed.data.topics.forEach((t, i) => {
-    if (positionBySlug.has(t.slug)) errors.push(`topic ${t.slug}: duplicate slug`);
-    else positionBySlug.set(t.slug, i);
-  });
-
-  const topics: Topic[] = parsed.data.topics.map((t, position) => {
-    const domain = domainById.get(t.domain);
-    if (domain === undefined) {
-      errors.push(`topic ${t.slug}: unknown domain "${t.domain}"`);
-    } else if (!domain.subdomains.some((s) => s.id === t.subdomain)) {
-      errors.push(`topic ${t.slug}: unknown subdomain "${t.subdomain}" in domain "${t.domain}"`);
-    }
-    for (const p of t.prereqs) {
-      const pPos = positionBySlug.get(p);
-      if (pPos === undefined) errors.push(`topic ${t.slug}: unknown prereq "${p}"`);
-      else if (pPos >= position)
-        errors.push(`topic ${t.slug}: prereq "${p}" must appear earlier in study order`);
-    }
-    return {
-      slug: t.slug as TopicSlug,
-      title: t.title,
-      domain: t.domain as DomainId,
-      subdomain: t.subdomain,
-      outcome: t.outcome,
-      prereqs: t.prereqs as TopicSlug[],
-      sources: t.sources,
-      gaps: t.gaps,
-      position,
-    };
-  });
-
+  const slugs = indexSlugs(registry.topics);
+  const errors = [
+    ...(domainById.size !== domains.length ? ['registry: duplicate domain id'] : []),
+    ...slugs.errors,
+    ...registry.topics.flatMap((t, position) =>
+      topicErrors(t, position, domainById, slugs.positionBySlug),
+    ),
+  ];
   if (errors.length > 0) return err(errors);
+
+  const topics = registry.topics.map(toTopic);
   return ok({
     domains,
     topics,
     bySlug: new Map(topics.map((t) => [t.slug, t])),
-    settings: parsed.data.settings,
+    settings: registry.settings,
   });
 }

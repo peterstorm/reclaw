@@ -1,6 +1,7 @@
 .memory/
 .claude/cortex-memory.local.md
-.claude/plans/
+.claude/plans/*
+!.claude/plans/*-pr-remediation.md
 .claude/reviews/
 node_modules/
 dist/

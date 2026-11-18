@@ -88,44 +88,57 @@ export function parseResearchCommand(text: string): Result<ResearchRequest, stri
   // Strip the /research prefix and any immediately following whitespace
   // Normalize em dashes (—) and en dashes (–) to double hyphens (Telegram autocorrect fix)
   const rawRemainder = trimmed.slice(prefix.length).replace(/^\s+/, '').replace(/[—–]/g, '--');
-
-  // Extract --audio and --video flags (case-insensitive), then strip them
-  const generateAudio = /(?:^|\s)--audio\b/i.test(rawRemainder);
-  const generateVideo = /(?:^|\s)--video\b/i.test(rawRemainder);
-
-  // Extract --link <url> flag: captures the URL immediately following --link
-  const linkMatch = rawRemainder.match(/(?:^|\s)--link\s+(https?:\/\/\S+)/i);
-  const linkUrl = linkMatch ? linkMatch[1] : null;
-
-  // Strip all flags (--audio, --video, --link <url>) from remainder
-  const remainder = rawRemainder
-    .replace(/(?:^|\s)--audio\b/gi, ' ')
-    .replace(/(?:^|\s)--video\b/gi, ' ')
-    .replace(/(?:^|\s)--link\s+https?:\/\/\S+/gi, ' ')
-    .replace(/^\s+/, '');
+  const flags = extractFlags(rawRemainder);
 
   // Collect inline URLs from the remainder (after flag stripping)
-  const inlineUrls = extractUrls(remainder);
+  const inlineUrls = extractUrls(flags.remainder);
 
   // Strip inline URLs from remainder text to get the prompt
-  const promptText = remainder.replace(/https?:\/\/\S+/gi, '').trim();
+  const promptText = flags.remainder.replace(/https?:\/\/\S+/gi, '').trim();
 
   // Build sourceHints: --link URL first, then inline URLs
-  const sourceHints: readonly string[] = [...(linkUrl ? [linkUrl] : []), ...inlineUrls];
+  const sourceHints: readonly string[] = [...(flags.linkUrl ? [flags.linkUrl] : []), ...inlineUrls];
 
-  // Determine prompt
-  let prompt = promptText;
+  const prompt = resolvePrompt(promptText, flags.linkUrl);
+  if (!prompt.ok) return prompt;
 
-  if (prompt.length === 0) {
-    if (linkUrl) {
-      // Derive a seed prompt from the --link URL
-      prompt = topicFromUrl(linkUrl);
-    } else {
-      return err(
-        'Research prompt must not be empty. Usage: /research <prompt> [--audio] [--video] [--link <url>]',
-      );
-    }
-  }
+  return ok({
+    prompt: prompt.value,
+    sourceHints,
+    generateAudio: flags.generateAudio,
+    generateVideo: flags.generateVideo,
+  });
+}
 
-  return ok({ prompt, sourceHints, generateAudio, generateVideo });
+type ResearchFlags = Readonly<{
+  generateAudio: boolean;
+  generateVideo: boolean;
+  linkUrl: string | null;
+  /** The text with every flag removed. */
+  remainder: string;
+}>;
+
+/** Read --audio, --video and --link <url> (case-insensitive) and strip them from the text. */
+function extractFlags(rawRemainder: string): ResearchFlags {
+  // --link captures the URL immediately following it
+  const linkMatch = rawRemainder.match(/(?:^|\s)--link\s+(https?:\/\/\S+)/i);
+  return {
+    generateAudio: /(?:^|\s)--audio\b/i.test(rawRemainder),
+    generateVideo: /(?:^|\s)--video\b/i.test(rawRemainder),
+    linkUrl: linkMatch?.[1] ?? null,
+    remainder: rawRemainder
+      .replace(/(?:^|\s)--audio\b/gi, ' ')
+      .replace(/(?:^|\s)--video\b/gi, ' ')
+      .replace(/(?:^|\s)--link\s+https?:\/\/\S+/gi, ' ')
+      .replace(/^\s+/, ''),
+  };
+}
+
+/** The prompt text, or — when it is empty — a seed prompt derived from the --link URL. */
+function resolvePrompt(promptText: string, linkUrl: string | null): Result<string, string> {
+  if (promptText.length > 0) return ok(promptText);
+  if (linkUrl) return ok(topicFromUrl(linkUrl));
+  return err(
+    'Research prompt must not be empty. Usage: /research <prompt> [--audio] [--video] [--link <url>]',
+  );
 }

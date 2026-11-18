@@ -19,7 +19,7 @@ import type { Curriculum, StudySettings, Topic, TopicSlug } from './curriculum.j
 import { notePathFor } from './curriculum.js';
 import type { CardId, Lesson, MasterNote, RecallCard } from './master-note.js';
 import { type Grade, type RoundId, type StudyEvent, roundIdAt } from './study-log.js';
-import { type Result, err, ok } from './types.js';
+import { type Result, assertNever, err, ok } from './types.js';
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 24 * HOUR_MS;
@@ -140,6 +140,8 @@ export function foldStudy(
       case 'feynman-checked':
         feynmanAt.set(e.topic, at);
         break;
+      default:
+        return assertNever(e);
     }
   }
 
@@ -296,8 +298,29 @@ export type RoundPlan =
  * 24h new-card cap. Interleaving: prefer cards from topics not yet in the round.
  */
 export function pickRound(state: StudyState, now: Date, size?: number): RoundPlan {
+  const chosen = interleave(
+    roundCandidates(state, now),
+    size ?? state.curriculum.settings.roundSize,
+  );
+  if (chosen.length === 0) return nothingDue(state, now);
+
+  const round = roundIdAt(now);
+  return {
+    kind: 'round',
+    round,
+    cards: chosen.map((p) => toRoundCard(state, p)),
+    event: {
+      kind: 'round-asked',
+      at: now.toISOString(),
+      round,
+      cards: chosen.map((p) => p.card.id),
+    },
+  };
+}
+
+/** Eligible cards in priority order: short-term by due date, weakest reviews, capped new cards. */
+function roundCandidates(state: StudyState, now: Date): readonly CardProgress[] {
   const settings = state.curriculum.settings;
-  const limit = size ?? settings.roundSize;
   const scheduler = schedulerFor(settings);
   const eligible = [...state.cards.values()].filter((p) => isEligible(p, now, settings));
 
@@ -309,13 +332,22 @@ export function pickRound(state: StudyState, now: Date, size?: number): RoundPla
     .map((p) => ({ p, r: scheduler.get_retrievability(p.fsrs, now, false) }))
     .sort((a, b) => a.r - b.r)
     .map(({ p }) => p);
+  return [...shortTerm, ...reviews, ...freshCards(state, eligible, now)];
+}
+
+/** New cards in study order, limited to what the rolling 24h new-card cap still allows. */
+function freshCards(
+  state: StudyState,
+  eligible: readonly CardProgress[],
+  now: Date,
+): readonly CardProgress[] {
   const introducedToday = [...state.cards.values()].filter((p) => {
     const first = p.grades[0];
     return first !== undefined && now.getTime() - first.at.getTime() < DAY_MS;
   }).length;
   const position = (p: CardProgress): number =>
     state.curriculum.bySlug.get(p.card.topic)?.position ?? Number.MAX_SAFE_INTEGER;
-  const fresh = eligible
+  return eligible
     .filter((p) => p.fsrs.state === State.New)
     .sort(
       (a, b) =>
@@ -323,9 +355,11 @@ export function pickRound(state: StudyState, now: Date, size?: number): RoundPla
         a.card.lesson - b.card.lesson ||
         a.card.id.localeCompare(b.card.id),
     )
-    .slice(0, Math.max(0, settings.newCardsPerDay - introducedToday));
+    .slice(0, Math.max(0, state.curriculum.settings.newCardsPerDay - introducedToday));
+}
 
-  const candidates = [...shortTerm, ...reviews, ...fresh];
+/** Up to `limit` candidates: one per topic first, then fill in priority order. */
+function interleave(candidates: readonly CardProgress[], limit: number): readonly CardProgress[] {
   const chosen: CardProgress[] = [];
   const topics = new Set<TopicSlug>();
   for (const p of candidates) {
@@ -339,42 +373,34 @@ export function pickRound(state: StudyState, now: Date, size?: number): RoundPla
     if (chosen.length >= limit) break;
     if (!chosen.includes(p)) chosen.push(p);
   }
+  return chosen;
+}
 
-  if (chosen.length === 0) {
-    const upcoming = [...state.cards.values()]
-      .filter((p) => !p.suspended)
-      .map((p) => p.fsrs.due.getTime())
-      .filter((t) => t > now.getTime())
-      .sort((a, b) => a - b)[0];
-    return {
-      kind: 'nothing-due',
-      nextDueAt: upcoming === undefined ? null : new Date(upcoming),
-      pendingCards: [...state.cards.values()].filter((p) => isPending(p, now, settings)).length,
-    };
-  }
-
-  const round = roundIdAt(now);
+function nothingDue(state: StudyState, now: Date): RoundPlan {
+  const upcoming = [...state.cards.values()]
+    .filter((p) => !p.suspended)
+    .map((p) => p.fsrs.due.getTime())
+    .filter((t) => t > now.getTime())
+    .sort((a, b) => a - b)[0];
   return {
-    kind: 'round',
-    round,
-    cards: chosen.map((p) => {
-      const topic = state.curriculum.bySlug.get(p.card.topic);
-      return {
-        id: p.card.id,
-        topicTitle: topic?.title ?? p.card.topic,
-        notePath: topic === undefined ? '' : notePathFor(topic),
-        lesson: p.card.lesson,
-        question: p.card.question,
-        answer: p.card.answer,
-        isNew: p.fsrs.state === State.New,
-      };
-    }),
-    event: {
-      kind: 'round-asked',
-      at: now.toISOString(),
-      round,
-      cards: chosen.map((p) => p.card.id),
-    },
+    kind: 'nothing-due',
+    nextDueAt: upcoming === undefined ? null : new Date(upcoming),
+    pendingCards: [...state.cards.values()].filter((p) =>
+      isPending(p, now, state.curriculum.settings),
+    ).length,
+  };
+}
+
+function toRoundCard(state: StudyState, p: CardProgress): RoundCard {
+  const topic = state.curriculum.bySlug.get(p.card.topic);
+  return {
+    id: p.card.id,
+    topicTitle: topic?.title ?? p.card.topic,
+    notePath: topic === undefined ? '' : notePathFor(topic),
+    lesson: p.card.lesson,
+    question: p.card.question,
+    answer: p.card.answer,
+    isNew: p.fsrs.state === State.New,
   };
 }
 

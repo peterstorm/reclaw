@@ -1,4 +1,5 @@
 import { match } from 'ts-pattern';
+import { type AskRejection, formatAskRejection } from '../core/ask-rejection.js';
 import { parseAskCommand } from '../core/ask-request.js';
 import {
   citedSourceIndicesOf,
@@ -13,7 +14,9 @@ import {
   parsePodcastCommand,
 } from '../core/podcast-request.js';
 import {
-  formatReminderConfirmation,
+  type ParsedReminder,
+  type ReminderEnqueueOutcome,
+  formatReminderEnqueueOutcome,
   formatReminderList,
   isRemindListCommand,
   parseRemindCancelCommand,
@@ -23,24 +26,34 @@ import { parseResearchCommand } from '../core/research-request.js';
 import { makeResearchJobData } from '../core/research-types.js';
 import type { SourceMeta } from '../core/research-types.js';
 import {
+  type RunRejection,
+  findRunSkill,
+  formatRunRejection,
+  manualRunWindow,
+  parseRunCommand,
+} from '../core/run-command.js';
+import {
   type AgentBackendName,
   type JobId,
+  type Result,
+  type SkillConfig,
   type SkillRegistry,
   type TelegramIngressKind,
+  err,
   makeChatJob,
   makePodcastJob,
   makeRecurringReminderJob,
   makeReminderJob,
   makeScheduledJob,
-  makeSkillId,
   makeTelegramIngressJobId,
   makeTelegramUserId,
+  ok,
 } from '../core/types.js';
 import type { NotebookLMAdapter } from '../infra/notebooklm-client.js';
 import type { Queues } from '../infra/queue.js';
 import type { QuotaTracker } from '../infra/quota-tracker.js';
-import { appendAskAnswer } from '../infra/research-qa-writer.js';
-import { findNotebookByTopic } from '../infra/research-vault-lookup.js';
+import { type AskAnswerInput, appendAskAnswer } from '../infra/research-qa-writer.js';
+import { type NotebookLookup, findNotebookByTopic } from '../infra/research-vault-lookup.js';
 import type { SessionStore } from '../infra/session-store.js';
 import type {
   TelegramAdapter,
@@ -249,49 +262,53 @@ async function routeRemindCommand(msg: IncomingMessage, deps: MessageRouterDeps)
     return;
   }
 
-  if (parseResult.value.kind === 'recurring' || parseResult.value.kind === 'cron-recurring') {
-    const recurParsed = parseResult.value;
-    const jobId = ingressJobId(msg, 'recurring');
-    const recurringResult = makeRecurringReminderJob({
-      id: jobId,
-      chatId: msg.chatId,
-      text: recurParsed.text,
-      createdAt: new Date().toISOString(),
-      ...(recurParsed.kind === 'cron-recurring'
-        ? { cronPattern: recurParsed.cronPattern, cronDescription: recurParsed.cronDescription }
-        : { intervalMs: recurParsed.intervalMs }),
-      schedulerId: jobId,
-    });
+  const reminder = parseResult.value;
+  const outcome =
+    reminder.kind === 'recurring' || reminder.kind === 'cron-recurring'
+      ? await enqueueRecurringReminder(msg, deps, reminder)
+      : await enqueueOneShotReminder(msg, deps, reminder);
+  await deps.telegram.sendMessage(msg.chatId, formatReminderEnqueueOutcome(outcome, now));
+}
 
-    if (!recurringResult.ok) {
-      await deps.telegram.sendMessage(
-        msg.chatId,
-        `Cannot create recurring reminder: ${recurringResult.error}`,
-      );
-      return;
-    }
+type RecurringReminder = Extract<ParsedReminder, { kind: 'recurring' | 'cron-recurring' }>;
+type OneShotReminder = Exclude<ParsedReminder, RecurringReminder>;
 
-    await deps.queues.enqueueRecurringReminder(recurringResult.value);
-    await deps.telegram.sendMessage(msg.chatId, formatReminderConfirmation(parseResult.value, now));
-    return;
-  }
+async function enqueueRecurringReminder(
+  msg: IncomingMessage,
+  deps: MessageRouterDeps,
+  reminder: RecurringReminder,
+): Promise<ReminderEnqueueOutcome> {
+  const jobId = ingressJobId(msg, 'recurring');
+  const recurringResult = makeRecurringReminderJob({
+    id: jobId,
+    chatId: msg.chatId,
+    text: reminder.text,
+    createdAt: new Date().toISOString(),
+    ...(reminder.kind === 'cron-recurring'
+      ? { cronPattern: reminder.cronPattern, cronDescription: reminder.cronDescription }
+      : { intervalMs: reminder.intervalMs }),
+    schedulerId: jobId,
+  });
+  if (!recurringResult.ok) return { kind: 'rejected', reminder, reason: recurringResult.error };
+  await deps.queues.enqueueRecurringReminder(recurringResult.value);
+  return { kind: 'enqueued', reminder };
+}
 
-  const parsed = parseResult.value;
+async function enqueueOneShotReminder(
+  msg: IncomingMessage,
+  deps: MessageRouterDeps,
+  reminder: OneShotReminder,
+): Promise<ReminderEnqueueOutcome> {
   const reminderResult = makeReminderJob({
     id: ingressJobId(msg, 'reminder'),
     chatId: msg.chatId,
-    text: parsed.text,
+    text: reminder.text,
     createdAt: new Date().toISOString(),
-    delayMs: parsed.delayMs,
+    delayMs: reminder.delayMs,
   });
-
-  if (!reminderResult.ok) {
-    await deps.telegram.sendMessage(msg.chatId, `Cannot create reminder: ${reminderResult.error}`);
-    return;
-  }
-
+  if (!reminderResult.ok) return { kind: 'rejected', reminder, reason: reminderResult.error };
   await deps.queues.enqueueReminder(reminderResult.value);
-  await deps.telegram.sendMessage(msg.chatId, formatReminderConfirmation(parseResult.value, now));
+  return { kind: 'enqueued', reminder };
 }
 
 // ─── /research-status ────────────────────────────────────────────────────────
@@ -410,53 +427,23 @@ async function routeHelpCommand(msg: IncomingMessage, deps: MessageRouterDeps): 
 // ─── /ask <topic-slug> <question> ────────────────────────────────────────────
 
 async function runAsk(msg: IncomingMessage, deps: MessageRouterDeps): Promise<void> {
-  if (deps.getNotebookLM === undefined || deps.vaultBasePath === undefined) {
-    await deps.telegram.sendMessage(
-      msg.chatId,
-      '/ask is not wired up — NotebookLM adapter or vault path missing.',
-    );
+  const target = await resolveAskTarget(msg, deps);
+  if (!target.ok) {
+    await deps.telegram.sendMessage(msg.chatId, formatAskRejection(target.error));
     return;
   }
+  const { notebookLM, notebook, question } = target.value;
+  const { lookup } = notebook;
 
-  const parsed = parseAskCommand(msg.text);
-  if (!parsed.ok) {
-    await deps.telegram.sendMessage(msg.chatId, parsed.error);
-    return;
-  }
+  await deps.telegram.sendMessage(msg.chatId, `Asking notebook: ${lookup.topic}…`);
 
-  const lookup = await findNotebookByTopic(deps.vaultBasePath, parsed.value.slug);
-  if (!lookup.ok) {
-    await deps.telegram.sendMessage(msg.chatId, lookup.error);
-    return;
-  }
-
-  const hasQuota = await deps.quotaTracker.hasQuota(1);
-  if (!hasQuota) {
-    await deps.telegram.sendMessage(
-      msg.chatId,
-      'Daily NotebookLM chat quota exhausted. Try again tomorrow.',
-    );
-    return;
-  }
-
-  const notebookLM = await deps.getNotebookLM();
-  if (notebookLM === null) {
-    await deps.telegram.sendMessage(
-      msg.chatId,
-      'NotebookLM is not configured on this reclaw instance.',
-    );
-    return;
-  }
-
-  await deps.telegram.sendMessage(msg.chatId, `Asking notebook: ${lookup.value.topic}…`);
-
-  const chatResult = await notebookLM.chat(lookup.value.notebookId, parsed.value.question);
+  const chatResult = await notebookLM.chat(lookup.notebookId, question);
   if (!chatResult.ok) {
     await deps.telegram.sendMessage(msg.chatId, `NotebookLM error: ${chatResult.error.message}`);
     return;
   }
 
-  const sourcesResult = await notebookLM.listSources(lookup.value.notebookId);
+  const sourcesResult = await notebookLM.listSources(lookup.notebookId);
   if (!sourcesResult.ok) {
     await deps.telegram.sendMessage(
       msg.chatId,
@@ -468,41 +455,78 @@ async function runAsk(msg: IncomingMessage, deps: MessageRouterDeps): Promise<vo
   const passageMap = extractPassageToSourceMap(chatResult.value.rawData, sources);
   const resolution = resolveAnswerCitations(chatResult.value.text, sources, passageMap);
   const { resolvedText } = resolution;
-  const cited = citedSourceIndicesOf(resolution);
+  const citedSources = citedInOrder(sources, citedSourceIndicesOf(resolution));
 
   // Complete the best-effort Q&A write before acknowledging the update. A
   // vault failure does not suppress an otherwise valid answer, but it is no
   // longer detached from ingress lifecycle and process shutdown.
-  const citedSources = [...cited]
-    .sort((a, b) => a - b)
-    .map((i) => sources[i])
-    .filter((s): s is SourceMeta => s !== undefined);
-
   const persisted = await appendAskAnswer({
-    vaultBasePath: deps.vaultBasePath,
-    lookup: lookup.value,
-    question: parsed.value.question,
+    ...notebook,
+    question,
     resolvedAnswer: resolvedText,
     citedSources,
   });
   if (!persisted.ok) console.error(`[router] /ask: failed to persist Q&A: ${persisted.error}`);
 
-  const reply = formatAskReply(resolvedText, sources, cited, lookup.value);
-  const chunks = splitMessage(reply);
-  await deps.telegram.sendChunkedMessage(msg.chatId, chunks);
+  const reply = formatAskReply(resolvedText, citedSources, lookup);
+  await deps.telegram.sendChunkedMessage(msg.chatId, splitMessage(reply));
 }
+
+/** A topic's notebook, together with the vault it was resolved against. */
+type ResolvedNotebook = Pick<AskAnswerInput, 'vaultBasePath' | 'lookup'>;
+
+type AskTarget = {
+  readonly notebookLM: NotebookLMAdapter;
+  readonly notebook: ResolvedNotebook;
+  readonly question: string;
+};
+
+/**
+ * Everything /ask needs before it spends a NotebookLM chat: wiring, a parsed
+ * command, the topic's notebook, quota, and an adapter.
+ */
+async function resolveAskTarget(
+  msg: IncomingMessage,
+  deps: MessageRouterDeps,
+): Promise<Result<AskTarget, AskRejection>> {
+  const { getNotebookLM, vaultBasePath } = deps;
+  if (getNotebookLM === undefined || vaultBasePath === undefined) {
+    return err({ kind: 'not-wired' });
+  }
+  const parsed = parseAskCommand(msg.text);
+  if (!parsed.ok) return err({ kind: 'invalid-command', reason: parsed.error });
+
+  const lookup = await findNotebookByTopic(vaultBasePath, parsed.value.slug);
+  if (!lookup.ok) return err({ kind: 'topic-unavailable', reason: lookup.error });
+
+  const hasQuota = await deps.quotaTracker.hasQuota(1);
+  if (!hasQuota) return err({ kind: 'quota-exhausted' });
+
+  const notebookLM = await getNotebookLM();
+  if (notebookLM === null) return err({ kind: 'notebooklm-unconfigured' });
+
+  return ok({
+    notebookLM,
+    notebook: { vaultBasePath, lookup: lookup.value },
+    question: parsed.value.question,
+  });
+}
+
+/** The cited sources in source-index order; indices with no source are dropped. */
+const citedInOrder = (
+  sources: readonly SourceMeta[],
+  citedSourceIndices: ReadonlySet<number>,
+): readonly SourceMeta[] =>
+  [...citedSourceIndices]
+    .sort((a, b) => a - b)
+    .map((i) => sources[i])
+    .filter((s): s is SourceMeta => s !== undefined);
 
 function formatAskReply(
   resolvedText: string,
-  sources: ReadonlyArray<{ readonly title: string; readonly url: string }>,
-  citedSourceIndices: ReadonlySet<number>,
-  lookup: { readonly topic: string; readonly hubVaultPath: string },
+  cited: readonly SourceMeta[],
+  lookup: NotebookLookup,
 ): string {
-  const cited = [...citedSourceIndices]
-    .sort((a, b) => a - b)
-    .map((i) => sources[i])
-    .filter((s): s is { readonly title: string; readonly url: string } => s !== undefined);
-
   const sourcesSection =
     cited.length > 0
       ? `\n\nSources:\n${cited.map((s) => `• ${s.title}\n  ${s.url}`).join('\n')}`
@@ -621,50 +645,18 @@ async function routeDlqCommand(msg: IncomingMessage, deps: MessageRouterDeps): P
 // ─── /run <skill-id> — manual skill trigger ──────────────────────────────────
 
 async function routeRunCommand(msg: IncomingMessage, deps: MessageRouterDeps): Promise<void> {
-  if (deps.getSkillRegistry === undefined) {
-    await deps.telegram.sendMessage(msg.chatId, 'Skill registry not available — /run is disabled.');
+  const skill = resolveRunSkill(msg.text, deps.getSkillRegistry);
+  if (!skill.ok) {
+    await deps.telegram.sendMessage(msg.chatId, formatRunRejection(skill.error));
     return;
   }
 
-  const parts = msg.text.trim().split(/\s+/);
-  const rawSkillId = parts[1];
-  if (!rawSkillId || rawSkillId === '') {
-    await deps.telegram.sendMessage(
-      msg.chatId,
-      'Usage: /run <skill-id>\nUse /status to see how many skills are loaded; check workspace/skills/ for IDs.',
-    );
-    return;
-  }
-
-  const skillIdResult = makeSkillId(rawSkillId);
-  if (!skillIdResult.ok) {
-    await deps.telegram.sendMessage(
-      msg.chatId,
-      `Invalid skill id "${rawSkillId}": ${skillIdResult.error}`,
-    );
-    return;
-  }
-
-  const registry = deps.getSkillRegistry();
-  const skill = registry.get(skillIdResult.value);
-  if (skill === undefined) {
-    const known = [...registry.keys()].slice(0, 20).join(', ');
-    await deps.telegram.sendMessage(msg.chatId, `Unknown skill "${rawSkillId}". Known: ${known}`);
-    return;
-  }
-
-  const triggeredAt = new Date();
-  triggeredAt.setMilliseconds(0);
-  const triggeredIso = triggeredAt.toISOString();
-  const validUntilIso = new Date(
-    triggeredAt.getTime() + skill.validityWindowMinutes * 60 * 1000,
-  ).toISOString();
-
+  const runWindow = manualRunWindow(new Date(), skill.value.validityWindowMinutes);
   const scheduledJobResult = makeScheduledJob({
     id: ingressJobId(msg, 'run'),
-    skillId: skill.id,
-    triggeredAt: triggeredIso,
-    validUntil: validUntilIso,
+    skillId: skill.value.id,
+    triggeredAt: runWindow.triggeredAt,
+    validUntil: runWindow.validUntil,
     trigger: 'manual',
   });
 
@@ -679,6 +671,17 @@ async function routeRunCommand(msg: IncomingMessage, deps: MessageRouterDeps): P
   await deps.queues.enqueueScheduled(scheduledJobResult.value);
   await deps.telegram.sendMessage(
     msg.chatId,
-    `Triggered "${skill.id}" — output will arrive in chat when it completes.`,
+    `Triggered "${skill.value.id}" — output will arrive in chat when it completes.`,
   );
+}
+
+/** The skill a /run command names. The registry is read only once the command parses. */
+function resolveRunSkill(
+  text: string,
+  getSkillRegistry: (() => SkillRegistry) | undefined,
+): Result<SkillConfig, RunRejection> {
+  if (getSkillRegistry === undefined) return err({ kind: 'registry-unavailable' });
+  const skillId = parseRunCommand(text);
+  if (!skillId.ok) return skillId;
+  return findRunSkill(getSkillRegistry(), skillId.value);
 }

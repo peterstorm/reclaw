@@ -72,60 +72,66 @@ function flag(args: readonly string[], name: string): string | undefined {
 
 const isGrade = (s: string | undefined): s is Grade => GRADES.some((g) => g === s);
 
+type CommandName = Command['kind'];
+
+/**
+ * One argv parser per command name, each given the full argv (name first). The mapped
+ * type is the totality proof: a new Command variant without a parser is a compile error.
+ */
+const COMMAND_PARSERS: {
+  readonly [K in CommandName]: (args: readonly string[]) => Result<Command, string>;
+} = {
+  status: () => ok({ kind: 'status' }),
+  lesson: () => ok({ kind: 'lesson' }),
+  'build-next': () => ok({ kind: 'build-next' }),
+  feynman: () => ok({ kind: 'feynman' }),
+  read: ([, topic, rawLesson]) => {
+    const lesson = Number(rawLesson);
+    if (topic === undefined || !Number.isInteger(lesson) || lesson < 1)
+      return err('read <topic-slug> <lesson-number>');
+    return ok({ kind: 'read', topic, lesson });
+  },
+  round: (args) => {
+    const raw = flag(args, '--size');
+    const size = raw === undefined ? undefined : Number(raw);
+    if (size !== undefined && (!Number.isInteger(size) || size < 1 || size > 10))
+      return err('round --size must be an integer 1–10');
+    return ok({ kind: 'round', size });
+  },
+  grade: (args) => {
+    const [, round, card, grade] = args;
+    if (round === undefined || card === undefined || !isGrade(grade))
+      return err(`grade <round> <card-id> <${GRADES.join('|')}> [--answer TEXT]`);
+    const answer = flag(args, '--answer');
+    return ok({ kind: 'grade', round, card, grade, answer: answer?.slice(0, MAX_ANSWER_CHARS) });
+  },
+  suspend: (args) => {
+    const card = args[1];
+    const reason = args.slice(2).join(' ').trim();
+    if (card === undefined || reason === '') return err('suspend <card-id> <reason...>');
+    return ok({ kind: 'suspend', card, reason });
+  },
+  unsuspend: ([, card]) =>
+    card === undefined ? err('unsuspend <card-id>') : ok({ kind: 'unsuspend', card }),
+  'feynman-log': (args) => {
+    const topic = args[1];
+    if (topic === undefined) return err('feynman-log <topic-slug> [--gaps "a; b"]');
+    const gaps = (flag(args, '--gaps') ?? '')
+      .split(';')
+      .map((g) => g.trim())
+      .filter((g) => g !== '');
+    return ok({ kind: 'feynman-log', topic, gaps });
+  },
+  validate: (args) => ok({ kind: 'validate', sources: args.includes('--sources') }),
+};
+
+const isCommandName = (s: string | undefined): s is CommandName =>
+  s !== undefined && Object.hasOwn(COMMAND_PARSERS, s);
+
 /** Parse argv (after the script name) into a command. */
 export function parseLearnArgs(args: readonly string[]): Result<Command, string> {
-  const [name, a1, a2, a3] = args;
-  switch (name) {
-    case 'status':
-    case 'lesson':
-    case 'build-next':
-    case 'feynman':
-      return ok({ kind: name });
-    case 'read': {
-      const lesson = Number(a2);
-      if (a1 === undefined || !Number.isInteger(lesson) || lesson < 1)
-        return err('read <topic-slug> <lesson-number>');
-      return ok({ kind: 'read', topic: a1, lesson });
-    }
-    case 'round': {
-      const raw = flag(args, '--size');
-      const size = raw === undefined ? undefined : Number(raw);
-      if (size !== undefined && (!Number.isInteger(size) || size < 1 || size > 10))
-        return err('round --size must be an integer 1–10');
-      return ok({ kind: 'round', size });
-    }
-    case 'grade': {
-      if (a1 === undefined || a2 === undefined || !isGrade(a3))
-        return err(`grade <round> <card-id> <${GRADES.join('|')}> [--answer TEXT]`);
-      const answer = flag(args, '--answer');
-      return ok({
-        kind: 'grade',
-        round: a1,
-        card: a2,
-        grade: a3,
-        answer: answer?.slice(0, MAX_ANSWER_CHARS),
-      });
-    }
-    case 'suspend': {
-      const reason = args.slice(2).join(' ').trim();
-      if (a1 === undefined || reason === '') return err('suspend <card-id> <reason...>');
-      return ok({ kind: 'suspend', card: a1, reason });
-    }
-    case 'unsuspend':
-      return a1 === undefined ? err('unsuspend <card-id>') : ok({ kind: 'unsuspend', card: a1 });
-    case 'feynman-log': {
-      if (a1 === undefined) return err('feynman-log <topic-slug> [--gaps "a; b"]');
-      const gaps = (flag(args, '--gaps') ?? '')
-        .split(';')
-        .map((g) => g.trim())
-        .filter((g) => g !== '');
-      return ok({ kind: 'feynman-log', topic: a1, gaps });
-    }
-    case 'validate':
-      return ok({ kind: 'validate', sources: args.includes('--sources') });
-    default:
-      return err(LEARN_USAGE);
-  }
+  const name = args[0];
+  return isCommandName(name) ? COMMAND_PARSERS[name](args) : err(LEARN_USAGE);
 }
 
 type Loaded = Readonly<{

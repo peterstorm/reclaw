@@ -54,7 +54,7 @@ These are operational conventions — not structural architecture decisions — 
    - Cons: Model choice not visible in reclaw's config, must SSH into server to check pi's config
 
 2. **Reclaw passes `--model` / `--provider` flags to pi**
-   - Pros: Centralized config, visible in `AGENT_MODEL` env var
+   - Pros: Centralized config, visible in AGENT_MODEL env var
    - Cons: Couples reclaw to pi's flag API (which may change), pi's provider routing is more sophisticated than a single flag, unnecessary indirection
 
 ### Prompt Delivery
@@ -84,8 +84,8 @@ When switching from `claude` to `pi` (or vice versa):
 
 ### Pi Model Defaults (AD-8)
 
-The pi backend's `buildArgs()` never includes `--model` or `--provider` flags. Pi uses whatever provider/model is configured in its own settings (`~/.pi/settings.json` or project-level `.pi/settings.json`). This means:
-- No `AGENT_MODEL` or `AGENT_PROVIDER` env vars in reclaw
+The pi backend's `buildArgs()` never includes `--model` or `--provider` flags. Pi uses whatever provider/model is configured in its own settings (`~/.pi/settings.json` or project-level `<project>/.pi/settings.json`). This means:
+- No AGENT_MODEL or AGENT_PROVIDER env vars in reclaw
 - Model routing is controlled entirely through pi's configuration
 - The cost-savings motivation (routing through github-copilot provider) is achieved by configuring pi, not reclaw
 

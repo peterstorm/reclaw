@@ -140,116 +140,149 @@ export async function appendPodcastLink(
 export async function handlePodcastJob(job: PodcastJob, deps: PodcastDeps): Promise<JobResult> {
   const { notebookLM, telegram } = deps;
   const formatLabel = FORMAT_LABELS[job.audioFormat] ?? 'Deep Dive';
-
-  // 1. Resolve note through the configured, canonical vault root.
-  const workspace = await createVaultWorkspace(deps.vaultBasePath);
-  if (!workspace.ok) {
-    const msg = `Podcast failed: ${formatVaultPathError(workspace.error)}`;
+  const fail = async (reason: string): Promise<JobResult> => {
+    const msg = `Podcast failed: ${reason}`;
     await telegram.sendMessage(job.chatId, msg).catch(console.error);
     return jobResultErr(msg);
-  }
-  const note = await resolveNotePath(workspace.value, job.notePath);
-  if (!note.ok) {
-    const msg = `Podcast failed: ${note.error}`;
-    await telegram.sendMessage(job.chatId, msg).catch(console.error);
-    return jobResultErr(msg);
-  }
+  };
 
-  const content = await readFile(note.value.filePath, 'utf-8');
-  if (content.trim().length === 0) {
-    const msg = `Podcast failed: note is empty — "${job.notePath}"`;
-    await telegram.sendMessage(job.chatId, msg).catch(console.error);
-    return jobResultErr(msg);
-  }
+  const source = await loadPodcastSource(deps.vaultBasePath, job.notePath);
+  if (!source.ok) return fail(source.error);
+  const { note, content } = source.value;
 
-  // 2. Send progress
   await telegram
-    .sendMessage(job.chatId, `Generating ${formatLabel} podcast for: ${note.value.title}...`)
+    .sendMessage(job.chatId, `Generating ${formatLabel} podcast for: ${note.title}...`)
     .catch(console.error);
 
-  // 3. Create notebook
-  const nbResult = await notebookLM.createNotebook(`Podcast: ${note.value.title}`);
-  if (!nbResult.ok) {
-    const msg = `Podcast failed: could not create notebook — ${nbResult.error.message}`;
-    await telegram.sendMessage(job.chatId, msg).catch(console.error);
-    return jobResultErr(msg);
+  const generated = await generatePodcastAudio(notebookLM, job, note.title, content, formatLabel);
+  if (!generated.ok) {
+    const failure = generated.error;
+    if (failure.kind === 'audio-not-generated') {
+      console.error(
+        `[podcast] audio generation failed after creating notebook ${failure.notebookId}: ${failure.reason}`,
+      );
+    }
+    return fail(failure.reason);
   }
-  const notebookId = nbResult.value;
+  const notebookId = generated.value;
 
-  // 4. Add text source
-  const addResult = await notebookLM.addSourceText(notebookId, note.value.title, content);
-  if (!addResult.ok) {
-    const msg = `Podcast failed: could not add note as source — ${addResult.error.message}`;
-    await telegram.sendMessage(job.chatId, msg).catch(console.error);
-    return jobResultErr(msg);
-  }
-
-  // 5. Wait for processing
-  const procResult = await notebookLM.waitForProcessing(notebookId, SOURCE_PROCESSING_TIMEOUT_MS);
-  if (!procResult.ok) {
-    const msg = `Podcast failed: source processing timed out — ${procResult.error.message}`;
-    await telegram.sendMessage(job.chatId, msg).catch(console.error);
-    return jobResultErr(msg);
-  }
-
-  // 6. Create audio overview
-  const audioResult = await notebookLM.createAudioOverview(notebookId, {
-    instructions: `Create a ${formatLabel.toLowerCase()} audio overview about: ${note.value.title}`,
-    customization: { format: job.audioFormat, length: job.audioLength },
-  });
-  if (!audioResult.ok) {
-    const msg = `Podcast failed: audio creation failed — ${audioResult.error.message}`;
-    await telegram.sendMessage(job.chatId, msg).catch(console.error);
-    return jobResultErr(msg);
-  }
-  const artifactId = audioResult.value;
-
-  // 7. Wait for artifact
-  const artifactResult = await notebookLM.waitForArtifact(
-    artifactId,
-    notebookId,
-    ARTIFACT_TIMEOUT_MS,
-  );
-  if (!artifactResult.ok) {
-    const msg = `Podcast failed: artifact generation timed out — ${artifactResult.error.message}`;
-    await telegram.sendMessage(job.chatId, msg).catch(console.error);
-    return jobResultErr(msg);
-  }
-  if (artifactResult.value === 'failed') {
-    const msg = `Podcast failed: NotebookLM could not generate audio for "${note.value.title}"`;
-    await telegram.sendMessage(job.chatId, msg).catch(console.error);
-    return jobResultErr(msg);
-  }
-
-  // 8. Share notebook
   const shareResult = await notebookLM.shareNotebook(notebookId);
   const shareUrl = shareResult.ok
     ? shareResult.value
     : `https://notebooklm.google.com/notebook/${notebookId}`;
 
-  // 9. Link podcast back to source note. The audio already exists and is
-  // shared, so a link-back failure must NOT fail the job — but it also must not
-  // be swallowed: previously the rejection was logged and the user was told
-  // "ready" with no hint the note was never updated. Capture the outcome and
-  // surface it in the notification so a silent vault-write blip is visible.
-  const linkBack = await appendPodcastLinkToResolvedFile(
-    note.value.filePath,
-    formatLabel,
-    shareUrl,
-  ).then(
-    () => ({ ok: true as const }),
-    (e: unknown) => ({ ok: false as const, error: e instanceof Error ? e.message : String(e) }),
-  );
-  if (!linkBack.ok) {
-    console.error(`[podcast] link-back to ${note.value.filePath} failed:`, linkBack.error);
-  }
-
-  // 10. Notify
-  const linkBackNote = linkBack.ok
-    ? ''
-    : "\n\n⚠️ Heads up: I couldn't add the podcast link back into the source note.";
-  const successMsg = `Podcast ready: ${note.value.title}\nFormat: ${formatLabel}\n\n${shareUrl}${linkBackNote}`;
+  const linkedBack = await linkPodcastBack(note.filePath, formatLabel, shareUrl);
+  const successMsg = formatPodcastReady(note.title, formatLabel, shareUrl, linkedBack);
   await telegram.sendMessage(job.chatId, successMsg);
 
   return jobResultOk(successMsg);
+}
+
+type PodcastSource = { readonly note: ResolvedPodcastNote; readonly content: string };
+
+/** Resolve the note through the configured, canonical vault root and read it. */
+async function loadPodcastSource(
+  vaultBasePath: string,
+  notePath: VaultRelativePath,
+): Promise<Result<PodcastSource, string>> {
+  const workspace = await createVaultWorkspace(vaultBasePath);
+  if (!workspace.ok) return err(formatVaultPathError(workspace.error));
+  const note = await resolveNotePath(workspace.value, notePath);
+  if (!note.ok) return err(note.error);
+
+  const content = await readFile(note.value.filePath, 'utf-8');
+  if (content.trim().length === 0) return err(`note is empty — "${notePath}"`);
+  return ok({ note: note.value, content });
+}
+
+/** The audio a podcast job asks NotebookLM for. */
+type PodcastAudioOptions = Pick<PodcastJob, 'audioFormat' | 'audioLength'>;
+
+/**
+ * Why no audio was generated. Once the notebook exists the failure names it:
+ * the notebook outlives the job, so it must be traceable.
+ */
+type PodcastFailure =
+  | { readonly kind: 'notebook-not-created'; readonly reason: string }
+  | { readonly kind: 'audio-not-generated'; readonly notebookId: string; readonly reason: string };
+
+/**
+ * Turn the note into a finished NotebookLM audio overview: notebook → text
+ * source → processing → audio → artifact. Returns the notebook id to share.
+ */
+async function generatePodcastAudio(
+  notebookLM: NotebookLMAdapter,
+  audio: PodcastAudioOptions,
+  title: string,
+  content: string,
+  formatLabel: string,
+): Promise<Result<string, PodcastFailure>> {
+  const nbResult = await notebookLM.createNotebook(`Podcast: ${title}`);
+  if (!nbResult.ok) {
+    const reason = `could not create notebook — ${nbResult.error.message}`;
+    return err({ kind: 'notebook-not-created', reason });
+  }
+  const notebookId = nbResult.value;
+  const notGenerated = (reason: string) =>
+    err<PodcastFailure>({ kind: 'audio-not-generated', notebookId, reason });
+
+  const addResult = await notebookLM.addSourceText(notebookId, title, content);
+  if (!addResult.ok)
+    return notGenerated(`could not add note as source — ${addResult.error.message}`);
+
+  const procResult = await notebookLM.waitForProcessing(notebookId, SOURCE_PROCESSING_TIMEOUT_MS);
+  if (!procResult.ok)
+    return notGenerated(`source processing timed out — ${procResult.error.message}`);
+
+  const audioResult = await notebookLM.createAudioOverview(notebookId, {
+    instructions: `Create a ${formatLabel.toLowerCase()} audio overview about: ${title}`,
+    customization: { format: audio.audioFormat, length: audio.audioLength },
+  });
+  if (!audioResult.ok) return notGenerated(`audio creation failed — ${audioResult.error.message}`);
+
+  const artifactResult = await notebookLM.waitForArtifact(
+    audioResult.value,
+    notebookId,
+    ARTIFACT_TIMEOUT_MS,
+  );
+  if (!artifactResult.ok)
+    return notGenerated(`artifact generation timed out — ${artifactResult.error.message}`);
+  if (artifactResult.value === 'failed')
+    return notGenerated(`NotebookLM could not generate audio for "${title}"`);
+  return ok(notebookId);
+}
+
+/**
+ * Link the podcast back into its source note. The audio already exists and is
+ * shared, so a link-back failure must NOT fail the job — but it must not be
+ * swallowed either: the outcome is surfaced in the notification so a silent
+ * vault-write blip is visible.
+ */
+async function linkPodcastBack(
+  filePath: VaultFilePath,
+  formatLabel: string,
+  shareUrl: string,
+): Promise<boolean> {
+  try {
+    await appendPodcastLinkToResolvedFile(filePath, formatLabel, shareUrl);
+    return true;
+  } catch (e) {
+    console.error(
+      `[podcast] link-back to ${filePath} failed:`,
+      e instanceof Error ? e.message : String(e),
+    );
+    return false;
+  }
+}
+
+function formatPodcastReady(
+  title: string,
+  formatLabel: string,
+  shareUrl: string,
+  linkedBack: boolean,
+): string {
+  const linkBackNote = linkedBack
+    ? ''
+    : "\n\n⚠️ Heads up: I couldn't add the podcast link back into the source note.";
+  return `Podcast ready: ${title}\nFormat: ${formatLabel}\n\n${shareUrl}${linkBackNote}`;
 }

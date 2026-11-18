@@ -15,50 +15,49 @@
  * Requires: GARMIN_EMAIL and GARMIN_PASSWORD env vars
  */
 
-import { existsSync } from 'node:fs';
-import { chmod } from 'node:fs/promises';
-import { join } from 'node:path';
-import { GarminConnect, type GarminWorkoutUploadPayload } from '@gooin/garmin-connect';
+import type { GarminWorkoutUploadPayload } from '@gooin/garmin-connect';
+import { type Result, err, ok } from '../src/core/types.js';
+import { connectGarmin, exportGarminTokens, requireGarminCredentials } from './garmin-session.js';
 
-// --- Auth (same pattern as garmin-fetch.ts) ---
+// --- Input ---
 
-async function authenticate(): Promise<GarminConnect> {
-  const email = process.env.GARMIN_EMAIL;
-  const password = process.env.GARMIN_PASSWORD;
-
-  if (!email || !password) {
-    console.error('[FATAL] GARMIN_EMAIL and GARMIN_PASSWORD env vars required');
-    process.exit(1);
+async function readStdin(): Promise<string> {
+  const chunks: string[] = [];
+  const reader = Bun.stdin.stream().getReader();
+  const decoder = new TextDecoder();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(decoder.decode(value, { stream: true }));
   }
+  return chunks.join('');
+}
 
-  const tokenDir = join(process.env.HOME ?? '/home/peterstorm', '.cache', 'garmin');
-  const client = new GarminConnect({ username: email, password: password });
-
-  const hasTokens = existsSync(join(tokenDir, 'oauth2_token.json'));
-  if (hasTokens) {
-    console.error('[INFO] Loading cached tokens...');
-    try {
-      await client.loadTokenByFile(tokenDir);
-      await client.getUserProfile();
-      console.error('[INFO] Cached tokens valid');
-    } catch {
-      console.error('[INFO] Cached tokens expired, logging in fresh...');
-      await client.login(email, password);
-      await client.exportTokenToFile(tokenDir);
-      await chmod(join(tokenDir, 'oauth1_token.json'), 0o600);
-      await chmod(join(tokenDir, 'oauth2_token.json'), 0o600);
-      console.error('[INFO] Login successful, tokens cached');
-    }
-  } else {
-    console.error('[INFO] No cached tokens, logging in...');
-    await client.login(email, password);
-    await client.exportTokenToFile(tokenDir);
-    await chmod(join(tokenDir, 'oauth1_token.json'), 0o600);
-    await chmod(join(tokenDir, 'oauth2_token.json'), 0o600);
-    console.error('[INFO] Login successful, tokens cached');
+/**
+ * The stdin workout, forwarded to Garmin verbatim: only workoutName and
+ * workoutSegments are checked here, and Garmin's API is the validator of record
+ * for the rest. That trust is this function's one cast; callers get the upload
+ * payload type.
+ */
+function parseWorkout(stdinText: string): Result<GarminWorkoutUploadPayload, string> {
+  if (!stdinText.trim()) return err('No workout JSON provided on stdin');
+  let raw: unknown;
+  try {
+    raw = JSON.parse(stdinText);
+  } catch (e) {
+    return err(`Invalid JSON on stdin: ${e instanceof Error ? e.message : String(e)}`);
   }
-
-  return client;
+  if (
+    typeof raw === 'object' &&
+    raw !== null &&
+    'workoutName' in raw &&
+    raw.workoutName &&
+    'workoutSegments' in raw &&
+    raw.workoutSegments
+  ) {
+    return ok(raw as GarminWorkoutUploadPayload);
+  }
+  return err('Workout JSON must include workoutName and workoutSegments');
 }
 
 // --- Main ---
@@ -70,42 +69,20 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Read workout JSON from stdin
-  const chunks: string[] = [];
-  const reader = Bun.stdin.stream().getReader();
-  const decoder = new TextDecoder();
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(decoder.decode(value, { stream: true }));
-  }
-  const stdinText = chunks.join('');
-
-  if (!stdinText.trim()) {
-    console.error('[FATAL] No workout JSON provided on stdin');
+  const parsed = parseWorkout(await readStdin());
+  if (!parsed.ok) {
+    console.error(`[FATAL] ${parsed.error}`);
     process.exit(1);
   }
+  const workout = parsed.value;
 
-  let workout: Record<string, unknown>;
-  try {
-    workout = JSON.parse(stdinText);
-  } catch (e) {
-    console.error(`[FATAL] Invalid JSON on stdin: ${e instanceof Error ? e.message : String(e)}`);
-    process.exit(1);
-  }
-
-  if (!workout.workoutName || !workout.workoutSegments) {
-    console.error('[FATAL] Workout JSON must include workoutName and workoutSegments');
-    process.exit(1);
-  }
-
-  const client = await authenticate();
+  const client = await connectGarmin(requireGarminCredentials(), {
+    narrate: (line) => console.error(line),
+  });
 
   // Create the workout
   console.error(`[INFO] Creating workout: ${workout.workoutName}...`);
-  // The stdin JSON is forwarded to Garmin verbatim: only workoutName and
-  // workoutSegments are checked above, and Garmin's API validates the rest.
-  const created = await client.addWorkout(workout as unknown as GarminWorkoutUploadPayload);
+  const created = await client.addWorkout(workout);
   const workoutId = created.workoutId;
   console.error(`[INFO] Workout created with ID: ${workoutId}`);
 
@@ -116,10 +93,7 @@ async function main(): Promise<void> {
   console.error('[INFO] Workout scheduled successfully');
 
   // Export tokens (they may have refreshed)
-  const tokenDir = join(process.env.HOME ?? '/home/peterstorm', '.cache', 'garmin');
-  await client.exportTokenToFile(tokenDir);
-  await chmod(join(tokenDir, 'oauth1_token.json'), 0o600);
-  await chmod(join(tokenDir, 'oauth2_token.json'), 0o600);
+  await exportGarminTokens(client);
 
   // Output result to stdout
   const result = {

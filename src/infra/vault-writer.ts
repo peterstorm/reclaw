@@ -11,6 +11,7 @@
 
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
+import { errorMessage } from '../core/error-message.js';
 import { err, ok } from '../core/types.js';
 import type { Result } from '../core/types.js';
 import type { VaultNote } from '../core/vault-content.js';
@@ -63,6 +64,12 @@ type PreparedVaultNote = {
   readonly absolutePath: VaultFilePath;
 };
 
+/** Open the vault rooted at basePath, its path error already formatted. */
+async function openWorkspace(basePath: string): Promise<Result<VaultWorkspace, string>> {
+  const workspace = await createVaultWorkspace(basePath);
+  return workspace.ok ? workspace : err(formatVaultPathError(workspace.error));
+}
+
 /** Write one already-preflighted note. */
 async function writeVaultNote(prepared: PreparedVaultNote): Promise<void> {
   await fs.mkdir(path.dirname(prepared.absolutePath), { recursive: true });
@@ -93,7 +100,7 @@ function findHubPath(notes: readonly PreparedVaultNote[]): VaultFilePath | null 
 
 /**
  * Attempt to write all notes with up to maxRetries attempts.
- * Returns the number of errors on the last attempt, or throws if exhausted.
+ * Resolves once one attempt writes every note; throws when all attempts fail.
  */
 async function writeNotesWithRetry(
   notes: readonly PreparedVaultNote[],
@@ -126,84 +133,75 @@ async function writeNotesWithRetry(
   }
 
   // Exhausted retries
-  const errorMsg = lastError instanceof Error ? lastError.message : String(lastError);
-  throw new Error(`Failed to write vault notes after ${maxRetries} attempts: ${errorMsg}`);
+  throw new Error(
+    `Failed to write vault notes after ${maxRetries} attempts: ${errorMessage(lastError)}`,
+  );
 }
+
+// ─── Adapter operations ───────────────────────────────────────────────────────
+
+const writeNotes: VaultWriterAdapter['writeNotes'] = async (notes, basePath) => {
+  if (notes.length === 0) {
+    return err('writeNotes called with empty notes array');
+  }
+
+  // Guard: verify hub note exists BEFORE any I/O.
+  if (!notes.some((note) => note.relativePath.endsWith('_index.md'))) {
+    return err('No hub note (_index.md) found in notes array');
+  }
+
+  const workspace = await openWorkspace(basePath);
+  if (!workspace.ok) return workspace;
+  const prepared = await prepareVaultNotes(notes, workspace.value);
+  if (!prepared.ok) return prepared;
+  const hubPath = findHubPath(prepared.value);
+  if (hubPath === null) return err('No hub note (_index.md) found in prepared notes');
+
+  try {
+    await writeNotesWithRetry(prepared.value, MAX_WRITE_RETRIES);
+    return ok(hubPath);
+  } catch (e) {
+    return err(`Vault write failed: ${errorMessage(e)}`);
+  }
+};
+
+const writeEmergencyNote: VaultWriterAdapter['writeEmergencyNote'] = async (note, basePath) => {
+  const workspace = await openWorkspace(basePath);
+  if (!workspace.ok) return workspace;
+  const prepared = await prepareVaultNotes([note], workspace.value);
+  if (!prepared.ok) return prepared;
+  const target = prepared.value[0];
+  if (target === undefined) return err('Emergency note preparation produced no target');
+
+  try {
+    await writeVaultNote(target);
+    return ok(target.absolutePath);
+  } catch (e) {
+    return err(`Emergency note write failed: ${errorMessage(e)}`);
+  }
+};
+
+const appendToNote: VaultWriterAdapter['appendToNote'] = async (
+  absolutePath,
+  content,
+  basePath,
+) => {
+  const workspace = await openWorkspace(basePath);
+  if (!workspace.ok) return workspace;
+  const target = await workspace.value.resolveExistingAbsoluteFile(absolutePath);
+  if (!target.ok) return err(formatVaultPathError(target.error));
+
+  try {
+    await fs.appendFile(target.value, content, 'utf8');
+    return ok(undefined);
+  } catch (e) {
+    return err(`Failed to append to note: ${errorMessage(e)}`);
+  }
+};
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
 
-/**
- * Create a VaultWriterAdapter that writes notes to the real filesystem.
- *
- */
+/** Create a VaultWriterAdapter that writes notes to the real filesystem. */
 export function createVaultWriter(): VaultWriterAdapter {
-  const writeNotes = async (
-    notes: readonly VaultNote[],
-    basePath: string,
-  ): Promise<Result<string, string>> => {
-    if (notes.length === 0) {
-      return err('writeNotes called with empty notes array');
-    }
-
-    // Guard: verify hub note exists BEFORE any I/O.
-    if (!notes.some((note) => note.relativePath.endsWith('_index.md'))) {
-      return err('No hub note (_index.md) found in notes array');
-    }
-
-    const workspace = await createVaultWorkspace(basePath);
-    if (!workspace.ok) return err(formatVaultPathError(workspace.error));
-    const prepared = await prepareVaultNotes(notes, workspace.value);
-    if (!prepared.ok) return prepared;
-    const hubPath = findHubPath(prepared.value);
-    if (hubPath === null) return err('No hub note (_index.md) found in prepared notes');
-
-    try {
-      await writeNotesWithRetry(prepared.value, MAX_WRITE_RETRIES);
-      return ok(hubPath);
-    } catch (e) {
-      const errorMsg = e instanceof Error ? e.message : String(e);
-      return err(`Vault write failed: ${errorMsg}`);
-    }
-  };
-
-  const writeEmergencyNote = async (
-    note: VaultNote,
-    basePath: string,
-  ): Promise<Result<string, string>> => {
-    const workspace = await createVaultWorkspace(basePath);
-    if (!workspace.ok) return err(formatVaultPathError(workspace.error));
-    const prepared = await prepareVaultNotes([note], workspace.value);
-    if (!prepared.ok) return prepared;
-    const target = prepared.value[0];
-    if (target === undefined) return err('Emergency note preparation produced no target');
-
-    try {
-      await writeVaultNote(target);
-      return ok(target.absolutePath);
-    } catch (e) {
-      const errorMsg = e instanceof Error ? e.message : String(e);
-      return err(`Emergency note write failed: ${errorMsg}`);
-    }
-  };
-
-  const appendToNote = async (
-    absolutePath: string,
-    content: string,
-    basePath: string,
-  ): Promise<Result<void, string>> => {
-    const workspace = await createVaultWorkspace(basePath);
-    if (!workspace.ok) return err(formatVaultPathError(workspace.error));
-    const target = await workspace.value.resolveExistingAbsoluteFile(absolutePath);
-    if (!target.ok) return err(formatVaultPathError(target.error));
-
-    try {
-      await fs.appendFile(target.value, content, 'utf8');
-      return ok(undefined);
-    } catch (e) {
-      const errorMsg = e instanceof Error ? e.message : String(e);
-      return err(`Failed to append to note: ${errorMsg}`);
-    }
-  };
-
   return { writeNotes, writeEmergencyNote, appendToNote };
 }

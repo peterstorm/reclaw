@@ -16,58 +16,25 @@
  * Requires: GARMIN_EMAIL and GARMIN_PASSWORD env vars
  */
 
-import { existsSync } from 'node:fs';
-import { chmod } from 'node:fs/promises';
-import { join } from 'node:path';
-import { GarminConnect } from '@gooin/garmin-connect';
+import type { GarminConnect } from '@gooin/garmin-connect';
+import { connectGarmin, exportGarminTokens, requireGarminCredentials } from './garmin-session.js';
 
-async function authenticate(): Promise<GarminConnect> {
-  const email = process.env.GARMIN_EMAIL;
-  const password = process.env.GARMIN_PASSWORD;
-  if (!email || !password) {
-    console.error('[FATAL] GARMIN_EMAIL and GARMIN_PASSWORD env vars required');
-    process.exit(1);
-  }
-  const tokenDir = join(process.env.HOME ?? '/home/peterstorm', '.cache', 'garmin');
-  const client = new GarminConnect({ username: email, password: password });
-  if (existsSync(join(tokenDir, 'oauth2_token.json'))) {
-    try {
-      await client.loadTokenByFile(tokenDir);
-      await client.getUserProfile();
-    } catch {
-      await client.login(email, password);
-      await client.exportTokenToFile(tokenDir);
-      await chmod(join(tokenDir, 'oauth1_token.json'), 0o600);
-      await chmod(join(tokenDir, 'oauth2_token.json'), 0o600);
-    }
-  } else {
-    await client.login(email, password);
-    await client.exportTokenToFile(tokenDir);
-    await chmod(join(tokenDir, 'oauth1_token.json'), 0o600);
-    await chmod(join(tokenDir, 'oauth2_token.json'), 0o600);
-  }
-  return client;
-}
+/** Garmin's id for one scheduling of a workout: the calendar item's `id`, or its `workoutScheduleId`. */
+type ScheduleId = string | number;
 
-async function main(): Promise<void> {
-  const [workoutIdArg, fromDate, toDate] = process.argv.slice(2);
-  if (!workoutIdArg || !fromDate || !toDate) {
-    console.error('Usage: bun garmin-reschedule-workout.ts <workoutId> <fromDate> <toDate>');
-    process.exit(1);
-  }
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(fromDate) || !/^\d{4}-\d{2}-\d{2}$/.test(toDate)) {
-    console.error('[FATAL] Dates must be YYYY-MM-DD');
-    process.exit(1);
-  }
+/** The scheduling being moved: its id and the calendar item's title (as Garmin sent it, or null). */
+type Schedule = { readonly title: unknown; readonly scheduleId: ScheduleId };
 
-  const client = await authenticate();
-  const rawClient = (
-    client as unknown as {
-      client: { get: (u: string) => Promise<unknown>; delete: (u: string) => Promise<unknown> };
-    }
-  ).client;
+/** A present, non-empty id; null for anything else. */
+const parseScheduleId = (value: unknown): ScheduleId | null =>
+  (typeof value === 'number' || typeof value === 'string') && value ? value : null;
 
-  // 1. Find the scheduleId for this workout on fromDate via the calendar
+/** The calendar item scheduling `workoutId` on `fromDate`; exits when there is none. */
+async function findSchedule(
+  client: GarminConnect,
+  workoutIdArg: string,
+  fromDate: string,
+): Promise<Schedule> {
   const [year, month] = fromDate.split('-').map(Number) as [number, number];
   console.error(`[INFO] Fetching calendar for ${year}-${String(month).padStart(2, '0')}...`);
   const calendar = (await client.getCalendar(year, month - 1)) as {
@@ -95,19 +62,32 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const scheduleId = match.id ?? match.workoutScheduleId;
-  if (!scheduleId) {
+  const scheduleId = parseScheduleId(match.id ?? match.workoutScheduleId);
+  if (scheduleId === null) {
     console.error('[FATAL] No schedule id found on calendar item:', JSON.stringify(match, null, 2));
     process.exit(1);
   }
   console.error(`[INFO] Found schedule id: ${scheduleId}`);
+  return { title: match.title ?? null, scheduleId };
+}
 
-  // 2. Delete the existing schedule
+/** Delete the old schedule, then schedule the same workout on `toDate`; returns the new schedule id. */
+async function moveSchedule(
+  client: GarminConnect,
+  scheduleId: ScheduleId,
+  workoutIdArg: string,
+  toDate: string,
+): Promise<number | undefined> {
+  const rawClient = (
+    client as unknown as {
+      client: { get: (u: string) => Promise<unknown>; delete: (u: string) => Promise<unknown> };
+    }
+  ).client;
+
   console.error(`[INFO] Deleting schedule ${scheduleId}...`);
   await rawClient.delete(`https://connectapi.garmin.com/workout-service/schedule/${scheduleId}`);
   console.error('[INFO] Schedule deleted');
 
-  // 3. Re-schedule to new date
   console.error(`[INFO] Scheduling workout ${workoutIdArg} for ${toDate}...`);
   const targetDate = new Date(`${toDate}T00:00:00`);
   const scheduled = (await client.scheduleWorkout(
@@ -117,23 +97,39 @@ async function main(): Promise<void> {
   console.error(
     `[INFO] Rescheduled successfully. New schedule id: ${scheduled.workoutScheduleId ?? '(unknown)'}`,
   );
+  return scheduled.workoutScheduleId;
+}
+
+async function main(): Promise<void> {
+  const [workoutIdArg, fromDate, toDate] = process.argv.slice(2);
+  if (!workoutIdArg || !fromDate || !toDate) {
+    console.error('Usage: bun garmin-reschedule-workout.ts <workoutId> <fromDate> <toDate>');
+    process.exit(1);
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fromDate) || !/^\d{4}-\d{2}-\d{2}$/.test(toDate)) {
+    console.error('[FATAL] Dates must be YYYY-MM-DD');
+    process.exit(1);
+  }
+
+  const client = await connectGarmin(requireGarminCredentials(), { narrate: () => {} });
+  // 1. Find the scheduleId for this workout on fromDate via the calendar
+  const { title, scheduleId } = await findSchedule(client, workoutIdArg, fromDate);
+  // 2. Delete the existing schedule, 3. re-schedule to the new date
+  const newScheduleId = await moveSchedule(client, scheduleId, workoutIdArg, toDate);
 
   // Export tokens (they may have refreshed)
-  const tokenDir = join(process.env.HOME ?? '/home/peterstorm', '.cache', 'garmin');
-  await client.exportTokenToFile(tokenDir);
-  await chmod(join(tokenDir, 'oauth1_token.json'), 0o600);
-  await chmod(join(tokenDir, 'oauth2_token.json'), 0o600);
+  await exportGarminTokens(client);
 
   console.log(
     JSON.stringify(
       {
         success: true,
         workoutId: workoutIdArg,
-        title: match.title ?? null,
+        title,
         from: fromDate,
         to: toDate,
         oldScheduleId: scheduleId,
-        newScheduleId: scheduled.workoutScheduleId ?? null,
+        newScheduleId: newScheduleId ?? null,
       },
       null,
       2,

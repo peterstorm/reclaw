@@ -248,7 +248,7 @@ const STATE_ORDER: ReadonlyArray<ResearchState['kind']> = [
  * The initial state is `deriving_topic`. The topic and topicSlug are derived
  * via LLM during that state and checkpointed into context before proceeding.
  */
-export function makeResearchJobData(params: {
+type ResearchJobParams = {
   prompt: string;
   /** When the job was accepted; the shell supplies the clock. */
   now: Date;
@@ -256,7 +256,9 @@ export function makeResearchJobData(params: {
   chatId: number;
   generateAudio?: boolean;
   generateVideo?: boolean;
-}): Result<ResearchJobData, string> {
+};
+
+export function makeResearchJobData(params: ResearchJobParams): Result<ResearchJobData, string> {
   if (params.prompt.trim().length === 0) {
     return err('Research prompt must not be empty.');
   }
@@ -264,9 +266,18 @@ export function makeResearchJobData(params: {
     return err(`chatId must be an integer, got: ${params.chatId}`);
   }
 
-  const startedAt = params.now.toISOString();
+  return ok({
+    prompt: params.prompt,
+    sourceHints: params.sourceHints,
+    chatId: params.chatId,
+    state: { kind: 'deriving_topic' },
+    context: initialContext(params),
+  });
+}
 
-  const context: ResearchContext = {
+/** A fresh job's context: the request itself, nothing derived or gathered yet. */
+function initialContext(params: ResearchJobParams): ResearchContext {
+  return {
     topic: '',
     prompt: params.prompt,
     topicSlug: null,
@@ -291,18 +302,8 @@ export function makeResearchJobData(params: {
     lastError: null,
     trace: [],
     chatsUsed: 0,
-    startedAt,
+    startedAt: params.now.toISOString(),
   };
-
-  const jobData: ResearchJobData = {
-    prompt: params.prompt,
-    sourceHints: params.sourceHints,
-    chatId: params.chatId,
-    state: { kind: 'deriving_topic' },
-    context,
-  };
-
-  return ok(jobData);
 }
 
 // ─── State Helpers ────────────────────────────────────────────────────────────

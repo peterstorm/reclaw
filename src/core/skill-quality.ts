@@ -12,7 +12,7 @@
  * surface free of operational noise.
  */
 
-import type { SkillId } from './types.js';
+import { type SkillId, assertNever } from './types.js';
 
 // ─── Status ──────────────────────────────────────────────────────────────────
 
@@ -87,6 +87,8 @@ function describe(signal: SkillQualitySignal): string {
     case 'success':
     case 'validity_expired':
       return `${id} ${signal.status} at ${at}`;
+    default:
+      return assertNever(signal.status);
   }
 }
 

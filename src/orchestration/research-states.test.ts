@@ -4,17 +4,13 @@
 // All infra adapters are mocked — no real SDK/Redis/filesystem calls.
 
 import { describe, expect, it, vi } from 'vitest';
-import type {
-  ChatResponse,
-  ResearchContext,
-  ResearchState,
-  SourceMeta,
-} from '../core/research-types.js';
-import type { NotebookLMAdapter } from '../infra/notebooklm-client.js';
-import type { QuotaTracker } from '../infra/quota-tracker.js';
-import type { ResearchLLMAdapter } from '../infra/research-llm-client.js';
-import type { TelegramAdapter } from '../infra/telegram.js';
-import type { VaultWriterAdapter } from '../infra/vault-writer.js';
+import type { ChatResponse, ResearchContext, ResearchState } from '../core/research-types.js';
+import {
+  type ResearchDepsScript,
+  makeMockChatResponse,
+  makeMockResearchDeps,
+  makeMockSource,
+} from './__fixtures__/research.js';
 import {
   type ResearchDeps,
   buildCortexSummary,
@@ -58,111 +54,22 @@ const makeMockContext = (overrides: Partial<ResearchContext> = {}): ResearchCont
   ...overrides,
 });
 
-const makeMockSource = (overrides: Partial<SourceMeta> = {}): SourceMeta => ({
-  id: 'src-1',
-  title: 'AI Agents Overview',
-  url: 'https://example.com/ai-agents',
-  sourceType: 'web',
-  ...overrides,
-});
-
-const makeMockChatResponse = (overrides: Partial<ChatResponse> = {}): ChatResponse => ({
-  text: 'This is a detailed answer about AI agents with lots of information and context. It covers autonomous reasoning and decision-making.',
-  citations: [1, 2],
-  rawData: null,
-  ...overrides,
-});
-
 // ─── Mock factory ─────────────────────────────────────────────────────────────
 
-function makeMockDeps(overrides: Partial<ResearchDeps> = {}): ResearchDeps {
-  const notebookLM: NotebookLMAdapter = {
-    createNotebook: vi.fn().mockResolvedValue({ ok: true, value: 'nb-001' }),
-    searchWeb: vi.fn().mockResolvedValue({
-      ok: true,
-      value: {
-        sessionId: 'session-001',
-        webSources: [
-          { title: 'Source 1', url: 'https://example.com/1' },
-          { title: 'Source 2', url: 'https://example.com/2' },
-        ],
-      },
-    }),
-    addDiscoveredSources: vi.fn().mockResolvedValue({ ok: true, value: ['id-1', 'id-2'] }),
-    addSourceUrl: vi.fn().mockResolvedValue({ ok: true, value: 'id-hint-1' }),
-    addSourceText: vi.fn().mockResolvedValue({ ok: true, value: 'id-text-1' }),
-    addYouTubeSource: vi.fn().mockResolvedValue({ ok: true, value: 'id-yt-1' }),
-    waitForProcessing: vi.fn().mockResolvedValue({ ok: true, value: undefined }),
-    chat: vi.fn().mockResolvedValue({ ok: true, value: makeMockChatResponse() }),
-    listSources: vi.fn().mockResolvedValue({
-      ok: true,
-      value: [makeMockSource()],
-    }),
-    createAudioOverview: vi.fn().mockResolvedValue({ ok: true, value: 'audio-001' }),
-    createVideoOverview: vi.fn().mockResolvedValue({ ok: true, value: 'video-001' }),
-    waitForArtifact: vi.fn().mockResolvedValue({ ok: true, value: 'ready' }),
-    shareNotebook: vi
-      .fn()
-      .mockResolvedValue({ ok: true, value: 'https://notebooklm.google.com/notebook/shared-123' }),
-    dispose: vi.fn().mockResolvedValue(undefined),
-  };
+const STATES_SCRIPT: ResearchDepsScript = {
+  webSources: [
+    { title: 'Source 1', url: 'https://example.com/1' },
+    { title: 'Source 2', url: 'https://example.com/2' },
+  ],
+  discoveredSourceIds: ['id-1', 'id-2'],
+  derivedTopic: 'AI Agents Overview',
+  reformulatedQuery: 'AI autonomous agents',
+  rephrasedQuestion: 'Rephrased question?',
+  claudeUrls: ['https://claude-found.com/article1', 'https://claude-found.com/article2'],
+};
 
-  const researchLLM: ResearchLLMAdapter = {
-    deriveTopic: vi.fn().mockResolvedValue('AI Agents Overview'),
-    generateQuestions: vi.fn().mockResolvedValue({
-      ok: true,
-      value: ['Q1?', 'Q2?', 'Q3?'],
-    }),
-    reformulateQuery: vi.fn().mockResolvedValue({
-      ok: true,
-      value: 'AI autonomous agents',
-    }),
-    rephraseQuestion: vi.fn().mockResolvedValue({
-      ok: true,
-      value: 'Rephrased question?',
-    }),
-    discoverSourceUrls: vi.fn().mockResolvedValue({
-      ok: true,
-      value: ['https://claude-found.com/article1', 'https://claude-found.com/article2'],
-    }),
-  };
-
-  const vaultWriter: VaultWriterAdapter = {
-    writeNotes: vi
-      .fn()
-      .mockResolvedValue({ ok: true, value: '/vault/research/runs/ai-agents/_index.md' }),
-    writeEmergencyNote: vi
-      .fn()
-      .mockResolvedValue({ ok: true, value: '/vault/research/runs/ai-agents/_emergency.md' }),
-    appendToNote: vi.fn().mockResolvedValue({ ok: true, value: undefined }),
-  };
-
-  const telegram: TelegramAdapter = {
-    start: vi.fn().mockResolvedValue(undefined),
-    stop: vi.fn().mockResolvedValue(undefined),
-    sendMessage: vi.fn().mockResolvedValue(1),
-    editMessage: vi.fn().mockResolvedValue(undefined),
-    sendChunkedMessage: vi.fn().mockResolvedValue([1]),
-    onMessage: vi.fn(),
-  };
-
-  const quotaTracker: QuotaTracker = {
-    increment: vi.fn().mockResolvedValue(undefined),
-    getRemaining: vi.fn().mockResolvedValue(45),
-    hasQuota: vi.fn().mockResolvedValue(true),
-    getUsed: vi.fn().mockResolvedValue(5),
-  };
-
-  return {
-    notebookLM,
-    researchLLM,
-    vaultWriter,
-    telegram,
-    quotaTracker,
-    vaultBasePath: '/vault',
-    ...overrides,
-  };
-}
+const makeMockDeps = (overrides: Partial<ResearchDeps> = {}): ResearchDeps =>
+  makeMockResearchDeps(STATES_SCRIPT, overrides);
 
 // ─── creating_notebook tests ──────────────────────────────────────────────────
 

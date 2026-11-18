@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SkillRegistry } from '../core/types.js';
-import { createSkillWatcher } from './skill-watcher.js';
+import { createSettleTracker, createSkillWatcher } from './skill-watcher.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -458,5 +458,143 @@ timeout: 300
   it('stop() can be called when watcher was never started', async () => {
     const watcher = createSkillWatcher(tempDir);
     await expect(watcher.stop()).resolves.toBeUndefined();
+  });
+});
+
+// ─── Settle tracker ───────────────────────────────────────────────────────────
+
+describe('createSettleTracker', () => {
+  const DEBOUNCE_MS = 100;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Whether `promise` has resolved, after letting every queued microtask run. */
+  async function hasResolved(promise: Promise<void>): Promise<boolean> {
+    let resolved = false;
+    void promise.then(() => {
+      resolved = true;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    return resolved;
+  }
+
+  it('is ready only once the scan is complete and every pending load has run', async () => {
+    const onSettled = vi.fn();
+    const loads: string[] = [];
+    const tracker = createSettleTracker(onSettled);
+
+    tracker.schedule('a.yaml', () => loads.push('a'));
+    tracker.schedule('b.yaml', () => loads.push('b'));
+    expect(await hasResolved(tracker.ready())).toBe(false);
+
+    tracker.markScanComplete();
+    expect(await hasResolved(tracker.ready())).toBe(false);
+    expect(tracker.isSettled()).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
+    expect(loads).toEqual(['a', 'b']);
+    expect(onSettled).toHaveBeenCalledOnce();
+    expect(tracker.isSettled()).toBe(true);
+    expect(await hasResolved(tracker.ready())).toBe(true);
+  });
+
+  it('is not ready when the loads finish before the scan does', async () => {
+    const onSettled = vi.fn();
+    const tracker = createSettleTracker(onSettled);
+
+    tracker.schedule('a.yaml', () => {});
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
+    expect(onSettled).not.toHaveBeenCalled();
+    expect(await hasResolved(tracker.ready())).toBe(false);
+
+    tracker.markScanComplete();
+    expect(onSettled).toHaveBeenCalledOnce();
+    expect(await hasResolved(tracker.ready())).toBe(true);
+  });
+
+  it('settles at once when the scan completes with nothing scheduled', async () => {
+    const onSettled = vi.fn();
+    const tracker = createSettleTracker(onSettled);
+
+    tracker.markScanComplete();
+
+    expect(onSettled).toHaveBeenCalledOnce();
+    expect(await hasResolved(tracker.ready())).toBe(true);
+  });
+
+  it('runs the settle hook before ready resolves, while the last load is already visible', async () => {
+    const order: string[] = [];
+    const tracker = createSettleTracker(() => order.push('settled'));
+    void tracker.ready().then(() => order.push('ready'));
+
+    tracker.schedule('a.yaml', () => order.push('load a'));
+    tracker.markScanComplete();
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
+
+    expect(order).toEqual(['load a', 'settled', 'ready']);
+  });
+
+  it('debounces per file: a newer event replaces the pending load for its path only', async () => {
+    const loads: string[] = [];
+    const tracker = createSettleTracker(() => {});
+
+    tracker.schedule('a.yaml', () => loads.push('a1'));
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS / 2);
+    tracker.schedule('b.yaml', () => loads.push('b1'));
+    tracker.schedule('a.yaml', () => loads.push('a2'));
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
+
+    expect(loads).toEqual(['b1', 'a2']);
+  });
+
+  it('runs the settle hook once; loads after settling do not run it again', async () => {
+    const onSettled = vi.fn();
+    const tracker = createSettleTracker(onSettled);
+    tracker.markScanComplete();
+
+    tracker.schedule('a.yaml', () => {});
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
+
+    expect(onSettled).toHaveBeenCalledOnce();
+    expect(tracker.isSettled()).toBe(true);
+  });
+
+  it('releases ready without loading or settling when cancelled during startup', async () => {
+    const onSettled = vi.fn();
+    const load = vi.fn();
+    const tracker = createSettleTracker(onSettled);
+
+    tracker.schedule('a.yaml', load);
+    const ready = tracker.ready();
+    tracker.cancelAll();
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
+
+    expect(await hasResolved(ready)).toBe(true);
+    expect(load).not.toHaveBeenCalled();
+    expect(onSettled).not.toHaveBeenCalled();
+    expect(tracker.isSettled()).toBe(false);
+  });
+
+  it('still settles when a load throws, and surfaces the error', async () => {
+    const onSettled = vi.fn();
+    const loads: string[] = [];
+    const tracker = createSettleTracker(onSettled);
+
+    tracker.schedule('bad.yaml', () => {
+      throw new Error('unreadable skill');
+    });
+    tracker.schedule('good.yaml', () => loads.push('good'));
+    tracker.markScanComplete();
+
+    expect(() => vi.advanceTimersByTime(DEBOUNCE_MS)).toThrow('unreadable skill');
+    expect(loads).toEqual(['good']);
+    expect(onSettled).toHaveBeenCalledOnce();
+    expect(await hasResolved(tracker.ready())).toBe(true);
   });
 });

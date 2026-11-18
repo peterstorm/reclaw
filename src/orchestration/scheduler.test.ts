@@ -7,7 +7,7 @@ import {
   emptySkillRegistry,
   skillRegistryFromList,
 } from '../core/types.js';
-import { createScheduler, decideCatchUp, hasCycle } from './scheduler.js';
+import { type CronScheduler, createScheduler, decideCatchUp, hasCycle } from './scheduler.js';
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────
 
@@ -48,6 +48,30 @@ describe('createScheduler', () => {
     vi.useRealTimers();
     vi.clearAllMocks();
   });
+
+  /**
+   * Reconcile `skills` on real timers and wait for the async startup catch-up
+   * check (isJobKnown → isJobCompleted → decide) to settle.
+   */
+  async function reconcileAndSettleCatchUp(
+    knownFn: ReturnType<typeof vi.fn>,
+    completedFn: ReturnType<typeof vi.fn>,
+    skills: readonly SkillConfig[],
+  ): Promise<CronScheduler> {
+    vi.useRealTimers();
+    const scheduler = createScheduler(enqueueScheduled, knownFn, completedFn);
+    scheduler.reconcile(skillRegistryFromList(skills));
+    await new Promise((r) => globalThis.setTimeout(r, 50));
+    return scheduler;
+  }
+
+  /** A cron trigger ("prune") with one dependent ("librarian"). */
+  const pruneWithLibrarian = (): readonly SkillConfig[] => [
+    makeSkillConfig('prune', '* * * * *', 60),
+    makeSkillConfig('librarian', null, 60, 'prune'),
+  ];
+
+  const firstEnqueuedJob = (): ScheduledJob => enqueueScheduled.mock.calls[0]?.[0];
 
   it('returns object with reconcile, stop, getActiveJobs, resolveDependents', () => {
     const scheduler = createScheduler(enqueueScheduled, isJobKnown, isJobCompleted);
@@ -177,7 +201,7 @@ describe('createScheduler', () => {
     await Promise.resolve();
 
     expect(enqueueScheduled).toHaveBeenCalled();
-    const job: ScheduledJob = enqueueScheduled.mock.calls[0]?.[0];
+    const job = firstEnqueuedJob();
     expect(job).toBeDefined();
     expect(job.kind).toBe('scheduled');
     expect(job.skillId).toBe('minute-skill');
@@ -199,7 +223,7 @@ describe('createScheduler', () => {
     await Promise.resolve();
 
     expect(enqueueScheduled).toHaveBeenCalled();
-    const job: ScheduledJob = enqueueScheduled.mock.calls[0]?.[0];
+    const job = firstEnqueuedJob();
     const triggered = new Date(job.triggeredAt).getTime();
     const validUntil = new Date(job.validUntil).getTime();
     // validUntil should be triggeredAt + 15 minutes
@@ -294,17 +318,13 @@ describe('createScheduler', () => {
 
   describe('catch-up deduplication', () => {
     it('skips catch-up when trigger already fired and completed (no dependents)', async () => {
-      vi.useRealTimers();
-
       const knownFn = vi.fn().mockResolvedValue(true);
       const completedFn = vi.fn().mockResolvedValue(true);
       const consoleSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
 
-      const scheduler = createScheduler(enqueueScheduled, knownFn, completedFn);
-      const skill = makeSkillConfig('dedup-test', '* * * * *', 60);
-      scheduler.reconcile(skillRegistryFromList([skill]));
-
-      await new Promise((r) => globalThis.setTimeout(r, 50));
+      const scheduler = await reconcileAndSettleCatchUp(knownFn, completedFn, [
+        makeSkillConfig('dedup-test', '* * * * *', 60),
+      ]);
 
       expect(knownFn).toHaveBeenCalled();
       expect(enqueueScheduled).not.toHaveBeenCalled();
@@ -317,22 +337,17 @@ describe('createScheduler', () => {
     });
 
     it('enqueues catch-up when trigger not fired', async () => {
-      vi.useRealTimers();
-
       const knownFn = vi.fn().mockResolvedValue(false);
       const completedFn = vi.fn().mockResolvedValue(false);
       const consoleSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
 
-      const scheduler = createScheduler(enqueueScheduled, knownFn, completedFn);
-      const skill = makeSkillConfig('dedup-test', '* * * * *', 60);
-      scheduler.reconcile(skillRegistryFromList([skill]));
-
-      await new Promise((r) => globalThis.setTimeout(r, 50));
+      const scheduler = await reconcileAndSettleCatchUp(knownFn, completedFn, [
+        makeSkillConfig('dedup-test', '* * * * *', 60),
+      ]);
 
       expect(knownFn).toHaveBeenCalled();
       expect(enqueueScheduled).toHaveBeenCalledOnce();
-      const job: ScheduledJob = enqueueScheduled.mock.calls[0]?.[0];
-      expect(job.skillId).toBe('dedup-test');
+      expect(firstEnqueuedJob().skillId).toBe('dedup-test');
 
       scheduler.stop();
       consoleSpy.mockRestore();
@@ -350,7 +365,7 @@ describe('createScheduler', () => {
       await Promise.resolve();
 
       expect(enqueueScheduled).toHaveBeenCalled();
-      const job: ScheduledJob = enqueueScheduled.mock.calls[0]?.[0];
+      const job = firstEnqueuedJob();
       expect(job.skillId).toBe('cortex-prune');
 
       scheduler.stop();
@@ -411,18 +426,11 @@ describe('createScheduler', () => {
     });
 
     it('catch-up skips when trigger is in-flight (fired but not completed)', async () => {
-      vi.useRealTimers();
-
       const knownFn = vi.fn().mockResolvedValue(true);
       const completedFn = vi.fn().mockResolvedValue(false); // fired but not completed
       const consoleSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
 
-      const scheduler = createScheduler(enqueueScheduled, knownFn, completedFn);
-      const trigger = makeSkillConfig('prune', '* * * * *', 60);
-      const dependent = makeSkillConfig('librarian', null, 60, 'prune');
-      scheduler.reconcile(skillRegistryFromList([trigger, dependent]));
-
-      await new Promise((r) => globalThis.setTimeout(r, 50));
+      const scheduler = await reconcileAndSettleCatchUp(knownFn, completedFn, pruneWithLibrarian());
 
       expect(enqueueScheduled).not.toHaveBeenCalled();
       expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('in-flight'));
@@ -432,8 +440,6 @@ describe('createScheduler', () => {
     });
 
     it('catch-up enqueues dependents when trigger completed but dependents not fired', async () => {
-      vi.useRealTimers();
-
       // isJobKnown: trigger=true, dependent=false
       const knownFn = vi
         .fn()
@@ -442,56 +448,38 @@ describe('createScheduler', () => {
       const completedFn = vi.fn().mockResolvedValue(true); // trigger completed
       const consoleSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
 
-      const scheduler = createScheduler(enqueueScheduled, knownFn, completedFn);
-      const trigger = makeSkillConfig('prune', '* * * * *', 60);
-      const dependent = makeSkillConfig('librarian', null, 60, 'prune');
-      scheduler.reconcile(skillRegistryFromList([trigger, dependent]));
-
-      await new Promise((r) => globalThis.setTimeout(r, 50));
+      const scheduler = await reconcileAndSettleCatchUp(knownFn, completedFn, pruneWithLibrarian());
 
       expect(enqueueScheduled).toHaveBeenCalledOnce();
-      const job: ScheduledJob = enqueueScheduled.mock.calls[0]?.[0];
-      expect(job.skillId).toBe('librarian');
+      expect(firstEnqueuedJob().skillId).toBe('librarian');
 
       scheduler.stop();
       consoleSpy.mockRestore();
     });
 
     it('catch-up enqueues trigger standalone when not yet fired (event handles deps later)', async () => {
-      vi.useRealTimers();
-
       const knownFn = vi.fn().mockResolvedValue(false);
       const completedFn = vi.fn().mockResolvedValue(false);
       const consoleSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
 
-      const scheduler = createScheduler(enqueueScheduled, knownFn, completedFn);
-      const trigger = makeSkillConfig('prune', '* * * * *', 60);
-      const dependent = makeSkillConfig('librarian', null, 60, 'prune');
-      scheduler.reconcile(skillRegistryFromList([trigger, dependent]));
-
-      await new Promise((r) => globalThis.setTimeout(r, 50));
+      const scheduler = await reconcileAndSettleCatchUp(knownFn, completedFn, pruneWithLibrarian());
 
       // Should enqueue trigger standalone — worker callback will handle dependent
       expect(enqueueScheduled).toHaveBeenCalledOnce();
-      const job: ScheduledJob = enqueueScheduled.mock.calls[0]?.[0];
-      expect(job.skillId).toBe('prune');
+      expect(firstEnqueuedJob().skillId).toBe('prune');
 
       scheduler.stop();
       consoleSpy.mockRestore();
     });
 
     it('catch-up error fallback enqueues trigger defensively', async () => {
-      vi.useRealTimers();
-
       const knownFn = vi.fn().mockRejectedValue(new Error('Redis down'));
       const completedFn = vi.fn().mockResolvedValue(false);
       const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
-      const scheduler = createScheduler(enqueueScheduled, knownFn, completedFn);
-      const trigger = makeSkillConfig('prune', '* * * * *', 60);
-      scheduler.reconcile(skillRegistryFromList([trigger]));
-
-      await new Promise((r) => globalThis.setTimeout(r, 50));
+      const scheduler = await reconcileAndSettleCatchUp(knownFn, completedFn, [
+        makeSkillConfig('prune', '* * * * *', 60),
+      ]);
 
       expect(enqueueScheduled).toHaveBeenCalledOnce();
       expect(consoleSpy).toHaveBeenCalledWith(
@@ -653,32 +641,18 @@ describe('hasCycle', () => {
 });
 
 describe('decideCatchUp', () => {
-  const triggerJob: ScheduledJob = {
+  const cronJob = (id: string, skillId: string): ScheduledJob => ({
     kind: 'scheduled',
-    id: 'job-trigger' as JobId,
-    skillId: 'prune' as SkillId,
+    id: id as JobId,
+    skillId: skillId as SkillId,
     triggeredAt: '2026-04-06T00:00:00.000Z',
     validUntil: '2026-04-06T01:00:00.000Z',
     trigger: 'cron',
-  };
+  });
 
-  const depJob1: ScheduledJob = {
-    kind: 'scheduled',
-    id: 'job-dep1' as JobId,
-    skillId: 'librarian' as SkillId,
-    triggeredAt: '2026-04-06T00:00:00.000Z',
-    validUntil: '2026-04-06T01:00:00.000Z',
-    trigger: 'cron',
-  };
-
-  const depJob2: ScheduledJob = {
-    kind: 'scheduled',
-    id: 'job-dep2' as JobId,
-    skillId: 'indexer' as SkillId,
-    triggeredAt: '2026-04-06T00:00:00.000Z',
-    validUntil: '2026-04-06T01:00:00.000Z',
-    trigger: 'cron',
-  };
+  const triggerJob = cronJob('job-trigger', 'prune');
+  const depJob1 = cronJob('job-dep1', 'librarian');
+  const depJob2 = cronJob('job-dep2', 'indexer');
 
   it('enqueues standalone when trigger not fired', () => {
     const result = decideCatchUp(false, false, triggerJob, []);

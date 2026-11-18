@@ -2,7 +2,7 @@
 
 /**
  * Commute weather (I/O shell) — fetches the Open-Meteo hourly forecast and
- * delegates all distillation to the pure core in `src/core/commute-weather.ts`,
+ * delegates parsing and distillation to the pure core in `src/core/commute-weather.ts`,
  * which extracts just the 07:00 and 08:00 hours for the requested day. Both
  * morning-briefing and evening-journal used to inline this curl + parse a full
  * 24-hour JSON blob in-context; this returns two hours already distilled.
@@ -19,10 +19,10 @@
  */
 
 import {
-  type OpenMeteoResponse,
   buildForecastUrl,
   distillForecast,
   parseDayOffset,
+  parseOpenMeteoResponse,
 } from '../src/core/commute-weather.js';
 
 function fail(msg: string): never {
@@ -40,23 +40,25 @@ if (!lat || !lon || !timezone) {
 const dayOffsetResult = parseDayOffset(dayOffsetRaw);
 if (!dayOffsetResult.ok) fail(dayOffsetResult.error);
 const dayOffset = dayOffsetResult.value;
+const url = buildForecastUrl(lat, lon, timezone, dayOffset);
 
 async function main(): Promise<void> {
-  const url = buildForecastUrl(lat, lon, timezone, dayOffset);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 20_000);
-  let json: OpenMeteoResponse;
+  let raw: unknown;
   try {
     const res = await fetch(url, { signal: controller.signal });
     if (!res.ok) fail(`HTTP ${res.status}`);
-    json = (await res.json()) as OpenMeteoResponse;
+    raw = await res.json();
   } catch (e) {
     fail(e instanceof Error ? e.message : String(e));
   } finally {
     clearTimeout(timer);
   }
 
-  const result = distillForecast(json, dayOffset);
+  const response = parseOpenMeteoResponse(raw);
+  if (!response.ok) fail(response.error);
+  const result = distillForecast(response.value, dayOffset);
   if (!result.ok) fail(result.error);
 
   process.stdout.write(`${JSON.stringify(result.value, null, 2)}\n`);

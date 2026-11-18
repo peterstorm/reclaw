@@ -3,13 +3,7 @@
 import { spawnSync } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-
-type Contact = {
-  readonly email: string;
-  readonly message: string;
-  readonly timestamp: string;
-  readonly ip: string;
-};
+import { contactsSince, parseContacts } from '../src/core/dotslash-contacts.js';
 
 const STATE_FILE = join(
   process.env.HOME ?? '/home/peterstorm',
@@ -47,36 +41,18 @@ const fetchContactsRaw = (): string => {
   return r.stdout ?? '';
 };
 
-const parseContacts = (raw: string): Contact[] =>
-  raw
-    .split('\n')
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0)
-    .map((l) => {
-      try {
-        return JSON.parse(l) as Contact;
-      } catch {
-        return null;
-      }
-    })
-    .filter((c): c is Contact => c !== null);
-
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const dryRun = args.includes('--no-update');
 
   const since = await readState();
-  const all = parseContacts(fetchContactsRaw());
-  const fresh = all
-    .filter((c) => c.timestamp > since)
-    .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  const { contacts, warnings } = parseContacts(fetchContactsRaw());
+  for (const warning of warnings) console.error(warning);
+  const { fresh, cursor } = contactsSince(contacts, since);
 
   console.log(JSON.stringify(fresh, null, 2));
 
-  if (!dryRun && fresh.length > 0) {
-    const newest = fresh[fresh.length - 1].timestamp;
-    await writeState(newest);
-  }
+  if (!dryRun && cursor !== null) await writeState(cursor);
 }
 
 main().catch((e) => {

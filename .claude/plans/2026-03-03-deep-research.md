@@ -1,6 +1,6 @@
 # Plan: Deep Research Skill -- NotebookLM-Powered Research Pipeline
 
-**Spec:** /home/peterstorm/dev/claude-plugins/reclaw/.claude/specs/2026-03-03-deep-research/spec.md
+**Spec:** `.claude/specs/2026-03-03-deep-research/spec.md`
 **Plan note:** /home/peterstorm/dev/notes/remotevault/reclaw/deep-research.md
 **Created:** 2026-03-03
 

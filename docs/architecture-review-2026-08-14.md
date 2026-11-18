@@ -48,13 +48,13 @@ During this review, `bun run lint` scanned an ignored credentials file and print
 Observed conditions:
 
 - `credentials.json` was mode `0600`.
-- `credentials.json.bak` was mode **`0644`**.
+- credentials.json.bak was mode **`0644`**.
 - Both files were ignored by Git, but Biome still scanned them.
 
 Treat the current NotebookLM token and cookies as disclosed:
 
 1. Rotate or revoke them. **Pending: requires an interactive authentication action.**
-2. Delete `credentials.json.bak` or change it to mode `0600`. **Contained 2026-08-14: changed to `0600`.**
+2. Delete credentials.json.bak or change it to mode `0600`. **Contained 2026-08-14: changed to `0600`.**
 3. Exclude credentials, memory databases, caches, and generated workspace state in `biome.json`. **Implemented 2026-08-14: Biome now honors `.gitignore` and explicitly excludes common local credential formats.**
 4. Ensure CI, formatter, and system journal output cannot contain diffs of secret files. **Partially addressed by the Biome exclusions; deployment logging still requires verification.**
 
@@ -509,18 +509,18 @@ A backend can also emit assistant text followed by a terminal provider error. `p
 
 Use a typed failure algebra such as:
 
-- `spawn-failed`
-- `timed-out`
-- `cancelled`
-- `invalid-session`
-- `provider-rate-limited`
-- `provider-auth-failed`
-- `protocol-drift`
-- `agent-failed`
-- `output-limit-exceeded`
-- `nonzero-exit`
+- spawn-failed
+- timed-out
+- cancelled
+- invalid-session
+- provider-rate-limited
+- provider-auth-failed
+- protocol-drift
+- agent-failed
+- output-limit-exceeded
+- nonzero-exit
 
-Only `invalid-session` should trigger fresh-session fallback.
+Only invalid-session should trigger fresh-session fallback.
 
 ---
 
@@ -536,10 +536,10 @@ Each queue has `concurrency: 1`, but all five queues can run simultaneously. Thi
 
 A shared resource governor should model weighted resources and priority, for example:
 
-- `agentCli`
-- `notebookLm`
-- `vaultWriter`
-- `telegramDelivery`
+- agentCli
+- notebookLm
+- vaultWriter
+- telegramDelivery
 
 Interactive chat should generally have priority over background research.
 
@@ -670,7 +670,7 @@ created → recovering → ready → draining → stopped
 
 ### 8. Bounded-context organization
 
-The current horizontal `core/infra/orchestration` organization forces maintainers to jump among several folders to understand one capability.
+The current horizontal `core`/`infra`/`orchestration` organization forces maintainers to jump among several folders to understand one capability.
 
 After the semantic fixes above, reorganize toward:
 

@@ -1,6 +1,6 @@
 # Plan: Personal AI Agent (Reclaw)
 
-**Spec:** /home/peterstorm/dev/claude-plugins/reclaw/.claude/specs/2026-02-26-personal-agent/spec.md
+**Spec:** `.claude/specs/2026-02-26-personal-agent/spec.md`
 **Created:** 2026-02-26
 
 ## Summary

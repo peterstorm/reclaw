@@ -473,10 +473,12 @@ Skills are not part of this repo — they live in the workspace at `~/dev/claude
 
 ## Learning loop
 
-A curriculum learning system over the vault (`learning/curriculum/`): master learning notes read one lesson a day, recall cards answered in free text over Telegram, FSRS scheduling. Vocabulary: [CONTEXT.md](CONTEXT.md). Design note: vault `reclaw/skills/learning-loop.md`.
+A curriculum learning system over the vault (`<vault>/learning/curriculum/`): master learning notes read one lesson a day, recall cards answered in free text over Telegram, FSRS scheduling. Vocabulary: [CONTEXT.md](CONTEXT.md). Design note: `<vault>/reclaw/skills/learning-loop.md`.
+
+`<vault>` is the Obsidian vault root. The scripts read it from `RECLAW_VAULT_ROOT` (default `~/dev/notes/remotevault`). The service reads it from `OBSIDIAN_VAULT_PATH` (see [Configuration](#configuration)).
 
 - **One command surface:** `bun scripts/learn.ts <status|lesson|read|round|grade|suspend|unsuspend|build-next|feynman|feynman-log|validate>` — prints JSON; refuses (exit 1, nothing written) on an unknown card/round or a corrupt log. `grade … --answer -` reads the answer from stdin (skills pass it through a quoted heredoc).
-- **State:** only the append-only `learning/curriculum/.state/study-log.jsonl`. Card schedules, reading progress and stats are a pure fold (`src/core/study-plan.ts`, ts-fsrs with fuzz off → deterministic). Models grade answers; the core decides what a grade means.
+- **State:** only the append-only `<vault>/learning/curriculum/.state/study-log.jsonl` (`STUDY_LOG_PATH`). Card schedules, reading progress and stats are a pure fold (`src/core/study-plan.ts`, ts-fsrs with fuzz off → deterministic). Models grade answers; the core decides what a grade means.
 - **Skills:** `learn-lesson` (07:00), `learn-recall` (11:30/15:30/19:30), `learn-feynman` (Sun 17:00), `curriculum-builder` (02:30, builds the next note when fewer than `buildBuffer` built topics are unread). The builder follows `AGENT_BACKEND` like every other skill, with `fallback: { backend: claude, model: sonnet }`; the three learn skills pin `backend: claude` + `model: sonnet` (grading short answers) with `fallback: pi`. A missed builder night is absorbed by the 3-topic buffer. Replies to their messages resume the skill session, which then calls `learn.ts`.
 - **Notes** are validated by `parseMasterNote` (strict format, all-or-nothing). Authoring spec: `workspace/skills/shared/master-note-guide.md`. Domain MOCs are generated: `bun scripts/curriculum-mocs.ts`.
 - **Dry-run anything** against a copy: `RECLAW_VAULT_ROOT=/tmp/vault-copy bun scripts/learn.ts …`.
@@ -503,15 +505,15 @@ All config is env-driven (no config file). See `src/infra/config.ts` for the Zod
 
 | Var                              | Default                | Notes                                                  |
 |----------------------------------|------------------------|--------------------------------------------------------|
-| `TELEGRAM_BOT_TOKEN`             | required               | grammy bot token                                       |
+| `TELEGRAM_TOKEN`                 | required               | grammy bot token                                       |
 | `AUTHORIZED_USER_IDS`            | required               | Comma-separated Telegram user IDs                      |
 | `REDIS_HOST` / `REDIS_PORT`      | `localhost` / `6379`   | Reclaw on homelab uses `6380`                          |
 | `WORKSPACE_PATH`                 | `/workspace`           | Where personality.md and skills/ live                  |
-| `SKILLS_DIR`                     | `${WORKSPACE_PATH}/skills` | Watched by chokidar                              |
-| `CLAUDE_BINARY_PATH`             | `claude`               | Override if not on PATH                                |
+| `SKILLS_DIR`                     | `/workspace/skills`    | Watched by chokidar (default does not follow `WORKSPACE_PATH`) |
+| `PERSONALITY_PATH`               | `/workspace/personality.md` | Personality prompt file                           |
+| `SCRIPTS_DIR`                    | repo `scripts/`        | Exposed to skill templates as `{{scriptsDir}}`         |
 | `CHAT_TIMEOUT_MS`                | `3_600_000` (1h)       | Max chat subprocess lifetime                           |
 | `SCHEDULED_TIMEOUT_MS`           | `1_200_000` (20m)      | Max scheduled subprocess lifetime                      |
-| `SESSION_IDLE_TIMEOUT_MS`        | `1_800_000` (30m)      | Session record TTL                                     |
 | `OBSIDIAN_VAULT_PATH`            | optional               | Canonical root for research, `/ask`, and `/podcast`; falls back to workspace path |
 | `NOTEBOOKLM_AUTH_TOKEN` + `NOTEBOOKLM_COOKIES` | optional   | Token-based NotebookLM auth                            |
 | `GOOGLE_EMAIL` + `GOOGLE_PASSWORD`             | optional   | Fallback NotebookLM auto-login                         |
@@ -520,7 +522,7 @@ All config is env-driven (no config file). See `src/infra/config.ts` for the Zod
 | `RECLAW_PI_PROVIDER`            | unset                  | Optional Pi `--provider`; unset means use Pi defaults  |
 | `RECLAW_PI_MODEL`               | unset                  | Optional Pi `--model` (Pi runs only); unset means use Pi defaults |
 | `RECLAW_PI_SCHEDULED_MODEL`     | unset                  | Optional Pi `--model` for **scheduled skills only** (chat keeps `RECLAW_PI_MODEL`); provider shared; unset means scheduled runs use `RECLAW_PI_MODEL` |
-| `LATITUDE` / `LONGITUDE` / `TIMEZONE` / `LOCATION_NAME` | Copenhagen defaults | Weather, sun-time skills        |
+| `LATITUDE` / `LONGITUDE` / `TZ_NAME` (else `TZ`) / `LOCATION_NAME` | Copenhagen defaults | Weather, sun-time skills |
 
 Pi model override example for trying DeepSeek v4 Flash through reclaw:
 
@@ -609,20 +611,27 @@ src/
     permissions.ts            # backend-neutral tool policy
     agent-environment.ts      # closed subprocess environment + skill grant policy
     vault-path.ts             # branded, strict vault-relative path parser
+    error-message.ts          # message of any thrown value, shared by adapters
     ...
   infra/                      # I/O adapters
     config.ts                 # env → AppConfig (Zod)
     vault-workspace.ts        # canonical root containment + symlink escape checks
-    telegram.ts               # grammy adapter + authenticated attachment ingress
+    telegram.ts               # grammy adapter: polling lifecycle + handler wiring
+    telegram-ingress.ts       # ingress gate (phase + update/lifecycle views), per-update handlers, spooling
+    telegram-send.ts          # send/edit/chunked send, rate-limit retry, HTML fallback
+    telegram-download.ts      # fetch-only photo + size-capped document downloads (returns bytes, never writes)
+    telegram-spool.ts         # attachment spool dir + atomic writes
     document-text.ts          # supported-document policy, decoding, and untrusted envelope
     pdf-text.ts               # confined PDF.js extraction used by document ingress
     upload-store.ts           # atomic persistent opaque-file storage + metadata sidecars
     queue.ts                  # BullMQ source queues + delivery outbox
+    queue-read-models.ts      # pure BullMQ record → queue view projections and their types
     activity-store.ts         # immutable Redis ActivityResult repository
     session-store.ts          # Redis generation transitions + revision CAS
+    shared-redis.ts           # one Redis connection for several stores, opened lazily, closed once
     quota-tracker.ts          # NotebookLM daily quota
-    skill-watcher.ts          # chokidar on skills/*.yaml
-    claude-subprocess.ts      # spawn `claude` CLI, parse stream-json
+    skill-watcher.ts          # chokidar on skills/*.yaml + per-file debounce/ready settle tracker
+    agent-backends/           # claude + pi backends behind one runner (spawn, parse, stream)
     notebooklm-client.ts      # research/podcast adapter
     research-llm-client.ts    # Gemini for research summarization
     vault-writer.ts           # write notes into Obsidian vault
@@ -633,6 +642,8 @@ src/
     scheduler.ts              # cron scheduling + dependency resolution
     delivery-handler.ts       # Resumable completion-effect execution
     worker.ts                 # BullMQ workers + activity/outbox/dead-letter wiring
+    worker-activity.ts        # chat + scheduled processors: activity record before effects
+    worker-lifecycle.ts       # start/stop supervision of all workers
     chat-handler.ts           # ChatJob → agent result + final delivery plan
     scheduled-handler.ts      # ScheduledJob → agent result for durable commit
     reminder-handler.ts       # ReminderJob / RecurringReminderJob → telegram

@@ -18,6 +18,7 @@
 import { match } from 'ts-pattern';
 import { extractPassageToSourceMap, resolveAnswerCitations } from '../core/citation-resolver.js';
 import { computeMetrics, evaluateQuality } from '../core/research-quality.js';
+import { buildTelegramSummary } from '../core/research-summary.js';
 import type { ResearchContext, ResearchEvent, ResearchState } from '../core/research-types.js';
 import type { ArtifactMeta, ResolvedNote } from '../core/research-types.js';
 import { RESEARCH_BASE, generateTopicSlug } from '../core/topic-slug.js';
@@ -765,55 +766,9 @@ async function executeGeneratingArtifacts(
 async function executeNotifying(ctx: ResearchContext, deps: ResearchDeps): Promise<ResearchEvent> {
   const metrics = computeMetrics(ctx, Date.now());
   const quality = evaluateQuality(ctx, metrics);
+  const quotaRemaining = await readQuotaRemaining(deps.quotaTracker);
+  const telegramSummary = buildTelegramSummary(ctx, quality, metrics, quotaRemaining);
 
-  // Get remaining quota for the summary
-  let quotaRemaining = '?';
-  try {
-    const remaining = await deps.quotaTracker.getRemaining();
-    quotaRemaining = String(remaining);
-  } catch (err) {
-    console.warn('[research:notifying] quota getRemaining failed:', err);
-  }
-
-  // Build Telegram summary (FR-060)
-  const hubLink = ctx.hubPath !== null ? `\n\nVault: ${ctx.hubPath}` : '';
-  const durationMin = Math.round(metrics.durationMs / 60_000);
-
-  const warningsText =
-    quality.warnings.length > 0
-      ? `\n\nWarnings:\n${quality.warnings.map((w) => `• ${w}`).join('\n')}`
-      : '';
-
-  // FR-062: Key findings per question
-  const keyFindings = Object.entries(ctx.answers)
-    .slice(0, 3) // Show up to 3 key findings
-    .map(([question, response]) => {
-      const preview = response.text.slice(0, 120).trim();
-      const ellipsis = response.text.length > 120 ? '...' : '';
-      return `Q: ${question}\nA: ${preview}${ellipsis}`;
-    })
-    .join('\n\n');
-
-  const keyFindingsSection = keyFindings.length > 0 ? `\n\nKey Findings:\n${keyFindings}` : '';
-
-  const skippedSection =
-    ctx.skippedQuestions.length > 0
-      ? `\n\nSkipped questions (${ctx.skippedQuestions.length}): ${ctx.skippedQuestions.join(', ')}`
-      : '';
-
-  const artifactLinks =
-    ctx.artifacts.length > 0
-      ? `\n\nMedia:\n${ctx.artifacts.map((a) => `• ${a.type === 'audio' ? 'Audio' : 'Video'}: ${a.url}`).join('\n')}`
-      : '';
-
-  const artifactFailuresText =
-    ctx.artifactFailures.length > 0
-      ? `\n\nFailed artifacts:\n${ctx.artifactFailures.map((f) => `• ${f}`).join('\n')}`
-      : '';
-
-  const telegramSummary = `Research Complete: ${ctx.topic}\n\nQuality: ${quality.grade.toUpperCase()}\nQuestions: ${metrics.questionsAnswered}/${metrics.questionsAsked} answered\nCitations: ${metrics.totalCitations} total, ${metrics.avgCitationsPerAnswer.toFixed(1)} avg/answer\nSources: ${metrics.sourcesIngested} ingested, ${metrics.sourcesCited} cited\nQuota used: ${metrics.chatsUsed} chats, ${quotaRemaining} remaining today\nDuration: ${durationMin}m${skippedSection}${warningsText}${keyFindingsSection}${artifactLinks}${artifactFailuresText}${hubLink}`;
-
-  // Send Telegram notification
   const sendResult = await sendTelegramSafe(deps.telegram, ctx.chatId, telegramSummary);
 
   if (!sendResult) {
@@ -835,6 +790,16 @@ async function executeNotifying(ctx: ResearchContext, deps: ResearchDeps): Promi
   }
 
   return { type: 'NOTIFIED' };
+}
+
+/** Remaining quota for the summary; '?' when the tracker is unreachable. */
+async function readQuotaRemaining(quotaTracker: QuotaTracker): Promise<string> {
+  try {
+    return String(await quotaTracker.getRemaining());
+  } catch (err) {
+    console.warn('[research:notifying] quota getRemaining failed:', err);
+    return '?';
+  }
 }
 
 // ─── Pure helpers ─────────────────────────────────────────────────────────────

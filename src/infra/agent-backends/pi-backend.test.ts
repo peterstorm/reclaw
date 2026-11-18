@@ -310,6 +310,22 @@ describe('piBackend', () => {
       expect(result.text).toBe('Hi there!');
     });
 
+    it('skips malformed content blocks and non-string error fields instead of throwing', () => {
+      const lines = [
+        JSON.stringify({
+          type: 'message_end',
+          message: { role: 'assistant', content: [null, 7, { type: 'text', text: 'Kept.' }] },
+        }),
+        JSON.stringify({
+          type: 'message_end',
+          message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: 503 },
+        }),
+      ];
+      const result = piBackend.parseResult(lines.join('\n'));
+      expect(result.text).toBe('Kept.');
+      expect(result.errorMessage).toBe('pi reported an agent error');
+    });
+
     it('returns null text when only a user message_end is present', () => {
       const rawOutput = JSON.stringify({
         type: 'message_end',
@@ -387,6 +403,38 @@ describe('piBackend', () => {
       const result = piBackend.extractStreamDelta(line);
       expect(result).toEqual({ type: 'text', text: '' });
     });
+
+    it.each([
+      { label: 'an unstreamed kind (toolcall_start)', event: { type: 'toolcall_start' } },
+      { label: 'an unstreamed kind (text_end)', event: { type: 'text_end', delta: 'x' } },
+      { label: 'a missing type', event: { delta: 'orphan' } },
+      { label: 'a non-string type', event: { type: 42, delta: 'x' } },
+      { label: 'a prototype key as type', event: { type: 'toString' } },
+    ])('returns null for a message_update with $label', ({ event }) => {
+      const line = JSON.stringify({ type: 'message_update', assistantMessageEvent: event });
+      expect(piBackend.extractStreamDelta(line)).toBeNull();
+    });
+
+    it.each([
+      { label: 'missing', assistantMessageEvent: undefined },
+      { label: 'null', assistantMessageEvent: null },
+      { label: 'a string', assistantMessageEvent: 'text_delta' },
+      { label: 'an array', assistantMessageEvent: [{ type: 'text_delta', delta: 'x' }] },
+    ])('returns null when assistantMessageEvent is $label', ({ assistantMessageEvent }) => {
+      const line = JSON.stringify({ type: 'message_update', assistantMessageEvent });
+      expect(piBackend.extractStreamDelta(line)).toBeNull();
+    });
+
+    it.each(['text_delta', 'thinking_delta'])(
+      'returns null for a %s whose delta is not a string',
+      (type) => {
+        const line = JSON.stringify({
+          type: 'message_update',
+          assistantMessageEvent: { type, delta: { text: 'nested' } },
+        });
+        expect(piBackend.extractStreamDelta(line)).toBeNull();
+      },
+    );
   });
 
   describe('extractSessionId', () => {

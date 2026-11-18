@@ -40,16 +40,8 @@ function pickAuth(
   return null;
 }
 
-async function main(): Promise<void> {
-  const [, , notebookIdArg, q1Arg, q2Arg] = process.argv;
-  if (!notebookIdArg) {
-    console.error('Usage: bun scripts/notebooklm-multiturn-smoke.ts <notebookId> ["q1"] ["q2"]');
-    process.exit(1);
-  }
-  const notebookId = notebookIdArg;
-  const q1 = q1Arg ?? DEFAULT_Q1;
-  const q2 = q2Arg ?? DEFAULT_Q2;
-
+/** Connect with whichever auth the env offers and pass the notebooks.list() health check. */
+async function connectFromEnv(): Promise<NotebookLMClient> {
   const authToken = process.env.NOTEBOOKLM_AUTH_TOKEN;
   const cookies = process.env.NOTEBOOKLM_COOKIES;
   const email = process.env.GOOGLE_EMAIL;
@@ -77,6 +69,20 @@ async function main(): Promise<void> {
 
   await sdk.connect();
   await sdk.notebooks.list(); // health check
+  return sdk;
+}
+
+async function main(): Promise<void> {
+  const [, , notebookIdArg, q1Arg, q2Arg] = process.argv;
+  if (!notebookIdArg) {
+    console.error('Usage: bun scripts/notebooklm-multiturn-smoke.ts <notebookId> ["q1"] ["q2"]');
+    process.exit(1);
+  }
+  const notebookId = notebookIdArg;
+  const q1 = q1Arg ?? DEFAULT_Q1;
+  const q2 = q2Arg ?? DEFAULT_Q2;
+
+  const sdk = await connectFromEnv();
 
   console.log('\n── Turn 1 ──────────────────────────────────────────────');
   console.log(`Q: ${q1}\n`);

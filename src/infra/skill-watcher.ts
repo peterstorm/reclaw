@@ -51,6 +51,186 @@ function skillIdFromPath(filePath: string): ReturnType<typeof makeSkillId> {
   return makeSkillId(idStr);
 }
 
+// ─── Shell helpers ────────────────────────────────────────────────────────────
+
+/** Delay that coalesces the burst of events one save produces. */
+const DEBOUNCE_MS = 100;
+
+/** A registry change caused by one skill file; null leaves the registry as it was. */
+type SkillFileChange = (registry: SkillRegistry, filePath: string) => SkillRegistry | null;
+
+/**
+ * Load filePath's skill into the registry. An unreadable or invalid file is
+ * logged and changes nothing (FR-054: never crash).
+ */
+const registryWithSkillFile: SkillFileChange = (registry, filePath) => {
+  let content: string;
+  try {
+    content = readFileSync(filePath, 'utf-8');
+  } catch (e) {
+    console.error(
+      `[skill-watcher] Failed to read "${filePath}":`,
+      e instanceof Error ? e.message : String(e),
+    );
+    return null;
+  }
+
+  const result = parseSkillConfig(content, filePath);
+  if (!result.ok) {
+    console.error(`[skill-watcher] Invalid skill config "${filePath}": ${result.error}`);
+    return null;
+  }
+  return registryWithSkill(registry, result.value);
+};
+
+/** Drop filePath's skill from the registry; a path naming no valid SkillId changes nothing. */
+const registryWithoutSkillFile: SkillFileChange = (registry, filePath) => {
+  const idResult = skillIdFromPath(filePath);
+  if (!idResult.ok) {
+    console.error(`[skill-watcher] Cannot derive SkillId from "${filePath}": ${idResult.error}`);
+    return null;
+  }
+  return registryWithoutSkill(registry, idResult.value);
+};
+
+type RegistryListeners = {
+  readonly add: (handler: (registry: SkillRegistry) => void) => void;
+  readonly notify: (registry: SkillRegistry) => void;
+};
+
+/** Notifies a snapshot, so a handler that registers another mid-pass cannot change the pass. */
+function createRegistryListeners(): RegistryListeners {
+  const handlers: Array<(registry: SkillRegistry) => void> = [];
+  return {
+    add: (handler) => {
+      handlers.push(handler);
+    },
+    notify: (registry) => {
+      for (const handler of [...handlers]) {
+        handler(registry);
+      }
+    },
+  };
+}
+
+/**
+ * Debounced per-file loads, and the readiness they decide: the registry is
+ * ready once the initial scan is complete and no debounced load is pending.
+ */
+export type SettleTracker = {
+  /** Run `load` after the debounce; a newer event for the same path replaces it, others are untouched. */
+  readonly schedule: (filePath: string, load: () => void) => void;
+  /** Chokidar has emitted every initial path. */
+  readonly markScanComplete: () => void;
+  /** True once the initial scan has been fully applied; stays true. */
+  readonly isSettled: () => boolean;
+  /** Resolves once the initial scan has been fully applied, or the tracker was cancelled. */
+  readonly ready: () => Promise<void>;
+  /** Drop every pending load and release anyone awaiting `ready`. */
+  readonly cancelAll: () => void;
+};
+
+/** Startup progress: scanning (paths still arriving), draining (loads pending), settled. */
+type SettlePhase = 'scanning' | 'draining' | 'settled';
+
+/**
+ * Track when the initial scan has been fully *applied*.
+ *
+ * Chokidar's `ready` event only means "every initial path has been emitted",
+ * not "every initial path has been loaded". Because add events go through the
+ * debounce, resolving directly on `ready` handed callers a registry that was
+ * still empty or partial — and main.ts awaits this promise specifically so that
+ * workers start with a populated registry, so scheduled jobs firing in that
+ * window failed with 'skill not found'.
+ *
+ * Both conditions must therefore hold: chokidar has finished scanning, and no
+ * debounced load is still pending. `onSettled` then runs once, before `ready`
+ * resolves, so listeners are up to date the moment callers proceed. Every load
+ * is followed by a settle check, even one that throws, so one bad file can
+ * never leave `ready` pending.
+ */
+export function createSettleTracker(onSettled: () => void): SettleTracker {
+  const timers = new Map<string, ReturnType<typeof setTimeout>>();
+  let phase: SettlePhase = 'scanning';
+  let release: () => void = () => {};
+  const readyPromise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  const settleIfIdle = (): void => {
+    if (phase === 'scanning' || timers.size > 0) return;
+    if (phase === 'draining') {
+      phase = 'settled';
+      onSettled();
+    }
+    release();
+  };
+
+  const schedule = (filePath: string, load: () => void): void => {
+    clearTimeout(timers.get(filePath));
+    const timer = setTimeout(() => {
+      timers.delete(filePath);
+      try {
+        load();
+      } finally {
+        settleIfIdle();
+      }
+    }, DEBOUNCE_MS);
+    timers.set(filePath, timer);
+  };
+
+  const markScanComplete = (): void => {
+    if (phase === 'scanning') phase = 'draining';
+    // Settles immediately when the directory held no skills; otherwise the
+    // last debounced load to finish settles it.
+    settleIfIdle();
+  };
+
+  const cancelAll = (): void => {
+    for (const timer of timers.values()) clearTimeout(timer);
+    timers.clear();
+    release();
+  };
+
+  return {
+    schedule,
+    markScanComplete,
+    isSettled: () => phase === 'settled',
+    ready: () => readyPromise,
+    cancelAll,
+  };
+}
+
+type SkillFileEvents = {
+  readonly onUpsert: (filePath: string) => void;
+  readonly onRemove: (filePath: string) => void;
+  readonly onScanComplete: () => void;
+};
+
+/** Watch every skill YAML under skillsDir, initial files included. */
+function watchSkillFiles(skillsDir: string, events: SkillFileEvents): FSWatcher {
+  const watcher = chokidar.watch(`${skillsDir}/**/*.{yaml,yml}`, {
+    persistent: true,
+    ignoreInitial: false,
+    awaitWriteFinish: {
+      stabilityThreshold: 50,
+      pollInterval: 50,
+    },
+  });
+
+  watcher.on('add', events.onUpsert);
+  watcher.on('change', events.onUpsert);
+  watcher.on('unlink', events.onRemove);
+  watcher.on('ready', events.onScanComplete);
+  watcher.on('error', (error: unknown) => {
+    console.error(
+      '[skill-watcher] Watcher error:',
+      error instanceof Error ? error.message : String(error),
+    );
+  });
+  return watcher;
+}
+
 // ─── Factory ──────────────────────────────────────────────────────────────────
 
 /**
@@ -61,174 +241,48 @@ function skillIdFromPath(filePath: string): ReturnType<typeof makeSkillId> {
  */
 export function createSkillWatcher(skillsDir: string): SkillWatcher {
   let registry: SkillRegistry = emptySkillRegistry();
-  const changeHandlers: Array<(registry: SkillRegistry) => void> = [];
   let watcher: FSWatcher | null = null;
-  // Per-file debounce timers to avoid one file's event cancelling another's
-  const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  // Promise that resolves once the initial scan has been fully *applied*.
-  //
-  // Chokidar's `ready` event only means "every initial path has been emitted",
-  // not "every initial path has been loaded". Because add events go through the
-  // 100ms debounce below, resolving directly on `ready` handed callers a
-  // registry that was still empty or partial — and main.ts awaits this promise
-  // specifically so that workers start with a populated registry, so scheduled
-  // jobs firing in that window failed with 'skill not found'.
-  //
-  // Both conditions must therefore hold: chokidar has finished scanning, and no
-  // debounced load is still pending.
-  let readyResolve: (() => void) | null = null;
-  const readyPromise = new Promise<void>((resolve) => {
-    readyResolve = resolve;
-  });
-  let scanComplete = false;
-  // Whether the initial scan has been applied. Until it has, the registry is a
-  // partial view and listeners are not told about it — see notifyHandlers.
-  let initialLoadApplied = false;
+  const listeners = createRegistryListeners();
 
-  const resolveReadyIfSettled = (): void => {
-    if (!scanComplete || debounceTimers.size > 0) return;
-    if (!initialLoadApplied) {
-      initialLoadApplied = true;
-      // One notification carrying the complete initial registry, emitted before
-      // ready() resolves so listeners are up to date the moment callers proceed.
-      notifyHandlers(registry);
-    }
-    readyResolve?.();
-  };
+  // The initial load is announced once, complete, when it settles.
+  const settle = createSettleTracker(() => listeners.notify(registry));
 
-  // Notify all registered change listeners.
-  // Iterate a snapshot so a handler that mutates `changeHandlers` (e.g. removes
-  // itself) cannot skip subsequent handlers in this notification pass.
-  //
-  // Suppressed during the initial scan. Each file loads independently, so
-  // notifying per file announced the registry once per skill while it was still
-  // filling — every listener ran against a view already known to be incomplete.
-  // For the one real listener (scheduler.reconcile) that meant rebuilding the
-  // dependency map and cron entries ~21 times per start, and logging a
-  // dependency-missing warning for every skill whose `dependsOn` target simply
-  // had not been read yet. The warning described the loading order, not the
-  // configuration, but was indistinguishable from a genuine misconfiguration.
-  const notifyHandlers = (reg: SkillRegistry): void => {
-    if (!initialLoadApplied) return;
-    for (const handler of [...changeHandlers]) {
-      handler(reg);
-    }
-  };
-
-  // Per-file debounce: each file path has its own timer
-  const debounce = (filePath: string, fn: () => void): void => {
-    const existing = debounceTimers.get(filePath);
-    if (existing !== undefined) {
-      clearTimeout(existing);
-    }
-    const timer = setTimeout(() => {
-      debounceTimers.delete(filePath);
-      try {
-        fn();
-      } finally {
-        // Runs even if the load throws, so one bad file can never leave the
-        // ready promise pending forever.
-        resolveReadyIfSettled();
-      }
-    }, 100);
-    debounceTimers.set(filePath, timer);
-  };
-
-  // Read + parse a file and update registry atomically
-  const loadFile = (filePath: string): void => {
-    let content: string;
-    try {
-      content = readFileSync(filePath, 'utf-8');
-    } catch (e) {
-      console.error(
-        `[skill-watcher] Failed to read "${filePath}":`,
-        e instanceof Error ? e.message : String(e),
-      );
-      return;
-    }
-
-    const result = parseSkillConfig(content, filePath);
-    if (!result.ok) {
-      // FR-054: log error, do not crash
-      console.error(`[skill-watcher] Invalid skill config "${filePath}": ${result.error}`);
-      return;
-    }
-
-    registry = registryWithSkill(registry, result.value);
-    notifyHandlers(registry);
-  };
-
-  const removeFile = (filePath: string): void => {
-    const idResult = skillIdFromPath(filePath);
-    if (!idResult.ok) {
-      console.error(`[skill-watcher] Cannot derive SkillId from "${filePath}": ${idResult.error}`);
-      return;
-    }
-    registry = registryWithoutSkill(registry, idResult.value);
-    notifyHandlers(registry);
+  const scheduleChange = (filePath: string, change: SkillFileChange): void => {
+    settle.schedule(filePath, () => {
+      const next = change(registry, filePath);
+      if (next === null) return;
+      registry = next;
+      // Silent until the initial load is applied: notifying per file announced a
+      // registry known to be incomplete, so the scheduler rebuilt its cron entries
+      // once per skill and warned about every `dependsOn` target not yet read.
+      if (settle.isSettled()) listeners.notify(registry);
+    });
   };
 
   const start = (): void => {
     if (watcher !== null) return;
-
-    watcher = chokidar.watch(`${skillsDir}/**/*.{yaml,yml}`, {
-      persistent: true,
-      ignoreInitial: false,
-      awaitWriteFinish: {
-        stabilityThreshold: 50,
-        pollInterval: 50,
-      },
-    });
-
-    watcher.on('add', (filePath: string) => {
-      debounce(filePath, () => loadFile(filePath));
-    });
-
-    watcher.on('change', (filePath: string) => {
-      debounce(filePath, () => loadFile(filePath));
-    });
-
-    watcher.on('unlink', (filePath: string) => {
-      debounce(filePath, () => removeFile(filePath));
-    });
-
-    watcher.on('ready', () => {
-      scanComplete = true;
-      // Resolves immediately when the directory held no skills; otherwise the
-      // last debounced load to settle resolves it.
-      resolveReadyIfSettled();
-    });
-
-    watcher.on('error', (error: unknown) => {
-      console.error(
-        '[skill-watcher] Watcher error:',
-        error instanceof Error ? error.message : String(error),
-      );
+    watcher = watchSkillFiles(skillsDir, {
+      onUpsert: (filePath) => scheduleChange(filePath, registryWithSkillFile),
+      onRemove: (filePath) => scheduleChange(filePath, registryWithoutSkillFile),
+      onScanComplete: settle.markScanComplete,
     });
   };
 
   const stop = async (): Promise<void> => {
-    for (const timer of debounceTimers.values()) {
-      clearTimeout(timer);
-    }
-    debounceTimers.clear();
-    // Discarding those timers means nothing is left to settle the ready promise.
-    // Release anyone still awaiting it rather than deadlocking a shutdown that
-    // raced startup; the registry is simply whatever loaded before the stop.
-    readyResolve?.();
+    // Nothing is left to settle the ready promise; cancelling releases anyone
+    // awaiting it rather than deadlock a shutdown that raced startup.
+    settle.cancelAll();
     if (watcher !== null) {
       await watcher.close();
       watcher = null;
     }
   };
 
-  const getRegistry = (): SkillRegistry => registry;
-
-  const onRegistryChange = (handler: (registry: SkillRegistry) => void): void => {
-    changeHandlers.push(handler);
-  };
-
-  const ready = (): Promise<void> => readyPromise;
-
-  return { start, stop, getRegistry, onRegistryChange, ready } as const;
+  return {
+    start,
+    stop,
+    getRegistry: () => registry,
+    onRegistryChange: listeners.add,
+    ready: settle.ready,
+  } as const;
 }

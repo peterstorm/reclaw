@@ -68,6 +68,18 @@ const chatJob: ChatJob = {
   },
 };
 
+/** The instant the default test clock reports. */
+const RECORDED_AT = '2026-02-26T10:05:00.000Z';
+
+/** A clock that moves one second forward on every read. */
+function tickingClock(start: string): { readonly now: () => Date; readonly reads: () => number } {
+  let reads = 0;
+  return {
+    now: () => new Date(Date.parse(start) + 1000 * reads++),
+    reads: () => reads,
+  };
+}
+
 const scheduledJob: ScheduledJob = {
   kind: 'scheduled',
   id: 'job-sched-001' as JobId,
@@ -214,14 +226,29 @@ describe('createWorkers', () => {
     vi.clearAllMocks();
   });
 
+  /** Deps a test may replace; session, activity and outbox state are always the shared fakes. */
   type TestWorkerDeps = Omit<
     Parameters<typeof createWorkers>[0],
     'sessionStore' | 'activityResults' | 'deliveryOutbox'
   >;
 
-  function createTestWorkers(deps: TestWorkerDeps) {
+  /** Workers over the current handler mocks; `overrides` replaces individual deps. */
+  function makeWorkers(overrides: Partial<TestWorkerDeps> = {}) {
     return createWorkers({
-      ...deps,
+      redisConnection: { host: 'localhost', port: 6379 },
+      chatHandler,
+      scheduledHandler,
+      reminderHandler,
+      recurringReminderHandler,
+      researchHandler,
+      podcastHandler,
+      telegram: mockTelegram,
+      config: mockConfig,
+      workerFactory: fakeFactory.factory,
+      onScheduledJobCompleted: vi.fn(),
+      markScheduledJobCompleted: vi.fn().mockResolvedValue(undefined),
+      now: () => new Date(RECORDED_AT),
+      ...overrides,
       sessionStore: mockSessionStore,
       activityResults: {
         find: async (id) => activityStore.get(id) ?? null,
@@ -236,22 +263,13 @@ describe('createWorkers', () => {
     });
   }
 
-  function makeWorkers() {
-    return createTestWorkers({
-      redisConnection: { host: 'localhost', port: 6379 },
-      chatHandler,
-      scheduledHandler,
-      reminderHandler,
-      recurringReminderHandler,
-      researchHandler,
-      podcastHandler,
-      telegram: mockTelegram,
-      config: mockConfig,
-      workerFactory: fakeFactory.factory,
-      onScheduledJobCompleted: vi.fn(),
-      markScheduledJobCompleted: vi.fn().mockResolvedValue(undefined),
-    });
-  }
+  /** A first-attempt Bull job carrying `data`, with the default three attempts. */
+  const bullJobFor = (data: ChatJob | ScheduledJob): FakeBullJob => ({
+    data,
+    id: data.id,
+    opts: { attempts: 3 },
+    attemptsMade: 1,
+  });
 
   function requireWorker(queueName: string): CreatedWorker {
     const worker = fakeFactory.createdWorkers.find(
@@ -299,20 +317,7 @@ describe('createWorkers', () => {
   });
 
   it('passes redis connection options to both workers', () => {
-    createTestWorkers({
-      redisConnection: { host: 'redis-host', port: 6380 },
-      chatHandler,
-      scheduledHandler,
-      reminderHandler,
-      recurringReminderHandler,
-      researchHandler,
-      podcastHandler,
-      telegram: mockTelegram,
-      config: mockConfig,
-      workerFactory: fakeFactory.factory,
-      onScheduledJobCompleted: vi.fn(),
-      markScheduledJobCompleted: vi.fn().mockResolvedValue(undefined),
-    });
+    makeWorkers({ redisConnection: { host: 'redis-host', port: 6380 } });
 
     for (const w of fakeFactory.createdWorkers) {
       expect(w.opts.connection).toEqual({ host: 'redis-host', port: 6380 });
@@ -322,17 +327,11 @@ describe('createWorkers', () => {
   it('chat worker processes ChatJob via chatHandler', async () => {
     makeWorkers();
 
-    const chatWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-chat');
-    expect(chatWorker).toBeDefined();
+    const chatWorker = requireWorker('reclaw-chat');
 
-    const bullJob: FakeBullJob = {
-      data: chatJob,
-      id: chatJob.id,
-      opts: { attempts: 3 },
-      attemptsMade: 1,
-    };
+    const bullJob = bullJobFor(chatJob);
 
-    const result = await chatWorker?.processor(bullJob);
+    const result = await chatWorker.processor(bullJob);
     expect(chatHandler).toHaveBeenCalledWith(chatJob);
     expect(result).toEqual({ kind: 'chat-completed', response: 'chat response' });
   });
@@ -347,8 +346,7 @@ describe('createWorkers', () => {
       drainPreviews: vi.fn().mockResolvedValue(undefined),
     });
     makeWorkers();
-    const chatWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-chat');
-    if (chatWorker === undefined) throw new Error('Chat worker was not created');
+    const chatWorker = requireWorker('reclaw-chat');
 
     await chatWorker.processor({
       data: { ...chatJob, documentPaths: ['/state/reclaw/1003.md.txt'] },
@@ -409,8 +407,7 @@ describe('createWorkers', () => {
       deliveries: [],
     });
     makeWorkers();
-    const chatWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-chat');
-    if (chatWorker === undefined) throw new Error('Chat worker was not created');
+    const chatWorker = requireWorker('reclaw-chat');
 
     try {
       await chatWorker.processor({
@@ -465,12 +462,7 @@ describe('createWorkers', () => {
       .mockResolvedValue(undefined);
     makeWorkers();
     const chatWorker = requireWorker('reclaw-chat');
-    const bullJob: FakeBullJob = {
-      data: chatJob,
-      id: chatJob.id,
-      opts: { attempts: 3 },
-      attemptsMade: 1,
-    };
+    const bullJob = bullJobFor(chatJob);
 
     await expect(chatWorker.processor(bullJob)).rejects.toThrow('outbox unavailable');
     await expect(chatWorker.processor(bullJob)).resolves.toEqual({
@@ -502,12 +494,7 @@ describe('createWorkers', () => {
       .mockResolvedValue({ kind: 'committed' });
     makeWorkers();
     const chatWorker = requireWorker('reclaw-chat');
-    const bullJob: FakeBullJob = {
-      data: chatJob,
-      id: chatJob.id,
-      opts: { attempts: 3 },
-      attemptsMade: 1,
-    };
+    const bullJob = bullJobFor(chatJob);
 
     await expect(chatWorker.processor(bullJob)).rejects.toThrow('session Redis unavailable');
     await expect(chatWorker.processor(bullJob)).resolves.toMatchObject({ kind: 'chat-completed' });
@@ -535,22 +522,81 @@ describe('createWorkers', () => {
     );
   });
 
+  it('stamps a chat activity and its session commit from one clock read', async () => {
+    const session = makeClaudeSessionId('clocked-session');
+    if (!session.ok) throw new Error(session.error);
+    chatHandler.mockResolvedValue({
+      kind: 'completed',
+      response: 'clocked response',
+      sessionId: session.value,
+      conversationGeneration: 0 as ConversationGeneration,
+      conversationRevision: 0 as ConversationRevision,
+      conversationBackend: 'claude',
+      telegramOperations: [],
+      sourcePaths: [],
+      drainPreviews: vi.fn().mockResolvedValue(undefined),
+    });
+    const clock = tickingClock('2026-03-01T08:00:00.000Z');
+    makeWorkers({ now: clock.now });
+
+    await requireWorker('reclaw-chat').processor(bullJobFor(chatJob));
+
+    const activity = activityStore.get(makeActivityId('chat', chatJob.id));
+    expect(activity?.completedAt).toBe('2026-03-01T08:00:00.000Z');
+    expect(activity?.deliveries).toContainEqual(
+      expect.objectContaining({
+        kind: 'chat-session',
+        lastActivityAt: '2026-03-01T08:00:00.000Z',
+      }),
+    );
+    expect(clock.reads()).toBe(1);
+  });
+
+  it('stamps a scheduled activity from the injected clock', async () => {
+    const clock = tickingClock('2026-03-01T06:00:00.000Z');
+    makeWorkers({ now: clock.now });
+
+    await requireWorker('reclaw-scheduled').processor(bullJobFor(scheduledJob));
+
+    const activity = activityStore.get(makeActivityId('scheduled', scheduledJob.id));
+    expect(activity?.completedAt).toBe('2026-03-01T06:00:00.000Z');
+    expect(clock.reads()).toBe(1);
+  });
+
+  it('reads no clock when a persisted activity is reused', async () => {
+    const activityId = makeActivityId('scheduled', scheduledJob.id);
+    activityStore.set(activityId, {
+      schemaVersion: 1,
+      id: activityId,
+      sourceKind: 'scheduled',
+      sourceJobId: scheduledJob.id,
+      completedAt: RECORDED_AT,
+      outcome: { kind: 'scheduled-completed', response: 'cached briefing', suppressed: false },
+      deliveries: [],
+    });
+    const clock = tickingClock('2026-03-01T06:00:00.000Z');
+    makeWorkers({ now: clock.now });
+
+    await expect(
+      requireWorker('reclaw-scheduled').processor(bullJobFor(scheduledJob)),
+    ).resolves.toEqual({
+      kind: 'scheduled-completed',
+      response: 'cached briefing',
+      suppressed: false,
+    });
+
+    expect(scheduledHandler).not.toHaveBeenCalled();
+    expect(clock.reads()).toBe(0);
+  });
+
   it('scheduled worker processes ScheduledJob via scheduledHandler', async () => {
     makeWorkers();
 
-    const scheduledWorker = fakeFactory.createdWorkers.find(
-      (w) => w.queueName === 'reclaw-scheduled',
-    );
-    expect(scheduledWorker).toBeDefined();
+    const scheduledWorker = requireWorker('reclaw-scheduled');
 
-    const bullJob: FakeBullJob = {
-      data: scheduledJob,
-      id: scheduledJob.id,
-      opts: { attempts: 3 },
-      attemptsMade: 1,
-    };
+    const bullJob = bullJobFor(scheduledJob);
 
-    const result = await scheduledWorker?.processor(bullJob);
+    const result = await scheduledWorker.processor(bullJob);
     expect(scheduledHandler).toHaveBeenCalledWith(scheduledJob);
     expect(result).toEqual({
       kind: 'scheduled-completed',
@@ -604,10 +650,7 @@ describe('createWorkers', () => {
 
   it('preserves the BullMQ Job receiver when checkpointing delivery data', async () => {
     makeWorkers();
-    const deliveryWorker = fakeFactory.createdWorkers.find(
-      (worker) => worker.queueName === 'reclaw-delivery',
-    );
-    if (deliveryWorker === undefined) throw new Error('Delivery worker was not created');
+    const deliveryWorker = requireWorker('reclaw-delivery');
 
     const delivery = makeTelegramBatchDelivery({
       activityId: makeActivityId('chat', chatJob.id),
@@ -639,10 +682,7 @@ describe('createWorkers', () => {
     const session = makeClaudeSessionId('chat-session');
     if (!session.ok) throw new Error(session.error);
     makeWorkers();
-    const deliveryWorker = fakeFactory.createdWorkers.find(
-      (worker) => worker.queueName === 'reclaw-delivery',
-    );
-    if (deliveryWorker === undefined) throw new Error('Delivery worker was not created');
+    const deliveryWorker = requireWorker('reclaw-delivery');
     const delivery = makeTelegramBatchDelivery({
       activityId: makeActivityId('chat', chatJob.id),
       chatId: chatJob.chatId,
@@ -666,10 +706,7 @@ describe('createWorkers', () => {
 
   it('ignores legacy unversioned chat-session commits that could overwrite newer lineage', async () => {
     makeWorkers();
-    const deliveryWorker = fakeFactory.createdWorkers.find(
-      (worker) => worker.queueName === 'reclaw-delivery',
-    );
-    if (deliveryWorker === undefined) throw new Error('Delivery worker was not created');
+    const deliveryWorker = requireWorker('reclaw-delivery');
     const activityId = makeActivityId('chat', chatJob.id);
     const deliveryId = `legacy-chat-session-${activityId}`;
 
@@ -728,32 +765,9 @@ describe('createWorkers', () => {
       callOrder.push('callback');
     });
 
-    createTestWorkers({
-      redisConnection: { host: 'localhost', port: 6379 },
-      chatHandler,
-      scheduledHandler,
-      reminderHandler,
-      recurringReminderHandler,
-      researchHandler,
-      podcastHandler,
-      telegram: mockTelegram,
-      config: mockConfig,
-      workerFactory: fakeFactory.factory,
-      markScheduledJobCompleted: markCompleted,
-      onScheduledJobCompleted: onCompleted,
-    });
+    makeWorkers({ markScheduledJobCompleted: markCompleted, onScheduledJobCompleted: onCompleted });
 
-    const scheduledWorker = fakeFactory.createdWorkers.find(
-      (w) => w.queueName === 'reclaw-scheduled',
-    );
-    const bullJob: FakeBullJob = {
-      data: scheduledJob,
-      id: scheduledJob.id,
-      opts: { attempts: 3 },
-      attemptsMade: 1,
-    };
-
-    await scheduledWorker?.processor(bullJob);
+    await requireWorker('reclaw-scheduled').processor(bullJobFor(scheduledJob));
 
     expect(markCompleted).toHaveBeenCalledWith(scheduledJob.id);
     expect(onCompleted).toHaveBeenCalledWith(scheduledJob);
@@ -768,33 +782,11 @@ describe('createWorkers', () => {
     });
     const markCompleted = vi.fn().mockResolvedValue(undefined);
     const onCompleted = vi.fn();
+    makeWorkers({ markScheduledJobCompleted: markCompleted, onScheduledJobCompleted: onCompleted });
 
-    createTestWorkers({
-      redisConnection: { host: 'localhost', port: 6379 },
-      chatHandler,
-      scheduledHandler,
-      reminderHandler,
-      recurringReminderHandler,
-      researchHandler,
-      podcastHandler,
-      telegram: mockTelegram,
-      config: mockConfig,
-      workerFactory: fakeFactory.factory,
-      markScheduledJobCompleted: markCompleted,
-      onScheduledJobCompleted: onCompleted,
-    });
-
-    const scheduledWorker = fakeFactory.createdWorkers.find(
-      (w) => w.queueName === 'reclaw-scheduled',
-    );
-    const bullJob: FakeBullJob = {
-      data: scheduledJob,
-      id: scheduledJob.id,
-      opts: { attempts: 3 },
-      attemptsMade: 1,
-    };
-
-    await expect(scheduledWorker?.processor(bullJob)).rejects.toThrow('handler failed');
+    await expect(
+      requireWorker('reclaw-scheduled').processor(bullJobFor(scheduledJob)),
+    ).rejects.toThrow('handler failed');
     expect(markCompleted).not.toHaveBeenCalled();
     expect(onCompleted).not.toHaveBeenCalled();
   });
@@ -810,34 +802,12 @@ describe('createWorkers', () => {
     } as ScheduledOutcome);
     const markCompleted = vi.fn().mockResolvedValue(undefined);
     const onCompleted = vi.fn();
-
-    createTestWorkers({
-      redisConnection: { host: 'localhost', port: 6379 },
-      chatHandler,
-      scheduledHandler,
-      reminderHandler,
-      recurringReminderHandler,
-      researchHandler,
-      podcastHandler,
-      telegram: mockTelegram,
-      config: mockConfig,
-      workerFactory: fakeFactory.factory,
-      markScheduledJobCompleted: markCompleted,
-      onScheduledJobCompleted: onCompleted,
-    });
-
-    const scheduledWorker = fakeFactory.createdWorkers.find(
-      (w) => w.queueName === 'reclaw-scheduled',
-    );
-    const bullJob: FakeBullJob = {
-      data: scheduledJob,
-      id: scheduledJob.id,
-      opts: { attempts: 3 },
-      attemptsMade: 1,
-    };
+    makeWorkers({ markScheduledJobCompleted: markCompleted, onScheduledJobCompleted: onCompleted });
 
     // Resolving (not rejecting) is what tells BullMQ never to retry this job.
-    await expect(scheduledWorker?.processor(bullJob)).resolves.toEqual({
+    await expect(
+      requireWorker('reclaw-scheduled').processor(bullJobFor(scheduledJob)),
+    ).resolves.toEqual({
       kind: 'skipped',
       reason: 'validity-window-expired',
     });
@@ -852,34 +822,12 @@ describe('createWorkers', () => {
       .fn()
       .mockRejectedValueOnce(new Error('callback boom'))
       .mockResolvedValue(undefined);
+    makeWorkers({ markScheduledJobCompleted: markCompleted, onScheduledJobCompleted: onCompleted });
+    const scheduledWorker = requireWorker('reclaw-scheduled');
+    const bullJob = bullJobFor(scheduledJob);
 
-    createTestWorkers({
-      redisConnection: { host: 'localhost', port: 6379 },
-      chatHandler,
-      scheduledHandler,
-      reminderHandler,
-      recurringReminderHandler,
-      researchHandler,
-      podcastHandler,
-      telegram: mockTelegram,
-      config: mockConfig,
-      workerFactory: fakeFactory.factory,
-      markScheduledJobCompleted: markCompleted,
-      onScheduledJobCompleted: onCompleted,
-    });
-
-    const scheduledWorker = fakeFactory.createdWorkers.find(
-      (w) => w.queueName === 'reclaw-scheduled',
-    );
-    const bullJob: FakeBullJob = {
-      data: scheduledJob,
-      id: scheduledJob.id,
-      opts: { attempts: 3 },
-      attemptsMade: 1,
-    };
-
-    await expect(scheduledWorker?.processor(bullJob)).rejects.toThrow('callback boom');
-    await expect(scheduledWorker?.processor(bullJob)).resolves.toEqual({
+    await expect(scheduledWorker.processor(bullJob)).rejects.toThrow('callback boom');
+    await expect(scheduledWorker.processor(bullJob)).resolves.toEqual({
       kind: 'scheduled-completed',
       response: 'scheduled response',
       suppressed: false,
@@ -894,31 +842,11 @@ describe('createWorkers', () => {
       kind: 'failed',
       failure: { kind: 'backend-reported', backend: 'claude', detail: 'claude failed' },
     });
+    makeWorkers();
 
-    createTestWorkers({
-      redisConnection: { host: 'localhost', port: 6379 },
-      chatHandler,
-      scheduledHandler,
-      reminderHandler,
-      recurringReminderHandler,
-      researchHandler,
-      podcastHandler,
-      telegram: mockTelegram,
-      config: mockConfig,
-      workerFactory: fakeFactory.factory,
-      onScheduledJobCompleted: vi.fn(),
-      markScheduledJobCompleted: vi.fn().mockResolvedValue(undefined),
-    });
-
-    const chatWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-chat');
-    const bullJob: FakeBullJob = {
-      data: chatJob,
-      id: chatJob.id,
-      opts: { attempts: 3 },
-      attemptsMade: 1,
-    };
-
-    await expect(chatWorker?.processor(bullJob)).rejects.toThrow('claude failed');
+    await expect(requireWorker('reclaw-chat').processor(bullJobFor(chatJob))).rejects.toThrow(
+      'claude failed',
+    );
   });
 
   it('marks permanent agent failures unrecoverable and dead-letters on the first attempt', async () => {
@@ -931,16 +859,8 @@ describe('createWorkers', () => {
       },
     });
     makeWorkers();
-    const chatWorker = fakeFactory.createdWorkers.find(
-      (worker) => worker.queueName === 'reclaw-chat',
-    );
-    if (chatWorker === undefined) throw new Error('Chat worker was not created');
-    const bullJob: FakeBullJob = {
-      data: chatJob,
-      id: chatJob.id,
-      opts: { attempts: 3 },
-      attemptsMade: 1,
-    };
+    const chatWorker = requireWorker('reclaw-chat');
+    const bullJob = bullJobFor(chatJob);
 
     let thrown: Error | null = null;
     try {
@@ -964,42 +884,18 @@ describe('createWorkers', () => {
         failure: { kind: 'timeout', backend: 'claude', timeoutMs: 300_000 },
       },
     });
+    makeWorkers();
 
-    createTestWorkers({
-      redisConnection: { host: 'localhost', port: 6379 },
-      chatHandler,
-      scheduledHandler,
-      reminderHandler,
-      recurringReminderHandler,
-      researchHandler,
-      podcastHandler,
-      telegram: mockTelegram,
-      config: mockConfig,
-      workerFactory: fakeFactory.factory,
-      onScheduledJobCompleted: vi.fn(),
-      markScheduledJobCompleted: vi.fn().mockResolvedValue(undefined),
-    });
-
-    const scheduledWorker = fakeFactory.createdWorkers.find(
-      (w) => w.queueName === 'reclaw-scheduled',
-    );
-    const bullJob: FakeBullJob = {
-      data: scheduledJob,
-      id: scheduledJob.id,
-      opts: { attempts: 3 },
-      attemptsMade: 1,
-    };
-
-    await expect(scheduledWorker?.processor(bullJob)).rejects.toThrow(
-      'claude timed out after 300000ms',
-    );
+    await expect(
+      requireWorker('reclaw-scheduled').processor(bullJobFor(scheduledJob)),
+    ).rejects.toThrow('claude timed out after 300000ms');
   });
 
   it('dead letter: sends user-friendly telegram notification on final chat job failure', async () => {
     makeWorkers();
 
-    const chatWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-chat');
-    const failedHandler = chatWorker?.eventHandlers.get('failed');
+    const chatWorker = requireWorker('reclaw-chat');
+    const failedHandler = chatWorker.eventHandlers.get('failed');
     expect(failedHandler).toBeDefined();
 
     await failedHandler?.(
@@ -1022,10 +918,8 @@ describe('createWorkers', () => {
   it('dead letter: sends telegram notification on final scheduled job failure to all users', async () => {
     makeWorkers();
 
-    const scheduledWorker = fakeFactory.createdWorkers.find(
-      (w) => w.queueName === 'reclaw-scheduled',
-    );
-    const failedHandler = scheduledWorker?.eventHandlers.get('failed');
+    const scheduledWorker = requireWorker('reclaw-scheduled');
+    const failedHandler = scheduledWorker.eventHandlers.get('failed');
     expect(failedHandler).toBeDefined();
 
     await failedHandler?.(
@@ -1042,8 +936,8 @@ describe('createWorkers', () => {
   it('dead letter: does NOT send notification if retries not exhausted', async () => {
     makeWorkers();
 
-    const chatWorker = fakeFactory.createdWorkers.find((w) => w.queueName === 'reclaw-chat');
-    const failedHandler = chatWorker?.eventHandlers.get('failed');
+    const chatWorker = requireWorker('reclaw-chat');
+    const failedHandler = chatWorker.eventHandlers.get('failed');
 
     // attemptsMade=2, maxAttempts=3 → NOT final failure
     await failedHandler?.(
@@ -1104,21 +998,7 @@ describe('createWorkers', () => {
   });
 
   it('readiness timeout closes every inert worker and rejects startup', async () => {
-    const workers = createTestWorkers({
-      redisConnection: { host: 'localhost', port: 6379 },
-      chatHandler,
-      scheduledHandler,
-      reminderHandler,
-      recurringReminderHandler,
-      researchHandler,
-      podcastHandler,
-      telegram: mockTelegram,
-      config: mockConfig,
-      workerFactory: fakeFactory.factory,
-      onScheduledJobCompleted: vi.fn(),
-      markScheduledJobCompleted: vi.fn().mockResolvedValue(undefined),
-      readyTimeoutMs: 5,
-    });
+    const workers = makeWorkers({ readyTimeoutMs: 5 });
     fakeFactory.createdWorkers[0]?.waitUntilReadyImpl.mockReturnValueOnce(new Promise(() => {}));
 
     await expect(workers.start()).rejects.toThrow('not ready within 5ms');
@@ -1156,10 +1036,8 @@ describe('createWorkers', () => {
   it('dead letter message for non-chat job kinds includes job kind, id, and error', async () => {
     makeWorkers();
 
-    const scheduledWorker = fakeFactory.createdWorkers.find(
-      (w) => w.queueName === 'reclaw-scheduled',
-    );
-    const failedHandler = scheduledWorker?.eventHandlers.get('failed');
+    const scheduledWorker = requireWorker('reclaw-scheduled');
+    const failedHandler = scheduledWorker.eventHandlers.get('failed');
 
     await failedHandler?.(
       { data: scheduledJob, id: 'specific-job-id', opts: { attempts: 3 }, attemptsMade: 3 },
@@ -1177,10 +1055,7 @@ describe('createWorkers', () => {
   it('reminder worker dispatches recurring-reminder to recurringReminderHandler', async () => {
     makeWorkers();
 
-    const reminderWorker = fakeFactory.createdWorkers.find(
-      (w) => w.queueName === 'reclaw-reminder',
-    );
-    expect(reminderWorker).toBeDefined();
+    const reminderWorker = requireWorker('reclaw-reminder');
 
     const recurringJob: RecurringReminderJob = {
       kind: 'recurring-reminder',
@@ -1199,7 +1074,7 @@ describe('createWorkers', () => {
       attemptsMade: 0,
     };
 
-    const result = await reminderWorker?.processor(bullJob);
+    const result = await reminderWorker.processor(bullJob);
     expect(recurringReminderHandler).toHaveBeenCalledWith(recurringJob);
     expect(result).toEqual({ ok: true, response: 'recurring response' });
   });
@@ -1207,9 +1082,7 @@ describe('createWorkers', () => {
   it('reminder worker still dispatches one-shot reminders correctly', async () => {
     makeWorkers();
 
-    const reminderWorker = fakeFactory.createdWorkers.find(
-      (w) => w.queueName === 'reclaw-reminder',
-    );
+    const reminderWorker = requireWorker('reclaw-reminder');
 
     const oneshotJob: ReminderJob = {
       kind: 'reminder',
@@ -1227,7 +1100,7 @@ describe('createWorkers', () => {
       attemptsMade: 0,
     };
 
-    const result = await reminderWorker?.processor(bullJob);
+    const result = await reminderWorker.processor(bullJob);
     expect(reminderHandler).toHaveBeenCalledWith(oneshotJob);
     expect(result).toEqual({ ok: true, response: 'reminder response' });
   });
@@ -1235,9 +1108,7 @@ describe('createWorkers', () => {
   it('reminder worker throws on unknown kind', async () => {
     makeWorkers();
 
-    const reminderWorker = fakeFactory.createdWorkers.find(
-      (w) => w.queueName === 'reclaw-reminder',
-    );
+    const reminderWorker = requireWorker('reclaw-reminder');
     const bullJob: FakeBullJob = {
       data: { kind: 'unknown-type', id: 'x' },
       id: 'x',
@@ -1245,7 +1116,7 @@ describe('createWorkers', () => {
       attemptsMade: 0,
     };
 
-    await expect(reminderWorker?.processor(bullJob)).rejects.toThrow('unexpected kind');
+    await expect(reminderWorker.processor(bullJob)).rejects.toThrow('unexpected kind');
   });
 
   // ── Research worker (AD-1, FR-002) ──────────────────────────────────────
@@ -1253,10 +1124,7 @@ describe('createWorkers', () => {
   it('research worker processes ResearchJobData via researchHandler', async () => {
     makeWorkers();
 
-    const researchWorker = fakeFactory.createdWorkers.find(
-      (w) => w.queueName === 'reclaw-research',
-    );
-    expect(researchWorker).toBeDefined();
+    const researchWorker = requireWorker('reclaw-research');
 
     const researchJobData = {
       kind: 'research' as const,
@@ -1299,7 +1167,7 @@ describe('createWorkers', () => {
       updateProgress: mockUpdateProgress,
     };
 
-    const result = await researchWorker?.processor(bullJob);
+    const result = await researchWorker.processor(bullJob);
     // Handler receives a ResearchJobLike wrapping the BullMQ job's updateData/updateProgress
     expect(researchHandler).toHaveBeenCalledWith(
       expect.objectContaining({ data: researchJobData }),
@@ -1317,9 +1185,7 @@ describe('createWorkers', () => {
   it('research worker throws on missing topic field', async () => {
     makeWorkers();
 
-    const researchWorker = fakeFactory.createdWorkers.find(
-      (w) => w.queueName === 'reclaw-research',
-    );
+    const researchWorker = requireWorker('reclaw-research');
     const bullJob: FakeBullJob = {
       data: { state: { kind: 'creating_notebook' } },
       id: 'x',
@@ -1327,15 +1193,13 @@ describe('createWorkers', () => {
       attemptsMade: 0,
     };
 
-    await expect(researchWorker?.processor(bullJob)).rejects.toThrow('Invalid research job');
+    await expect(researchWorker.processor(bullJob)).rejects.toThrow('Invalid research job');
   });
 
   it('research worker throws on missing state field', async () => {
     makeWorkers();
 
-    const researchWorker = fakeFactory.createdWorkers.find(
-      (w) => w.queueName === 'reclaw-research',
-    );
+    const researchWorker = requireWorker('reclaw-research');
     const bullJob: FakeBullJob = {
       data: { topic: 'AI agents' },
       id: 'x',
@@ -1343,15 +1207,13 @@ describe('createWorkers', () => {
       attemptsMade: 0,
     };
 
-    await expect(researchWorker?.processor(bullJob)).rejects.toThrow('Invalid research job');
+    await expect(researchWorker.processor(bullJob)).rejects.toThrow('Invalid research job');
   });
 
   it('research worker throws on null data', async () => {
     makeWorkers();
 
-    const researchWorker = fakeFactory.createdWorkers.find(
-      (w) => w.queueName === 'reclaw-research',
-    );
+    const researchWorker = requireWorker('reclaw-research');
     const bullJob: FakeBullJob = {
       data: null,
       id: 'x',
@@ -1359,28 +1221,23 @@ describe('createWorkers', () => {
       attemptsMade: 0,
     };
 
-    await expect(researchWorker?.processor(bullJob)).rejects.toThrow('Invalid research job');
+    await expect(researchWorker.processor(bullJob)).rejects.toThrow('Invalid research job');
   });
 
   it('research worker has concurrency=1 and long lockDuration (SC-009)', () => {
     makeWorkers();
 
-    const researchWorker = fakeFactory.createdWorkers.find(
-      (w) => w.queueName === 'reclaw-research',
-    );
-    expect(researchWorker).toBeDefined();
-    expect(researchWorker?.opts.concurrency).toBe(1);
+    const researchWorker = requireWorker('reclaw-research');
+    expect(researchWorker.opts.concurrency).toBe(1);
     const expectedLockMs = 60 * 60 * 1000;
-    expect((researchWorker?.opts as { lockDuration?: number }).lockDuration).toBe(expectedLockMs);
+    expect((researchWorker.opts as { lockDuration?: number }).lockDuration).toBe(expectedLockMs);
   });
 
   it('dead letter: sends telegram notification on research job failure', async () => {
     makeWorkers();
 
-    const researchWorker = fakeFactory.createdWorkers.find(
-      (w) => w.queueName === 'reclaw-research',
-    );
-    const failedHandler = researchWorker?.eventHandlers.get('failed');
+    const researchWorker = requireWorker('reclaw-research');
+    const failedHandler = researchWorker.eventHandlers.get('failed');
     expect(failedHandler).toBeDefined();
 
     const researchJobData = {

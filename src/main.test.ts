@@ -1,8 +1,33 @@
-import { type MockInstance, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { type SkillRegistry, makeTelegramUpdateId } from './core/types.js';
+import {
+  type Mock,
+  type MockInstance,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
+import {
+  type JobId,
+  type ScheduledJob,
+  type SkillId,
+  type SkillRegistry,
+  makePodcastJob,
+  makeTelegramUpdateId,
+} from './core/types.js';
+import { fakeQueueOperations } from './infra/__fixtures__/queue-operations.js';
+import type { AgentResult } from './infra/agent-backends/index.js';
 import type { AppConfig } from './infra/config.js';
-import type { TelegramIncomingDisposition, TelegramIncomingMessage } from './infra/telegram.js';
+import type { NotebookLMAdapter, NotebookLMCredentials } from './infra/notebooklm-client.js';
+import type {
+  TelegramIncomingDisposition,
+  TelegramIncomingMessage,
+  createTelegramAdapter,
+} from './infra/telegram.js';
 import { type BootstrapDeps, bootstrap } from './main.js';
+import type { handleScheduledJob } from './orchestration/scheduled-handler.js';
+import type { createWorkers } from './orchestration/worker.js';
 
 // NOTE: We do NOT use vi.mock() here because vitest + bun does not properly
 // intercept module evaluation for mocked modules in this runtime. Instead,
@@ -30,6 +55,37 @@ const mockConfig: AppConfig = {
 };
 const AUTHORIZED_USER_ID = mockConfig.authorizedUserIds[0];
 if (AUTHORIZED_USER_ID === undefined) throw new Error('Test config requires an authorized user');
+
+const TOKEN_CREDENTIALS = { notebooklmAuthToken: 'nlm-token', notebooklmCookies: 'SID=abc' };
+const GOOGLE_CREDENTIALS = { googleEmail: 'agent@example.com', googlePassword: 'hunter2' };
+
+const podcastJobResult = makePodcastJob({
+  id: 'telegram:7002:podcast' as JobId,
+  chatId: 99988877,
+  notePath: 'notes/agents.md',
+  audioFormat: 0,
+  audioLength: 2,
+  enqueuedAt: '2026-08-14T10:00:00.000Z',
+});
+if (!podcastJobResult.ok) throw new Error(podcastJobResult.error);
+const PODCAST_JOB = podcastJobResult.value;
+
+const SCHEDULED_JOB: ScheduledJob = {
+  kind: 'scheduled',
+  id: 'job-sched-001' as JobId,
+  skillId: 'morning-briefing' as SkillId,
+  triggeredAt: '2026-08-14T06:00:00Z',
+  validUntil: '2026-08-14T06:30:00Z',
+  trigger: 'cron',
+};
+
+const AGENT_SUCCESS: AgentResult = { ok: true, output: '', sessionId: null, durationMs: 1 };
+
+/** Stands in for the NotebookLM SDK adapter: the job handlers under test never call it. */
+function makeMockNotebookLM() {
+  const dispose = vi.fn().mockResolvedValue(undefined);
+  return { adapter: { dispose } as unknown as NotebookLMAdapter, dispose };
+}
 
 // ─── Fake component builders ──────────────────────────────────────────────────
 
@@ -84,22 +140,7 @@ function makeMockQueues() {
     },
     podcast: { close: vi.fn().mockResolvedValue(undefined), on: vi.fn() },
     delivery: { close: vi.fn().mockResolvedValue(undefined), on: vi.fn() },
-    activityResults: {
-      find: vi.fn().mockResolvedValue(null),
-      saveIfAbsent: vi.fn(),
-    },
-    deliveryOutbox: { enqueue: vi.fn().mockResolvedValue(undefined) },
-    enqueueChat: vi.fn().mockResolvedValue(undefined),
-    enqueueScheduled: vi.fn().mockResolvedValue(undefined),
-    isScheduledJobKnown: vi.fn().mockResolvedValue(false),
-    isScheduledJobCompleted: vi.fn().mockResolvedValue(false),
-    markScheduledJobCompleted: vi.fn().mockResolvedValue(undefined),
-    enqueueReminder: vi.fn().mockResolvedValue(undefined),
-    enqueueRecurringReminder: vi.fn().mockResolvedValue('recur:123'),
-    listRecurringReminders: vi.fn().mockResolvedValue([]),
-    cancelRecurringReminder: vi.fn().mockResolvedValue(true),
-    enqueueResearch: vi.fn().mockResolvedValue(undefined),
-    getResearchQueuePosition: vi.fn().mockResolvedValue(1),
+    ...fakeQueueOperations(),
   };
 }
 
@@ -168,8 +209,14 @@ describe('bootstrap', () => {
   let createQueuesMock: ReturnType<typeof vi.fn>;
   let createSkillWatcherMock: ReturnType<typeof vi.fn>;
   let createSchedulerMock: ReturnType<typeof vi.fn>;
-  let createWorkersMock: ReturnType<typeof vi.fn>;
+  let createWorkersMock: Mock<typeof createWorkers>;
   let createSessionStoreMock: ReturnType<typeof vi.fn>;
+  let createNotebookLMMock: Mock<
+    (credentials: NotebookLMCredentials) => Promise<NotebookLMAdapter>
+  >;
+  let mockNotebookLM: ReturnType<typeof makeMockNotebookLM>;
+  let handlePodcastJobMock: ReturnType<typeof vi.fn>;
+  let handleScheduledJobMock: ReturnType<typeof vi.fn>;
   let processExitSpy: MockInstance<typeof process.exit>;
   let processOnceSpy: MockInstance<typeof process.once>;
   const signalHandlers = new Map<string, () => void>();
@@ -191,11 +238,15 @@ describe('bootstrap', () => {
     createQueuesMock = vi.fn().mockReturnValue(mockQueues);
     createSkillWatcherMock = vi.fn().mockReturnValue(mockSkillWatcher);
     createSchedulerMock = vi.fn().mockReturnValue(mockScheduler);
-    createWorkersMock = vi.fn().mockReturnValue(mockWorkers);
+    createWorkersMock = vi.fn<typeof createWorkers>().mockReturnValue(mockWorkers);
     createSessionStoreMock = vi.fn().mockReturnValue({
       sessionStore: mockSessionStore,
       disconnect: mockDisconnectRedis,
     });
+    mockNotebookLM = makeMockNotebookLM();
+    createNotebookLMMock = vi.fn().mockResolvedValue(mockNotebookLM.adapter);
+    handlePodcastJobMock = vi.fn().mockResolvedValue({ ok: true, response: 'podcast ready' });
+    handleScheduledJobMock = vi.fn().mockResolvedValue({ kind: 'skipped', reason: 'test' });
 
     processExitSpy = vi.spyOn(process, 'exit').mockImplementation((code): never => {
       throw new Error(`process.exit(${code})`);
@@ -232,15 +283,44 @@ describe('bootstrap', () => {
       createWorkersFn: createWorkersMock,
       runClaudeFn: vi.fn(),
       handleChatJobFn: vi.fn().mockResolvedValue({ ok: true, response: '' }),
-      handleScheduledJobFn: vi.fn().mockResolvedValue({ ok: true, response: '' }),
+      handleScheduledJobFn: handleScheduledJobMock,
       handleReminderJobFn: vi.fn().mockResolvedValue({ ok: true, response: '' }),
       handleRecurringReminderJobFn: vi.fn().mockResolvedValue({ ok: true, response: '' }),
       handleResearchJobFn: vi.fn().mockResolvedValue({ hubPath: null, topic: 'test' }),
+      handlePodcastJobFn: handlePodcastJobMock,
+      createNotebookLMAdapterFn: createNotebookLMMock,
       createSessionStoreFn: createSessionStoreMock,
       createQuotaTrackerFn: vi
         .fn()
         .mockReturnValue({ tracker: mockQuotaTracker, disconnect: mockQuotaDisconnect }),
     };
+  }
+
+  /** Bootstrap deps over `config` instead of the default test config. */
+  function makeDepsWithConfig(config: AppConfig): BootstrapDeps {
+    loadConfigMock.mockReturnValue({ ok: true, value: config });
+    return makeDeps();
+  }
+
+  /** The deps bootstrap handed to the (injected) createWorkers. */
+  function capturedWorkerDeps(): Parameters<typeof createWorkers>[0] {
+    const call = createWorkersMock.mock.calls[0];
+    if (call === undefined) throw new Error('createWorkers was not called');
+    return call[0];
+  }
+
+  /** The onFatalError callback bootstrap handed to the Telegram adapter. */
+  function capturedOnFatalError(): (err: unknown) => void {
+    const call = createTelegramMock.mock.calls[0] as Parameters<typeof createTelegramAdapter>;
+    if (call === undefined) throw new Error('Telegram adapter was not created');
+    const { onFatalError } = call[0];
+    if (onFatalError === undefined) throw new Error('No onFatalError was wired');
+    return onFatalError;
+  }
+
+  /** The adapter the podcast handler received on its `n`th call. */
+  function podcastNotebookLM(n: number): unknown {
+    return (handlePodcastJobMock.mock.calls[n]?.[1] as { notebookLM: unknown }).notebookLM;
   }
 
   it('calls loadConfig', async () => {
@@ -594,6 +674,215 @@ describe('bootstrap', () => {
 
       expect(mockSessionStore.getMessageReference).not.toHaveBeenCalled();
       expect(mockQueues.enqueueChat).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe('NotebookLM adapter wiring (AD-5)', () => {
+    it('fails a NotebookLM job when no credentials are configured', async () => {
+      await bootstrap(makeDeps());
+
+      await expect(capturedWorkerDeps().podcastHandler(PODCAST_JOB)).rejects.toThrow(
+        'NotebookLM adapter not configured',
+      );
+      expect(createNotebookLMMock).not.toHaveBeenCalled();
+      expect(handlePodcastJobMock).not.toHaveBeenCalled();
+    });
+
+    it('prefers token auth over Google auto-login when both are configured', async () => {
+      await bootstrap(
+        makeDepsWithConfig({ ...mockConfig, ...TOKEN_CREDENTIALS, ...GOOGLE_CREDENTIALS }),
+      );
+
+      await capturedWorkerDeps().podcastHandler(PODCAST_JOB);
+
+      expect(createNotebookLMMock).toHaveBeenCalledWith({
+        kind: 'token',
+        authToken: 'nlm-token',
+        cookies: 'SID=abc',
+      });
+    });
+
+    it('falls back to Google auto-login when the token pair is incomplete', async () => {
+      await bootstrap(
+        makeDepsWithConfig({
+          ...mockConfig,
+          notebooklmAuthToken: 'nlm-token',
+          ...GOOGLE_CREDENTIALS,
+        }),
+      );
+
+      await capturedWorkerDeps().podcastHandler(PODCAST_JOB);
+
+      expect(createNotebookLMMock).toHaveBeenCalledWith({
+        kind: 'google',
+        email: 'agent@example.com',
+        password: 'hunter2',
+      });
+    });
+
+    it('creates the adapter once and reuses it for later jobs', async () => {
+      await bootstrap(makeDepsWithConfig({ ...mockConfig, ...TOKEN_CREDENTIALS }));
+      const { podcastHandler } = capturedWorkerDeps();
+
+      await podcastHandler(PODCAST_JOB);
+      await podcastHandler(PODCAST_JOB);
+
+      expect(createNotebookLMMock).toHaveBeenCalledOnce();
+      expect(podcastNotebookLM(1)).toBe(mockNotebookLM.adapter);
+    });
+
+    it('creates one adapter when two jobs need it before the first creation finishes', async () => {
+      let finishCreation: (adapter: NotebookLMAdapter) => void = () => {};
+      createNotebookLMMock.mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishCreation = resolve;
+        }),
+      );
+      await bootstrap(makeDepsWithConfig({ ...mockConfig, ...TOKEN_CREDENTIALS }));
+      const { podcastHandler } = capturedWorkerDeps();
+
+      const first = podcastHandler(PODCAST_JOB);
+      const second = podcastHandler(PODCAST_JOB);
+      await vi.waitFor(() => expect(createNotebookLMMock).toHaveBeenCalledOnce());
+      finishCreation(mockNotebookLM.adapter);
+      await Promise.all([first, second]);
+
+      expect(createNotebookLMMock).toHaveBeenCalledOnce();
+      expect(podcastNotebookLM(0)).toBe(mockNotebookLM.adapter);
+      expect(podcastNotebookLM(1)).toBe(mockNotebookLM.adapter);
+    });
+
+    it('retries adapter creation on the next job after a failed creation', async () => {
+      createNotebookLMMock.mockRejectedValueOnce(new Error('login failed'));
+      await bootstrap(makeDepsWithConfig({ ...mockConfig, ...TOKEN_CREDENTIALS }));
+      const { podcastHandler } = capturedWorkerDeps();
+
+      await expect(podcastHandler(PODCAST_JOB)).rejects.toThrow('login failed');
+      await podcastHandler(PODCAST_JOB);
+
+      expect(createNotebookLMMock).toHaveBeenCalledTimes(2);
+      expect(podcastNotebookLM(0)).toBe(mockNotebookLM.adapter);
+    });
+
+    it('disposes the created adapter at shutdown', async () => {
+      const shutdown = await bootstrap(makeDepsWithConfig({ ...mockConfig, ...TOKEN_CREDENTIALS }));
+      await capturedWorkerDeps().podcastHandler(PODCAST_JOB);
+
+      await shutdown();
+
+      expect(mockNotebookLM.dispose).toHaveBeenCalledOnce();
+    });
+
+    it('creates no adapter at shutdown when no job needed one', async () => {
+      const shutdown = await bootstrap(makeDepsWithConfig({ ...mockConfig, ...TOKEN_CREDENTIALS }));
+
+      await shutdown();
+
+      expect(createNotebookLMMock).not.toHaveBeenCalled();
+      expect(mockNotebookLM.dispose).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Redis stores', () => {
+    it('shutdown disconnects both injected Redis stores', async () => {
+      const shutdown = await bootstrap(makeDeps());
+      await shutdown();
+      expect(mockDisconnectRedis).toHaveBeenCalledOnce();
+      expect(mockQuotaDisconnect).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe('Telegram fatal-error relay', () => {
+    it('a fatal polling error after bootstrap runs the graceful shutdown', async () => {
+      await bootstrap(makeDeps());
+      processExitSpy.mockImplementation(() => undefined as never);
+
+      capturedOnFatalError()(new Error('polling conflict'));
+      await vi.waitFor(() => expect(processExitSpy).toHaveBeenCalledWith(0));
+
+      expect(mockWorkers.stop).toHaveBeenCalledOnce();
+      expect(mockTelegram.stop).toHaveBeenCalledOnce();
+      expect(mockQueues.chat.close).toHaveBeenCalledOnce();
+      expect(mockDisconnectRedis).toHaveBeenCalledOnce();
+    });
+
+    it('a fatal polling error before shutdown is wired exits at once', async () => {
+      let releaseWorkers: () => void = () => {};
+      mockWorkers.start.mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          releaseWorkers = resolve;
+        }),
+      );
+      processExitSpy.mockImplementation(() => undefined as never);
+
+      const bootstrapping = bootstrap(makeDeps());
+      await vi.waitFor(() => expect(mockWorkers.start).toHaveBeenCalledOnce());
+      capturedOnFatalError()(new Error('polling conflict'));
+
+      expect(processExitSpy).toHaveBeenCalledWith(1);
+      expect(mockWorkers.stop).not.toHaveBeenCalled();
+      releaseWorkers();
+      await bootstrapping;
+    });
+  });
+
+  describe('authorized user ids', () => {
+    it('exits before creating the Telegram adapter when an id is invalid', async () => {
+      await expect(
+        bootstrap(
+          makeDepsWithConfig({ ...mockConfig, authorizedUserIds: [AUTHORIZED_USER_ID, 0] }),
+        ),
+      ).rejects.toThrow('process.exit(1)');
+
+      expect(processExitSpy).toHaveBeenCalledWith(1);
+      expect(createTelegramMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('scheduled agent runs', () => {
+    const piConfig: AppConfig = {
+      ...mockConfig,
+      agentBackend: 'pi',
+      piProvider: 'vllm',
+      piModel: 'chat-model',
+    };
+
+    /** Run the scheduled agent bootstrap hands to the scheduled job handler; returns the run's options. */
+    async function scheduledRunOptions(config: AppConfig): Promise<unknown> {
+      const runAgentMock = vi.fn().mockResolvedValue(AGENT_SUCCESS);
+      const { runClaudeFn: _chatRunner, ...deps } = makeDepsWithConfig(config);
+      await bootstrap({ ...deps, runAgentFn: runAgentMock });
+
+      await capturedWorkerDeps().scheduledHandler(SCHEDULED_JOB);
+      const handlerDeps = handleScheduledJobMock.mock.calls[0]?.[1] as Parameters<
+        typeof handleScheduledJob
+      >[1];
+      await handlerDeps.runClaude({
+        cwd: '/workspace',
+        prompt: 'briefing',
+        allowedTools: [],
+        timeoutMs: 1_000,
+      });
+
+      expect(runAgentMock).toHaveBeenCalledOnce();
+      expect(runAgentMock.mock.calls[0]?.[0]).toMatchObject({ name: 'pi' });
+      return runAgentMock.mock.calls[0]?.[1];
+    }
+
+    it('runs scheduled skills on the scheduled Pi model', async () => {
+      const options = await scheduledRunOptions({ ...piConfig, piScheduledModel: 'cheap-model' });
+
+      expect(options).toMatchObject({
+        modelSelection: { provider: 'vllm', model: 'cheap-model' },
+      });
+    });
+
+    it('runs scheduled skills on the chat Pi model when no scheduled model is set', async () => {
+      const options = await scheduledRunOptions(piConfig);
+
+      expect(options).toMatchObject({
+        modelSelection: { provider: 'vllm', model: 'chat-model' },
+      });
     });
   });
 

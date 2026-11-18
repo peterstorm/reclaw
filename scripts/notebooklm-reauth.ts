@@ -42,6 +42,8 @@ import {
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { BrowserContext, Page } from 'playwright-core';
+import { z } from 'zod';
 import {
   NOTEBOOKLM_WEB_ORIGIN,
   NOTEBOOKLM_WEB_ORIGINS,
@@ -54,12 +56,20 @@ import {
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CREDENTIALS_PATH = join(REPO_ROOT, 'credentials.json');
 
+const browsersJsonSchema = z.object({
+  browsers: z.array(z.object({ name: z.string(), revision: z.string() })),
+});
+
 /** Chromium revision that the installed playwright-core expects. */
 function wantedChromiumRevision(): string {
-  const browsersJson = JSON.parse(
+  const raw: unknown = JSON.parse(
     readFileSync(join(REPO_ROOT, 'node_modules/playwright-core/browsers.json'), 'utf8'),
-  ) as { browsers: ReadonlyArray<{ name: string; revision: string }> };
-  const chromium = browsersJson.browsers.find((b) => b.name === 'chromium');
+  );
+  const parsed = browsersJsonSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new Error(`unexpected playwright-core browsers.json: ${parsed.error.message}`);
+  }
+  const chromium = parsed.data.browsers.find((b) => b.name === 'chromium');
   if (!chromium) throw new Error('chromium not found in playwright-core browsers.json');
   return chromium.revision;
 }
@@ -99,13 +109,89 @@ function shimBrowsersPath(): string {
   return shim;
 }
 
-async function main(): Promise<void> {
+type GoogleLogin = { readonly email: string; readonly password: string };
+type Credentials = { authToken: string; cookies: string };
+
+function googleLoginFromEnv(): GoogleLogin {
   const email = process.env.GOOGLE_EMAIL;
   const password = process.env.GOOGLE_PASSWORD;
   if (!email || !password) {
     console.error('[reauth] missing GOOGLE_EMAIL / GOOGLE_PASSWORD');
     process.exit(1);
   }
+  return { email, password };
+}
+
+/** Drive Google's WebLiteSignIn flow until the page lands on NotebookLM. */
+async function signIn(page: Page, { email, password }: GoogleLogin): Promise<void> {
+  await page.goto(`https://accounts.google.com/ServiceLogin?continue=${NOTEBOOKLM_WEB_ORIGIN}/`, {
+    waitUntil: 'networkidle',
+    timeout: 60_000,
+  });
+
+  // Email — WebLiteSignIn uses input[name="identifier"], not input[type=email].
+  await page.fill('#identifierId, input[name="identifier"]', email, { timeout: 20_000 });
+  await page
+    .click('#identifierNext button, #identifierNext', { timeout: 10_000 })
+    .catch(() => page.keyboard.press('Enter'));
+  console.error('[reauth] email submitted');
+
+  // Password
+  await page.waitForSelector('input[type="password"]:visible, input[name="Passwd"]', {
+    timeout: 25_000,
+  });
+  await page.waitForTimeout(1_000);
+  await page.fill('input[type="password"], input[name="Passwd"]', password, { timeout: 20_000 });
+  await page
+    .click('#passwordNext button, #passwordNext', { timeout: 10_000 })
+    .catch(() => page.keyboard.press('Enter'));
+  console.error('[reauth] password submitted');
+
+  await page
+    .waitForURL((url) => isNotebookLMWebUrl(url.href), { timeout: 45_000 })
+    .catch(() => undefined);
+  await page.waitForTimeout(3_000);
+  if (!isNotebookLMWebUrl(page.url())) {
+    const heading = await page
+      .locator('h1, [role=heading]')
+      .first()
+      .innerText()
+      .catch(() => '?');
+    throw new Error(`login did not reach NotebookLM (stuck at "${heading}", url=${page.url()})`);
+  }
+}
+
+/** Read the SNlM0e token off a signed-in NotebookLM page, plus the cookie header. */
+async function extractCredentials(ctx: BrowserContext, page: Page): Promise<Credentials> {
+  await page.goto(`${NOTEBOOKLM_WEB_ORIGIN}/`, {
+    waitUntil: 'domcontentloaded',
+    timeout: 45_000,
+  });
+  await page.waitForTimeout(3_000);
+
+  // Runs in the page, where Google's bootstrap object is untyped: narrow it there.
+  const authToken = await page.evaluate((): string | null => {
+    const data: unknown = Reflect.get(globalThis, 'WIZ_global_data');
+    if (typeof data !== 'object' || data === null) return null;
+    const token: unknown = Reflect.get(data, 'SNlM0e');
+    return typeof token === 'string' && token !== '' ? token : null;
+  });
+  if (!authToken) throw new Error('SNlM0e auth token not found on NotebookLM page');
+
+  const cookies = await ctx.cookies([
+    ...NOTEBOOKLM_WEB_ORIGINS,
+    'https://accounts.google.com',
+    'https://google.com',
+  ]);
+  const cookieHeader = cookies.map((c) => `${c.name}=${c.value}`).join('; ');
+  console.error(
+    `[reauth] extracted token(${authToken.length}ch) cookies(${cookieHeader.length}ch)`,
+  );
+  return { authToken, cookies: cookieHeader };
+}
+
+async function main(): Promise<void> {
+  const login = googleLoginFromEnv();
 
   process.env.PLAYWRIGHT_BROWSERS_PATH = shimBrowsersPath();
   process.env.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = '1';
@@ -115,75 +201,15 @@ async function main(): Promise<void> {
   const { createNotebookLMAdapter } = await import('../src/infra/notebooklm-client.js');
 
   const browser = await chromium.launch({ headless: true });
-  let credentials: { authToken: string; cookies: string };
+  let credentials: Credentials;
   try {
     const ctx = await browser.newContext({
       userAgent:
         'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     });
     const page = await ctx.newPage();
-
-    await page.goto(`https://accounts.google.com/ServiceLogin?continue=${NOTEBOOKLM_WEB_ORIGIN}/`, {
-      waitUntil: 'networkidle',
-      timeout: 60_000,
-    });
-
-    // Email — WebLiteSignIn uses input[name="identifier"], not input[type=email].
-    await page.fill('#identifierId, input[name="identifier"]', email, { timeout: 20_000 });
-    await page
-      .click('#identifierNext button, #identifierNext', { timeout: 10_000 })
-      .catch(() => page.keyboard.press('Enter'));
-    console.error('[reauth] email submitted');
-
-    // Password
-    await page.waitForSelector('input[type="password"]:visible, input[name="Passwd"]', {
-      timeout: 25_000,
-    });
-    await page.waitForTimeout(1_000);
-    await page.fill('input[type="password"], input[name="Passwd"]', password, { timeout: 20_000 });
-    await page
-      .click('#passwordNext button, #passwordNext', { timeout: 10_000 })
-      .catch(() => page.keyboard.press('Enter'));
-    console.error('[reauth] password submitted');
-
-    await page
-      .waitForURL((url) => isNotebookLMWebUrl(url.href), { timeout: 45_000 })
-      .catch(() => undefined);
-    await page.waitForTimeout(3_000);
-    if (!isNotebookLMWebUrl(page.url())) {
-      const heading = await page
-        .locator('h1, [role=heading]')
-        .first()
-        .innerText()
-        .catch(() => '?');
-      throw new Error(`login did not reach NotebookLM (stuck at "${heading}", url=${page.url()})`);
-    }
-
-    await page.goto(`${NOTEBOOKLM_WEB_ORIGIN}/`, {
-      waitUntil: 'domcontentloaded',
-      timeout: 45_000,
-    });
-    await page.waitForTimeout(3_000);
-
-    // Runs in the page, where Google's bootstrap object is untyped: narrow it there.
-    const authToken = await page.evaluate((): string | null => {
-      const data: unknown = Reflect.get(globalThis, 'WIZ_global_data');
-      if (typeof data !== 'object' || data === null) return null;
-      const token: unknown = Reflect.get(data, 'SNlM0e');
-      return typeof token === 'string' && token !== '' ? token : null;
-    });
-    if (!authToken) throw new Error('SNlM0e auth token not found on NotebookLM page');
-
-    const cookies = await ctx.cookies([
-      ...NOTEBOOKLM_WEB_ORIGINS,
-      'https://accounts.google.com',
-      'https://google.com',
-    ]);
-    const cookieHeader = cookies.map((c) => `${c.name}=${c.value}`).join('; ');
-    credentials = { authToken, cookies: cookieHeader };
-    console.error(
-      `[reauth] extracted token(${authToken.length}ch) cookies(${cookieHeader.length}ch)`,
-    );
+    await signIn(page, login);
+    credentials = await extractCredentials(ctx, page);
   } finally {
     await browser.close();
   }
