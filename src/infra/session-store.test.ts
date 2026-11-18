@@ -128,6 +128,39 @@ describe('createSessionStore', () => {
     });
   });
 
+  it('rejects a malformed commit reply instead of guessing a CAS outcome', async () => {
+    const session = makeAgentSessionId('new-session');
+    if (!session.ok) throw new Error(session.error);
+    const store = createSessionStore(redis, 'pi', () => NOW);
+    const commit = (reply: unknown) => {
+      redis.eval.mockResolvedValueOnce(reply);
+      return store.commitSession({
+        chatId: CHAT_ID,
+        expectedGeneration: 0 as ConversationGeneration,
+        expectedRevision: 2 as ConversationRevision,
+        backend: 'pi',
+        sessionId: session.value,
+        lastActivityAt: NOW,
+      });
+    };
+
+    await expect(commit(7)).rejects.toThrow('Redis conversation commit returned non-string result');
+    await expect(commit('not-json')).rejects.toThrow(
+      'Redis conversation commit returned invalid JSON',
+    );
+    for (const envelope of [
+      'null',
+      '[]',
+      '"committed"',
+      JSON.stringify({ committed: 'yes', lineage: lineage() }),
+      JSON.stringify({ committed: true }),
+    ]) {
+      await expect(commit(envelope)).rejects.toThrow(
+        'Redis conversation commit returned invalid envelope',
+      );
+    }
+  });
+
   it('stores and reads message references scoped by chat ID', async () => {
     const session = makeAgentSessionId('session-1');
     if (!session.ok) throw new Error(session.error);

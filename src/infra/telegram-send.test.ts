@@ -15,11 +15,33 @@ const rateLimited = (retryAfter: number) => ({
   parameters: { retry_after: retryAfter },
 });
 
+/** A 429 that names no wait: grammY's GrammyError (an Error) with empty parameters. */
+const rateLimitedWithoutRetryAfter = () =>
+  Object.assign(new Error('Call to sendMessage failed! (429: Too Many Requests)'), {
+    error_code: 429,
+    description: 'Too Many Requests',
+    parameters: {},
+  });
+
 function fakeApi() {
   const sendMessage = vi.fn();
   const editMessageText = vi.fn();
   const api = { sendMessage, editMessageText } as unknown as SenderApi;
   return { api, sendMessage, editMessageText };
+}
+
+/** Walk the 1s, 2s, 4s backoff: each retry fires exactly when its delay elapses, not a tick earlier. */
+async function expectBackoffRetries(apiCall: ReturnType<typeof vi.fn>): Promise<void> {
+  const callsAfter = async (ms: number): Promise<number> => {
+    await vi.advanceTimersByTimeAsync(ms);
+    return apiCall.mock.calls.length;
+  };
+  expect(await callsAfter(999)).toBe(1);
+  expect(await callsAfter(1)).toBe(2);
+  expect(await callsAfter(1_999)).toBe(2);
+  expect(await callsAfter(1)).toBe(3);
+  expect(await callsAfter(3_999)).toBe(3);
+  expect(await callsAfter(1)).toBe(4);
 }
 
 describe('createTelegramSender — 429 rate-limit retry', () => {
@@ -63,18 +85,44 @@ describe('createTelegramSender — 429 rate-limit retry', () => {
     const sender = createTelegramSender(api);
 
     const sending = sender.sendMessage(5, 'hello', { plain: true });
-    const callsAfter = async (ms: number): Promise<number> => {
-      await vi.advanceTimersByTimeAsync(ms);
-      return sendMessage.mock.calls.length;
-    };
-
-    expect(await callsAfter(999)).toBe(1);
-    expect(await callsAfter(1)).toBe(2);
-    expect(await callsAfter(1_999)).toBe(2);
-    expect(await callsAfter(1)).toBe(3);
-    expect(await callsAfter(3_999)).toBe(3);
-    expect(await callsAfter(1)).toBe(4);
+    await expectBackoffRetries(sendMessage);
     await expect(sending).resolves.toBe(9);
+  });
+
+  it('uses the 1s, 2s, 4s backoff when a 429 carries no retry_after', async () => {
+    const { api, sendMessage } = fakeApi();
+    sendMessage
+      .mockRejectedValueOnce(rateLimitedWithoutRetryAfter())
+      .mockRejectedValueOnce({ error_code: 429, description: 'Too Many Requests' })
+      .mockRejectedValueOnce({ error_code: 429, parameters: { retry_after: 'soon' } })
+      .mockResolvedValueOnce({ message_id: 11 });
+    const sender = createTelegramSender(api);
+
+    const sending = sender.sendMessage(5, 'hello', { plain: true });
+    await expectBackoffRetries(sendMessage);
+    await expect(sending).resolves.toBe(11);
+    expect(warn).toHaveBeenCalledWith(
+      '[telegram] 429 rate-limited on sendMessage, retrying in 1s (attempt 1/3)',
+    );
+  });
+
+  it('rethrows the last 429 without retry_after once the backoff is exhausted', async () => {
+    const { api, sendMessage } = fakeApi();
+    const last = rateLimitedWithoutRetryAfter();
+    sendMessage
+      .mockRejectedValueOnce(rateLimitedWithoutRetryAfter())
+      .mockRejectedValueOnce(rateLimitedWithoutRetryAfter())
+      .mockRejectedValueOnce(rateLimitedWithoutRetryAfter())
+      .mockRejectedValueOnce(last);
+    const sender = createTelegramSender(api);
+
+    const sending = sender.sendMessage(5, 'hello', { plain: true });
+    const rejection = expect(sending).rejects.toBe(last);
+    await vi.advanceTimersByTimeAsync(7_000);
+
+    await rejection;
+    expect(sendMessage).toHaveBeenCalledTimes(4);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('rethrows the last 429 once its three retries are exhausted', async () => {

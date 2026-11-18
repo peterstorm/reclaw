@@ -9,6 +9,7 @@
  * modelSelection (mapped to --provider/--model), and loads all features (no --no-extensions or --no-skills flags).
  */
 
+import { type UnknownRecord, isRecord } from '../../core/is-record.js';
 import { assertNever } from '../../core/types.js';
 import type { AgentBackend, AgentModelSelection, StreamDelta } from './types.js';
 
@@ -17,27 +18,22 @@ import type { AgentBackend, AgentModelSelection, StreamDelta } from './types.js'
 // Pi's `--mode json` lines are wire data: each is parsed once into the shape
 // reclaw reads, and anything that does not fit is skipped, never cast.
 
-type WireRecord = Readonly<Record<string, unknown>>;
-
-const isWireRecord = (value: unknown): value is WireRecord =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
-
 const optionalString = (value: unknown): string | undefined =>
   typeof value === 'string' ? value : undefined;
 
 /** One JSON line as an object, or null for blank, non-JSON and non-object lines. */
-const parseJsonLine = (line: string): WireRecord | null => {
+const parseJsonLine = (line: string): UnknownRecord | null => {
   const trimmed = line.trim();
   if (!trimmed) return null;
   try {
     const parsed: unknown = JSON.parse(trimmed);
-    return isWireRecord(parsed) ? parsed : null;
+    return isRecord(parsed) ? parsed : null;
   } catch {
     return null;
   }
 };
 
-const parseSessionId = (event: WireRecord): string | null =>
+const parseSessionId = (event: UnknownRecord): string | null =>
   event.type === 'session' && typeof event.id === 'string' ? event.id : null;
 
 /** A message_end, reduced to what parseResult reads: its text blocks and failure fields. */
@@ -48,8 +44,8 @@ type PiMessageEnd = {
   readonly texts: readonly string[];
 };
 
-const parseMessageEnd = (event: WireRecord): PiMessageEnd | null => {
-  if (event.type !== 'message_end' || !isWireRecord(event.message)) return null;
+const parseMessageEnd = (event: UnknownRecord): PiMessageEnd | null => {
+  if (event.type !== 'message_end' || !isRecord(event.message)) return null;
   const { role, stopReason, errorMessage, content } = event.message;
   if (!Array.isArray(content)) return null;
   const blocks: readonly unknown[] = content;
@@ -58,7 +54,7 @@ const parseMessageEnd = (event: WireRecord): PiMessageEnd | null => {
     stopReason: optionalString(stopReason),
     errorMessage: optionalString(errorMessage),
     texts: blocks.flatMap((block) =>
-      isWireRecord(block) && block.type === 'text' && typeof block.text === 'string'
+      isRecord(block) && block.type === 'text' && typeof block.text === 'string'
         ? [block.text]
         : [],
     ),
@@ -98,8 +94,8 @@ const parseDeltaText = (delta: unknown): string | null => {
   return typeof delta === 'string' ? delta : null;
 };
 
-const parseStreamedEvent = (event: WireRecord): PiStreamedEvent | null => {
-  if (event.type !== 'message_update' || !isWireRecord(event.assistantMessageEvent)) return null;
+const parseStreamedEvent = (event: UnknownRecord): PiStreamedEvent | null => {
+  if (event.type !== 'message_update' || !isRecord(event.assistantMessageEvent)) return null;
   const { type, delta } = event.assistantMessageEvent;
   const streamed = PI_STREAMED_KINDS.get(type);
   if (streamed === undefined) return null;

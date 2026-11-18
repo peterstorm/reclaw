@@ -27,7 +27,7 @@ export type VaultWorkspace = {
 
 function errorCode(error: unknown): string | undefined {
   return typeof error === 'object' && error !== null && 'code' in error
-    ? String((error as { readonly code?: unknown }).code)
+    ? String(error.code)
     : undefined;
 }
 
@@ -45,18 +45,21 @@ function outside(pathValue: string): Result<never, VaultPathError> {
 }
 
 /**
- * Resolve a configured vault root once, then expose only containment-checking
- * path operations. The canonical root may differ from the configured path when
- * the root itself is a symlink.
+ * The vault root as configured (made absolute) and as canonicalized. They differ
+ * when the root itself is a symlink; a caller may name a file under either.
  */
-export async function createVaultWorkspace(
+type VaultRoots = Readonly<{
+  configured: string;
+  canonical: string;
+}>;
+
+/** Canonicalize the configured root, which must exist and be a directory. */
+async function resolveVaultRoots(
   configuredRoot: string,
-): Promise<Result<VaultWorkspace, VaultPathError>> {
-  const configuredRootAbsolute = path.resolve(configuredRoot);
-  let canonicalRoot: string;
+): Promise<Result<VaultRoots, VaultPathError>> {
   try {
-    canonicalRoot = await fs.realpath(configuredRoot);
-    const stat = await fs.stat(canonicalRoot);
+    const canonical = await fs.realpath(configuredRoot);
+    const stat = await fs.stat(canonical);
     if (!stat.isDirectory()) {
       return err({
         kind: 'vault-root-unavailable',
@@ -64,6 +67,7 @@ export async function createVaultWorkspace(
         cause: 'configured vault root is not a directory',
       });
     }
+    return ok({ configured: path.resolve(configuredRoot), canonical });
   } catch (error) {
     return err({
       kind: 'vault-root-unavailable',
@@ -71,95 +75,123 @@ export async function createVaultWorkspace(
       cause: errorMessage(error),
     });
   }
+}
 
-  const resolveExistingAbsoluteFile = async (
-    absolutePath: string,
-  ): Promise<Result<VaultFilePath, VaultPathError>> => {
-    const lexicalPath = path.resolve(absolutePath);
-    const isNamedUnderConfiguredRoot = isContained(configuredRootAbsolute, lexicalPath);
-    const isNamedUnderCanonicalRoot = isContained(canonicalRoot, lexicalPath);
-    if (
-      !path.isAbsolute(absolutePath) ||
-      (!isNamedUnderConfiguredRoot && !isNamedUnderCanonicalRoot)
-    ) {
-      return outside(absolutePath);
+async function resolveExistingAbsoluteFile(
+  roots: VaultRoots,
+  absolutePath: string,
+): Promise<Result<VaultFilePath, VaultPathError>> {
+  const lexicalPath = path.resolve(absolutePath);
+  const isNamedUnderConfiguredRoot = isContained(roots.configured, lexicalPath);
+  const isNamedUnderCanonicalRoot = isContained(roots.canonical, lexicalPath);
+  if (
+    !path.isAbsolute(absolutePath) ||
+    (!isNamedUnderConfiguredRoot && !isNamedUnderCanonicalRoot)
+  ) {
+    return outside(absolutePath);
+  }
+
+  try {
+    const canonicalPath = await fs.realpath(lexicalPath);
+    if (!isContained(roots.canonical, canonicalPath)) return outside(absolutePath);
+    const stat = await fs.stat(canonicalPath);
+    if (!stat.isFile()) return err({ kind: 'not-a-file', path: absolutePath });
+    return ok(canonicalPath as VaultFilePath);
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return err({ kind: 'not-found', path: absolutePath });
+    return err({ kind: 'filesystem-error', path: absolutePath, cause: errorMessage(error) });
+  }
+}
+
+async function resolveExistingFile(
+  roots: VaultRoots,
+  relativePath: VaultRelativePath,
+): Promise<Result<VaultFilePath, VaultPathError>> {
+  const lexicalPath = path.resolve(roots.canonical, relativePath);
+  if (!isContained(roots.canonical, lexicalPath)) return outside(relativePath);
+  return resolveExistingAbsoluteFile(roots, lexicalPath);
+}
+
+/**
+ * Why a write-path probe whose realpath failed cannot be walked past, or null
+ * when it is simply missing and its parent should be probed next.
+ */
+async function unwalkableProbe(
+  canonicalRoot: string,
+  probe: string,
+  realpathError: unknown,
+  relativePath: VaultRelativePath,
+): Promise<Result<never, VaultPathError> | null> {
+  if (errorCode(realpathError) !== 'ENOENT') {
+    return err({
+      kind: 'filesystem-error',
+      path: relativePath,
+      cause: errorMessage(realpathError),
+    });
+  }
+  // realpath also reports ENOENT for a broken final symlink. Treating it
+  // as an ordinary missing file would let writeFile follow that symlink
+  // and create its target outside the vault.
+  try {
+    const stat = await fs.lstat(probe);
+    if (stat.isSymbolicLink()) return outside(relativePath);
+  } catch (lstatError) {
+    if (errorCode(lstatError) !== 'ENOENT') {
+      return err({ kind: 'filesystem-error', path: relativePath, cause: errorMessage(lstatError) });
     }
+  }
+  if (probe === canonicalRoot) {
+    return err({ kind: 'filesystem-error', path: relativePath, cause: 'vault root disappeared' });
+  }
+  return null;
+}
 
+async function resolveFileForWrite(
+  roots: VaultRoots,
+  relativePath: VaultRelativePath,
+): Promise<Result<VaultFilePath, VaultPathError>> {
+  const canonicalRoot = roots.canonical;
+  const lexicalPath = path.resolve(canonicalRoot, relativePath);
+  if (!isContained(canonicalRoot, lexicalPath)) return outside(relativePath);
+
+  // The target may not exist. Canonicalize its deepest existing ancestor,
+  // then re-attach only the missing suffix. This detects an escaping symlink
+  // in any existing parent without requiring the destination file to exist.
+  const missingSegments: string[] = [];
+  let probe = lexicalPath;
+  while (true) {
     try {
-      const canonicalPath = await fs.realpath(lexicalPath);
-      if (!isContained(canonicalRoot, canonicalPath)) return outside(absolutePath);
-      const stat = await fs.stat(canonicalPath);
-      if (!stat.isFile()) return err({ kind: 'not-a-file', path: absolutePath });
-      return ok(canonicalPath as VaultFilePath);
+      const canonicalAncestor = await fs.realpath(probe);
+      if (!isContained(canonicalRoot, canonicalAncestor)) return outside(relativePath);
+      const canonicalTarget = path.resolve(canonicalAncestor, ...missingSegments);
+      if (!isContained(canonicalRoot, canonicalTarget)) return outside(relativePath);
+      return ok(canonicalTarget as VaultFilePath);
     } catch (error) {
-      if (errorCode(error) === 'ENOENT') return err({ kind: 'not-found', path: absolutePath });
-      return err({ kind: 'filesystem-error', path: absolutePath, cause: errorMessage(error) });
+      const refusal = await unwalkableProbe(canonicalRoot, probe, error, relativePath);
+      if (refusal !== null) return refusal;
+      missingSegments.unshift(path.basename(probe));
+      probe = path.dirname(probe);
     }
-  };
+  }
+}
 
-  const resolveExistingFile = async (
-    relativePath: VaultRelativePath,
-  ): Promise<Result<VaultFilePath, VaultPathError>> => {
-    const lexicalPath = path.resolve(canonicalRoot, relativePath);
-    if (!isContained(canonicalRoot, lexicalPath)) return outside(relativePath);
-    return resolveExistingAbsoluteFile(lexicalPath);
-  };
-
-  const resolveFileForWrite = async (
-    relativePath: VaultRelativePath,
-  ): Promise<Result<VaultFilePath, VaultPathError>> => {
-    const lexicalPath = path.resolve(canonicalRoot, relativePath);
-    if (!isContained(canonicalRoot, lexicalPath)) return outside(relativePath);
-
-    // The target may not exist. Canonicalize its deepest existing ancestor,
-    // then re-attach only the missing suffix. This detects an escaping symlink
-    // in any existing parent without requiring the destination file to exist.
-    const missingSegments: string[] = [];
-    let probe = lexicalPath;
-    while (true) {
-      try {
-        const canonicalAncestor = await fs.realpath(probe);
-        if (!isContained(canonicalRoot, canonicalAncestor)) return outside(relativePath);
-        const canonicalTarget = path.resolve(canonicalAncestor, ...missingSegments);
-        if (!isContained(canonicalRoot, canonicalTarget)) return outside(relativePath);
-        return ok(canonicalTarget as VaultFilePath);
-      } catch (error) {
-        if (errorCode(error) !== 'ENOENT') {
-          return err({ kind: 'filesystem-error', path: relativePath, cause: errorMessage(error) });
-        }
-        // realpath also reports ENOENT for a broken final symlink. Treating it
-        // as an ordinary missing file would let writeFile follow that symlink
-        // and create its target outside the vault.
-        try {
-          const stat = await fs.lstat(probe);
-          if (stat.isSymbolicLink()) return outside(relativePath);
-        } catch (lstatError) {
-          if (errorCode(lstatError) !== 'ENOENT') {
-            return err({
-              kind: 'filesystem-error',
-              path: relativePath,
-              cause: errorMessage(lstatError),
-            });
-          }
-        }
-        if (probe === canonicalRoot) {
-          return err({
-            kind: 'filesystem-error',
-            path: relativePath,
-            cause: 'vault root disappeared',
-          });
-        }
-        missingSegments.unshift(path.basename(probe));
-        probe = path.dirname(probe);
-      }
-    }
-  };
+/**
+ * Resolve a configured vault root once, then expose only containment-checking
+ * path operations. The canonical root may differ from the configured path when
+ * the root itself is a symlink.
+ */
+export async function createVaultWorkspace(
+  configuredRoot: string,
+): Promise<Result<VaultWorkspace, VaultPathError>> {
+  const resolved = await resolveVaultRoots(configuredRoot);
+  if (!resolved.ok) return resolved;
+  const roots = resolved.value;
 
   return ok({
-    root: canonicalRoot,
-    resolveExistingFile,
-    resolveFileForWrite,
-    resolveExistingAbsoluteFile,
+    root: roots.canonical,
+    resolveExistingFile: (relativePath) => resolveExistingFile(roots, relativePath),
+    resolveFileForWrite: (relativePath) => resolveFileForWrite(roots, relativePath),
+    resolveExistingAbsoluteFile: (absolutePath) => resolveExistingAbsoluteFile(roots, absolutePath),
   });
 }
 

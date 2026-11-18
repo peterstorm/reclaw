@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { isRecord } from '../core/is-record.js';
 
 // ─── Pure functions ──────────────────────────────────────────────────────────
 
@@ -86,10 +87,6 @@ export function resolveTranscriptPath(sessionId: string, cwd: string): string | 
 // ─── Script resolution ───────────────────────────────────────────────────────
 
 const EXTRACT_SCRIPT = ['hooks', 'scripts', 'extract-and-generate.sh'] as const;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 /**
  * Pure: the checkout directory of a directory-source marketplace, or null when

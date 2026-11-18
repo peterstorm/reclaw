@@ -44,58 +44,81 @@ const classifyRunStatus = (status: string): RunStatus => {
   return PENDING_STATUSES.has(status) ? 'pending' : 'failed';
 };
 
+/** What every Apify request needs: the fetch to send it with and the authenticated headers. */
+type ApifyClient = Readonly<{
+  fetchFn: HttpFetch;
+  headers: Readonly<Record<string, string>>;
+}>;
+
+/** One authenticated request, parsed with `schema`. HTTP bodies never echo the token. */
+async function call<T>(
+  client: ApifyClient,
+  url: string,
+  init: RequestInit,
+  schema: z.ZodType<T>,
+): Promise<Result<T, string>> {
+  const response = await client.fetchFn(url, { ...init, headers: client.headers });
+  if (!response.ok) {
+    const body = (await response.text()).slice(0, 300);
+    return err(`Apify HTTP ${response.status}: ${body}`);
+  }
+  const parsed = schema.safeParse(await response.json());
+  return parsed.success
+    ? ok(parsed.data)
+    : err(`Unexpected Apify response: ${parsed.error.issues[0]?.message ?? '?'}`);
+}
+
+/** Long-poll run `id` from `status` until it succeeds; a failed end or a passed deadline is an error. */
+async function awaitRunSuccess(
+  client: ApifyClient,
+  id: string,
+  status: string,
+  deadline: number,
+): Promise<Result<void, string>> {
+  let current = status;
+  while (classifyRunStatus(current) === 'pending') {
+    if (Date.now() > deadline) return err(`Apify run ${id} did not finish in time.`);
+    const polled = await call(
+      client,
+      `${API}/actor-runs/${id}?waitForFinish=${POLL_SECONDS}`,
+      { method: 'GET' },
+      RunSchema,
+    );
+    if (!polled.ok) return polled;
+    current = polled.value.data.status;
+  }
+  if (classifyRunStatus(current) === 'failed') return err(`Apify run ${id} ended as ${current}.`);
+  return ok(undefined);
+}
+
 export function createApifyInstagramScraper(
   config: ApifyScraperConfig,
 ): InstagramIngestPorts['scrape'] {
-  const fetchFn = config.fetchFn ?? fetch;
-  const headers = {
-    Authorization: `Bearer ${config.token}`,
-    'Content-Type': 'application/json',
+  const client: ApifyClient = {
+    fetchFn: config.fetchFn ?? fetch,
+    headers: {
+      Authorization: `Bearer ${config.token}`,
+      'Content-Type': 'application/json',
+    },
   };
-
-  /** One authenticated request, parsed with `schema`. HTTP bodies never echo the token. */
-  const call = async <T>(
-    url: string,
-    init: RequestInit,
-    schema: z.ZodType<T>,
-  ): Promise<Result<T, string>> => {
-    const response = await fetchFn(url, { ...init, headers });
-    if (!response.ok) {
-      const body = (await response.text()).slice(0, 300);
-      return err(`Apify HTTP ${response.status}: ${body}`);
-    }
-    const parsed = schema.safeParse(await response.json());
-    return parsed.success
-      ? ok(parsed.data)
-      : err(`Unexpected Apify response: ${parsed.error.issues[0]?.message ?? '?'}`);
-  };
+  const runDeadlineMs = config.runDeadlineMs ?? DEFAULT_RUN_DEADLINE_MS;
 
   return async (target, limit, budgetUsd) => {
     const input = { directUrls: [target.url], resultsType: 'posts', resultsLimit: limit };
     const started = await call(
+      client,
       `${API}/acts/${ACTOR}/runs?maxTotalChargeUsd=${budgetUsd}`,
       { method: 'POST', body: JSON.stringify(input) },
       RunSchema,
     );
     if (!started.ok) return started;
 
-    const { id, defaultDatasetId } = started.value.data;
-    let status = started.value.data.status;
-    const deadline = Date.now() + (config.runDeadlineMs ?? DEFAULT_RUN_DEADLINE_MS);
-
-    while (classifyRunStatus(status) === 'pending') {
-      if (Date.now() > deadline) return err(`Apify run ${id} did not finish in time.`);
-      const polled = await call(
-        `${API}/actor-runs/${id}?waitForFinish=${POLL_SECONDS}`,
-        { method: 'GET' },
-        RunSchema,
-      );
-      if (!polled.ok) return polled;
-      status = polled.value.data.status;
-    }
-    if (classifyRunStatus(status) === 'failed') return err(`Apify run ${id} ended as ${status}.`);
+    const { id, status, defaultDatasetId } = started.value.data;
+    const finished = await awaitRunSuccess(client, id, status, Date.now() + runDeadlineMs);
+    if (!finished.ok) return finished;
 
     return call(
+      client,
       `${API}/datasets/${defaultDatasetId}/items?format=json&clean=true`,
       { method: 'GET' },
       ItemsSchema,

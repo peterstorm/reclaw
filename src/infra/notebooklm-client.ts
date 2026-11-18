@@ -20,6 +20,7 @@ import {
   NotebookLMNetworkError,
   NotebookLMParseError,
 } from 'notebooklm-kit';
+import { errorMessage } from '../core/error-message.js';
 import { requiredGroup } from '../core/regex-group.js';
 import type { ChatResponse, SourceMeta, WebSource } from '../core/research-types.js';
 import type { Result } from '../core/types.js';
@@ -224,13 +225,13 @@ async function safeCall<T>(fn: () => Promise<T>): Promise<Result<T, AdapterError
     const value = await fn();
     return { ok: true, value };
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = errorMessage(err);
     // Log full error details for debugging SDK failures (e.g. gRPC error codes)
     const extras: Record<string, unknown> = {};
     if (err instanceof Error) {
-      if ('errorCode' in err) extras.errorCode = (err as Record<string, unknown>).errorCode;
-      if ('httpStatus' in err) extras.httpStatus = (err as Record<string, unknown>).httpStatus;
-      if ('rawResponse' in err) extras.rawResponse = (err as Record<string, unknown>).rawResponse;
+      if ('errorCode' in err) extras.errorCode = err.errorCode;
+      if ('httpStatus' in err) extras.httpStatus = err.httpStatus;
+      if ('rawResponse' in err) extras.rawResponse = err.rawResponse;
     }
     console.error(
       '[notebooklm:safeCall] SDK error:',
@@ -327,6 +328,257 @@ export async function fetchCurrentBuildLabel(): Promise<string> {
   }
 }
 
+// ─── Operations ───────────────────────────────────────────────────────────────
+//
+// Each adapter operation is a function of the connected SDK; the factory only
+// connects and wires them.
+
+/** A failure no retry can fix: the SDK answered, but without what was asked for. */
+function permanentFailure(message: string): Result<never, AdapterError> {
+  return { ok: false, error: { message, retriable: false } };
+}
+
+/** The id an SDK call returned, or a permanent failure naming what was missing. */
+function requiredId(id: string | undefined, missing: string): Result<string, AdapterError> {
+  return id ? { ok: true, value: id } : permanentFailure(missing);
+}
+
+async function createNotebook(
+  sdk: NotebookLMClient,
+  title: string,
+): Promise<Result<string, AdapterError>> {
+  const result = await safeCall(() => sdk.notebooks.create({ title }));
+  if (!result.ok) return result;
+  return requiredId(result.value.projectId, 'NotebookLM did not return a projectId');
+}
+
+async function searchWeb(
+  sdk: NotebookLMClient,
+  notebookId: string,
+  query: string,
+): Promise<Result<{ sessionId: string; webSources: WebSource[] }, AdapterError>> {
+  const result = await safeCall(() => sdk.sources.searchWebAndWait(notebookId, { query }));
+  if (!result.ok) return result;
+  const { sessionId, web } = result.value;
+  const webSources: WebSource[] = web.map((s) => ({
+    title: s.title,
+    url: s.url,
+  }));
+  return { ok: true, value: { sessionId, webSources } };
+}
+
+async function addDiscoveredSources(
+  sdk: NotebookLMClient,
+  notebookId: string,
+  sessionId: string,
+  sources: WebSource[],
+  limit: number,
+): Promise<Result<string[], AdapterError>> {
+  const capped = sources.slice(0, limit);
+  const webSources = capped.map((s) => ({ url: s.url, title: s.title }));
+  return safeCall(() => sdk.sources.addDiscovered(notebookId, { sessionId, webSources }));
+}
+
+type AddedText = Awaited<ReturnType<NotebookLMClient['sources']['addFromText']>>;
+
+/** SDK returns plain string (sourceId) for small texts, or AddSourceResult for chunked uploads. */
+function addedTextSourceId(added: AddedText): string {
+  return typeof added === 'string'
+    ? added
+    : ((added as { sourceId?: string; allSourceIds?: string[]; sourceIds?: string[] }).sourceId ??
+        (added as { allSourceIds?: string[] }).allSourceIds?.[0] ??
+        (added as { sourceIds?: string[] }).sourceIds?.[0] ??
+        '');
+}
+
+async function addSourceText(
+  sdk: NotebookLMClient,
+  notebookId: string,
+  title: string,
+  content: string,
+): Promise<Result<string, AdapterError>> {
+  const result = await safeCall(() => sdk.sources.addFromText(notebookId, { title, content }));
+  if (!result.ok) return result;
+  return requiredId(addedTextSourceId(result.value), 'addFromText returned no sourceId');
+}
+
+async function chat(
+  sdk: NotebookLMClient,
+  notebookId: string,
+  question: string,
+): Promise<Result<ChatResponse, AdapterError>> {
+  const result = await safeCall(() => sdk.generation.chat(notebookId, question));
+  if (!result.ok) return result;
+  const data = result.value;
+
+  const chatResponse: ChatResponse = {
+    text: data.text ?? '',
+    citations: data.citations ?? [],
+    rawData: data.rawData ?? null,
+  };
+  return { ok: true, value: chatResponse };
+}
+
+async function listSources(
+  sdk: NotebookLMClient,
+  notebookId: string,
+): Promise<Result<readonly SourceMeta[], AdapterError>> {
+  const result = await safeCall(() => sdk.sources.list(notebookId));
+  if (!result.ok) return result;
+  const sources: SourceMeta[] = result.value.map((s) => ({
+    id: s.sourceId,
+    title: s.title ?? s.url ?? s.sourceId,
+    url: s.url ?? '',
+    sourceType: mapSourceType(s.type),
+  }));
+  return { ok: true, value: sources };
+}
+
+async function createAudioOverview(
+  sdk: NotebookLMClient,
+  notebookId: string,
+  options?: { instructions?: string; customization?: AudioCustomization },
+): Promise<Result<string, AdapterError>> {
+  const customization = { format: 0, ...options?.customization };
+  const createOpts: Record<string, unknown> = { customization };
+  if (options?.instructions) createOpts.instructions = options.instructions;
+  const result = await safeCall(() => sdk.artifacts.audio.create(notebookId, createOpts));
+  if (!result.ok) return result;
+  return requiredId(
+    (result.value as { audioId?: string }).audioId,
+    'Audio creation returned no audioId',
+  );
+}
+
+async function createVideoOverview(
+  sdk: NotebookLMClient,
+  notebookId: string,
+  options?: { instructions?: string },
+): Promise<Result<string, AdapterError>> {
+  const videoOpts: Record<string, unknown> = {};
+  if (options?.instructions) videoOpts.instructions = options.instructions;
+  const result = await safeCall(() => sdk.artifacts.video.create(notebookId, videoOpts));
+  if (!result.ok) return result;
+  return requiredId(
+    (result.value as { videoId?: string }).videoId,
+    'Video creation returned no videoId',
+  );
+}
+
+/** Poll an artifact until READY or FAILED; throws once `timeoutMs` passes. */
+async function pollArtifact(
+  sdk: NotebookLMClient,
+  artifactId: string,
+  notebookId: string,
+  timeoutMs: number,
+): Promise<'ready' | 'failed'> {
+  const deadline = Date.now() + timeoutMs;
+  const pollIntervalMs = 15_000;
+
+  while (Date.now() < deadline) {
+    const artifact = await sdk.artifacts.get(artifactId, notebookId);
+    const state = (artifact as { state?: number }).state;
+    // ArtifactState: CREATING = 1, READY = 2, FAILED = 3
+    if (state === 2) return 'ready';
+    if (state === 3) return 'failed';
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await new Promise<void>((r) => setTimeout(r, Math.min(pollIntervalMs, remaining)));
+  }
+  throw new Error(`Artifact ${artifactId} did not become ready within ${timeoutMs}ms`);
+}
+
+async function shareNotebook(
+  sdk: NotebookLMClient,
+  notebookId: string,
+): Promise<Result<string, AdapterError>> {
+  const result = await safeCall(
+    () => sdk.artifacts.share(notebookId, { accessType: 1 }), // anyone with link
+  );
+  if (!result.ok) return result;
+  return requiredId((result.value as { shareUrl?: string }).shareUrl, 'Share returned no shareUrl');
+}
+
+/** Wire every adapter operation to one connected SDK. */
+function notebookLMAdapterOver(sdk: NotebookLMClient): NotebookLMAdapter {
+  return {
+    createNotebook: (title) => createNotebook(sdk, title),
+    searchWeb: (notebookId, query) => searchWeb(sdk, notebookId, query),
+    addDiscoveredSources: (notebookId, sessionId, sources, limit) =>
+      addDiscoveredSources(sdk, notebookId, sessionId, sources, limit),
+    addSourceUrl: (notebookId, url) => safeCall(() => sdk.sources.addFromURL(notebookId, { url })),
+    addSourceText: (notebookId, title, content) => addSourceText(sdk, notebookId, title, content),
+    addYouTubeSource: (notebookId, url) =>
+      safeCall(() => sdk.sources.addYouTube(notebookId, { urlOrId: url })),
+    waitForProcessing: (notebookId, timeoutMs) =>
+      safeCall(() => pollUntilReady(sdk, notebookId, timeoutMs)),
+    chat: (notebookId, question) => chat(sdk, notebookId, question),
+    listSources: (notebookId) => listSources(sdk, notebookId),
+    createAudioOverview: (notebookId, options) => createAudioOverview(sdk, notebookId, options),
+    createVideoOverview: (notebookId, options) => createVideoOverview(sdk, notebookId, options),
+    waitForArtifact: (artifactId, notebookId, timeoutMs) =>
+      safeCall(() => pollArtifact(sdk, artifactId, notebookId, timeoutMs)),
+    shareNotebook: (notebookId) => shareNotebook(sdk, notebookId),
+    dispose: async () => {
+      sdk.dispose();
+    },
+  } as const;
+}
+
+// ─── Connection ───────────────────────────────────────────────────────────────
+
+function createSdk(credentials: NotebookLMCredentials, bl: string): NotebookLMClient {
+  return new NotebookLMClient({
+    ...(credentials.kind === 'token'
+      ? { authToken: credentials.authToken, cookies: credentials.cookies }
+      : { auth: { email: credentials.email, password: credentials.password, headless: true } }),
+    autoRefresh: { enabled: true, interval: 10 * 60 * 1000 },
+    urlParams: { bl },
+  });
+}
+
+/** sdk.connect(), rejected after CONNECT_TIMEOUT_MS with a hint for the auth method in use. */
+async function connectWithinTimeout(
+  sdk: NotebookLMClient,
+  authKind: NotebookLMCredentials['kind'],
+): Promise<void> {
+  console.info('[notebooklm] Calling sdk.connect()...');
+  const connectStart = Date.now();
+  await Promise.race([
+    sdk.connect(),
+    new Promise<never>((_, reject) =>
+      setTimeout(
+        () =>
+          reject(
+            new Error(
+              `sdk.connect() timed out after ${CONNECT_TIMEOUT_MS}ms — ${
+                authKind === 'google'
+                  ? 'Google auto-login likely blocked by captcha. Switch to token auth (NOTEBOOKLM_AUTH_TOKEN + NOTEBOOKLM_COOKIES).'
+                  : 'token auth failed to connect.'
+              }`,
+            ),
+          ),
+        CONNECT_TIMEOUT_MS,
+      ),
+    ),
+  ]);
+  console.info(`[notebooklm] sdk.connect() succeeded in ${Date.now() - connectStart}ms`);
+}
+
+/** Verify auth by listing notebooks (fast, lightweight call); a failure disposes the SDK and throws. */
+async function checkAuthHealth(sdk: NotebookLMClient): Promise<void> {
+  console.info('[notebooklm] Running auth health check (notebooks.list)...');
+  try {
+    await sdk.notebooks.list();
+    console.info('[notebooklm] Auth health check passed — adapter ready');
+  } catch (healthErr) {
+    const msg = errorMessage(healthErr);
+    console.error(`[notebooklm] Auth health check FAILED: ${msg}`);
+    sdk.dispose();
+    throw new Error(`NotebookLM auth health check failed: ${msg}`);
+  }
+}
+
 /**
  * Create a NotebookLM adapter.
  *
@@ -342,287 +594,8 @@ export async function createNotebookLMAdapter(
   console.info(`[notebooklm] Creating adapter with auth method: ${credentials.kind}`);
 
   // Fetch the current build label from NotebookLM page (falls back to FALLBACK_BL)
-  const bl = await fetchCurrentBuildLabel();
-
-  const sdk = new NotebookLMClient({
-    ...(credentials.kind === 'token'
-      ? { authToken: credentials.authToken, cookies: credentials.cookies }
-      : { auth: { email: credentials.email, password: credentials.password, headless: true } }),
-    autoRefresh: { enabled: true, interval: 10 * 60 * 1000 },
-    urlParams: { bl },
-  });
-
-  console.info('[notebooklm] Calling sdk.connect()...');
-  const connectStart = Date.now();
-  await Promise.race([
-    sdk.connect(),
-    new Promise<never>((_, reject) =>
-      setTimeout(
-        () =>
-          reject(
-            new Error(
-              `sdk.connect() timed out after ${CONNECT_TIMEOUT_MS}ms — ${
-                credentials.kind === 'google'
-                  ? 'Google auto-login likely blocked by captcha. Switch to token auth (NOTEBOOKLM_AUTH_TOKEN + NOTEBOOKLM_COOKIES).'
-                  : 'token auth failed to connect.'
-              }`,
-            ),
-          ),
-        CONNECT_TIMEOUT_MS,
-      ),
-    ),
-  ]);
-  console.info(`[notebooklm] sdk.connect() succeeded in ${Date.now() - connectStart}ms`);
-
-  // Health check: verify auth by listing notebooks (fast, lightweight call)
-  console.info('[notebooklm] Running auth health check (notebooks.list)...');
-  try {
-    await sdk.notebooks.list();
-    console.info('[notebooklm] Auth health check passed — adapter ready');
-  } catch (healthErr) {
-    const msg = healthErr instanceof Error ? healthErr.message : String(healthErr);
-    console.error(`[notebooklm] Auth health check FAILED: ${msg}`);
-    sdk.dispose();
-    throw new Error(`NotebookLM auth health check failed: ${msg}`);
-  }
-
-  // ─── createNotebook ────────────────────────────────────────────────────────
-
-  const createNotebook = async (title: string): Promise<Result<string, AdapterError>> => {
-    const result = await safeCall(() => sdk.notebooks.create({ title }));
-    if (!result.ok) return result;
-    const notebookId: string = result.value.projectId;
-    if (!notebookId) {
-      return {
-        ok: false,
-        error: { message: 'NotebookLM did not return a projectId', retriable: false },
-      };
-    }
-    return { ok: true, value: notebookId };
-  };
-
-  // ─── searchWeb ─────────────────────────────────────────────────────────────
-
-  const searchWeb = async (
-    notebookId: string,
-    query: string,
-  ): Promise<Result<{ sessionId: string; webSources: WebSource[] }, AdapterError>> => {
-    const result = await safeCall(() => sdk.sources.searchWebAndWait(notebookId, { query }));
-    if (!result.ok) return result;
-    const { sessionId, web } = result.value;
-    const webSources: WebSource[] = web.map((s) => ({
-      title: s.title,
-      url: s.url,
-    }));
-    return { ok: true, value: { sessionId, webSources } };
-  };
-
-  // ─── addDiscoveredSources ──────────────────────────────────────────────────
-
-  const addDiscoveredSources = async (
-    notebookId: string,
-    sessionId: string,
-    sources: WebSource[],
-    limit: number,
-  ): Promise<Result<string[], AdapterError>> => {
-    const capped = sources.slice(0, limit);
-    const webSources = capped.map((s) => ({ url: s.url, title: s.title }));
-    const result = await safeCall(() =>
-      sdk.sources.addDiscovered(notebookId, { sessionId, webSources }),
-    );
-    return result;
-  };
-
-  // ─── addSourceUrl ──────────────────────────────────────────────────────────
-
-  const addSourceUrl = async (
-    notebookId: string,
-    url: string,
-  ): Promise<Result<string, AdapterError>> => {
-    const result = await safeCall(() => sdk.sources.addFromURL(notebookId, { url }));
-    return result;
-  };
-
-  // ─── addSourceText ───────────────────────────────────────────────────────
-
-  const addSourceText = async (
-    notebookId: string,
-    title: string,
-    content: string,
-  ): Promise<Result<string, AdapterError>> => {
-    const result = await safeCall(() => sdk.sources.addFromText(notebookId, { title, content }));
-    if (!result.ok) return result;
-    // SDK returns plain string (sourceId) for small texts, or AddSourceResult for chunked uploads
-    const val = result.value;
-    const sourceId =
-      typeof val === 'string'
-        ? val
-        : ((val as { sourceId?: string; allSourceIds?: string[]; sourceIds?: string[] }).sourceId ??
-          (val as { allSourceIds?: string[] }).allSourceIds?.[0] ??
-          (val as { sourceIds?: string[] }).sourceIds?.[0] ??
-          '');
-    if (!sourceId) {
-      return {
-        ok: false,
-        error: { message: 'addFromText returned no sourceId', retriable: false },
-      };
-    }
-    return { ok: true, value: sourceId };
-  };
-
-  // ─── addYouTubeSource ──────────────────────────────────────────────────────
-
-  const addYouTubeSource = async (
-    notebookId: string,
-    url: string,
-  ): Promise<Result<string, AdapterError>> => {
-    const result = await safeCall(() => sdk.sources.addYouTube(notebookId, { urlOrId: url }));
-    return result;
-  };
-
-  // ─── waitForProcessing ─────────────────────────────────────────────────────
-
-  const waitForProcessing = async (
-    notebookId: string,
-    timeoutMs: number,
-  ): Promise<Result<void, AdapterError>> => {
-    return safeCall(() => pollUntilReady(sdk, notebookId, timeoutMs));
-  };
-
-  // ─── chat ──────────────────────────────────────────────────────────────────
-
-  const chat = async (
-    notebookId: string,
-    question: string,
-  ): Promise<Result<ChatResponse, AdapterError>> => {
-    const result = await safeCall(() => sdk.generation.chat(notebookId, question));
-    if (!result.ok) return result;
-    const data = result.value;
-
-    const chatResponse: ChatResponse = {
-      text: data.text ?? '',
-      citations: data.citations ?? [],
-      rawData: data.rawData ?? null,
-    };
-    return { ok: true, value: chatResponse };
-  };
-
-  // ─── listSources ───────────────────────────────────────────────────────────
-
-  const listSources = async (
-    notebookId: string,
-  ): Promise<Result<readonly SourceMeta[], AdapterError>> => {
-    const result = await safeCall(() => sdk.sources.list(notebookId));
-    if (!result.ok) return result;
-    const sources: SourceMeta[] = result.value.map((s) => ({
-      id: s.sourceId,
-      title: s.title ?? s.url ?? s.sourceId,
-      url: s.url ?? '',
-      sourceType: mapSourceType(s.type),
-    }));
-    return { ok: true, value: sources };
-  };
-
-  // ─── createAudioOverview ───────────────────────────────────────────────────
-
-  const createAudioOverview = async (
-    notebookId: string,
-    options?: { instructions?: string; customization?: AudioCustomization },
-  ): Promise<Result<string, AdapterError>> => {
-    const customization = { format: 0, ...options?.customization };
-    const createOpts: Record<string, unknown> = { customization };
-    if (options?.instructions) createOpts.instructions = options.instructions;
-    const result = await safeCall(() => sdk.artifacts.audio.create(notebookId, createOpts));
-    if (!result.ok) return result;
-    const audioId: string = (result.value as { audioId?: string }).audioId ?? '';
-    if (!audioId) {
-      return {
-        ok: false,
-        error: { message: 'Audio creation returned no audioId', retriable: false },
-      };
-    }
-    return { ok: true, value: audioId };
-  };
-
-  // ─── createVideoOverview ──────────────────────────────────────────────────
-
-  const createVideoOverview = async (
-    notebookId: string,
-    options?: { instructions?: string },
-  ): Promise<Result<string, AdapterError>> => {
-    const videoOpts: Record<string, unknown> = {};
-    if (options?.instructions) videoOpts.instructions = options.instructions;
-    const result = await safeCall(() => sdk.artifacts.video.create(notebookId, videoOpts));
-    if (!result.ok) return result;
-    const videoId: string = (result.value as { videoId?: string }).videoId ?? '';
-    if (!videoId) {
-      return {
-        ok: false,
-        error: { message: 'Video creation returned no videoId', retriable: false },
-      };
-    }
-    return { ok: true, value: videoId };
-  };
-
-  // ─── waitForArtifact ──────────────────────────────────────────────────────
-
-  const waitForArtifact = async (
-    artifactId: string,
-    notebookId: string,
-    timeoutMs: number,
-  ): Promise<Result<'ready' | 'failed', AdapterError>> => {
-    return safeCall(async () => {
-      const deadline = Date.now() + timeoutMs;
-      const pollIntervalMs = 15_000;
-
-      while (Date.now() < deadline) {
-        const artifact = await sdk.artifacts.get(artifactId, notebookId);
-        const state = (artifact as { state?: number }).state;
-        // ArtifactState: CREATING = 1, READY = 2, FAILED = 3
-        if (state === 2) return 'ready' as const;
-        if (state === 3) return 'failed' as const;
-        const remaining = deadline - Date.now();
-        if (remaining <= 0) break;
-        await new Promise<void>((r) => setTimeout(r, Math.min(pollIntervalMs, remaining)));
-      }
-      throw new Error(`Artifact ${artifactId} did not become ready within ${timeoutMs}ms`);
-    });
-  };
-
-  // ─── shareNotebook ────────────────────────────────────────────────────────
-
-  const shareNotebook = async (notebookId: string): Promise<Result<string, AdapterError>> => {
-    const result = await safeCall(
-      () => sdk.artifacts.share(notebookId, { accessType: 1 }), // anyone with link
-    );
-    if (!result.ok) return result;
-    const shareUrl: string = (result.value as { shareUrl?: string }).shareUrl ?? '';
-    if (!shareUrl) {
-      return { ok: false, error: { message: 'Share returned no shareUrl', retriable: false } };
-    }
-    return { ok: true, value: shareUrl };
-  };
-
-  // ─── dispose ───────────────────────────────────────────────────────────────
-
-  const dispose = async (): Promise<void> => {
-    sdk.dispose();
-  };
-
-  return {
-    createNotebook,
-    searchWeb,
-    addDiscoveredSources,
-    addSourceUrl,
-    addSourceText,
-    addYouTubeSource,
-    waitForProcessing,
-    chat,
-    listSources,
-    createAudioOverview,
-    createVideoOverview,
-    waitForArtifact,
-    shareNotebook,
-    dispose,
-  } as const;
+  const sdk = createSdk(credentials, await fetchCurrentBuildLabel());
+  await connectWithinTimeout(sdk, credentials.kind);
+  await checkAuthHealth(sdk);
+  return notebookLMAdapterOver(sdk);
 }

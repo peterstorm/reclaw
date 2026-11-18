@@ -6,14 +6,9 @@
  */
 
 import { match } from 'ts-pattern';
+import { type UnknownRecord, isRecord } from '../../core/is-record.js';
 import { assertNever } from '../../core/types.js';
 import type { AgentBackend, AgentModelSelection, StreamDelta } from './types.js';
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 // ─── Implementation ───────────────────────────────────────────────────────────
 
@@ -51,7 +46,7 @@ function enabledClaudeBuiltins(allowedTools: readonly string[]): readonly string
 // ─── Output parsing ───────────────────────────────────────────────────────────
 
 /** One stream-json line as a JSON object, or null for blank, non-JSON and non-object lines. */
-function parseJsonRecord(line: string): Record<string, unknown> | null {
+function parseJsonRecord(line: string): UnknownRecord | null {
   const trimmed = line.trim();
   if (trimmed === '') return null;
 
@@ -81,7 +76,7 @@ type ClaudeFrame =
   | { readonly kind: 'result'; readonly sessionId: string | null; readonly result: string | null }
   | ClaudeStreamEvent;
 
-function parseResultFrame(record: Record<string, unknown>): ClaudeFrame {
+function parseResultFrame(record: UnknownRecord): ClaudeFrame {
   const sessionId = typeof record.session_id === 'string' ? record.session_id : null;
   const result = typeof record.result === 'string' ? record.result : null;
   const subtype = typeof record.subtype === 'string' ? record.subtype : null;

@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import chokidar, { type FSWatcher } from 'chokidar';
+import { errorMessage } from '../core/error-message.js';
 import { parseSkillConfig } from '../core/skill-config.js';
 import {
   type SkillConfig,
@@ -68,10 +69,7 @@ const registryWithSkillFile: SkillFileChange = (registry, filePath) => {
   try {
     content = readFileSync(filePath, 'utf-8');
   } catch (e) {
-    console.error(
-      `[skill-watcher] Failed to read "${filePath}":`,
-      e instanceof Error ? e.message : String(e),
-    );
+    console.error(`[skill-watcher] Failed to read "${filePath}":`, errorMessage(e));
     return null;
   }
 
@@ -95,19 +93,32 @@ const registryWithoutSkillFile: SkillFileChange = (registry, filePath) => {
 
 type RegistryListeners = {
   readonly add: (handler: (registry: SkillRegistry) => void) => void;
-  readonly notify: (registry: SkillRegistry) => void;
+  /** `source` names what changed the registry (the skills directory or one file), for the log. */
+  readonly notify: (registry: SkillRegistry, source: string) => void;
 };
 
-/** Notifies a snapshot, so a handler that registers another mid-pass cannot change the pass. */
+/**
+ * Notifies a snapshot, so a handler that registers another mid-pass cannot
+ * change the pass. A throwing handler is logged and skipped: the others still
+ * hear of the change, and the throw never reaches the settle tracker or a
+ * chokidar callback, where it would leave `ready` pending or escape a timer.
+ */
 function createRegistryListeners(): RegistryListeners {
   const handlers: Array<(registry: SkillRegistry) => void> = [];
   return {
     add: (handler) => {
       handlers.push(handler);
     },
-    notify: (registry) => {
+    notify: (registry, source) => {
       for (const handler of [...handlers]) {
-        handler(registry);
+        try {
+          handler(registry);
+        } catch (e) {
+          console.error(
+            `[skill-watcher] Registry listener failed after "${source}":`,
+            errorMessage(e),
+          );
+        }
       }
     },
   };
@@ -146,24 +157,25 @@ type SettlePhase = 'scanning' | 'draining' | 'settled';
  * Both conditions must therefore hold: chokidar has finished scanning, and no
  * debounced load is still pending. `onSettled` then runs once, before `ready`
  * resolves, so listeners are up to date the moment callers proceed. Every load
- * is followed by a settle check, even one that throws, so one bad file can
- * never leave `ready` pending.
+ * is followed by a settle check, even one that throws, and `ready` is released
+ * even when `onSettled` throws (the error still surfaces to the caller), so
+ * neither a bad file nor a failing hook can leave `ready` pending.
  */
 export function createSettleTracker(onSettled: () => void): SettleTracker {
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
   let phase: SettlePhase = 'scanning';
-  let release: () => void = () => {};
-  const readyPromise = new Promise<void>((resolve) => {
-    release = resolve;
-  });
+  const { promise: readyPromise, resolve: release } = Promise.withResolvers<void>();
 
   const settleIfIdle = (): void => {
     if (phase === 'scanning' || timers.size > 0) return;
-    if (phase === 'draining') {
-      phase = 'settled';
-      onSettled();
+    try {
+      if (phase === 'draining') {
+        phase = 'settled';
+        onSettled();
+      }
+    } finally {
+      release();
     }
-    release();
   };
 
   const schedule = (filePath: string, load: () => void): void => {
@@ -223,10 +235,7 @@ function watchSkillFiles(skillsDir: string, events: SkillFileEvents): FSWatcher 
   watcher.on('unlink', events.onRemove);
   watcher.on('ready', events.onScanComplete);
   watcher.on('error', (error: unknown) => {
-    console.error(
-      '[skill-watcher] Watcher error:',
-      error instanceof Error ? error.message : String(error),
-    );
+    console.error('[skill-watcher] Watcher error:', errorMessage(error));
   });
   return watcher;
 }
@@ -245,7 +254,7 @@ export function createSkillWatcher(skillsDir: string): SkillWatcher {
   const listeners = createRegistryListeners();
 
   // The initial load is announced once, complete, when it settles.
-  const settle = createSettleTracker(() => listeners.notify(registry));
+  const settle = createSettleTracker(() => listeners.notify(registry, skillsDir));
 
   const scheduleChange = (filePath: string, change: SkillFileChange): void => {
     settle.schedule(filePath, () => {
@@ -255,7 +264,7 @@ export function createSkillWatcher(skillsDir: string): SkillWatcher {
       // Silent until the initial load is applied: notifying per file announced a
       // registry known to be incomplete, so the scheduler rebuilt its cron entries
       // once per skill and warned about every `dependsOn` target not yet read.
-      if (settle.isSettled()) listeners.notify(registry);
+      if (settle.isSettled()) listeners.notify(registry, filePath);
     });
   };
 

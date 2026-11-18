@@ -1,5 +1,6 @@
 import type { Api } from 'grammy';
 import { errorMessage } from '../core/error-message.js';
+import { isRecord } from '../core/is-record.js';
 import { markdownToTelegramHtml } from '../core/markdown-to-telegram.js';
 
 export type SendOptions = { readonly html?: boolean; readonly plain?: boolean };
@@ -31,7 +32,7 @@ const CHUNK_DELAY_MS = 200;
 /** Maximum retries for 429 rate-limit responses. */
 const RATE_LIMIT_MAX_RETRIES = 3;
 
-/** Backoff schedule (seconds) when a 429's retry_after is not positive. */
+/** Backoff schedule (seconds) when a 429 carries no positive numeric retry_after. */
 const RATE_LIMIT_BACKOFF_S = [1, 2, 4] as const;
 
 function sleep(ms: number): Promise<void> {
@@ -43,33 +44,44 @@ function isNotModified(err: unknown): boolean {
   return errorMessage(err).includes('message is not modified');
 }
 
+/** How a Telegram 429 says to wait: its own positive retry_after, or our backoff schedule. */
+type RateLimit =
+  | { readonly kind: 'retry-after'; readonly seconds: number }
+  | { readonly kind: 'backoff' };
+
 /**
- * Check if an error is a Telegram 429 rate-limit response.
- * Grammy throws GrammyError with error_code and retry_after for 429s.
+ * Read a thrown value as a Telegram 429, or null for any other error. grammY
+ * throws a GrammyError carrying error_code and, usually, parameters.retry_after;
+ * a 429 whose retry_after is absent, non-numeric or not positive backs off.
  */
-function getRateLimitRetryAfter(err: unknown): number | null {
-  if (typeof err !== 'object' || err === null) return null;
-  const e = err as Record<string, unknown>;
-  if (e.error_code !== 429) return null;
-  const parameters = e.parameters as Record<string, unknown> | undefined;
-  const retryAfter = parameters?.retry_after;
-  return typeof retryAfter === 'number' ? retryAfter : null;
+function parseRateLimit(err: unknown): RateLimit | null {
+  if (!isRecord(err) || err.error_code !== 429) return null;
+  const retryAfter = isRecord(err.parameters) ? err.parameters.retry_after : undefined;
+  return typeof retryAfter === 'number' && retryAfter > 0
+    ? { kind: 'retry-after', seconds: retryAfter }
+    : { kind: 'backoff' };
+}
+
+function retryDelaySeconds(rateLimit: RateLimit, attempt: number): number {
+  return rateLimit.kind === 'retry-after'
+    ? rateLimit.seconds
+    : (RATE_LIMIT_BACKOFF_S[attempt] ?? 4);
 }
 
 /**
- * Execute an async operation with retry on 429 rate-limit errors that carry a
- * numeric retry_after: wait that many seconds, or the backoff schedule when it
- * is not positive. Any other error, a 429 without retry_after included, is
- * rethrown at once.
+ * Execute an async operation, retrying a Telegram 429 up to
+ * RATE_LIMIT_MAX_RETRIES times: wait the 429's own positive retry_after, or
+ * the 1s/2s/4s backoff schedule when it names none. Any other error, and the
+ * last 429 once the retries are spent, is rethrown.
  */
 async function withRateLimitRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
   for (let attempt = 0; attempt <= RATE_LIMIT_MAX_RETRIES; attempt++) {
     try {
       return await fn();
     } catch (err) {
-      const retryAfter = getRateLimitRetryAfter(err);
-      if (retryAfter === null || attempt === RATE_LIMIT_MAX_RETRIES) throw err;
-      const delaySec = retryAfter > 0 ? retryAfter : (RATE_LIMIT_BACKOFF_S[attempt] ?? 4);
+      const rateLimit = parseRateLimit(err);
+      if (rateLimit === null || attempt === RATE_LIMIT_MAX_RETRIES) throw err;
+      const delaySec = retryDelaySeconds(rateLimit, attempt);
       console.warn(
         `[telegram] 429 rate-limited on ${label}, retrying in ${delaySec}s (attempt ${attempt + 1}/${RATE_LIMIT_MAX_RETRIES})`,
       );

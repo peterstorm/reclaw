@@ -1,3 +1,4 @@
+import { isRecord } from '../core/is-record.js';
 import {
   type ConversationCommitResult,
   type ConversationLineage,
@@ -136,133 +137,159 @@ function requireRedisString(value: unknown, operation: string): string {
   return value;
 }
 
+/** What the conversation operations share: the Redis client and the lineage defaults. */
+type ConversationContext = Readonly<{
+  redis: RedisClient;
+  defaultBackend: AgentBackendName;
+  clock: () => string;
+}>;
+
+type CommitParams = Parameters<ConversationStore['commitSession']>[0];
+
+function parseLineage(raw: string, defaultBackend: AgentBackendName): ConversationLineage {
+  const parsed = parseConversationLineage(raw, defaultBackend);
+  if (!parsed.ok) throw new Error(parsed.error);
+  return parsed.value;
+}
+
+async function getCurrent(ctx: ConversationContext, chatId: number): Promise<ConversationLineage> {
+  // Read and refresh retention atomically. A prior GET→SET refresh could write
+  // an older lineage over a concurrent advance/commit and roll back its CAS counters.
+  const raw = await ctx.redis.eval(
+    GET_CURRENT_SCRIPT,
+    1,
+    makeConversationKey(chatId),
+    String(SESSION_RETENTION_MS),
+  );
+  if (raw === null) return initialConversation(ctx.defaultBackend, ctx.clock());
+  if (typeof raw !== 'string') {
+    throw new Error('Redis conversation read returned non-string result');
+  }
+
+  const parsed = parseConversationLineage(raw, ctx.defaultBackend);
+  if (!parsed.ok) {
+    throw new Error(`Corrupt conversation lineage for chat ${chatId}: ${parsed.error}`);
+  }
+  return parsed.value;
+}
+
+async function advance(
+  ctx: ConversationContext,
+  chatId: number,
+  mutationId: string,
+  selection: ConversationSelection,
+  now: string,
+): Promise<ConversationLineage> {
+  const sessionId = selection.kind === 'resume' ? selection.sessionId : '';
+  const result = await ctx.redis.eval(
+    ADVANCE_SCRIPT,
+    2,
+    makeConversationKey(chatId),
+    makeConversationMutationKey(chatId, mutationId),
+    serializeConversationLineage(initialConversation(ctx.defaultBackend, now)),
+    String(SESSION_RETENTION_MS),
+    selection.backend,
+    sessionId,
+    now,
+  );
+  return parseLineage(requireRedisString(result, 'conversation advance'), ctx.defaultBackend);
+}
+
+/** COMMIT_SCRIPT's `{ committed, lineage }` reply, parsed into the commit outcome. */
+function parseCommitReply(
+  raw: string,
+  params: CommitParams,
+  defaultBackend: AgentBackendName,
+): ConversationCommitResult {
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(raw);
+  } catch {
+    throw new Error('Redis conversation commit returned invalid JSON');
+  }
+  if (
+    !isRecord(decoded) ||
+    typeof decoded.committed !== 'boolean' ||
+    typeof decoded.lineage !== 'object'
+  ) {
+    throw new Error('Redis conversation commit returned invalid envelope');
+  }
+  const lineage = parseLineage(JSON.stringify(decoded.lineage), defaultBackend);
+  return decoded.committed
+    ? { kind: 'committed', lineage }
+    : {
+        kind: 'stale',
+        current: lineage,
+        expectedGeneration: params.expectedGeneration,
+        expectedRevision: params.expectedRevision,
+      };
+}
+
+async function commitSession(
+  ctx: ConversationContext,
+  params: CommitParams,
+): Promise<ConversationCommitResult> {
+  const initial = initialConversation(ctx.defaultBackend, params.lastActivityAt);
+  const raw = requireRedisString(
+    await ctx.redis.eval(
+      COMMIT_SCRIPT,
+      1,
+      makeConversationKey(params.chatId),
+      serializeConversationLineage(initial),
+      String(SESSION_RETENTION_MS),
+      String(params.expectedGeneration),
+      String(params.expectedRevision),
+      params.backend,
+      params.sessionId,
+      params.lastActivityAt,
+    ),
+    'conversation commit',
+  );
+  return parseCommitReply(raw, params, ctx.defaultBackend);
+}
+
+async function saveMessageReference(
+  redis: RedisClient,
+  chatId: number,
+  messageId: number,
+  reference: MessageConversationReference,
+): Promise<void> {
+  await redis.set(
+    makeMessageConversationKey(chatId, messageId),
+    serializeMessageConversationReference(reference),
+    { PX: SESSION_RETENTION_MS },
+  );
+}
+
+async function getMessageReference(
+  redis: RedisClient,
+  chatId: number,
+  messageId: number,
+): Promise<MessageConversationReference | null> {
+  const key = makeMessageConversationKey(chatId, messageId);
+  const raw = await redis.get(key);
+  if (raw === null) return null;
+  const parsed = parseMessageConversationReference(raw);
+  if (!parsed.ok) {
+    await redis.del(key);
+    return null;
+  }
+  return parsed.value;
+}
+
 export function createSessionStore(
   redis: RedisClient,
   defaultBackend: AgentBackendName = 'claude',
   clock: () => string = () => new Date().toISOString(),
 ): ConversationStore {
-  const parseLineage = (raw: string): ConversationLineage => {
-    const parsed = parseConversationLineage(raw, defaultBackend);
-    if (!parsed.ok) throw new Error(parsed.error);
-    return parsed.value;
+  const ctx: ConversationContext = { redis, defaultBackend, clock };
+  return {
+    getCurrent: (chatId) => getCurrent(ctx, chatId),
+    advance: (chatId, mutationId, selection, now) =>
+      advance(ctx, chatId, mutationId, selection, now),
+    commitSession: (params) => commitSession(ctx, params),
+    saveMessageReference: (chatId, messageId, reference) =>
+      saveMessageReference(redis, chatId, messageId, reference),
+    getMessageReference: (chatId, messageId) => getMessageReference(redis, chatId, messageId),
   };
-
-  const getCurrent = async (chatId: number): Promise<ConversationLineage> => {
-    // Read and refresh retention atomically. A prior GET→SET refresh could write
-    // an older lineage over a concurrent advance/commit and roll back its CAS counters.
-    const raw = await redis.eval(
-      GET_CURRENT_SCRIPT,
-      1,
-      makeConversationKey(chatId),
-      String(SESSION_RETENTION_MS),
-    );
-    if (raw === null) return initialConversation(defaultBackend, clock());
-    if (typeof raw !== 'string') {
-      throw new Error('Redis conversation read returned non-string result');
-    }
-
-    const parsed = parseConversationLineage(raw, defaultBackend);
-    if (!parsed.ok) {
-      throw new Error(`Corrupt conversation lineage for chat ${chatId}: ${parsed.error}`);
-    }
-    return parsed.value;
-  };
-
-  const advance = async (
-    chatId: number,
-    mutationId: string,
-    selection: ConversationSelection,
-    now: string,
-  ): Promise<ConversationLineage> => {
-    const sessionId = selection.kind === 'resume' ? selection.sessionId : '';
-    const result = await redis.eval(
-      ADVANCE_SCRIPT,
-      2,
-      makeConversationKey(chatId),
-      makeConversationMutationKey(chatId, mutationId),
-      serializeConversationLineage(initialConversation(defaultBackend, now)),
-      String(SESSION_RETENTION_MS),
-      selection.backend,
-      sessionId,
-      now,
-    );
-    return parseLineage(requireRedisString(result, 'conversation advance'));
-  };
-
-  const commitSession = async (params: {
-    readonly chatId: number;
-    readonly expectedGeneration: ConversationGeneration;
-    readonly expectedRevision: ConversationRevision;
-    readonly backend: AgentBackendName;
-    readonly sessionId: AgentSessionId;
-    readonly lastActivityAt: string;
-  }): Promise<ConversationCommitResult> => {
-    const initial = initialConversation(defaultBackend, params.lastActivityAt);
-    const raw = requireRedisString(
-      await redis.eval(
-        COMMIT_SCRIPT,
-        1,
-        makeConversationKey(params.chatId),
-        serializeConversationLineage(initial),
-        String(SESSION_RETENTION_MS),
-        String(params.expectedGeneration),
-        String(params.expectedRevision),
-        params.backend,
-        params.sessionId,
-        params.lastActivityAt,
-      ),
-      'conversation commit',
-    );
-    let decoded: unknown;
-    try {
-      decoded = JSON.parse(raw);
-    } catch {
-      throw new Error('Redis conversation commit returned invalid JSON');
-    }
-    if (typeof decoded !== 'object' || decoded === null) {
-      throw new Error('Redis conversation commit returned invalid envelope');
-    }
-    const record = decoded as Record<string, unknown>;
-    if (typeof record.committed !== 'boolean' || typeof record.lineage !== 'object') {
-      throw new Error('Redis conversation commit returned invalid envelope');
-    }
-    const lineage = parseLineage(JSON.stringify(record.lineage));
-    return record.committed
-      ? { kind: 'committed', lineage }
-      : {
-          kind: 'stale',
-          current: lineage,
-          expectedGeneration: params.expectedGeneration,
-          expectedRevision: params.expectedRevision,
-        };
-  };
-
-  const saveMessageReference = async (
-    chatId: number,
-    messageId: number,
-    reference: MessageConversationReference,
-  ): Promise<void> => {
-    await redis.set(
-      makeMessageConversationKey(chatId, messageId),
-      serializeMessageConversationReference(reference),
-      { PX: SESSION_RETENTION_MS },
-    );
-  };
-
-  const getMessageReference = async (
-    chatId: number,
-    messageId: number,
-  ): Promise<MessageConversationReference | null> => {
-    const key = makeMessageConversationKey(chatId, messageId);
-    const raw = await redis.get(key);
-    if (raw === null) return null;
-    const parsed = parseMessageConversationReference(raw);
-    if (!parsed.ok) {
-      await redis.del(key);
-      return null;
-    }
-    return parsed.value;
-  };
-
-  return { getCurrent, advance, commitSession, saveMessageReference, getMessageReference };
 }
