@@ -625,6 +625,7 @@ src/
     queue-read-models.ts      # pure BullMQ record → queue view projections
     activity-store.ts         # immutable Redis ActivityResult repository
     session-store.ts          # Redis generation transitions + revision CAS
+    shared-redis.ts           # one Redis connection for several stores, opened lazily, closed once
     quota-tracker.ts          # NotebookLM daily quota
     skill-watcher.ts          # chokidar on skills/*.yaml
     agent-backends/           # claude + pi backends behind one runner (spawn, parse, stream)

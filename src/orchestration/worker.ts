@@ -21,22 +21,16 @@ import {
   processScheduledJob,
   removeFailedChatSources,
 } from './worker-activity.js';
-import { superviseWorkers } from './worker-lifecycle.js';
+import {
+  type BullWorkerLike,
+  type JobKind,
+  type Workers,
+  superviseWorkers,
+} from './worker-lifecycle.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type Workers = {
-  readonly start: () => Promise<void>;
-  readonly stop: () => Promise<void>;
-};
-
-/** Minimal BullMQ worker interface used by createWorkers. Injected for testability. */
-export type BullWorkerLike = {
-  readonly on: (event: string, handler: (...args: unknown[]) => void) => void;
-  readonly waitUntilReady: () => Promise<unknown>;
-  readonly run: () => Promise<void>;
-  readonly close: () => Promise<void>;
-};
+export type { BullWorkerLike, Workers } from './worker-lifecycle.js';
 
 /** Factory function that creates a BullMQ-like worker. Injected for testability. */
 export type WorkerFactory = (
@@ -93,7 +87,7 @@ type WorkerTuning = Pick<
  * Pure: no side effects.
  */
 export function formatDeadLetterMessage(
-  jobKind: string,
+  jobKind: JobKind,
   jobId: string,
   errorMessage: string,
 ): string {
@@ -154,7 +148,7 @@ const defaultWorkerFactory: WorkerFactory = (queueName, processor, opts) => {
 
 type DeadLetterOpts = {
   readonly worker: BullWorkerLike;
-  readonly jobKind: string;
+  readonly jobKind: JobKind;
   readonly telegram: TelegramAdapter;
   /** Extract recipient chat IDs from the raw job data. */
   readonly getChatIds: (data: unknown) => readonly number[];
@@ -211,7 +205,7 @@ function attachDeadLetterHandler(opts: DeadLetterOpts): void {
 
 /** One queue's worker: what it runs, how it is tuned, and who hears of its final failure. */
 type QueueSpec = {
-  readonly kind: string;
+  readonly kind: JobKind;
   readonly queueName: string;
   readonly processor: QueueProcessor;
   readonly tuning: WorkerTuning;

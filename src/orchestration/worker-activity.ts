@@ -42,12 +42,14 @@ import type { ScheduledActivityOutcome } from './scheduled-handler.js';
 /** The part of a BullMQ job an activity processor reads. */
 type SourceJob = { readonly data: unknown; readonly id?: string };
 
-/** What both activity queues need: result persistence, the outbox, and cortex wiring. */
+/** What both activity queues need: result persistence, the outbox, cortex wiring and a clock. */
 type ActivityQueueDeps = {
   readonly activityResults: ActivityResultRepository;
   readonly deliveryOutbox: DeliveryOutbox;
   readonly triggerCortexExtraction?: (sessionId: string, cwd: string) => Promise<void>;
   readonly config: Pick<AppConfig, 'workspacePath'>;
+  /** Read once per recorded activity: every timestamp it persists is the same instant. */
+  readonly now: () => Date;
 };
 
 export type ChatQueueDeps = ActivityQueueDeps & {
@@ -77,8 +79,12 @@ type ChatRecord =
       readonly drainPreviews: () => Promise<void>;
     };
 
-/** A skip is a successful non-event: no activity ran, so nothing is persisted. */
+/**
+ * A scheduled activity this attempt ran, one an earlier attempt already persisted, or a skip.
+ * A skip is a successful non-event: no activity ran, so nothing is persisted.
+ */
 type ScheduledRecord =
+  | { readonly kind: 'reused'; readonly activity: ActivityResult }
   | { readonly kind: 'recorded'; readonly activity: ActivityResult }
   | { readonly kind: 'skipped'; readonly outcome: SkippedScheduled };
 
@@ -204,19 +210,20 @@ async function recordChatActivity(deps: ChatQueueDeps, chatJob: ChatJob): Promis
   if (outcome.kind === 'failed') {
     throwAgentFailure(outcome.failure);
   }
+  const completedAt = deps.now().toISOString();
   const deliveries = chatDeliveries(
     activityId,
     chatJob.chatId,
     outcome,
     cortexWorkspace(deps),
-    new Date().toISOString(),
+    completedAt,
   );
   const activity = await deps.activityResults.saveIfAbsent({
     schemaVersion: 1,
     id: activityId,
     sourceKind: 'chat',
     sourceJobId: chatJob.id,
-    completedAt: new Date().toISOString(),
+    completedAt,
     outcome: { kind: 'chat-completed', response: outcome.response },
     deliveries,
   });
@@ -284,7 +291,7 @@ async function recordScheduledActivity(
 ): Promise<ScheduledRecord> {
   const activityId = makeActivityId('scheduled', scheduledJob.id);
   const existing = await deps.activityResults.find(activityId);
-  if (existing !== null) return { kind: 'recorded', activity: existing };
+  if (existing !== null) return { kind: 'reused', activity: existing };
 
   const outcome = await deps.scheduledHandler(scheduledJob);
   // A genuine failure remains retryable (unless the agent policy says otherwise).
@@ -301,7 +308,7 @@ async function recordScheduledActivity(
     id: activityId,
     sourceKind: 'scheduled',
     sourceJobId: scheduledJob.id,
-    completedAt: new Date().toISOString(),
+    completedAt: deps.now().toISOString(),
     outcome: {
       kind: 'scheduled-completed',
       response: outcome.response,

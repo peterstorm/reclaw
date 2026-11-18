@@ -351,6 +351,7 @@ describe('BullMQ runtime with isolated Redis', () => {
       config,
       onScheduledJobCompleted: vi.fn().mockResolvedValue(undefined),
       markScheduledJobCompleted: vi.fn().mockResolvedValue(undefined),
+      now: () => new Date(),
     });
 
     try {
@@ -481,6 +482,7 @@ describe('BullMQ runtime with isolated Redis', () => {
         config,
         onScheduledJobCompleted: vi.fn().mockResolvedValue(undefined),
         markScheduledJobCompleted: vi.fn().mockResolvedValue(undefined),
+        now: () => new Date(),
       });
     let workers: Workers | null = null;
     try {

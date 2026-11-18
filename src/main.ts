@@ -15,12 +15,18 @@ import type {
   AgentOptions,
   AgentResult,
   OnStreamChunk,
+  runAgent,
 } from './infra/agent-backends/index.js';
 import type { AppConfig } from './infra/config.js';
-import type { NotebookLMAdapter, NotebookLMCredentials } from './infra/notebooklm-client.js';
+import type {
+  NotebookLMAdapter,
+  NotebookLMCredentials,
+  createNotebookLMAdapter,
+} from './infra/notebooklm-client.js';
 import type { Queues } from './infra/queue.js';
 import type { QuotaRedisClient, QuotaTracker } from './infra/quota-tracker.js';
 import type { RedisClient, SessionStore } from './infra/session-store.js';
+import { sharedRedis } from './infra/shared-redis.js';
 import type { SkillQualityRecorder } from './infra/skill-quality.js';
 import type { SkillWatcher } from './infra/skill-watcher.js';
 import type { TelegramAdapter } from './infra/telegram.js';
@@ -56,8 +62,12 @@ export type BootstrapDeps = {
     isJobCompleted: (jobId: string) => Promise<boolean>,
   ) => CronScheduler;
   readonly createWorkersFn?: typeof createWorkers;
+  /** Replaces every non-streaming agent run, skipping backend and model resolution. */
   readonly runClaudeFn?: AgentRun;
   readonly runClaudeStreamingFn?: StreamingAgentRun;
+  /** The backend runner under backend and model resolution; used when runClaudeFn is not injected. */
+  readonly runAgentFn?: typeof runAgent;
+  readonly createNotebookLMAdapterFn?: typeof createNotebookLMAdapter;
   readonly handleChatJobFn?: typeof handleChatJob;
   readonly handleScheduledJobFn?: typeof handleScheduledJob;
   readonly handleReminderJobFn?: typeof handleReminderJob;
@@ -106,13 +116,11 @@ type AgentRuntime = {
   readonly recordSkillQuality: SkillQualityRecorder;
 };
 
-type RedisStoreFactories = {
-  readonly createSessionStore: (
-    redis: RedisConnection,
-  ) => SessionStoreHandle | Promise<SessionStoreHandle>;
-  readonly createQuotaTracker: (
-    redis: RedisConnection,
-  ) => QuotaTrackerHandle | Promise<QuotaTrackerHandle>;
+/** The stores bootstrap keeps on Redis, and the one way to release them all. */
+type RedisStores = {
+  readonly sessionStore: SessionStore;
+  readonly quotaTracker: QuotaTracker;
+  readonly disconnect: () => Promise<void>;
 };
 
 /** AD-5: the NotebookLM adapter is created on the first job that needs it, then reused. */
@@ -121,18 +129,27 @@ type LazyNotebookLM = {
   readonly dispose: () => Promise<void>;
 };
 
+type CreateNotebookLMAdapter = (credentials: NotebookLMCredentials) => Promise<NotebookLMAdapter>;
+
+type NotebookLMConfig = Pick<
+  AppConfig,
+  'notebooklmAuthToken' | 'notebooklmCookies' | 'googleEmail' | 'googlePassword'
+>;
+
 type Components = {
   readonly telegram: TelegramAdapter;
   readonly queues: Queues;
   readonly sessionStore: SessionStore;
+  readonly quotaTracker: QuotaTracker;
+  /** Releases the session store and the quota tracker, and their shared connection. */
   readonly disconnectRedis: () => Promise<void>;
   readonly skillWatcher: SkillWatcher;
   readonly scheduler: CronScheduler;
   readonly notebookLM: LazyNotebookLM;
-  readonly quotaTracker: QuotaTrackerHandle;
 };
 
 type WorkerDeps = Parameters<typeof createWorkers>[0];
+type NotebookJobHandlers = Pick<WorkerDeps, 'researchHandler' | 'podcastHandler'>;
 
 type FatalErrorRelay = {
   readonly onFatalError: (err: unknown) => void;
@@ -167,7 +184,8 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
   const agents = await createAgentRuntime(config, injected);
   const fatal = createFatalErrorRelay();
   const components = await buildComponents(config, injected, factories, fatal.onFatalError);
-  const workers = await createJobWorkers(config, components, agents, jobs);
+  const notebookHandlers = await createNotebookJobHandlers(config, components, agents, jobs);
+  const workers = createJobWorkers(config, components, agents, jobs, notebookHandlers);
   routeTelegramMessages(config, components);
   await startServices(config, components, workers);
   return superviseProcess(() => stopServices(components, workers), fatal);
@@ -175,7 +193,9 @@ export async function bootstrap(injected: BootstrapDeps = {}): Promise<() => Pro
 
 // ─── Dependency resolution ───────────────────────────────────────────────────
 
-async function resolveAdapterFactories(injected: BootstrapDeps): Promise<AdapterFactories> {
+async function resolveAdapterFactories(
+  injected: Partial<AdapterFactories>,
+): Promise<AdapterFactories> {
   return {
     loadConfigFn:
       injected.loadConfigFn ?? (await import('./infra/config.js').then((m) => m.loadConfig)),
@@ -193,7 +213,7 @@ async function resolveAdapterFactories(injected: BootstrapDeps): Promise<Adapter
   };
 }
 
-async function resolveJobRuntime(injected: BootstrapDeps): Promise<JobRuntime> {
+async function resolveJobRuntime(injected: Partial<JobRuntime>): Promise<JobRuntime> {
   const workerModule = await import('./orchestration/worker.js');
   return {
     createWorkersFn: injected.createWorkersFn ?? workerModule.createWorkers,
@@ -241,9 +261,18 @@ async function loadAppConfig(loadConfigFn: () => Result<AppConfig, string>): Pro
 
 // ─── Agent runs ───────────────────────────────────────────────────────────────
 
+type AgentRunnerConfig = Pick<
+  AppConfig,
+  'agentBackend' | 'agentContainment' | 'piProvider' | 'piModel' | 'piScheduledModel'
+>;
+type InjectedAgentRunners = Pick<
+  BootstrapDeps,
+  'runClaudeFn' | 'runClaudeStreamingFn' | 'runAgentFn'
+>;
+
 async function createAgentRuntime(
-  config: AppConfig,
-  injected: BootstrapDeps,
+  config: AgentRunnerConfig,
+  injected: InjectedAgentRunners,
 ): Promise<AgentRuntime> {
   const runners = await createAgentRunners(config, injected);
   const triggerCortexExtraction = await createCortexExtraction();
@@ -252,8 +281,8 @@ async function createAgentRuntime(
 }
 
 async function createAgentRunners(
-  config: AppConfig,
-  injected: BootstrapDeps,
+  config: AgentRunnerConfig,
+  injected: InjectedAgentRunners,
 ): Promise<Pick<AgentRuntime, 'runClaude' | 'runScheduled' | 'runChatStreaming'>> {
   const { resolveBackend, runAgent, runAgentStreaming } = await import(
     './infra/agent-backends/index.js'
@@ -283,10 +312,10 @@ async function createAgentRunners(
   const runStreaming: StreamingAgentRun =
     injected.runClaudeStreamingFn ??
     ((opts, onChunk) => runAgentStreaming(...forBackend(serviceSelections)(opts), onChunk));
+  const run = injected.runAgentFn ?? runAgent;
   return {
-    runClaude: injected.runClaudeFn ?? ((opts) => runAgent(...forBackend(serviceSelections)(opts))),
-    runScheduled:
-      injected.runClaudeFn ?? ((opts) => runAgent(...forBackend(scheduledSelections)(opts))),
+    runClaude: injected.runClaudeFn ?? ((opts) => run(...forBackend(serviceSelections)(opts))),
+    runScheduled: injected.runClaudeFn ?? ((opts) => run(...forBackend(scheduledSelections)(opts))),
     runChatStreaming: serialized(runStreaming),
   };
 }
@@ -304,7 +333,7 @@ function piModelSelections(
   };
 }
 
-function describeContainment(containment: AppConfig['agentContainment']): string {
+function describeContainment(containment: AgentRunnerConfig['agentContainment']): string {
   return containment.kind === 'systemd-scope'
     ? `[main] Agent containment: systemd scope per run in ${containment.slice} (bindsTo=${containment.bindsTo ?? 'none'}, runtimeMaxSec=${containment.runtimeMaxSec})`
     : '[main] Agent containment: none — a timed-out run only signals the agent process';
@@ -350,10 +379,20 @@ async function openSkillQualityLog(): Promise<SkillQualityRecorder> {
 
 // ─── Components ───────────────────────────────────────────────────────────────
 
+type ComponentConfig = NotebookLMConfig &
+  Pick<
+    AppConfig,
+    'telegramToken' | 'authorizedUserIds' | 'redisHost' | 'redisPort' | 'skillsDir' | 'agentBackend'
+  >;
+type InjectedComponents = Pick<
+  BootstrapDeps,
+  'createSessionStoreFn' | 'createQuotaTrackerFn' | 'createNotebookLMAdapterFn'
+>;
+
 async function buildComponents(
-  config: AppConfig,
-  injected: BootstrapDeps,
-  factories: AdapterFactories,
+  config: ComponentConfig,
+  injected: InjectedComponents,
+  factories: Omit<AdapterFactories, 'loadConfigFn'>,
   onFatalError: (err: unknown) => void,
 ): Promise<Components> {
   const connection: RedisConnection = { host: config.redisHost, port: config.redisPort };
@@ -363,8 +402,7 @@ async function buildComponents(
     onFatalError,
   });
   const queues = factories.createQueuesFn(connection);
-  const redisStores = await resolveRedisStoreFactories(injected, config);
-  const { sessionStore, disconnect } = await redisStores.createSessionStore(connection);
+  const redisStores = await openRedisStores(injected, connection, config.agentBackend);
   console.info('[main] Session store created');
   const skillWatcher = factories.createSkillWatcherFn(config.skillsDir);
   const scheduler = factories.createSchedulerFn(
@@ -373,17 +411,15 @@ async function buildComponents(
     queues.isScheduledJobCompleted,
   );
   reconcileOnRegistryChange(skillWatcher, scheduler);
-  const notebookLM = lazyNotebookLM(config);
-  const quotaTracker = await redisStores.createQuotaTracker(connection);
   return {
     telegram,
     queues,
-    sessionStore,
-    disconnectRedis: disconnect,
+    sessionStore: redisStores.sessionStore,
+    quotaTracker: redisStores.quotaTracker,
+    disconnectRedis: redisStores.disconnect,
     skillWatcher,
     scheduler,
-    notebookLM,
-    quotaTracker,
+    notebookLM: lazyNotebookLM(config, injected.createNotebookLMAdapterFn ?? loadNotebookLMAdapter),
   };
 }
 
@@ -400,34 +436,41 @@ function parseAuthorizedUserIds(rawIds: readonly number[]): TelegramUserId[] {
 }
 
 /**
- * Production opens one ioredis connection eagerly, shared by the session store and
- * the quota tracker. Tests inject both factories and open none.
+ * Production shares one ioredis connection between the session store and the quota
+ * tracker. Its SharedRedis handle opens it only for a store whose factory is not
+ * injected, and closes it once at shutdown. An injected store brings its own disconnect.
  */
-async function resolveRedisStoreFactories(
-  injected: BootstrapDeps,
-  config: AppConfig,
-): Promise<RedisStoreFactories> {
-  const { createSessionStoreFn, createQuotaTrackerFn } = injected;
-  if (createSessionStoreFn && createQuotaTrackerFn) {
-    return { createSessionStore: createSessionStoreFn, createQuotaTracker: createQuotaTrackerFn };
-  }
-  const { default: RedisClientCtor } = await import('ioredis');
-  const redis = new RedisClientCtor({
-    host: config.redisHost,
-    port: config.redisPort,
-    maxRetriesPerRequest: null,
-  });
+async function openRedisStores(
+  injected: Pick<BootstrapDeps, 'createSessionStoreFn' | 'createQuotaTrackerFn'>,
+  connection: RedisConnection,
+  backend: AppConfig['agentBackend'],
+): Promise<RedisStores> {
+  const redis = sharedRedis(() => connectRedis(connection));
+  const injectedSession = injected.createSessionStoreFn?.(connection);
+  const injectedQuota = injected.createQuotaTrackerFn?.(connection);
   return {
-    createSessionStore: createSessionStoreFn ?? (() => sessionStoreOn(redis, config.agentBackend)),
-    createQuotaTracker: createQuotaTrackerFn ?? (() => quotaTrackerOn(redis)),
+    sessionStore:
+      injectedSession?.sessionStore ?? (await sessionStoreOn(await redis.client(), backend)),
+    quotaTracker: injectedQuota?.tracker ?? (await quotaTrackerOn(await redis.client())),
+    disconnect: async () => {
+      await Promise.all([
+        injectedSession?.disconnect(),
+        injectedQuota?.disconnect(),
+        redis.close(),
+      ]);
+    },
   };
 }
 
-/** The session store owns the shared connection: its disconnect closes it. */
+async function connectRedis(connection: RedisConnection): Promise<Redis> {
+  const { default: RedisClientCtor } = await import('ioredis');
+  return new RedisClientCtor({ ...connection, maxRetriesPerRequest: null });
+}
+
 async function sessionStoreOn(
   redis: Redis,
   backend: AppConfig['agentBackend'],
-): Promise<SessionStoreHandle> {
+): Promise<SessionStore> {
   const { createSessionStore } = await import('./infra/session-store.js');
   const client: RedisClient = {
     get: (key) => redis.get(key),
@@ -436,13 +479,10 @@ async function sessionStoreOn(
     del: (key) => redis.del(key),
     eval: (script, numberOfKeys, ...args) => redis.eval(script, numberOfKeys, ...args),
   };
-  return {
-    sessionStore: createSessionStore(client, backend),
-    disconnect: () => redis.quit().then(() => {}),
-  };
+  return createSessionStore(client, backend);
 }
 
-async function quotaTrackerOn(redis: Redis): Promise<QuotaTrackerHandle> {
+async function quotaTrackerOn(redis: Redis): Promise<QuotaTracker> {
   const { createQuotaTracker } = await import('./infra/quota-tracker.js');
   const client: QuotaRedisClient = {
     get: (key) => redis.get(key),
@@ -450,8 +490,7 @@ async function quotaTrackerOn(redis: Redis): Promise<QuotaTrackerHandle> {
     incrby: (key, count) => redis.incrby(key, count),
     expire: (key, ttlSeconds) => redis.expire(key, ttlSeconds),
   };
-  // Don't disconnect here — the shared connection is owned by the session store
-  return { tracker: createQuotaTracker(client), disconnect: async () => {} };
+  return createQuotaTracker(client);
 }
 
 function reconcileOnRegistryChange(skillWatcher: SkillWatcher, scheduler: CronScheduler): void {
@@ -469,8 +508,11 @@ const NOTEBOOKLM_AUTH_LOG: Readonly<Record<NotebookLMCredentials['kind'], string
   google: '[main] Initializing NotebookLM adapter with Google auto-login...',
 };
 
+const loadNotebookLMAdapter: CreateNotebookLMAdapter = (credentials) =>
+  import('./infra/notebooklm-client.js').then((m) => m.createNotebookLMAdapter(credentials));
+
 /** Token auth wins over Google auto-login; null when neither pair is complete. */
-function notebookLMCredentials(config: AppConfig): NotebookLMCredentials | null {
+function notebookLMCredentials(config: NotebookLMConfig): NotebookLMCredentials | null {
   const { notebooklmAuthToken: authToken, notebooklmCookies: cookies } = config;
   const { googleEmail: email, googlePassword: password } = config;
   if (authToken && cookies) return { kind: 'token', authToken, cookies };
@@ -478,23 +520,36 @@ function notebookLMCredentials(config: AppConfig): NotebookLMCredentials | null 
   return null;
 }
 
-function lazyNotebookLM(config: AppConfig): LazyNotebookLM {
-  let adapter: NotebookLMAdapter | undefined;
+/**
+ * Concurrent first calls share one in-flight creation, so exactly one adapter exists
+ * and `dispose` reaches it. A failed creation is forgotten: the next job tries again.
+ */
+function lazyNotebookLM(config: NotebookLMConfig, create: CreateNotebookLMAdapter): LazyNotebookLM {
+  let creation: Promise<NotebookLMAdapter> | null = null;
+  const connect = async (credentials: NotebookLMCredentials): Promise<NotebookLMAdapter> => {
+    console.info(NOTEBOOKLM_AUTH_LOG[credentials.kind]);
+    const adapter = await create(credentials);
+    console.info('[main] NotebookLM adapter initialized successfully');
+    return adapter;
+  };
   return {
     get: async () => {
-      if (adapter) return adapter;
-      const { createNotebookLMAdapter } = await import('./infra/notebooklm-client.js');
       const credentials = notebookLMCredentials(config);
       if (credentials === null) {
         console.warn('[main] NotebookLM credentials not configured — research jobs will fail');
         return null;
       }
-      console.info(NOTEBOOKLM_AUTH_LOG[credentials.kind]);
-      adapter = await createNotebookLMAdapter(credentials);
-      console.info('[main] NotebookLM adapter initialized successfully');
-      return adapter;
+      creation ??= connect(credentials).catch((err: unknown) => {
+        creation = null;
+        throw err;
+      });
+      return creation;
     },
-    dispose: () => adapter?.dispose() ?? Promise.resolve(),
+    dispose: async () => {
+      // A failed creation already rejected the job that awaited it, and left nothing to dispose.
+      const adapter = await creation?.catch(() => null);
+      await adapter?.dispose();
+    },
   };
 }
 
@@ -510,14 +565,20 @@ async function requireNotebookLM(notebookLM: LazyNotebookLM): Promise<NotebookLM
 
 // ─── Workers ──────────────────────────────────────────────────────────────────
 
-async function createJobWorkers(
+function createJobWorkers(
   config: AppConfig,
-  components: Components,
-  agents: AgentRuntime,
-  jobs: JobRuntime,
-): Promise<Workers> {
+  components: Pick<
+    Components,
+    'telegram' | 'sessionStore' | 'queues' | 'skillWatcher' | 'scheduler'
+  >,
+  agents: Pick<
+    AgentRuntime,
+    'runChatStreaming' | 'runScheduled' | 'recordSkillQuality' | 'triggerCortexExtraction'
+  >,
+  jobs: Omit<JobRuntime, 'handleResearchJobFn' | 'handlePodcastJobFn'>,
+  notebookHandlers: NotebookJobHandlers,
+): Workers {
   const { telegram, sessionStore, queues, skillWatcher, scheduler } = components;
-  const notebookHandlers = await createNotebookJobHandlers(config, components, agents, jobs);
   const { triggerCortexExtraction } = agents;
   return jobs.createWorkersFn({
     redisConnection: { host: config.redisHost, port: config.redisPort },
@@ -550,16 +611,19 @@ async function createJobWorkers(
     config,
     onScheduledJobCompleted: (job) => scheduler.resolveDependents(job.skillId, job.triggeredAt),
     markScheduledJobCompleted: (jobId) => queues.markScheduledJobCompleted(jobId),
+    now: () => new Date(),
   });
 }
 
+type ResearchMemoryAgents = Pick<AgentRuntime, 'runClaude' | 'triggerCortexExtraction'>;
+
 /** Research and podcast jobs both need NotebookLM; each job fails when it is not configured. */
 async function createNotebookJobHandlers(
-  config: AppConfig,
-  components: Components,
-  agents: AgentRuntime,
-  jobs: JobRuntime,
-): Promise<Pick<WorkerDeps, 'researchHandler' | 'podcastHandler'>> {
+  config: Pick<AppConfig, 'workspacePath' | 'obsidianVaultPath'>,
+  components: Pick<Components, 'telegram' | 'notebookLM' | 'quotaTracker'>,
+  agents: ResearchMemoryAgents,
+  jobs: Pick<JobRuntime, 'handleResearchJobFn' | 'handlePodcastJobFn'>,
+): Promise<NotebookJobHandlers> {
   const vaultWriter = await import('./infra/vault-writer.js').then((m) => m.createVaultWriter());
   const researchLLM = await import('./infra/research-llm-client.js').then((m) =>
     m.createResearchLLMAdapter(config.workspacePath, 30_000, 600_000, agents.runClaude),
@@ -573,9 +637,9 @@ async function createNotebookJobHandlers(
         researchLLM,
         vaultWriter,
         telegram,
-        quotaTracker: quotaTracker.tracker,
+        quotaTracker,
         vaultBasePath,
-        cortexRemember: rememberResearchSummary(config, agents),
+        cortexRemember: rememberResearchSummary(config.workspacePath, agents),
       }),
     podcastHandler: async (job) =>
       jobs.handlePodcastJobFn(job, {
@@ -587,12 +651,12 @@ async function createNotebookJobHandlers(
 }
 
 function rememberResearchSummary(
-  config: AppConfig,
-  agents: AgentRuntime,
+  workspacePath: string,
+  agents: ResearchMemoryAgents,
 ): (text: string) => Promise<void> {
   return async (text) => {
     const result = await agents.runClaude({
-      cwd: config.workspacePath,
+      cwd: workspacePath,
       prompt: `Store this research summary in memory for future recall:\n\n${text}`,
       allowedTools: [],
       timeoutMs: 30_000,
@@ -602,7 +666,7 @@ function rememberResearchSummary(
         `[main] Research memory-summary agent failed: ${formatAgentFailure(result.failure)}`,
       );
     } else if (result.sessionId && agents.triggerCortexExtraction) {
-      await agents.triggerCortexExtraction(result.sessionId, config.workspacePath);
+      await agents.triggerCortexExtraction(result.sessionId, workspacePath);
     }
   };
 }
@@ -613,14 +677,20 @@ function rememberResearchSummary(
  * The returned promise is the durable ingress boundary. A rejection stops
  * polling without acknowledging the update, so Telegram can redeliver it.
  */
-function routeTelegramMessages(config: AppConfig, components: Components): void {
+function routeTelegramMessages(
+  config: Pick<AppConfig, 'agentBackend' | 'obsidianVaultPath' | 'workspacePath'>,
+  components: Pick<
+    Components,
+    'telegram' | 'sessionStore' | 'queues' | 'quotaTracker' | 'skillWatcher' | 'notebookLM'
+  >,
+): void {
   const { telegram, sessionStore, queues, quotaTracker, skillWatcher, notebookLM } = components;
   telegram.onMessage((msg) =>
     routeMessage(msg, {
       telegram,
       sessionStore,
       queues,
-      quotaTracker: quotaTracker.tracker,
+      quotaTracker,
       agentBackend: config.agentBackend,
       getSkillRegistry: skillWatcher.getRegistry,
       getNotebookLM: notebookLM.get,
@@ -630,8 +700,8 @@ function routeTelegramMessages(config: AppConfig, components: Components): void 
 }
 
 async function startServices(
-  config: AppConfig,
-  { skillWatcher, telegram }: Components,
+  config: Pick<AppConfig, 'authorizedUserIds'>,
+  { skillWatcher, telegram }: Pick<Components, 'skillWatcher' | 'telegram'>,
   workers: Workers,
 ): Promise<void> {
   await loadSkillRegistry(skillWatcher);
@@ -678,7 +748,13 @@ function announceRestart(telegram: TelegramAdapter, userIds: readonly number[]):
  * queue connections. This prevents new work from arriving behind a worker
  * that has already begun shutdown.
  */
-async function stopServices(components: Components, workers: Workers): Promise<void> {
+async function stopServices(
+  components: Pick<
+    Components,
+    'scheduler' | 'skillWatcher' | 'telegram' | 'queues' | 'disconnectRedis' | 'notebookLM'
+  >,
+  workers: Workers,
+): Promise<void> {
   const { scheduler, skillWatcher, telegram, queues } = components;
   await Promise.all([Promise.resolve(scheduler.stop()), skillWatcher.stop(), telegram.stop()]);
   await workers.stop();
@@ -690,11 +766,7 @@ async function stopServices(components: Components, workers: Workers): Promise<v
     queues.podcast.close(),
     queues.delivery.close(),
   ]);
-  await Promise.all([
-    components.disconnectRedis(),
-    components.quotaTracker.disconnect(),
-    components.notebookLM.dispose(),
-  ]);
+  await Promise.all([components.disconnectRedis(), components.notebookLM.dispose()]);
 }
 
 /**
