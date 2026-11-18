@@ -42,17 +42,18 @@ export function readReminderScheduler(
   const parsed = parseRecurringReminderJob(scheduler.template?.data);
   if (!parsed.ok) return { kind: 'unparseable', schedulerId: id, error: parsed.error };
 
-  const data = parsed.value;
-  const cronPattern = data.cronPattern ?? pattern;
+  const { text, schedule, chatId } = parsed.value;
+  const cron = schedule.kind === 'cron' ? schedule : null;
+  const cronPattern = cron?.cronPattern ?? pattern;
   return {
     kind: 'reminder',
     info: {
       schedulerId: id,
-      text: data.text,
+      text,
       intervalMs: every !== undefined ? Number(every) : 0,
       ...(cronPattern ? { cronPattern } : {}),
-      ...(data.cronDescription ? { cronDescription: data.cronDescription } : {}),
-      chatId: data.chatId,
+      ...(cron?.cronDescription ? { cronDescription: cron.cronDescription } : {}),
+      chatId,
     },
   };
 }

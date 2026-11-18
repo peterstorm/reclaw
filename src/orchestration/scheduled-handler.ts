@@ -13,6 +13,7 @@ import {
   type ClaudeSessionId,
   type ScheduledJob,
   type ScheduledOutcome,
+  type SkillConfig,
   type SkillRegistry,
   scheduledCompleted,
   scheduledFailed,
@@ -88,27 +89,12 @@ export async function handleScheduledJob(
   job: ScheduledJob,
   deps: ScheduledDeps,
 ): Promise<ScheduledHandlerOutcome> {
-  const startedAt = performance.now();
-  const emit = (
-    status: SkillRunStatus,
-    outputLength: number,
-    errorMessage: string | null,
-  ): void => {
-    deps.recordSkillQuality?.({
-      skillId: job.skillId,
-      status,
-      durationMs: Math.round(performance.now() - startedAt),
-      outputLength,
-      errorMessage,
-      timestamp: new Date().toISOString(),
-    });
-  };
+  const emit = qualityEmitter(job, deps.recordSkillQuality);
 
   // 1. Enforce the immutable deadline accepted with the job. Hot reload may
   // change future schedules, but must not mutate already-queued work.
   const now = new Date();
-  const nowMs = now.getTime();
-  if (nowMs < Date.parse(job.triggeredAt) || nowMs > Date.parse(job.validUntil)) {
+  if (!isWithinJobWindow(job, now)) {
     emit('validity_expired', 0, null);
     // Skip, not fail: the window only recedes, so every retry is guaranteed to
     // land further outside it. Failing here costs three backoff cycles and a
@@ -131,40 +117,149 @@ export async function handleScheduledJob(
       : scheduledFailed('skill not found');
   }
 
-  // 3. Resolve the skill's explicit service-environment grants. Undefined
-  // values are omitted so scripts can use their intentional file fallbacks.
-  const environment = resolveSkillEnvironment(deps.processEnvironment ?? {}, skill.environment);
+  // 3–7. Build the prompt and run the agent, with the skill's fallback.
+  const { result, sessionBackend, notice } = await runSkill(job, skill, deps, now);
 
-  // 4. Load personality — fallback to empty string on read error (FR-009)
-  let personality = '';
-  try {
-    personality = await fs.readFile(deps.config.personalityPath, 'utf-8');
-  } catch (error) {
-    console.warn(
-      `[scheduled] Personality unavailable at ${deps.config.personalityPath}; continuing without it:`,
-      error instanceof Error ? error.message : error,
-    );
+  // 8. Handle failure — no user notification for scheduled (goes to dead letter)
+  if (!result.ok) {
+    const message = formatAgentFailure(result.failure);
+    emit('claude_error', 0, message);
+    return deps.completionMode === 'durable'
+      ? { kind: 'failed', cause: { kind: 'agent', failure: result.failure } }
+      : scheduledFailed(message);
   }
 
-  // 5. Build prompt from template (pure)
-  const prompt = buildPrompt(skill.promptTemplate, {
-    date: localDate(now, deps.config.timezone),
-    dayOfWeek: localDayOfWeek(now, deps.config.timezone),
+  // 9–12. Deliver (or hand to the durable outbox) and record success.
+  return completeRun(result, sessionBackend, notice, deps, emit);
+}
+
+// ─── Steps ────────────────────────────────────────────────────────────────────
+
+/**
+ * 3–6. Personality (FR-009), prompt (pure), allowed tools (FR-011) and
+ * environment grants; 7. run the agent subprocess (FR-007), then the skill's
+ * fallback if the primary backend could not serve (core/backend-fallback.ts).
+ */
+async function runSkill(
+  job: ScheduledJob,
+  skill: SkillConfig,
+  deps: ScheduledDeps,
+  now: Date,
+): Promise<FallbackRun> {
+  const personality = await loadPersonality(deps.config.personalityPath);
+  const prompt = buildPrompt(skill.promptTemplate, promptVariables(deps.config, now, personality));
+  return runWithFallback(
+    job,
+    skill,
+    skillRunner(skill, deps, prompt),
+    skill.backend === 'claude' ? skill : { backend: skill.backend ?? deps.config.agentBackend },
+  );
+}
+
+/**
+ * 9. Suppress the ALL_CLEAR sentinel (alert-only skills). Durable production
+ * execution returns here: its delivery and Cortex extraction are persisted as
+ * independently retryable outbox jobs. The legacy inline path 10. sends to
+ * every authorized user, 11. awaits Cortex extraction, 12. records success.
+ */
+async function completeRun(
+  result: Extract<AgentResult, { ok: true }>,
+  sessionBackend: AgentBackendName,
+  notice: string | null,
+  deps: ScheduledDeps,
+  emit: QualityEmit,
+): Promise<ScheduledHandlerOutcome> {
+  const { response, isSuppressed } = composeResponse(result.output, notice);
+  const parsedSessionId = result.sessionId === null ? null : makeClaudeSessionId(result.sessionId);
+  const sessionId = parsedSessionId === null || !parsedSessionId.ok ? null : parsedSessionId.value;
+
+  if (deps.completionMode === 'durable') {
+    emit(isSuppressed ? 'suppressed' : 'success', response.length, null);
+    return { kind: 'completed', response, suppressed: isSuppressed, sessionId, sessionBackend };
+  }
+
+  if (!isSuppressed) {
+    await deliverInline(response, sessionId === null ? null : { sessionId, sessionBackend }, deps);
+  }
+  if (sessionId !== null) {
+    await deps.triggerCortexExtraction?.(sessionId, deps.config.workspacePath);
+  }
+  emit(isSuppressed ? 'suppressed' : 'success', response.length, null);
+  return scheduledCompleted(response);
+}
+
+type QualityEmit = (
+  status: SkillRunStatus,
+  outputLength: number,
+  errorMessage: string | null,
+) => void;
+
+/** Records the run's quality signal, timed from now. */
+function qualityEmitter(
+  job: ScheduledJob,
+  recordSkillQuality: ScheduledDeps['recordSkillQuality'],
+): QualityEmit {
+  const startedAt = performance.now();
+  return (status, outputLength, errorMessage) => {
+    recordSkillQuality?.({
+      skillId: job.skillId,
+      status,
+      durationMs: Math.round(performance.now() - startedAt),
+      outputLength,
+      errorMessage,
+      timestamp: new Date().toISOString(),
+    });
+  };
+}
+
+/** Whether `now` lies inside the window the job was accepted with. */
+function isWithinJobWindow(job: ScheduledJob, now: Date): boolean {
+  const nowMs = now.getTime();
+  return nowMs >= Date.parse(job.triggeredAt) && nowMs <= Date.parse(job.validUntil);
+}
+
+/** The personality file, or '' when it cannot be read (FR-009). */
+async function loadPersonality(personalityPath: string): Promise<string> {
+  try {
+    return await fs.readFile(personalityPath, 'utf-8');
+  } catch (error) {
+    console.warn(
+      `[scheduled] Personality unavailable at ${personalityPath}; continuing without it:`,
+      error instanceof Error ? error.message : error,
+    );
+    return '';
+  }
+}
+
+function promptVariables(
+  config: AppConfig,
+  now: Date,
+  personality: string,
+): Parameters<typeof buildPrompt>[1] {
+  return {
+    date: localDate(now, config.timezone),
+    dayOfWeek: localDayOfWeek(now, config.timezone),
     personality,
-    latitude: deps.config.latitude,
-    longitude: deps.config.longitude,
-    timezone: deps.config.timezone,
-    locationName: deps.config.locationName,
-    workspacePath: deps.config.workspacePath,
-    ...(deps.config.scriptsDir !== undefined ? { scriptsDir: deps.config.scriptsDir } : {}),
-  });
+    latitude: config.latitude,
+    longitude: config.longitude,
+    timezone: config.timezone,
+    locationName: config.locationName,
+    workspacePath: config.workspacePath,
+    ...(config.scriptsDir !== undefined ? { scriptsDir: config.scriptsDir } : {}),
+  };
+}
 
-  // 6. Get allowed tools for the skill's parsed profile (pure, FR-011)
+type SkillRun = (target: AgentTarget) => Promise<AgentResult>;
+
+/**
+ * Runs the skill's prompt on one agent target, with the skill's allowed tools
+ * (FR-011) and its explicit service-environment grants. Undefined grant values
+ * are omitted so scripts can use their intentional file fallbacks.
+ */
+function skillRunner(skill: SkillConfig, deps: ScheduledDeps, prompt: string): SkillRun {
+  const environment = resolveSkillEnvironment(deps.processEnvironment ?? {}, skill.environment);
   const allowedTools = getAllowedTools(skill.permissionProfile);
-
-  // 7. Run agent subprocess (FR-007), then the skill's fallback if the primary backend
-  // could not serve (the decision is pure: core/backend-fallback.ts).
-  const run = (target: AgentTarget): Promise<AgentResult> => {
+  return (target) => {
     const modelSelection = requestedModel(target);
     return deps.runClaude({
       prompt,
@@ -176,82 +271,75 @@ export async function handleScheduledJob(
       ...(modelSelection !== undefined ? { modelSelection } : {}),
     });
   };
-  const runWithFallback = async (
-    primary: AgentTarget,
-  ): Promise<{ result: AgentResult; sessionBackend: AgentBackendName; notice: string | null }> => {
-    const first = await run(primary);
-    const fallback = first.ok ? null : planFallback(primary.backend, skill.fallback, first.failure);
-    if (first.ok || fallback === null) {
-      return { result: first, sessionBackend: primary.backend, notice: null };
-    }
-    console.warn(
-      `[scheduled] ${job.skillId}: ${formatAgentFailure(first.failure)} — falling back to ${fallback.backend}`,
-    );
-    return {
-      result: await run(fallback),
-      sessionBackend: fallback.backend,
-      notice: fallbackNotice(first.failure, fallback),
-    };
-  };
-  const { result, sessionBackend, notice } = await runWithFallback(
-    skill.backend === 'claude' ? skill : { backend: skill.backend ?? deps.config.agentBackend },
+}
+
+/** Run on `primary`; when it could not serve, rerun on the skill's planned fallback. */
+/** The run that answered, the backend that served it, and the fallback notice if one did. */
+type FallbackRun = {
+  readonly result: AgentResult;
+  readonly sessionBackend: AgentBackendName;
+  readonly notice: string | null;
+};
+
+async function runWithFallback(
+  job: ScheduledJob,
+  skill: SkillConfig,
+  run: SkillRun,
+  primary: AgentTarget,
+): Promise<FallbackRun> {
+  const first = await run(primary);
+  const fallback = first.ok ? null : planFallback(primary.backend, skill.fallback, first.failure);
+  if (first.ok || fallback === null) {
+    return { result: first, sessionBackend: primary.backend, notice: null };
+  }
+  console.warn(
+    `[scheduled] ${job.skillId}: ${formatAgentFailure(first.failure)} — falling back to ${fallback.backend}`,
   );
+  return {
+    result: await run(fallback),
+    sessionBackend: fallback.backend,
+    notice: fallbackNotice(first.failure, fallback),
+  };
+}
 
-  // 8. Handle failure — no user notification for scheduled (goes to dead letter)
-  if (!result.ok) {
-    const message = formatAgentFailure(result.failure);
-    emit('claude_error', 0, message);
-    return deps.completionMode === 'durable'
-      ? { kind: 'failed', cause: { kind: 'agent', failure: result.failure } }
-      : scheduledFailed(message);
-  }
+/**
+ * The message to deliver. An ALL_CLEAR output is suppressed; a fallback run is
+ * announced on its message, never on a suppressed one.
+ */
+function composeResponse(
+  output: string,
+  notice: string | null,
+): { readonly response: string; readonly isSuppressed: boolean } {
+  const isSuppressed = output.trim() === SUPPRESS_SENTINEL;
+  return {
+    response: notice === null || isSuppressed ? output : `${notice}\n\n${output}`,
+    isSuppressed,
+  };
+}
 
-  // 9. Suppress notification if output is the ALL_CLEAR sentinel (alert-only skills). A
-  // fallback run is announced on its message, never on a suppressed one.
-  const isSuppressed = result.output.trim() === SUPPRESS_SENTINEL;
-  const response =
-    notice === null || isSuppressed ? result.output : `${notice}\n\n${result.output}`;
-
-  const parsedSessionId = result.sessionId === null ? null : makeClaudeSessionId(result.sessionId);
-  const sessionId = parsedSessionId === null || !parsedSessionId.ok ? null : parsedSessionId.value;
-
-  if (deps.completionMode === 'durable') {
-    emit(isSuppressed ? 'suppressed' : 'success', response.length, null);
-    return {
-      kind: 'completed',
-      response,
-      suppressed: isSuppressed,
-      sessionId,
-      sessionBackend,
-    };
-  }
-
-  // 10. Split response and send to all authorized users (unless suppressed)
-  if (!isSuppressed) {
-    const chunks = splitMessage(response);
-    for (const userId of deps.config.authorizedUserIds) {
-      const messageIds = await deps.telegram.sendChunkedMessage(userId, chunks);
-
-      // 10b. Save message→session mappings so reply-to-message can resume the session
-      if (sessionId !== null && deps.sessionStore) {
-        for (const msgId of messageIds) {
-          await deps.sessionStore.saveMessageReference(userId, msgId, {
-            schemaVersion: 1,
-            backend: sessionBackend,
-            sessionId,
-          });
-        }
+/**
+ * Send the response to every authorized user. 10b: with a session, map each
+ * sent message to it so reply-to-message can resume the session.
+ */
+async function deliverInline(
+  response: string,
+  session: {
+    readonly sessionId: ClaudeSessionId;
+    readonly sessionBackend: AgentBackendName;
+  } | null,
+  deps: ScheduledDeps,
+): Promise<void> {
+  const chunks = splitMessage(response);
+  for (const userId of deps.config.authorizedUserIds) {
+    const messageIds = await deps.telegram.sendChunkedMessage(userId, chunks);
+    if (session !== null && deps.sessionStore) {
+      for (const msgId of messageIds) {
+        await deps.sessionStore.saveMessageReference(userId, msgId, {
+          schemaVersion: 1,
+          backend: session.sessionBackend,
+          sessionId: session.sessionId,
+        });
       }
     }
   }
-
-  // 11. Await Cortex extraction in the legacy inline path; durable production
-  // execution persists this as an independently retryable delivery instead.
-  if (sessionId !== null) {
-    await deps.triggerCortexExtraction?.(sessionId, deps.config.workspacePath);
-  }
-
-  // 12. Emit quality signal and return success
-  emit(isSuppressed ? 'suppressed' : 'success', response.length, null);
-  return scheduledCompleted(response);
 }

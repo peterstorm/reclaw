@@ -873,57 +873,48 @@ describe('makeRecurringReminderJob', () => {
     schedulerId: 'telegram:1001:recurring',
   };
 
-  it('builds an interval job with no cron fields', () => {
-    expect(makeRecurringReminderJob({ ...base, intervalMs: 7_200_000 })).toEqual(
-      ok({ kind: 'recurring-reminder', ...base, intervalMs: 7_200_000 }),
+  // The wire forms (both / neither of interval and cron, a defaulted description)
+  // are parsed in job-schemas.ts; the factory takes the schedule union.
+
+  it('builds an interval job', () => {
+    const schedule = { kind: 'interval', intervalMs: 7_200_000 } as const;
+    expect(makeRecurringReminderJob({ ...base, schedule })).toEqual(
+      ok({ kind: 'recurring-reminder', ...base, schedule }),
     );
   });
 
-  it('builds a cron job that carries intervalMs 0', () => {
+  it('builds a cron job carrying its pattern and description', () => {
+    const schedule = {
+      kind: 'cron',
+      cronPattern: '0 12 * * 0',
+      cronDescription: 'every Sunday at 12:00',
+    } as const;
+    expect(makeRecurringReminderJob({ ...base, schedule })).toEqual(
+      ok({ kind: 'recurring-reminder', ...base, schedule }),
+    );
+  });
+
+  it('rejects a cron schedule with an empty pattern', () => {
     expect(
       makeRecurringReminderJob({
         ...base,
-        cronPattern: '0 12 * * 0',
-        cronDescription: 'every Sunday at 12:00',
+        schedule: { kind: 'cron', cronPattern: '', cronDescription: 'never' },
       }),
-    ).toEqual(
-      ok({
-        kind: 'recurring-reminder',
-        ...base,
-        intervalMs: 0,
-        cronPattern: '0 12 * * 0',
-        cronDescription: 'every Sunday at 12:00',
-      }),
-    );
+    ).toEqual(err('Recurring reminder cronPattern must not be empty.'));
   });
 
-  it('defaults cronDescription to the cron pattern', () => {
-    const r = makeRecurringReminderJob({ ...base, cronPattern: '0 9 * * 1-5' });
-    expect(r.ok && r.value.cronDescription).toBe('0 9 * * 1-5');
-  });
-
-  it('rejects a job with both an interval and a cron pattern', () => {
-    expect(
-      makeRecurringReminderJob({ ...base, intervalMs: 7_200_000, cronPattern: '0 12 * * 0' }),
-    ).toEqual(err('Cannot specify both intervalMs and cronPattern for a recurring reminder.'));
-  });
-
-  it('rejects a job with neither an interval nor a cron pattern', () => {
-    expect(makeRecurringReminderJob(base)).toEqual(
-      err('Either intervalMs or cronPattern must be provided.'),
-    );
-    expect(makeRecurringReminderJob({ ...base, intervalMs: 0, cronPattern: '' })).toEqual(
-      err('Either intervalMs or cronPattern must be provided.'),
-    );
-  });
-
-  it.each([59_999, 1, 90_000.5])('rejects interval %d (under a minute or fractional)', (ms) => {
-    expect(makeRecurringReminderJob({ ...base, intervalMs: ms })).toEqual(
-      err('Recurring reminder interval must be at least 1 minute.'),
-    );
-  });
+  it.each([59_999, 1, 0, -60_000, 90_000.5])(
+    'rejects interval %d (under a minute or fractional)',
+    (ms) => {
+      expect(
+        makeRecurringReminderJob({ ...base, schedule: { kind: 'interval', intervalMs: ms } }),
+      ).toEqual(err('Recurring reminder interval must be at least 1 minute.'));
+    },
+  );
 
   it('accepts an interval of exactly one minute', () => {
-    expect(makeRecurringReminderJob({ ...base, intervalMs: 60_000 }).ok).toBe(true);
+    expect(
+      makeRecurringReminderJob({ ...base, schedule: { kind: 'interval', intervalMs: 60_000 } }).ok,
+    ).toBe(true);
   });
 });

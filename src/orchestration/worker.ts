@@ -329,18 +329,21 @@ function deliveryQueue(deps: WorkerDeps): QueueSpec {
   };
 }
 
-/** Wrap the BullMQ job's checkpoint methods for the research pipeline (SC-002/SC-003). */
+/**
+ * Wrap the BullMQ job's checkpoint methods for the research pipeline (SC-002/SC-003).
+ * Both are called on `job`, never extracted: BullMQ's Job.updateData and
+ * updateProgress assign `this.data` / `this.progress` first, so a detached call
+ * throws a TypeError and loses the checkpoint.
+ */
 function researchJobLike(job: QueueJob, data: ResearchJobData): ResearchJobLike {
-  const updateData = job.updateData;
-  const updateProgress = job.updateProgress;
   return {
     data,
-    updateData:
-      updateData === undefined ? async () => {} : (next: ResearchJobData) => updateData(next),
-    updateProgress:
-      updateProgress === undefined
-        ? async () => {}
-        : (progress: number) => updateProgress(progress),
+    updateData: async (next) => {
+      await job.updateData?.(next);
+    },
+    updateProgress: async (progress) => {
+      await job.updateProgress?.(progress);
+    },
   };
 }
 

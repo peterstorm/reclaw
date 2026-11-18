@@ -1,13 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  type JobId,
   type ScheduledJob,
   type SkillConfig,
   type SkillId,
   emptySkillRegistry,
   skillRegistryFromList,
 } from '../core/types.js';
-import { type CronScheduler, createScheduler, decideCatchUp, hasCycle } from './scheduler.js';
+import { type CronScheduler, createScheduler } from './scheduler.js';
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────
 
@@ -50,18 +49,20 @@ describe('createScheduler', () => {
   });
 
   /**
-   * Reconcile `skills` on real timers and wait for the async startup catch-up
-   * check (isJobKnown → isJobCompleted → decide) to settle.
+   * Reconcile `skills` and let the async startup catch-up check
+   * (isJobKnown → isJobCompleted → decide) settle. The clock is pinned
+   * mid-minute on fake timers, so an every-minute cron cannot fire while the
+   * catch-up settles; on real timers a run crossing a minute boundary fired it.
    */
   async function reconcileAndSettleCatchUp(
     knownFn: ReturnType<typeof vi.fn>,
     completedFn: ReturnType<typeof vi.fn>,
     skills: readonly SkillConfig[],
   ): Promise<CronScheduler> {
-    vi.useRealTimers();
+    vi.setSystemTime(new Date('2026-01-01T12:00:10.000Z'));
     const scheduler = createScheduler(enqueueScheduled, knownFn, completedFn);
     scheduler.reconcile(skillRegistryFromList(skills));
-    await new Promise((r) => globalThis.setTimeout(r, 50));
+    await vi.advanceTimersByTimeAsync(50);
     return scheduler;
   }
 
@@ -596,97 +597,4 @@ describe('createScheduler', () => {
   });
 });
 
-// ─── Pure helper unit tests ──────────────────────────────────────────────────
-
-describe('hasCycle', () => {
-  it('returns false for skill with no dependencies', () => {
-    const a = makeSkillConfig('a', '* * * * *');
-    const registry = skillRegistryFromList([a]);
-    expect(hasCycle('a' as SkillId, registry)).toBe(false);
-  });
-
-  it('returns true for self-dependency', () => {
-    const a = makeSkillConfig('a', null, 30, 'a');
-    const registry = skillRegistryFromList([a]);
-    expect(hasCycle('a' as SkillId, registry)).toBe(true);
-  });
-
-  it('returns true for 2-node cycle (A→B→A)', () => {
-    const a = makeSkillConfig('a', '* * * * *', 30, 'b');
-    const b = makeSkillConfig('b', null, 30, 'a');
-    const registry = skillRegistryFromList([a, b]);
-    expect(hasCycle('a' as SkillId, registry)).toBe(true);
-    expect(hasCycle('b' as SkillId, registry)).toBe(true);
-  });
-
-  it('returns true for 3-node cycle (A→B→C→A)', () => {
-    const a = makeSkillConfig('a', null, 30, 'c');
-    const b = makeSkillConfig('b', null, 30, 'a');
-    const c = makeSkillConfig('c', null, 30, 'b');
-    const registry = skillRegistryFromList([a, b, c]);
-    expect(hasCycle('a' as SkillId, registry)).toBe(true);
-    expect(hasCycle('b' as SkillId, registry)).toBe(true);
-    expect(hasCycle('c' as SkillId, registry)).toBe(true);
-  });
-
-  it('returns false for valid linear chain (A→B→C, no cycle)', () => {
-    const a = makeSkillConfig('a', null, 30, 'b');
-    const b = makeSkillConfig('b', null, 30, 'c');
-    const c = makeSkillConfig('c', '* * * * *');
-    const registry = skillRegistryFromList([a, b, c]);
-    expect(hasCycle('a' as SkillId, registry)).toBe(false);
-    expect(hasCycle('b' as SkillId, registry)).toBe(false);
-    expect(hasCycle('c' as SkillId, registry)).toBe(false);
-  });
-});
-
-describe('decideCatchUp', () => {
-  const cronJob = (id: string, skillId: string): ScheduledJob => ({
-    kind: 'scheduled',
-    id: id as JobId,
-    skillId: skillId as SkillId,
-    triggeredAt: '2026-04-06T00:00:00.000Z',
-    validUntil: '2026-04-06T01:00:00.000Z',
-    trigger: 'cron',
-  });
-
-  const triggerJob = cronJob('job-trigger', 'prune');
-  const depJob1 = cronJob('job-dep1', 'librarian');
-  const depJob2 = cronJob('job-dep2', 'indexer');
-
-  it('enqueues standalone when trigger not fired', () => {
-    const result = decideCatchUp(false, false, triggerJob, []);
-    expect(result.action).toBe('enqueue-standalone');
-  });
-
-  it('skips when trigger fired but not completed (in-flight)', () => {
-    const result = decideCatchUp(true, false, triggerJob, []);
-    expect(result.action).toBe('skip');
-    if (result.action === 'skip') {
-      expect(result.reason).toContain('in-flight');
-    }
-  });
-
-  it('skips when trigger completed and all dependents already fired', () => {
-    const result = decideCatchUp(true, true, triggerJob, []);
-    expect(result.action).toBe('skip');
-  });
-
-  it('enqueues dependents when trigger completed with unfired deps', () => {
-    const result = decideCatchUp(true, true, triggerJob, [depJob1, depJob2]);
-    expect(result.action).toBe('enqueue-dependents');
-    if (result.action === 'enqueue-dependents') {
-      expect(result.depJobs).toHaveLength(2);
-      expect(result.depJobs[0]?.skillId).toBe('librarian');
-      expect(result.depJobs[1]?.skillId).toBe('indexer');
-    }
-  });
-
-  it('enqueues single dependent when one of many is unfired', () => {
-    const result = decideCatchUp(true, true, triggerJob, [depJob1]);
-    expect(result.action).toBe('enqueue-dependents');
-    if (result.action === 'enqueue-dependents') {
-      expect(result.depJobs).toHaveLength(1);
-    }
-  });
-});
+// hasCycle, dependencyGraph and decideCatchUp are pure: core/skill-dependencies.test.ts.

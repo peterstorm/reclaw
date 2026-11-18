@@ -1,3 +1,4 @@
+import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import {
   type ParsedReminder,
@@ -346,6 +347,81 @@ describe('parseRecurringReminder', () => {
   it('rejects cron with empty message', () => {
     const r = parseRecurringReminder('Sunday at noon');
     expect(r.ok).toBe(false);
+  });
+});
+
+// ─── Lookup tables keyed by user text ───────────────────────────────────────
+// Day names and time keywords are looked up by a word the user typed. A word
+// that names an Object.prototype member must be an unknown word, never a hit.
+
+const PROTOTYPE_KEYS = Object.getOwnPropertyNames(Object.prototype);
+const prototypeKey = fc.constantFrom(...PROTOTYPE_KEYS);
+
+/** The cron patterns parseRecurringReminder may emit: minute, hour, any day field it knows. */
+const WELL_FORMED_CRON = /^\d{1,2} \d{1,2} \* \* (?:[0-6]|1-5|0,6|\*)$/;
+
+describe('parseRecurringReminder prototype-key words', () => {
+  it.each(['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf'])(
+    'rejects "%s" as a day word',
+    (key) => {
+      expect(parseRecurringReminder(`${key} at 9am water plants`).ok).toBe(false);
+      expect(parseRecurringReminder(`${key} water plants`).ok).toBe(false);
+    },
+  );
+
+  it.each(['constructor', '__proto__', 'toString'])(
+    'rejects "%s" as the time after "at"',
+    (key) => {
+      expect(parseRecurringReminder(`Sunday at ${key} water plants`).ok).toBe(false);
+    },
+  );
+
+  it('keeps a prototype-key word after the day as message text, at the 09:00 default', () => {
+    expect(parseRecurringReminder('Sunday constructor review')).toEqual({
+      ok: true,
+      value: {
+        type: 'cron',
+        cronPattern: '0 9 * * 0',
+        cronDescription: 'every Sunday at 09:00',
+        text: 'constructor review',
+      },
+    });
+  });
+
+  it('property: no prototype key is ever read as a day or a time keyword', () => {
+    fc.assert(
+      fc.property(prototypeKey, (key) => {
+        expect(parseRecurringReminder(`${key} at noon water`).ok).toBe(false);
+        expect(parseRecurringReminder(`Sunday at ${key} water`).ok).toBe(false);
+        const bare = parseRecurringReminder(`Sunday ${key} water`);
+        expect(bare).toEqual({
+          ok: true,
+          value: {
+            type: 'cron',
+            cronPattern: '0 9 * * 0',
+            cronDescription: 'every Sunday at 09:00',
+            text: `${key} water`,
+          },
+        });
+      }),
+    );
+  });
+
+  it('property: every cron reminder parsed from any words has a well-formed pattern', () => {
+    const word = fc.oneof(
+      prototypeKey,
+      fc.constantFrom('Sunday', 'weekday', 'daily', 'at', 'noon', '9am', '14:30', 'to', 'tues'),
+      fc.stringMatching(/^[a-z_:0-9]{1,8}$/),
+    );
+    fc.assert(
+      fc.property(fc.array(word, { minLength: 2, maxLength: 5 }), (words) => {
+        const r = parseRecurringReminder(words.join(' '));
+        if (r.ok && r.value.type === 'cron') {
+          expect(r.value.cronPattern).toMatch(WELL_FORMED_CRON);
+          expect(r.value.cronDescription).toMatch(/^every [a-zA-Z ]+ at \d{2}:\d{2}$/);
+        }
+      }),
+    );
   });
 });
 

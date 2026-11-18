@@ -32,6 +32,7 @@ import {
   manualRunWindow,
   parseRunCommand,
 } from '../core/run-command.js';
+import type { ConversationLineage } from '../core/session.js';
 import {
   type AgentBackendName,
   type JobId,
@@ -39,6 +40,7 @@ import {
   type SkillConfig,
   type SkillRegistry,
   type TelegramIngressKind,
+  type TelegramUserId,
   err,
   makeChatJob,
   makePodcastJob,
@@ -141,27 +143,10 @@ export async function routeMessage(
     return;
   }
 
-  const hasAttachments =
-    (msg.imagePaths !== undefined && msg.imagePaths.length > 0) ||
-    (msg.documentPaths !== undefined && msg.documentPaths.length > 0) ||
-    (msg.storedUploads !== undefined && msg.storedUploads.length > 0);
-  const command = hasAttachments ? ({ kind: 'chat' } as const) : parseCommandKind(msg.text);
+  const command = hasAttachments(msg) ? ({ kind: 'chat' } as const) : parseCommandKind(msg.text);
 
   return match(command)
-    .with({ kind: 'new' }, async () => {
-      const now = new Date().toISOString();
-      await deps.sessionStore.advance(
-        msg.chatId,
-        ingressJobId(msg, 'chat'),
-        { kind: 'fresh', backend: deps.agentBackend },
-        now,
-      );
-      await deps.telegram.sendMessage(
-        msg.chatId,
-        'Conversation reset. Next message starts a fresh generation.',
-      );
-      return undefined;
-    })
+    .with({ kind: 'new' }, () => complete(routeNewCommand(msg, deps)))
     .with({ kind: 'help' }, () => complete(routeHelpCommand(msg, deps)))
     .with({ kind: 'remind' }, () => complete(routeRemindCommand(msg, deps)))
     .with({ kind: 'research-status' }, () => complete(routeResearchStatus(msg, deps)))
@@ -171,63 +156,101 @@ export async function routeMessage(
     .with({ kind: 'status' }, () => complete(routeStatusCommand(msg, deps)))
     .with({ kind: 'run' }, () => complete(routeRunCommand(msg, deps)))
     .with({ kind: 'dlq' }, () => complete(routeDlqCommand(msg, deps)))
-    .with({ kind: 'chat' }, async () => {
-      const jobId = ingressJobId(msg, 'chat');
-      const now = new Date().toISOString();
-      const replyReference =
-        msg.replyContext === undefined
-          ? null
-          : await deps.sessionStore.getMessageReference(msg.chatId, msg.replyContext.messageId);
-      const lineage =
-        replyReference === null
-          ? await deps.sessionStore.getCurrent(msg.chatId)
-          : await deps.sessionStore.advance(
-              msg.chatId,
-              jobId,
-              {
-                kind: 'resume',
-                backend: replyReference.backend,
-                sessionId: replyReference.sessionId,
-              },
-              now,
-            );
-
-      const chatJobResult = makeChatJob({
-        id: jobId,
-        userId: userIdResult.value,
-        text: msg.text,
-        chatId: msg.chatId,
-        receivedAt: now,
-        conversation: {
-          generation: lineage.generation,
-          revision: lineage.revision,
-          backend: lineage.backend,
-          sessionId: lineage.sessionId,
-        },
-        ...(msg.replyContext !== undefined ? { replyContext: msg.replyContext } : {}),
-        ...(msg.imagePaths && msg.imagePaths.length > 0 ? { imagePaths: msg.imagePaths } : {}),
-        ...(msg.documentPaths && msg.documentPaths.length > 0
-          ? { documentPaths: msg.documentPaths }
-          : {}),
-        ...(msg.storedUploads && msg.storedUploads.length > 0
-          ? { storedUploads: msg.storedUploads }
-          : {}),
-      });
-
-      if (!chatJobResult.ok) {
-        await deps.telegram.sendMessage(
-          msg.chatId,
-          `Cannot accept message: ${chatJobResult.error}`,
-        );
-        return undefined;
-      }
-
-      const disposition = await deps.queues.enqueueChat(chatJobResult.value);
-      return disposition === 'terminal-duplicate'
-        ? ({ kind: 'remove-source-files' } as const)
-        : ({ kind: 'retain-source-files' } as const);
-    })
+    .with({ kind: 'chat' }, () => routeChatMessage(msg, deps, userIdResult.value))
     .exhaustive();
+}
+
+/** An update carrying files is always chat, whatever its caption says. */
+function hasAttachments(msg: IncomingMessage): boolean {
+  return (
+    (msg.imagePaths !== undefined && msg.imagePaths.length > 0) ||
+    (msg.documentPaths !== undefined && msg.documentPaths.length > 0) ||
+    (msg.storedUploads !== undefined && msg.storedUploads.length > 0)
+  );
+}
+
+// ─── /new ────────────────────────────────────────────────────────────────────
+
+async function routeNewCommand(msg: IncomingMessage, deps: MessageRouterDeps): Promise<void> {
+  const now = new Date().toISOString();
+  await deps.sessionStore.advance(
+    msg.chatId,
+    ingressJobId(msg, 'chat'),
+    { kind: 'fresh', backend: deps.agentBackend },
+    now,
+  );
+  await deps.telegram.sendMessage(
+    msg.chatId,
+    'Conversation reset. Next message starts a fresh generation.',
+  );
+}
+
+// ─── Chat ────────────────────────────────────────────────────────────────────
+
+async function routeChatMessage(
+  msg: IncomingMessage,
+  deps: MessageRouterDeps,
+  userId: TelegramUserId,
+): Promise<TelegramIncomingDisposition | undefined> {
+  const jobId = ingressJobId(msg, 'chat');
+  const now = new Date().toISOString();
+  const lineage = await resolveChatLineage(msg, deps.sessionStore, jobId, now);
+
+  const chatJobResult = makeChatJob({
+    id: jobId,
+    userId,
+    text: msg.text,
+    chatId: msg.chatId,
+    receivedAt: now,
+    conversation: {
+      generation: lineage.generation,
+      revision: lineage.revision,
+      backend: lineage.backend,
+      sessionId: lineage.sessionId,
+    },
+    ...(msg.replyContext !== undefined ? { replyContext: msg.replyContext } : {}),
+    ...(msg.imagePaths && msg.imagePaths.length > 0 ? { imagePaths: msg.imagePaths } : {}),
+    ...(msg.documentPaths && msg.documentPaths.length > 0
+      ? { documentPaths: msg.documentPaths }
+      : {}),
+    ...(msg.storedUploads && msg.storedUploads.length > 0
+      ? { storedUploads: msg.storedUploads }
+      : {}),
+  });
+
+  if (!chatJobResult.ok) {
+    await deps.telegram.sendMessage(msg.chatId, `Cannot accept message: ${chatJobResult.error}`);
+    return undefined;
+  }
+
+  const disposition = await deps.queues.enqueueChat(chatJobResult.value);
+  return disposition === 'terminal-duplicate'
+    ? ({ kind: 'remove-source-files' } as const)
+    : ({ kind: 'retain-source-files' } as const);
+}
+
+/**
+ * The conversation a chat message continues: a reply to a mapped message
+ * resumes that message's session; anything else continues the current one.
+ */
+async function resolveChatLineage(
+  msg: IncomingMessage,
+  sessionStore: SessionStore,
+  jobId: JobId,
+  now: string,
+): Promise<ConversationLineage> {
+  const replyReference =
+    msg.replyContext === undefined
+      ? null
+      : await sessionStore.getMessageReference(msg.chatId, msg.replyContext.messageId);
+  return replyReference === null
+    ? sessionStore.getCurrent(msg.chatId)
+    : sessionStore.advance(
+        msg.chatId,
+        jobId,
+        { kind: 'resume', backend: replyReference.backend, sessionId: replyReference.sessionId },
+        now,
+      );
 }
 
 // ─── /remind sub-router ──────────────────────────────────────────────────────
@@ -284,9 +307,14 @@ async function enqueueRecurringReminder(
     chatId: msg.chatId,
     text: reminder.text,
     createdAt: new Date().toISOString(),
-    ...(reminder.kind === 'cron-recurring'
-      ? { cronPattern: reminder.cronPattern, cronDescription: reminder.cronDescription }
-      : { intervalMs: reminder.intervalMs }),
+    schedule:
+      reminder.kind === 'cron-recurring'
+        ? {
+            kind: 'cron',
+            cronPattern: reminder.cronPattern,
+            cronDescription: reminder.cronDescription,
+          }
+        : { kind: 'interval', intervalMs: reminder.intervalMs },
     schedulerId: jobId,
   });
   if (!recurringResult.ok) return { kind: 'rejected', reminder, reason: recurringResult.error };

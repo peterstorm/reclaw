@@ -19,9 +19,17 @@ import { match } from 'ts-pattern';
 import { extractPassageToSourceMap, resolveAnswerCitations } from '../core/citation-resolver.js';
 import { computeMetrics, evaluateQuality } from '../core/research-quality.js';
 import { buildTelegramSummary } from '../core/research-summary.js';
-import type { ResearchContext, ResearchEvent, ResearchState } from '../core/research-types.js';
-import type { ArtifactMeta, ResolvedNote } from '../core/research-types.js';
+import type {
+  ArtifactMeta,
+  ChatResponse,
+  ResearchContext,
+  ResearchEvent,
+  ResearchState,
+  ResolvedNote,
+  WebSource,
+} from '../core/research-types.js';
 import { RESEARCH_BASE, generateTopicSlug } from '../core/topic-slug.js';
+import type { Result } from '../core/types.js';
 import { buildAllVaultNotes, buildEmergencyNote } from '../core/vault-content.js';
 import { parseVaultRelativePath } from '../core/vault-path.js';
 import type { NotebookLMAdapter } from '../infra/notebooklm-client.js';
@@ -78,7 +86,7 @@ export function normalizeUrl(url: string): string {
  */
 export function deduplicateClaudeUrls(
   claudeUrls: readonly string[],
-  notebookLMSources: readonly import('../core/research-types.js').WebSource[],
+  notebookLMSources: readonly WebSource[],
   sourceHints: readonly string[],
 ): readonly string[] {
   const existingUrls = new Set<string>([
@@ -204,26 +212,8 @@ async function executeSearchingSources(
     };
   }
 
-  // FR-051: Re-reasoning on retry — reformulate the query if previous attempt failed
-  // Use prompt as the search query when available, falling back to topic
-  let query = ctx.prompt ?? ctx.topic;
-  if (ctx.lastError !== null) {
-    const reformulateResult = await deps.researchLLM.reformulateQuery(
-      ctx.topic,
-      ctx.lastError,
-      ctx.prompt,
-    );
-    if (reformulateResult.ok) {
-      query = reformulateResult.value;
-    } else {
-      console.warn(
-        '[research:searching] reformulateQuery failed, using original topic:',
-        reformulateResult.error,
-      );
-    }
-  }
-
   // Run NotebookLM search and Claude web search in parallel
+  const query = await searchQuery(ctx, deps);
   const [notebookLMResult, claudeSearchResult] = await Promise.all([
     deps.notebookLM.searchWeb(ctx.notebookId, query),
     deps.researchLLM.discoverSourceUrls(ctx.topic, ctx.prompt).catch((err) => {
@@ -241,30 +231,55 @@ async function executeSearchingSources(
     };
   }
 
-  // Claude search failure is non-blocking — log and continue with empty list
-  let claudeUrls: readonly string[] = [];
-  if (claudeSearchResult.ok) {
-    claudeUrls = deduplicateClaudeUrls(
-      claudeSearchResult.value,
-      notebookLMResult.value.webSources,
-      ctx.sourceHints,
-    );
-    console.info(
-      `[research:searching] Claude web search found ${claudeSearchResult.value.length} URLs, ${claudeUrls.length} after dedup`,
-    );
-  } else {
-    console.warn(
-      '[research:searching] Claude web search failed (non-blocking):',
-      claudeSearchResult.error,
-    );
-  }
-
   return {
     type: 'SOURCES_DISCOVERED',
     webSources: notebookLMResult.value.webSources,
     sessionId: notebookLMResult.value.sessionId,
-    claudeDiscoveredUrls: claudeUrls,
+    claudeDiscoveredUrls: newClaudeUrls(claudeSearchResult, notebookLMResult.value.webSources, ctx),
   };
+}
+
+/**
+ * The web search query: the prompt when there is one, else the topic. FR-051:
+ * on a retry, the LLM reformulates it in the light of the last error.
+ */
+async function searchQuery(ctx: ResearchContext, deps: ResearchDeps): Promise<string> {
+  const query = ctx.prompt ?? ctx.topic;
+  if (ctx.lastError === null) return query;
+  const reformulateResult = await deps.researchLLM.reformulateQuery(
+    ctx.topic,
+    ctx.lastError,
+    ctx.prompt,
+  );
+  if (reformulateResult.ok) return reformulateResult.value;
+  console.warn(
+    '[research:searching] reformulateQuery failed, using original topic:',
+    reformulateResult.error,
+  );
+  return query;
+}
+
+/**
+ * Claude-discovered URLs that NotebookLM and the user's hints do not already
+ * cover. A failed Claude search is non-blocking: logged, and no URLs.
+ */
+function newClaudeUrls(
+  claudeSearchResult: Result<readonly string[], string>,
+  webSources: readonly WebSource[],
+  ctx: ResearchContext,
+): readonly string[] {
+  if (!claudeSearchResult.ok) {
+    console.warn(
+      '[research:searching] Claude web search failed (non-blocking):',
+      claudeSearchResult.error,
+    );
+    return [];
+  }
+  const claudeUrls = deduplicateClaudeUrls(claudeSearchResult.value, webSources, ctx.sourceHints);
+  console.info(
+    `[research:searching] Claude web search found ${claudeSearchResult.value.length} URLs, ${claudeUrls.length} after dedup`,
+  );
+  return claudeUrls;
 }
 
 /**
@@ -290,68 +305,21 @@ async function executeAddingSources(
     };
   }
 
-  const addedIds: string[] = [];
+  // Step 1: discovered web sources; Step 1.5: Claude-discovered URLs; Step 2:
+  // source hint URLs (FR-013 / FR-014). Hint failures are non-fatal.
+  const notebookId = ctx.notebookId;
+  const additions = [
+    await addDiscoveredSources(ctx, notebookId, deps),
+    await addUrlSources(ctx.claudeDiscoveredUrls ?? [], 'addClaudeSource', notebookId, deps),
+    await addUrlSources(ctx.sourceHints, 'addSourceHint', notebookId, deps),
+  ];
+  const added = additions.reduce((total, step) => total + step.added, 0);
+  const errors = additions.flatMap((step) => step.errors);
   const sourceUrlById: Record<string, string> = {};
-  const errors: string[] = [];
-
-  // Step 1: Add discovered web sources using the session ID and sources stored in context.
-  // These were captured during searching_sources and checkpointed to avoid re-searching.
-  if (ctx.searchSessionId !== null && ctx.discoveredWebSources.length > 0) {
-    const capped = ctx.discoveredWebSources.slice(0, MAX_DISCOVERED_SOURCES);
-    const discoveredResult = await deps.notebookLM.addDiscoveredSources(
-      ctx.notebookId,
-      ctx.searchSessionId,
-      [...ctx.discoveredWebSources],
-      MAX_DISCOVERED_SOURCES,
-    );
-
-    if (discoveredResult.ok) {
-      addedIds.push(...discoveredResult.value);
-      // Map returned IDs to their original URLs (SDK preserves input order)
-      for (let i = 0; i < discoveredResult.value.length && i < capped.length; i++) {
-        const id = discoveredResult.value[i];
-        const src = capped[i];
-        if (id !== undefined && src !== undefined) {
-          sourceUrlById[id] = src.url;
-        }
-      }
-    } else {
-      errors.push(`addDiscoveredSources: ${discoveredResult.error.message}`);
-    }
-  }
-
-  // Step 1.5: Add Claude-discovered URLs individually via addSourceUrl
-  const claudeUrls = ctx.claudeDiscoveredUrls ?? [];
-  for (const url of claudeUrls) {
-    const claudeResult = isYouTubeUrl(url)
-      ? await deps.notebookLM.addYouTubeSource(ctx.notebookId, url)
-      : await deps.notebookLM.addSourceUrl(ctx.notebookId, url);
-
-    if (claudeResult.ok) {
-      addedIds.push(claudeResult.value);
-      sourceUrlById[claudeResult.value] = url;
-    } else {
-      errors.push(`addClaudeSource(${url}): ${claudeResult.error.message}`);
-    }
-  }
-
-  // Step 2: Add source hint URLs (FR-013 / FR-014)
-  for (const url of ctx.sourceHints) {
-    const hintResult = isYouTubeUrl(url)
-      ? await deps.notebookLM.addYouTubeSource(ctx.notebookId, url)
-      : await deps.notebookLM.addSourceUrl(ctx.notebookId, url);
-
-    if (hintResult.ok) {
-      addedIds.push(hintResult.value);
-      sourceUrlById[hintResult.value] = url;
-    } else {
-      // Source hint failures are non-fatal — log and continue
-      errors.push(`addSourceHint(${url}): ${hintResult.error.message}`);
-    }
-  }
+  for (const step of additions) Object.assign(sourceUrlById, step.sourceUrlById);
 
   // If we couldn't add ANY sources, return error regardless of whether errors exist
-  if (addedIds.length === 0) {
+  if (added === 0) {
     const detail =
       errors.length > 0
         ? `Failed to add any sources: ${errors.join('; ')}`
@@ -364,6 +332,75 @@ async function executeAddingSources(
   }
 
   return { type: 'SOURCES_ADDED', sourceUrlById };
+}
+
+/** What one batch of source additions did: how many IDs came back, their URLs, its errors. */
+type SourceAdditions = Readonly<{
+  added: number;
+  sourceUrlById: Readonly<Record<string, string>>;
+  errors: readonly string[];
+}>;
+
+/**
+ * Add the discovered web sources stored in context. These were captured during
+ * searching_sources and checkpointed, so no search quota is spent again.
+ */
+async function addDiscoveredSources(
+  ctx: ResearchContext,
+  notebookId: string,
+  deps: ResearchDeps,
+): Promise<SourceAdditions> {
+  if (ctx.searchSessionId === null || ctx.discoveredWebSources.length === 0) {
+    return { added: 0, sourceUrlById: {}, errors: [] };
+  }
+  const discoveredResult = await deps.notebookLM.addDiscoveredSources(
+    notebookId,
+    ctx.searchSessionId,
+    [...ctx.discoveredWebSources],
+    MAX_DISCOVERED_SOURCES,
+  );
+  if (!discoveredResult.ok) {
+    return {
+      added: 0,
+      sourceUrlById: {},
+      errors: [`addDiscoveredSources: ${discoveredResult.error.message}`],
+    };
+  }
+  // Map returned IDs to their original URLs (SDK preserves input order)
+  const capped = ctx.discoveredWebSources.slice(0, MAX_DISCOVERED_SOURCES);
+  const sourceUrlById: Record<string, string> = {};
+  for (let i = 0; i < discoveredResult.value.length && i < capped.length; i++) {
+    const id = discoveredResult.value[i];
+    const src = capped[i];
+    if (id !== undefined && src !== undefined) {
+      sourceUrlById[id] = src.url;
+    }
+  }
+  return { added: discoveredResult.value.length, sourceUrlById, errors: [] };
+}
+
+/** Add each URL in turn (YouTube or web); a failure is recorded under `label` and skipped. */
+async function addUrlSources(
+  urls: readonly string[],
+  label: 'addClaudeSource' | 'addSourceHint',
+  notebookId: string,
+  deps: ResearchDeps,
+): Promise<SourceAdditions> {
+  const sourceUrlById: Record<string, string> = {};
+  const errors: string[] = [];
+  let added = 0;
+  for (const url of urls) {
+    const result = isYouTubeUrl(url)
+      ? await deps.notebookLM.addYouTubeSource(notebookId, url)
+      : await deps.notebookLM.addSourceUrl(notebookId, url);
+    if (result.ok) {
+      added++;
+      sourceUrlById[result.value] = url;
+    } else {
+      errors.push(`${label}(${url}): ${result.error.message}`);
+    }
+  }
+  return { added, sourceUrlById, errors };
 }
 
 /**
@@ -465,30 +502,12 @@ async function executeQuerying(
     };
   }
 
-  // Find the next unanswered, non-skipped question
-  const pendingQuestion = ctx.questions.find(
-    (q) => !(q in ctx.answers) && !ctx.skippedQuestions.includes(q),
-  );
-
-  // All questions done
+  const pendingQuestion = nextPendingQuestion(ctx);
   if (pendingQuestion === undefined) {
     return { type: 'ALL_QUERIES_DONE' };
   }
 
-  // FR-051: Rephrase question on retry if previous attempt failed for this question
-  let question = pendingQuestion;
-  if (ctx.lastError !== null) {
-    const rephraseResult = await deps.researchLLM.rephraseQuestion(pendingQuestion, ctx.sources);
-    if (rephraseResult.ok) {
-      question = rephraseResult.value;
-    } else {
-      console.warn(
-        '[research:querying] rephraseQuestion failed, using original:',
-        rephraseResult.error,
-      );
-    }
-  }
-
+  const question = await questionToAsk(pendingQuestion, ctx, deps);
   const chatResult = await deps.notebookLM.chat(ctx.notebookId, question);
 
   if (!chatResult.ok) {
@@ -508,17 +527,9 @@ async function executeQuerying(
   }
 
   const response = chatResult.value;
-
-  // FR-025: Semantic circuit breaker — 0 citations + short answer text = low quality
-  const isLowQuality =
-    response.citations.length === 0 && response.text.trim().length < SEMANTIC_MIN_ANSWER_LENGTH;
-
-  if (isLowQuality) {
-    return {
-      type: 'ERROR',
-      error: `Semantic circuit breaker: response has 0 citations and is too short (${response.text.trim().length} chars < ${SEMANTIC_MIN_ANSWER_LENGTH})`,
-      retriable: true,
-    };
+  const breaker = semanticCircuitBreaker(response);
+  if (breaker !== null) {
+    return { type: 'ERROR', error: breaker, retriable: true };
   }
 
   // Track quota usage (best-effort — Redis failure should not discard valid answer)
@@ -533,6 +544,40 @@ async function executeQuerying(
     question: pendingQuestion,
     answer: response,
   };
+}
+
+/** The first question neither answered nor skipped. */
+function nextPendingQuestion(ctx: ResearchContext): string | undefined {
+  return ctx.questions.find(
+    (q) => !Object.hasOwn(ctx.answers, q) && !ctx.skippedQuestions.includes(q),
+  );
+}
+
+/** FR-051: on a retry, ask a rephrasing of the question; else the question itself. */
+async function questionToAsk(
+  pendingQuestion: string,
+  ctx: ResearchContext,
+  deps: ResearchDeps,
+): Promise<string> {
+  if (ctx.lastError === null) return pendingQuestion;
+  const rephraseResult = await deps.researchLLM.rephraseQuestion(pendingQuestion, ctx.sources);
+  if (rephraseResult.ok) return rephraseResult.value;
+  console.warn(
+    '[research:querying] rephraseQuestion failed, using original:',
+    rephraseResult.error,
+  );
+  return pendingQuestion;
+}
+
+/**
+ * FR-025: an answer with no citations and too little text is low quality.
+ * Returns why the breaker tripped, or null for an acceptable answer.
+ */
+function semanticCircuitBreaker(response: ChatResponse): string | null {
+  const length = response.text.trim().length;
+  return response.citations.length === 0 && length < SEMANTIC_MIN_ANSWER_LENGTH
+    ? `Semantic circuit breaker: response has 0 citations and is too short (${length} chars < ${SEMANTIC_MIN_ANSWER_LENGTH})`
+    : null;
 }
 
 /**
@@ -597,30 +642,9 @@ async function executeWritingVault(
   const writeResult = await deps.vaultWriter.writeNotes(notes, deps.vaultBasePath);
 
   if (writeResult.ok) {
-    // Append new topic to the Research MOC (best-effort — failure here doesn't block the pipeline)
+    // Best-effort — a MOC failure doesn't block the pipeline
     try {
-      const topicSlug = ctx.topicSlug ?? 'untitled';
-      const researchDate = ctx.startedAt.split('T')[0] ?? ctx.startedAt;
-      const mocEntry = `\n- [[${RESEARCH_BASE}/${topicSlug}/_index|${ctx.topic}]] — (${researchDate})\n`;
-      const mocRelativePath = parseVaultRelativePath(`${RESEARCH_BASE}/MOC.md`);
-      if (!mocRelativePath.ok) throw new Error(mocRelativePath.error);
-      const workspace = await createVaultWorkspace(deps.vaultBasePath);
-      if (!workspace.ok) throw new Error(formatVaultPathError(workspace.error));
-      const mocPath = await workspace.value.resolveExistingFile(mocRelativePath.value);
-      if (!mocPath.ok) throw new Error(formatVaultPathError(mocPath.error));
-      // Insert before "## Related Learning Notes" if it exists, otherwise append to end
-      const fs = await import('node:fs/promises');
-      const mocContent = await fs.readFile(mocPath.value, 'utf8');
-      const relatedIdx = mocContent.indexOf('\n## Related Learning Notes');
-      const updatedMoc =
-        relatedIdx !== -1
-          ? `${mocContent.slice(0, relatedIdx)}\n## Uncategorized\n${mocEntry}${mocContent.slice(relatedIdx)}`
-          : `${mocContent}\n## Uncategorized\n${mocEntry}`;
-      // Only append if this topic isn't already in the MOC
-      if (!mocContent.includes(topicSlug)) {
-        await fs.writeFile(mocPath.value, updatedMoc, 'utf8');
-        console.info(`[research:vault] Added ${topicSlug} to Research MOC`);
-      }
+      await addToResearchMoc(ctx, deps.vaultBasePath);
     } catch (mocErr) {
       console.warn('[research:vault] Failed to update Research MOC:', mocErr);
     }
@@ -647,6 +671,34 @@ async function executeWritingVault(
   };
 }
 
+/** Append the topic to the Research MOC unless it is already listed. Throws on any failure. */
+async function addToResearchMoc(ctx: ResearchContext, vaultBasePath: string): Promise<void> {
+  const topicSlug = ctx.topicSlug ?? 'untitled';
+  const mocRelativePath = parseVaultRelativePath(`${RESEARCH_BASE}/MOC.md`);
+  if (!mocRelativePath.ok) throw new Error(mocRelativePath.error);
+  const workspace = await createVaultWorkspace(vaultBasePath);
+  if (!workspace.ok) throw new Error(formatVaultPathError(workspace.error));
+  const mocPath = await workspace.value.resolveExistingFile(mocRelativePath.value);
+  if (!mocPath.ok) throw new Error(formatVaultPathError(mocPath.error));
+  const fs = await import('node:fs/promises');
+  const mocContent = await fs.readFile(mocPath.value, 'utf8');
+  // Only append if this topic isn't already in the MOC
+  if (!mocContent.includes(topicSlug)) {
+    await fs.writeFile(mocPath.value, mocWithTopic(mocContent, ctx, topicSlug), 'utf8');
+    console.info(`[research:vault] Added ${topicSlug} to Research MOC`);
+  }
+}
+
+/** The MOC with the topic's entry under "## Uncategorized", before "## Related Learning Notes" if present. */
+function mocWithTopic(mocContent: string, ctx: ResearchContext, topicSlug: string): string {
+  const researchDate = ctx.startedAt.split('T')[0] ?? ctx.startedAt;
+  const mocEntry = `\n- [[${RESEARCH_BASE}/${topicSlug}/_index|${ctx.topic}]] — (${researchDate})\n`;
+  const relatedIdx = mocContent.indexOf('\n## Related Learning Notes');
+  return relatedIdx !== -1
+    ? `${mocContent.slice(0, relatedIdx)}\n## Uncategorized\n${mocEntry}${mocContent.slice(relatedIdx)}`
+    : `${mocContent}\n## Uncategorized\n${mocEntry}`;
+}
+
 /**
  * generating_artifacts: Generate audio/video overviews from the notebook.
  *
@@ -665,87 +717,23 @@ async function executeGeneratingArtifacts(
     };
   }
 
-  const artifacts: ArtifactMeta[] = [];
-  const artifactFailures: string[] = [];
-
-  // Get a share URL for the notebook (shared link, no Google login required)
-  let shareUrl: string | null = null;
-  const shareResult = await deps.notebookLM.shareNotebook(ctx.notebookId);
-  if (shareResult.ok) {
-    shareUrl = shareResult.value;
-  } else {
-    console.warn(
-      '[research:artifacts] shareNotebook failed, falling back to direct URL:',
-      shareResult.error.message,
-    );
+  const notebookId = ctx.notebookId;
+  const notebookUrl = await shareableNotebookUrl(notebookId, deps);
+  const requested = overviewsFor(deps.notebookLM).filter((overview) =>
+    overview.type === 'audio' ? ctx.generateAudio : ctx.generateVideo,
+  );
+  const outcomes: OverviewOutcome[] = [];
+  for (const overview of requested) {
+    outcomes.push(await generateOverview(overview, ctx.topic, notebookId, notebookUrl, deps));
   }
-  const notebookUrl = shareUrl ?? `https://notebooklm.google.com/notebook/${ctx.notebookId}`;
-
-  // Generate audio overview if requested
-  if (ctx.generateAudio) {
-    const createResult = await deps.notebookLM.createAudioOverview(ctx.notebookId, {
-      instructions: `Create a deep-dive audio overview about: ${ctx.topic}`,
-    });
-
-    if (createResult.ok) {
-      const waitResult = await deps.notebookLM.waitForArtifact(
-        createResult.value,
-        ctx.notebookId,
-        ARTIFACT_TIMEOUT_MS,
-      );
-      if (waitResult.ok && waitResult.value === 'ready') {
-        artifacts.push({ type: 'audio', artifactId: createResult.value, url: notebookUrl });
-      } else {
-        const reason = waitResult.ok
-          ? `artifact state: ${waitResult.value}`
-          : waitResult.error.message;
-        console.warn('[research:artifacts] Audio generation failed or timed out:', reason);
-        artifactFailures.push(`Audio: ${reason}`);
-      }
-    } else {
-      console.warn('[research:artifacts] createAudioOverview failed:', createResult.error.message);
-      artifactFailures.push(`Audio: ${createResult.error.message}`);
-    }
-  }
-
-  // Generate video overview if requested
-  if (ctx.generateVideo) {
-    const createResult = await deps.notebookLM.createVideoOverview(ctx.notebookId, {
-      instructions: `Create a video overview about: ${ctx.topic}`,
-    });
-
-    if (createResult.ok) {
-      const waitResult = await deps.notebookLM.waitForArtifact(
-        createResult.value,
-        ctx.notebookId,
-        ARTIFACT_TIMEOUT_MS,
-      );
-      if (waitResult.ok && waitResult.value === 'ready') {
-        artifacts.push({ type: 'video', artifactId: createResult.value, url: notebookUrl });
-      } else {
-        const reason = waitResult.ok
-          ? `artifact state: ${waitResult.value}`
-          : waitResult.error.message;
-        console.warn('[research:artifacts] Video generation failed or timed out:', reason);
-        artifactFailures.push(`Video: ${reason}`);
-      }
-    } else {
-      console.warn('[research:artifacts] createVideoOverview failed:', createResult.error.message);
-      artifactFailures.push(`Video: ${createResult.error.message}`);
-    }
-  }
+  const artifacts = outcomes.flatMap((o) => (o.ok ? [o.value] : []));
+  const artifactFailures = outcomes.flatMap((o) => (o.ok ? [] : [o.error]));
 
   // Append media section to hub note if any artifacts were generated
   if (artifacts.length > 0 && ctx.hubPath !== null) {
-    const mediaLines = artifacts.map((a) => {
-      const label = a.type === 'audio' ? 'Audio Overview' : 'Video Overview';
-      return `- [${label}](${a.url})`;
-    });
-    const mediaSection = `\n\n## Media\n\n${mediaLines.join('\n')}\n`;
-
     const appendResult = await deps.vaultWriter.appendToNote(
       ctx.hubPath,
-      mediaSection,
+      mediaSection(artifacts),
       deps.vaultBasePath,
     );
     if (!appendResult.ok) {
@@ -754,6 +742,92 @@ async function executeGeneratingArtifacts(
   }
 
   return { type: 'ARTIFACTS_GENERATED', artifacts, artifactFailures };
+}
+
+/** The notebook's share link (no Google login required), else its direct URL. */
+async function shareableNotebookUrl(notebookId: string, deps: ResearchDeps): Promise<string> {
+  const shareResult = await deps.notebookLM.shareNotebook(notebookId);
+  if (shareResult.ok) return shareResult.value;
+  console.warn(
+    '[research:artifacts] shareNotebook failed, falling back to direct URL:',
+    shareResult.error.message,
+  );
+  return `https://notebooklm.google.com/notebook/${notebookId}`;
+}
+
+/** One kind of overview the notebook can generate, in generation order. */
+type Overview = Readonly<{
+  type: ArtifactMeta['type'];
+  /** Prefix of its failure entries and log lines. */
+  label: 'Audio' | 'Video';
+  /** The adapter method that starts it, as its log lines name it. */
+  createName: 'createAudioOverview' | 'createVideoOverview';
+  create: (
+    notebookId: string,
+    options: { readonly instructions: string },
+  ) => ReturnType<NotebookLMAdapter['createVideoOverview']>;
+  instructions: (topic: string) => string;
+}>;
+
+const overviewsFor = (notebookLM: NotebookLMAdapter): readonly Overview[] => [
+  {
+    type: 'audio',
+    label: 'Audio',
+    createName: 'createAudioOverview',
+    create: (notebookId, options) => notebookLM.createAudioOverview(notebookId, options),
+    instructions: (topic) => `Create a deep-dive audio overview about: ${topic}`,
+  },
+  {
+    type: 'video',
+    label: 'Video',
+    createName: 'createVideoOverview',
+    create: (notebookId, options) => notebookLM.createVideoOverview(notebookId, options),
+    instructions: (topic) => `Create a video overview about: ${topic}`,
+  },
+];
+
+/** A generated artifact, or the failure entry naming why it is missing. */
+type OverviewOutcome = Result<ArtifactMeta, string>;
+
+/** Create one overview and wait for it. Best-effort: a failure is returned, never thrown. */
+async function generateOverview(
+  overview: Overview,
+  topic: string,
+  notebookId: string,
+  notebookUrl: string,
+  deps: ResearchDeps,
+): Promise<OverviewOutcome> {
+  const createResult = await overview.create(notebookId, {
+    instructions: overview.instructions(topic),
+  });
+  if (!createResult.ok) {
+    console.warn(`[research:artifacts] ${overview.createName} failed:`, createResult.error.message);
+    return { ok: false, error: `${overview.label}: ${createResult.error.message}` };
+  }
+
+  const waitResult = await deps.notebookLM.waitForArtifact(
+    createResult.value,
+    notebookId,
+    ARTIFACT_TIMEOUT_MS,
+  );
+  if (waitResult.ok && waitResult.value === 'ready') {
+    return {
+      ok: true,
+      value: { type: overview.type, artifactId: createResult.value, url: notebookUrl },
+    };
+  }
+  const reason = waitResult.ok ? `artifact state: ${waitResult.value}` : waitResult.error.message;
+  console.warn(`[research:artifacts] ${overview.label} generation failed or timed out:`, reason);
+  return { ok: false, error: `${overview.label}: ${reason}` };
+}
+
+/** The hub note's "## Media" section linking each generated overview. */
+function mediaSection(artifacts: readonly ArtifactMeta[]): string {
+  const mediaLines = artifacts.map((a) => {
+    const label = a.type === 'audio' ? 'Audio Overview' : 'Video Overview';
+    return `- [${label}](${a.url})`;
+  });
+  return `\n\n## Media\n\n${mediaLines.join('\n')}\n`;
 }
 
 /**

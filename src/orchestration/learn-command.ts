@@ -25,6 +25,11 @@ import {
   serializeEvent,
 } from '../core/study-log.js';
 import {
+  type BuildPlan,
+  type FeynmanPlan,
+  type GradeError,
+  type LessonPlan,
+  type ReadError,
   type StudyState,
   foldStudy,
   gradeCard,
@@ -185,162 +190,200 @@ export async function runLearnCommand(
 
   const loaded = await load(vault);
   if (!loaded.ok) return err(`curriculum registry invalid:\n- ${loaded.error.join('\n- ')}`);
-  const { state, noteErrors, logErrors } = loaded.value;
+  const { state, logErrors } = loaded.value;
   if (logErrors.length > 0 && command.value.kind !== 'validate')
     return err(`study log is corrupt — fix it before continuing:\n- ${logErrors.join('\n- ')}`);
 
-  const append = async (events: readonly StudyEvent[]) =>
-    vault.appendLog(events.map(serializeEvent));
+  const session: Session = {
+    state,
+    now,
+    append: (events) => vault.appendLog(events.map(serializeEvent)),
+  };
 
   return match(command.value)
     .with({ kind: 'status' }, async () => ok(summarize(state, now)))
-    .with({ kind: 'lesson' }, async () => {
-      const plan = nextLesson(state, now);
-      return ok(
-        match(plan)
-          .with({ kind: 'lesson' }, (p) => ({
-            kind: p.kind,
-            topic: p.topic.slug,
-            topicTitle: p.noteTitle,
-            outcome: p.topic.outcome,
-            notePath: p.notePath,
-            lesson: p.lesson.number,
-            lessonTitle: p.lesson.title,
-            lessonCount: p.lessonCount,
-            minutes: p.minutesPerLesson,
-            pretest: p.lesson.pretest,
-            dueCards: p.dueCards,
-            backlogHigh: p.backlogHigh,
-            readCommand: `read ${p.topic.slug} ${p.lesson.number}`,
-          }))
-          .with({ kind: 'awaiting-build' }, (p) => ({
-            kind: p.kind,
-            topic: p.topic.slug,
-            topicTitle: p.topic.title,
-          }))
-          .with({ kind: 'note-invalid' }, (p) => ({
-            kind: p.kind,
-            topic: p.topic.slug,
-            errors: p.errors,
-          }))
-          .with({ kind: 'curriculum-complete' }, (p) => p)
-          .exhaustive(),
-      );
-    })
-    .with({ kind: 'read' }, async (c) => {
-      const result = markLessonRead(state, c.topic, c.lesson, now);
-      if (!result.ok)
-        return err(
-          match(result.error)
-            .with({ kind: 'unknown-topic' }, (e) => `unknown topic "${e.topic}"`)
-            .with({ kind: 'not-built' }, (e) => `topic "${e.topic}" has no master note yet`)
-            .with(
-              { kind: 'unknown-lesson' },
-              (e) => `topic "${e.topic}" has lessons 1–${e.lessonCount}, not ${e.lesson}`,
-            )
-            .exhaustive(),
-        );
-      if (result.value.kind === 'already-read') return ok({ kind: 'already-read' });
-      await append([result.value.event]);
-      return ok({ kind: 'recorded', unlockedCards: result.value.unlockedCards });
-    })
-    .with({ kind: 'round' }, async (c) => {
-      const plan = pickRound(state, now, c.size);
-      if (plan.kind === 'nothing-due')
-        return ok({
-          kind: plan.kind,
-          nextDueAt: iso(plan.nextDueAt),
-          pendingCards: plan.pendingCards,
-        });
-      await append([plan.event]);
-      return ok({ kind: plan.kind, round: plan.round, cards: plan.cards });
-    })
-    .with({ kind: 'grade' }, async (c) => {
-      const result = gradeCard(
-        state,
-        {
-          round: c.round,
-          card: c.card,
-          grade: c.grade,
-          ...(c.answer !== undefined ? { answer: c.answer } : {}),
-        },
-        now,
-      );
-      if (!result.ok)
-        return err(
-          match(result.error)
-            .with({ kind: 'unknown-round' }, (e) => `unknown round "${e.round}"`)
-            .with({ kind: 'unknown-card' }, (e) => `unknown or locked card "${e.card}"`)
-            .with(
-              { kind: 'card-not-in-round' },
-              (e) => `card "${e.card}" was not asked in round "${e.round}"`,
-            )
-            .exhaustive(),
-        );
-      await append([result.value.event]);
-      return ok({
-        kind: 'graded',
-        card: c.card,
-        grade: c.grade,
-        override: result.value.override,
-        nextDueAt: iso(result.value.nextDueAt),
-        intervalDays: result.value.intervalDays,
-      });
-    })
-    .with({ kind: 'suspend' }, { kind: 'unsuspend' }, async (c) => {
-      const result = setSuspended(state, c.card, c.kind === 'suspend' ? c.reason : null, now);
-      if (!result.ok) return err(`unknown card "${result.error.card}"`);
-      await append([result.value]);
-      return ok({ kind: result.value.kind, card: c.card });
-    })
-    .with({ kind: 'build-next' }, async () => {
-      const plan = nextBuild(state);
-      return ok(
-        match(plan)
-          .with({ kind: 'build' }, (p) => ({
-            kind: p.kind,
-            topic: p.topic,
-            notePath: p.notePath,
-            prereqNotes: p.prereqNotes,
-            unreadAhead: p.unreadAhead,
-          }))
-          .with({ kind: 'buffer-full' }, { kind: 'all-built' }, (p) => p)
-          .exhaustive(),
-      );
-    })
-    .with({ kind: 'feynman' }, async () => {
-      const plan = pickFeynman(state, now);
-      return ok(
-        plan.kind === 'feynman'
-          ? { ...plan, topic: plan.topic.slug, topicTitle: plan.topic.title }
-          : plan,
-      );
-    })
-    .with({ kind: 'feynman-log' }, async (c) => {
-      const result = logFeynman(state, c.topic, c.gaps, now);
-      if (!result.ok) return err(`topic "${result.error.topic}" is not fully read`);
-      await append([result.value]);
-      return ok({ kind: 'recorded', topic: c.topic, gaps: c.gaps.length });
-    })
-    .with({ kind: 'validate' }, async (c) => {
-      const missingSources: string[] = [];
-      if (c.sources)
-        for (const topic of loaded.value.curriculum.topics)
-          for (const source of topic.sources)
-            if (!(await vault.sourceExists(source)))
-              missingSources.push(`${topic.slug}: ${source}`);
-      const valid = noteErrors.size === 0 && logErrors.length === 0 && missingSources.length === 0;
-      return ok({
-        kind: 'validation',
-        valid,
-        topics: loaded.value.curriculum.topics.length,
-        builtNotes: state.notes.size,
-        cards: [...state.notes.values()].reduce((n, note) => n + note.cards.length, 0),
-        noteErrors: Object.fromEntries(noteErrors),
-        logErrors,
-        orphanEvents: state.orphanEvents,
-        ...(c.sources ? { missingSources } : {}),
-      });
-    })
+    .with({ kind: 'lesson' }, async () => ok(lessonView(nextLesson(state, now))))
+    .with({ kind: 'read' }, (c) => runRead(c, session))
+    .with({ kind: 'round' }, (c) => runRound(c, session))
+    .with({ kind: 'grade' }, (c) => runGrade(c, session))
+    .with({ kind: 'suspend' }, { kind: 'unsuspend' }, (c) => runSuspend(c, session))
+    .with({ kind: 'build-next' }, async () => ok(buildView(nextBuild(state))))
+    .with({ kind: 'feynman' }, async () => ok(feynmanView(pickFeynman(state, now))))
+    .with({ kind: 'feynman-log' }, (c) => runFeynmanLog(c, session))
+    .with({ kind: 'validate' }, (c) => runValidate(c, loaded.value, vault))
+    .exhaustive();
+}
+
+// ─── Commands that decide, then append ────────────────────────────────────────
+
+/** What a deciding command works on: the folded state, the clock, and the log writer. */
+type Session = Readonly<{
+  state: StudyState;
+  now: Date;
+  append: (events: readonly StudyEvent[]) => Promise<void>;
+}>;
+
+type CommandOf<K extends CommandName> = Extract<Command, { kind: K }>;
+type CommandResult = Promise<Result<unknown, string>>;
+
+async function runRead(c: CommandOf<'read'>, { state, now, append }: Session): CommandResult {
+  const result = markLessonRead(state, c.topic, c.lesson, now);
+  if (!result.ok) return err(readErrorMessage(result.error));
+  if (result.value.kind === 'already-read') return ok({ kind: 'already-read' });
+  await append([result.value.event]);
+  return ok({ kind: 'recorded', unlockedCards: result.value.unlockedCards });
+}
+
+async function runRound(c: CommandOf<'round'>, { state, now, append }: Session): CommandResult {
+  const plan = pickRound(state, now, c.size);
+  if (plan.kind === 'nothing-due')
+    return ok({
+      kind: plan.kind,
+      nextDueAt: iso(plan.nextDueAt),
+      pendingCards: plan.pendingCards,
+    });
+  await append([plan.event]);
+  return ok({ kind: plan.kind, round: plan.round, cards: plan.cards });
+}
+
+async function runGrade(c: CommandOf<'grade'>, { state, now, append }: Session): CommandResult {
+  const result = gradeCard(
+    state,
+    {
+      round: c.round,
+      card: c.card,
+      grade: c.grade,
+      ...(c.answer !== undefined ? { answer: c.answer } : {}),
+    },
+    now,
+  );
+  if (!result.ok) return err(gradeErrorMessage(result.error));
+  await append([result.value.event]);
+  return ok({
+    kind: 'graded',
+    card: c.card,
+    grade: c.grade,
+    override: result.value.override,
+    nextDueAt: iso(result.value.nextDueAt),
+    intervalDays: result.value.intervalDays,
+  });
+}
+
+async function runSuspend(
+  c: CommandOf<'suspend' | 'unsuspend'>,
+  { state, now, append }: Session,
+): CommandResult {
+  const result = setSuspended(state, c.card, c.kind === 'suspend' ? c.reason : null, now);
+  if (!result.ok) return err(`unknown card "${result.error.card}"`);
+  await append([result.value]);
+  return ok({ kind: result.value.kind, card: c.card });
+}
+
+async function runFeynmanLog(
+  c: CommandOf<'feynman-log'>,
+  { state, now, append }: Session,
+): CommandResult {
+  const result = logFeynman(state, c.topic, c.gaps, now);
+  if (!result.ok) return err(`topic "${result.error.topic}" is not fully read`);
+  await append([result.value]);
+  return ok({ kind: 'recorded', topic: c.topic, gaps: c.gaps.length });
+}
+
+/** Report every registry, note and log problem; with `--sources`, also missing source files. */
+async function runValidate(
+  c: CommandOf<'validate'>,
+  { curriculum, state, noteErrors, logErrors }: Loaded,
+  vault: LearningVault,
+): CommandResult {
+  const missingSources: string[] = [];
+  if (c.sources)
+    for (const topic of curriculum.topics)
+      for (const source of topic.sources)
+        if (!(await vault.sourceExists(source))) missingSources.push(`${topic.slug}: ${source}`);
+  const valid = noteErrors.size === 0 && logErrors.length === 0 && missingSources.length === 0;
+  return ok({
+    kind: 'validation',
+    valid,
+    topics: curriculum.topics.length,
+    builtNotes: state.notes.size,
+    cards: [...state.notes.values()].reduce((n, note) => n + note.cards.length, 0),
+    noteErrors: Object.fromEntries(noteErrors),
+    logErrors,
+    orphanEvents: state.orphanEvents,
+    ...(c.sources ? { missingSources } : {}),
+  });
+}
+
+// ─── Views (pure) ─────────────────────────────────────────────────────────────
+
+function lessonView(plan: LessonPlan): unknown {
+  return match(plan)
+    .with({ kind: 'lesson' }, (p) => ({
+      kind: p.kind,
+      topic: p.topic.slug,
+      topicTitle: p.noteTitle,
+      outcome: p.topic.outcome,
+      notePath: p.notePath,
+      lesson: p.lesson.number,
+      lessonTitle: p.lesson.title,
+      lessonCount: p.lessonCount,
+      minutes: p.minutesPerLesson,
+      pretest: p.lesson.pretest,
+      dueCards: p.dueCards,
+      backlogHigh: p.backlogHigh,
+      readCommand: `read ${p.topic.slug} ${p.lesson.number}`,
+    }))
+    .with({ kind: 'awaiting-build' }, (p) => ({
+      kind: p.kind,
+      topic: p.topic.slug,
+      topicTitle: p.topic.title,
+    }))
+    .with({ kind: 'note-invalid' }, (p) => ({
+      kind: p.kind,
+      topic: p.topic.slug,
+      errors: p.errors,
+    }))
+    .with({ kind: 'curriculum-complete' }, (p) => p)
+    .exhaustive();
+}
+
+function buildView(plan: BuildPlan): unknown {
+  return match(plan)
+    .with({ kind: 'build' }, (p) => ({
+      kind: p.kind,
+      topic: p.topic,
+      notePath: p.notePath,
+      prereqNotes: p.prereqNotes,
+      unreadAhead: p.unreadAhead,
+    }))
+    .with({ kind: 'buffer-full' }, { kind: 'all-built' }, (p) => p)
+    .exhaustive();
+}
+
+function feynmanView(plan: FeynmanPlan): unknown {
+  return plan.kind === 'feynman'
+    ? { ...plan, topic: plan.topic.slug, topicTitle: plan.topic.title }
+    : plan;
+}
+
+function readErrorMessage(error: ReadError): string {
+  return match(error)
+    .with({ kind: 'unknown-topic' }, (e) => `unknown topic "${e.topic}"`)
+    .with({ kind: 'not-built' }, (e) => `topic "${e.topic}" has no master note yet`)
+    .with(
+      { kind: 'unknown-lesson' },
+      (e) => `topic "${e.topic}" has lessons 1–${e.lessonCount}, not ${e.lesson}`,
+    )
+    .exhaustive();
+}
+
+function gradeErrorMessage(error: GradeError): string {
+  return match(error)
+    .with({ kind: 'unknown-round' }, (e) => `unknown round "${e.round}"`)
+    .with({ kind: 'unknown-card' }, (e) => `unknown or locked card "${e.card}"`)
+    .with(
+      { kind: 'card-not-in-round' },
+      (e) => `card "${e.card}" was not asked in round "${e.round}"`,
+    )
     .exhaustive();
 }

@@ -207,7 +207,7 @@ describe('routeMessage', () => {
         chatId: 456,
         text: 'water',
         createdAt: expect.any(String),
-        intervalMs: 7_200_000,
+        schedule: { kind: 'interval', intervalMs: 7_200_000 },
         schedulerId: 'telegram:1001:recurring',
       });
       expect(deps.queues.enqueueReminder).not.toHaveBeenCalled();
@@ -223,9 +223,11 @@ describe('routeMessage', () => {
 
       expect(deps.queues.enqueueRecurringReminder).toHaveBeenCalledWith(
         expect.objectContaining({
-          intervalMs: 0,
-          cronPattern: '0 12 * * 0',
-          cronDescription: 'every Sunday at 12:00',
+          schedule: {
+            kind: 'cron',
+            cronPattern: '0 12 * * 0',
+            cronDescription: 'every Sunday at 12:00',
+          },
           text: 'water',
         }),
       );
