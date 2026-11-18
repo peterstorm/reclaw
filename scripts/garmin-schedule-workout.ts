@@ -17,7 +17,7 @@
 
 import type { GarminWorkoutUploadPayload } from '@gooin/garmin-connect';
 import { type Result, err, ok } from '../src/core/types.js';
-import { connectGarmin, exportGarminTokens } from './garmin-session.js';
+import { connectGarmin, exportGarminTokens, requireGarminCredentials } from './garmin-session.js';
 
 // --- Input ---
 
@@ -35,11 +35,11 @@ async function readStdin(): Promise<string> {
 
 /**
  * The stdin workout, forwarded to Garmin verbatim: only workoutName and
- * workoutSegments are checked here, and Garmin's API validates the rest.
+ * workoutSegments are checked here, and Garmin's API is the validator of record
+ * for the rest. That trust is this function's one cast; callers get the upload
+ * payload type.
  */
-type WorkoutUpload = object & { readonly workoutName: unknown; readonly workoutSegments: unknown };
-
-function parseWorkout(stdinText: string): Result<WorkoutUpload, string> {
+function parseWorkout(stdinText: string): Result<GarminWorkoutUploadPayload, string> {
   if (!stdinText.trim()) return err('No workout JSON provided on stdin');
   let raw: unknown;
   try {
@@ -55,7 +55,7 @@ function parseWorkout(stdinText: string): Result<WorkoutUpload, string> {
     'workoutSegments' in raw &&
     raw.workoutSegments
   ) {
-    return ok(raw);
+    return ok(raw as GarminWorkoutUploadPayload);
   }
   return err('Workout JSON must include workoutName and workoutSegments');
 }
@@ -76,12 +76,13 @@ async function main(): Promise<void> {
   }
   const workout = parsed.value;
 
-  const client = await connectGarmin((line) => console.error(line));
+  const client = await connectGarmin(requireGarminCredentials(), {
+    narrate: (line) => console.error(line),
+  });
 
   // Create the workout
   console.error(`[INFO] Creating workout: ${workout.workoutName}...`);
-  // Forwarded verbatim (see WorkoutUpload): Garmin's API is the validator of record.
-  const created = await client.addWorkout(workout as unknown as GarminWorkoutUploadPayload);
+  const created = await client.addWorkout(workout);
   const workoutId = created.workoutId;
   console.error(`[INFO] Workout created with ID: ${workoutId}`);
 

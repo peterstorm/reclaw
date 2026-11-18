@@ -3,13 +3,7 @@
 import { spawnSync } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-
-type Contact = {
-  readonly email: string;
-  readonly message: string;
-  readonly timestamp: string;
-  readonly ip: string;
-};
+import { contactsSince, parseContacts } from '../src/core/dotslash-contacts.js';
 
 const STATE_FILE = join(
   process.env.HOME ?? '/home/peterstorm',
@@ -47,58 +41,18 @@ const fetchContactsRaw = (): string => {
   return r.stdout ?? '';
 };
 
-/**
- * A contact is the stored record itself, extra fields and key order included:
- * the caller prints it as-is, so the parser checks the record and keeps it.
- */
-const isContact = (value: unknown): value is Contact =>
-  typeof value === 'object' &&
-  value !== null &&
-  'email' in value &&
-  typeof value.email === 'string' &&
-  'message' in value &&
-  typeof value.message === 'string' &&
-  'timestamp' in value &&
-  typeof value.timestamp === 'string' &&
-  'ip' in value &&
-  typeof value.ip === 'string';
-
-// The warnings never echo the line: it holds a sender's email and message.
-const parseContactLine = (line: string): Contact | null => {
-  let raw: unknown;
-  try {
-    raw = JSON.parse(line);
-  } catch {
-    console.error('[WARN] skipping a contacts.jsonl line that is not JSON');
-    return null;
-  }
-  if (isContact(raw)) return raw;
-  console.error('[WARN] skipping a contact record without string email/message/timestamp/ip');
-  return null;
-};
-
-const parseContacts = (raw: string): Contact[] =>
-  raw
-    .split('\n')
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0)
-    .map(parseContactLine)
-    .filter((c): c is Contact => c !== null);
-
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const dryRun = args.includes('--no-update');
 
   const since = await readState();
-  const all = parseContacts(fetchContactsRaw());
-  const fresh = all
-    .filter((c) => c.timestamp > since)
-    .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  const { contacts, warnings } = parseContacts(fetchContactsRaw());
+  for (const warning of warnings) console.error(warning);
+  const { fresh, cursor } = contactsSince(contacts, since);
 
   console.log(JSON.stringify(fresh, null, 2));
 
-  const newest = fresh.at(-1);
-  if (!dryRun && newest) await writeState(newest.timestamp);
+  if (!dryRun && cursor !== null) await writeState(cursor);
 }
 
 main().catch((e) => {

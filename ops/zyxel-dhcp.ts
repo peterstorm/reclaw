@@ -9,7 +9,6 @@ import {
   type KeyObject,
   createCipheriv,
   createDecipheriv,
-  createHash,
   createPublicKey,
   publicEncrypt,
   randomBytes,
@@ -36,8 +35,6 @@ const OIDS = [
 ];
 
 const REDACT = /pass(word)?|hash|secret|slid/i;
-/** The login sends the password base64-encoded; the router also accepts a SHA-512 hex digest. */
-const SHA512_PASSWORD = false;
 
 let cookie = '';
 let aesKey: Buffer = randomBytes(0);
@@ -102,17 +99,18 @@ async function req(
   return await res.text();
 }
 
-/** The credentials AES-encrypted under `key`; the key itself travels RSA-encrypted to the router. */
+/**
+ * The credentials AES-encrypted under `key`; the key itself travels RSA-encrypted to the router.
+ * The password goes base64-encoded, so the body declares `SHA512_password: false`.
+ */
 function loginBody(pub: KeyObject, key: Buffer): string {
   const iv32 = randomBytes(32);
   const loginObj = {
     Input_Account: USER,
-    Input_Passwd: SHA512_PASSWORD
-      ? createHash('sha512').update(PASS).digest('hex')
-      : Buffer.from(PASS, 'utf8').toString('base64'),
+    Input_Passwd: Buffer.from(PASS, 'utf8').toString('base64'),
     currLang: 'en',
     RememberPassword: '',
-    SHA512_password: SHA512_PASSWORD,
+    SHA512_password: false,
   };
   return JSON.stringify({
     content: aesEncrypt(JSON.stringify(loginObj), key, iv32),
@@ -137,7 +135,7 @@ async function login(): Promise<{ aesKey: Buffer; sessionKey: string }> {
     Referer: `${HOST}/`,
     'X-Requested-With': 'XMLHttpRequest',
   });
-  process.stdout.write(`# raw login response (sha512=${SHA512_PASSWORD}): ${resp.slice(0, 300)}\n`);
+  process.stdout.write(`# raw login response (sha512=false): ${resp.slice(0, 300)}\n`);
   let data: Record<string, unknown>;
   try {
     data = decryptResponse(resp, aesKey);

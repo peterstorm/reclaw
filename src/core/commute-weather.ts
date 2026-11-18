@@ -1,11 +1,12 @@
 // ─── Commute weather (functional core) ─────────────────────────────────────────
 //
-// Pure distillation of an Open-Meteo hourly forecast into the two commute hours
-// (07:00, 08:00) plus a ready-to-render one-liner. No I/O: the caller
-// (scripts/commute-weather.ts) fetches the JSON and renders the Result, so the
-// date-indexing / worst-case-synthesis logic — and its "a broken integration
+// Pure parsing and distillation of an Open-Meteo hourly forecast into the two
+// commute hours (07:00, 08:00) plus a ready-to-render one-liner. No I/O: the
+// caller (scripts/commute-weather.ts) fetches the JSON and renders the Result, so
+// the date-indexing / worst-case-synthesis logic — and its "a broken integration
 // must never look like a calm, dry morning" contract — is unit-testable.
 
+import { z } from 'zod';
 import { type Result, err, ok } from './types.js';
 
 type Hour = {
@@ -25,22 +26,45 @@ export type Forecast = {
   readonly line: string;
 };
 
-export type OpenMeteoResponse = {
-  readonly hourly?: {
-    readonly time?: readonly string[];
-    readonly temperature_2m?: readonly number[];
-    readonly apparent_temperature?: readonly number[];
-    readonly precipitation_probability?: readonly number[];
-    readonly precipitation?: readonly number[];
-    readonly wind_speed_10m?: readonly number[];
-    readonly wind_gusts_10m?: readonly number[];
-    readonly weather_code?: readonly number[];
-  };
-};
+/**
+ * One hourly series. Open-Meteo sends `null` for an hour it has no value for, and
+ * may send `null` (or nothing) for a whole series or for the hourly block.
+ */
+const hourlySeries = z.array(z.number().nullable()).readonly().nullish();
+
+const openMeteoResponseSchema = z
+  .object({
+    hourly: z
+      .object({
+        time: z.array(z.string()).readonly().nullish(),
+        temperature_2m: hourlySeries,
+        apparent_temperature: hourlySeries,
+        precipitation_probability: hourlySeries,
+        precipitation: hourlySeries,
+        wind_speed_10m: hourlySeries,
+        wind_gusts_10m: hourlySeries,
+        weather_code: hourlySeries,
+      })
+      .readonly()
+      .nullish(),
+  })
+  .readonly();
+
+export type OpenMeteoResponse = z.infer<typeof openMeteoResponseSchema>;
+
+/** The response's hourly series, or the issues that make it unreadable (each prefixed with its path). */
+export function parseOpenMeteoResponse(raw: unknown): Result<OpenMeteoResponse, string> {
+  const parsed = openMeteoResponseSchema.safeParse(raw);
+  if (parsed.success) return ok(parsed.data);
+  const issues = parsed.error.issues.map((i) =>
+    i.path.length > 0 ? `${i.path.join('.')}: ${i.message}` : i.message,
+  );
+  return err(`unexpected Open-Meteo response (${issues.join('; ')})`);
+}
 
 const COMMUTE_HOURS = ['07:00', '08:00'] as const;
 
-export function round(n: number | undefined): number | null {
+export function round(n: number | null | undefined): number | null {
   return typeof n === 'number' ? Math.round(n) : null;
 }
 

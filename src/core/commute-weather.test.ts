@@ -4,6 +4,7 @@ import {
   buildForecastUrl,
   distillForecast,
   parseDayOffset,
+  parseOpenMeteoResponse,
   round,
 } from './commute-weather.js';
 
@@ -107,6 +108,36 @@ describe('distillForecast', () => {
     if (!result.ok) expect(result.error).toContain('no 07:00/08:00 rows');
   });
 
+  it('renders a null hour from Open-Meteo as null, and leaves it out of the worst case', () => {
+    const parsed = parseOpenMeteoResponse({
+      hourly: {
+        time: ['2026-07-16T07:00', '2026-07-16T08:00'],
+        temperature_2m: [null, 12.6],
+        precipitation: [null, 0.2],
+        precipitation_probability: [null, 30],
+        weather_code: [null, 61],
+      },
+    });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const result = distillForecast(parsed.value, 0);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.hours[0]).toEqual({
+      time: '2026-07-16T07:00',
+      tempC: null,
+      feelsLikeC: null,
+      precipProb: null,
+      precipMm: null,
+      windKmh: null,
+      gustKmh: null,
+      code: null,
+    });
+    expect(result.value.hours[1]).toMatchObject({ tempC: 13, precipMm: 0.2, code: 61 });
+    expect(JSON.stringify(result.value)).toContain('"precipMm":null');
+    expect(result.value.line).toBe('13–13°C feels-like, 30% rain (0.2mm), calm');
+  });
+
   it('falls back to tempC when feels-like is absent', () => {
     const noFeels: OpenMeteoResponse = {
       hourly: {
@@ -118,5 +149,56 @@ describe('distillForecast', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.line).toContain('11–13°C feels-like');
+  });
+});
+
+describe('parseOpenMeteoResponse', () => {
+  it('drops fields it does not read, keeping the hourly series it does', () => {
+    const parsed = parseOpenMeteoResponse({
+      latitude: 55.6,
+      hourly_units: { time: 'iso8601' },
+      hourly: { time: ['2026-07-16T07:00'], temperature_2m: [15.2], uv_index: [3] },
+    });
+    expect(parsed).toEqual({
+      ok: true,
+      value: { hourly: { time: ['2026-07-16T07:00'], temperature_2m: [15.2] } },
+    });
+  });
+
+  it.each([
+    ['missing', {}],
+    ['null', { hourly: null }],
+  ])('reads a %s hourly block as no data, like an empty response', (_, raw) => {
+    const parsed = parseOpenMeteoResponse(raw);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(distillForecast(parsed.value, 0)).toEqual(distillForecast({}, 0));
+  });
+
+  it('reads a null series or null time list as absent', () => {
+    const parsed = parseOpenMeteoResponse({ hourly: { time: null, precipitation: null } });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(distillForecast(parsed.value, 0)).toEqual({
+      ok: false,
+      error: 'no hourly data in response',
+    });
+  });
+
+  it('rejects a non-numeric series entry, naming its path', () => {
+    expect(
+      parseOpenMeteoResponse({ hourly: { time: ['2026-07-16T07:00'], precipitation: ['wet'] } }),
+    ).toEqual({
+      ok: false,
+      error:
+        'unexpected Open-Meteo response (hourly.precipitation.0: Expected number, received string)',
+    });
+  });
+
+  it('rejects a response that is not an object, without a path prefix', () => {
+    expect(parseOpenMeteoResponse('down for maintenance')).toEqual({
+      ok: false,
+      error: 'unexpected Open-Meteo response (Expected object, received string)',
+    });
   });
 });

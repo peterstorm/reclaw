@@ -40,15 +40,7 @@
  */
 
 import { execFile } from 'node:child_process';
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -355,7 +347,6 @@ async function probeGarmin(
 ): Promise<{ probe: Probe; attemptedAtMs: number | null }> {
   const email = process.env.GARMIN_EMAIL;
   const password = process.env.GARMIN_PASSWORD;
-  const tokenDir = join(homedir(), '.cache', 'garmin');
 
   // The client constructor throws "Missing credentials" on an empty username or
   // password, so there is no client — and therefore no probe — without the pair.
@@ -376,7 +367,9 @@ async function probeGarmin(
   }
 
   const { GarminConnect } = await import('@gooin/garmin-connect');
+  const { exportGarminTokens, garminTokenDir } = await import('./garmin-session.js');
   const client = new GarminConnect({ username: email, password });
+  const tokenDir = garminTokenDir();
 
   let probeResult: GarminProbe;
   let probeError = '';
@@ -429,9 +422,7 @@ async function probeGarmin(
   process.stderr.write(`[credential-health] garmin: logging in fresh (${decision.reason})\n`);
   try {
     await withRetry(() => client.login(email, password), 3, 5000);
-    await client.exportTokenToFile(tokenDir);
-    chmodSync(join(tokenDir, 'oauth1_token.json'), 0o600);
-    chmodSync(join(tokenDir, 'oauth2_token.json'), 0o600);
+    await exportGarminTokens(client);
     return {
       probe: {
         id: 'garmin',

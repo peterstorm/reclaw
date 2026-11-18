@@ -189,8 +189,11 @@ async function main(): Promise<void> {
       for (const vevent of extractVevents(content)) {
         events.push(...entriesOnDates(vevent, targetDates));
       }
-    } catch {
-      // Skip unreadable files
+    } catch (e) {
+      // Skip the file, but say so: its events would otherwise vanish without a trace.
+      console.error(
+        `[WARN] Skipping unreadable calendar file ${file}: ${e instanceof Error ? e.message : String(e)}`,
+      );
     }
   }
 

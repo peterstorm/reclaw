@@ -17,9 +17,17 @@
  */
 
 import type { GarminConnect } from '@gooin/garmin-connect';
-import { connectGarmin, exportGarminTokens } from './garmin-session.js';
+import { connectGarmin, exportGarminTokens, requireGarminCredentials } from './garmin-session.js';
 
-type Schedule = { readonly item: Record<string, unknown>; readonly scheduleId: unknown };
+/** Garmin's id for one scheduling of a workout: the calendar item's `id`, or its `workoutScheduleId`. */
+type ScheduleId = string | number;
+
+/** The scheduling being moved: its id and the calendar item's title (as Garmin sent it, or null). */
+type Schedule = { readonly title: unknown; readonly scheduleId: ScheduleId };
+
+/** A present, non-empty id; null for anything else. */
+const parseScheduleId = (value: unknown): ScheduleId | null =>
+  (typeof value === 'number' || typeof value === 'string') && value ? value : null;
 
 /** The calendar item scheduling `workoutId` on `fromDate`; exits when there is none. */
 async function findSchedule(
@@ -54,19 +62,19 @@ async function findSchedule(
     process.exit(1);
   }
 
-  const scheduleId = match.id ?? match.workoutScheduleId;
-  if (!scheduleId) {
+  const scheduleId = parseScheduleId(match.id ?? match.workoutScheduleId);
+  if (scheduleId === null) {
     console.error('[FATAL] No schedule id found on calendar item:', JSON.stringify(match, null, 2));
     process.exit(1);
   }
   console.error(`[INFO] Found schedule id: ${scheduleId}`);
-  return { item: match, scheduleId };
+  return { title: match.title ?? null, scheduleId };
 }
 
 /** Delete the old schedule, then schedule the same workout on `toDate`; returns the new schedule id. */
 async function moveSchedule(
   client: GarminConnect,
-  scheduleId: unknown,
+  scheduleId: ScheduleId,
   workoutIdArg: string,
   toDate: string,
 ): Promise<number | undefined> {
@@ -103,9 +111,9 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const client = await connectGarmin(() => {});
+  const client = await connectGarmin(requireGarminCredentials(), { narrate: () => {} });
   // 1. Find the scheduleId for this workout on fromDate via the calendar
-  const { item: match, scheduleId } = await findSchedule(client, workoutIdArg, fromDate);
+  const { title, scheduleId } = await findSchedule(client, workoutIdArg, fromDate);
   // 2. Delete the existing schedule, 3. re-schedule to the new date
   const newScheduleId = await moveSchedule(client, scheduleId, workoutIdArg, toDate);
 
@@ -117,7 +125,7 @@ async function main(): Promise<void> {
       {
         success: true,
         workoutId: workoutIdArg,
-        title: match.title ?? null,
+        title,
         from: fromDate,
         to: toDate,
         oldScheduleId: scheduleId,
