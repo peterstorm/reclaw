@@ -24,9 +24,10 @@ import type { ResearchContext, ResearchEvent, ResearchState } from './research-t
  * FR-050: deriving_topic=2, creating_notebook=2, searching_sources=2,
  *         adding_sources=2, writing_vault=3, notifying=2.
  *
- * States not listed here are not retried (they either succeed or fail immediately).
+ * Keyed by every state kind, so a lookup is total and only a state kind can be
+ * looked up. A limit of 0 means the state is not retried: it succeeds or fails at once.
  */
-export const MAX_RETRIES: Readonly<Record<string, number>> = Object.freeze({
+export const MAX_RETRIES: Readonly<Record<ResearchState['kind'], number>> = Object.freeze({
   deriving_topic: 2,
   creating_notebook: 2,
   searching_sources: 2,
@@ -34,9 +35,12 @@ export const MAX_RETRIES: Readonly<Record<string, number>> = Object.freeze({
   awaiting_processing: 2,
   generating_questions: 2,
   querying: 2,
+  resolving_citations: 0,
   writing_vault: 3,
   generating_artifacts: 2,
   notifying: 2,
+  done: 0,
+  failed: 0,
 });
 
 // ─── Transition Function ──────────────────────────────────────────────────────
@@ -101,7 +105,7 @@ function handleError(
   }
 
   const stateKey = state.kind;
-  const maxRetries = MAX_RETRIES[stateKey] ?? 0;
+  const maxRetries = MAX_RETRIES[stateKey];
   const currentRetries = ctx.retries[stateKey] ?? 0;
 
   if (currentRetries < maxRetries) {

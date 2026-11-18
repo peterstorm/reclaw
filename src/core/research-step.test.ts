@@ -245,7 +245,7 @@ describe('applyStep', () => {
   });
 
   it('traces a retriable error at the retry limit as a failure', () => {
-    const limit = MAX_RETRIES.creating_notebook ?? 0;
+    const limit = MAX_RETRIES.creating_notebook;
     const next = step(
       { kind: 'creating_notebook' },
       { type: 'ERROR', error: 'flaky', retriable: true },

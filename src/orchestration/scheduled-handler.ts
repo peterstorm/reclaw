@@ -30,7 +30,7 @@ import { type ScriptSkillDeps, defaultScriptStateRoot, runScriptSkill } from './
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type ScheduledDeps = {
-  readonly runClaude: (options: AgentOptions) => Promise<AgentResult>;
+  readonly runAgent: (options: AgentOptions) => Promise<AgentResult>;
   readonly telegram: TelegramAdapter;
   readonly skillRegistry: SkillRegistry;
   readonly config: AppConfig;
@@ -322,7 +322,7 @@ function skillRunner(skill: SkillConfig, deps: ScheduledDeps, prompt: string): S
   const allowedTools = getAllowedTools(skill.permissionProfile);
   return (target) => {
     const modelSelection = requestedModel(target);
-    return deps.runClaude({
+    return deps.runAgent({
       prompt,
       cwd: deps.config.workspacePath,
       allowedTools,
