@@ -1,8 +1,15 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { MAX_RETRIES } from './research-machine.js';
-import { applyStep, resumeContext, thrownErrorEvent } from './research-step.js';
 import {
+  applyStep,
+  nextPendingQuestion,
+  resumeContext,
+  semanticCircuitBreaker,
+  thrownErrorEvent,
+} from './research-step.js';
+import {
+  type ChatResponse,
   type ResearchContext,
   type ResearchEvent,
   type ResearchState,
@@ -75,6 +82,89 @@ describe('resumeContext', () => {
         const once = resumeContext(state, { ...freshContext(), retries, lastError });
         expect(resumeContext(state, once)).toEqual(once);
         expect(Object.hasOwn(once.retries, state.kind)).toBe(false);
+      }),
+    );
+  });
+});
+
+// ─── nextPendingQuestion ────────────────────────────────────────────────────
+
+describe('nextPendingQuestion', () => {
+  const answer: ChatResponse = { text: 'An answer.', citations: [1], rawData: null };
+
+  it('picks the first question neither answered nor skipped', () => {
+    const ctx: ResearchContext = {
+      ...freshContext(),
+      questions: ['Q1?', 'Q2?', 'Q3?'],
+      answers: { 'Q1?': answer },
+      skippedQuestions: ['Q2?'],
+    };
+    expect(nextPendingQuestion(ctx)).toBe('Q3?');
+  });
+
+  it('is undefined once every question is answered or skipped', () => {
+    const ctx: ResearchContext = {
+      ...freshContext(),
+      questions: ['Q1?', 'Q2?'],
+      answers: { 'Q1?': answer },
+      skippedQuestions: ['Q2?'],
+    };
+    expect(nextPendingQuestion(ctx)).toBeUndefined();
+  });
+
+  it('asks a question named like an Object.prototype member', () => {
+    const ctx: ResearchContext = { ...freshContext(), questions: ['constructor', 'toString'] };
+    expect(nextPendingQuestion(ctx)).toBe('constructor');
+  });
+
+  it('property: every question before the pick is settled, and the pick is not', () => {
+    const names: readonly string[] = ['Q1?', 'Q2?', 'Q3?', 'constructor', '__proto__'];
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(fc.constantFrom(...names)),
+        fc.subarray([...names]),
+        fc.subarray([...names]),
+        (questions, answered, skippedQuestions) => {
+          // defineProperty: a plain `answers['__proto__'] = …` would set the prototype instead.
+          const answers: Record<string, ChatResponse> = {};
+          for (const q of answered) {
+            Object.defineProperty(answers, q, { value: answer, enumerable: true });
+          }
+          const ctx: ResearchContext = { ...freshContext(), questions, answers, skippedQuestions };
+          const settled = (q: string) => answered.includes(q) || skippedQuestions.includes(q);
+          const pick = nextPendingQuestion(ctx);
+          const end = pick === undefined ? questions.length : questions.indexOf(pick);
+          expect(questions.slice(0, end).every(settled)).toBe(true);
+          if (pick !== undefined) expect(settled(pick)).toBe(false);
+        },
+      ),
+    );
+  });
+});
+
+// ─── semanticCircuitBreaker ─────────────────────────────────────────────────
+
+describe('semanticCircuitBreaker', () => {
+  const response = (length: number, citations: readonly number[]): ChatResponse => ({
+    text: `  ${'x'.repeat(length)}  `,
+    citations: [...citations],
+    rawData: null,
+  });
+
+  it('trips on an uncited answer shorter than 100 characters, naming its length', () => {
+    expect(semanticCircuitBreaker(response(99, []))).toBe(
+      'Semantic circuit breaker: response has 0 citations and is too short (99 chars < 100)',
+    );
+  });
+
+  it('holds for an uncited answer of 100 characters (trimmed)', () => {
+    expect(semanticCircuitBreaker(response(100, []))).toBeNull();
+  });
+
+  it('property: a cited answer never trips it, whatever its length', () => {
+    fc.assert(
+      fc.property(fc.nat({ max: 200 }), fc.array(fc.nat(), { minLength: 1 }), (length, cites) => {
+        expect(semanticCircuitBreaker(response(length, cites))).toBeNull();
       }),
     );
   });

@@ -160,13 +160,14 @@ export async function routeMessage(
     .exhaustive();
 }
 
+/** An attachment list counts only when it has an entry: an empty list means none. */
+function nonEmpty<T>(list: readonly T[] | undefined): list is readonly T[] {
+  return list !== undefined && list.length > 0;
+}
+
 /** An update carrying files is always chat, whatever its caption says. */
 function hasAttachments(msg: IncomingMessage): boolean {
-  return (
-    (msg.imagePaths !== undefined && msg.imagePaths.length > 0) ||
-    (msg.documentPaths !== undefined && msg.documentPaths.length > 0) ||
-    (msg.storedUploads !== undefined && msg.storedUploads.length > 0)
-  );
+  return nonEmpty(msg.imagePaths) || nonEmpty(msg.documentPaths) || nonEmpty(msg.storedUploads);
 }
 
 // ─── /new ────────────────────────────────────────────────────────────────────
@@ -209,13 +210,9 @@ async function routeChatMessage(
       sessionId: lineage.sessionId,
     },
     ...(msg.replyContext !== undefined ? { replyContext: msg.replyContext } : {}),
-    ...(msg.imagePaths && msg.imagePaths.length > 0 ? { imagePaths: msg.imagePaths } : {}),
-    ...(msg.documentPaths && msg.documentPaths.length > 0
-      ? { documentPaths: msg.documentPaths }
-      : {}),
-    ...(msg.storedUploads && msg.storedUploads.length > 0
-      ? { storedUploads: msg.storedUploads }
-      : {}),
+    ...(nonEmpty(msg.imagePaths) ? { imagePaths: msg.imagePaths } : {}),
+    ...(nonEmpty(msg.documentPaths) ? { documentPaths: msg.documentPaths } : {}),
+    ...(nonEmpty(msg.storedUploads) ? { storedUploads: msg.storedUploads } : {}),
   });
 
   if (!chatJobResult.ok) {

@@ -273,7 +273,6 @@ function skillRunner(skill: SkillConfig, deps: ScheduledDeps, prompt: string): S
   };
 }
 
-/** Run on `primary`; when it could not serve, rerun on the skill's planned fallback. */
 /** The run that answered, the backend that served it, and the fallback notice if one did. */
 type FallbackRun = {
   readonly result: AgentResult;
@@ -281,6 +280,7 @@ type FallbackRun = {
   readonly notice: string | null;
 };
 
+/** Run on `primary`; when it could not serve, rerun on the skill's planned fallback. */
 async function runWithFallback(
   job: ScheduledJob,
   skill: SkillConfig,

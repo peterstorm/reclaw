@@ -2,8 +2,12 @@ import { parseExpression } from 'cron-parser';
 import { getNextRun, isWithinValidityWindow } from '../core/schedule.js';
 import {
   type CatchUpDecision,
+  type DependencyGraph,
+  type TriggerProgress,
+  catchUpSkipLine,
   decideCatchUp,
   dependencyGraph,
+  dependencyIssueLog,
 } from '../core/skill-dependencies.js';
 import {
   type JobId,
@@ -48,11 +52,11 @@ type SchedulerState = {
   /** Armed cron entries — the scheduler manages their timers' lifecycle. */
   readonly active: Map<SkillId, CronEntry>;
   /**
-   * Trigger skillId → dependent SkillConfigs. Rebuilt on every reconcile.
+   * Trigger skillId → dependent SkillConfigs, replaced whole on every reconcile.
    * e.g., "cortex-prune" → [SkillConfig(memory-librarian), SkillConfig(memory-indexer)]
    * Fan-out is fully supported: resolveDependents iterates all entries.
    */
-  readonly dependents: Map<SkillId, readonly SkillConfig[]>;
+  dependents: DependencyGraph['dependents'];
 };
 
 // ─── Pure helpers ─────────────────────────────────────────────────────────────
@@ -197,7 +201,9 @@ export function createScheduler(
 
 function reconcile(state: SchedulerState, registry: SkillRegistry): void {
   const now = new Date();
-  rebuildDependents(state.dependents, registry);
+  const graph = dependencyGraph(registry);
+  for (const { level, line } of graph.issues.map(dependencyIssueLog)) console[level](line);
+  state.dependents = graph.dependents;
 
   const { toAdd, toRemove, toUpdate } = diffRegistry(state.active, registry);
 
@@ -212,34 +218,6 @@ function reconcile(state: SchedulerState, registry: SkillRegistry): void {
 
   for (const skill of toAdd) {
     addEntry(state, skill, now);
-  }
-}
-
-/** Replace the dependency map from scratch, logging each dependency it ignores. */
-function rebuildDependents(
-  dependents: Map<SkillId, readonly SkillConfig[]>,
-  registry: SkillRegistry,
-): void {
-  const graph = dependencyGraph(registry);
-  for (const issue of graph.issues) {
-    switch (issue.kind) {
-      case 'missing-trigger':
-        console.warn(
-          `[scheduler] Skill "${issue.skillId}" depends on "${issue.dependsOn}" which is not in the registry`,
-        );
-        break;
-      case 'cycle':
-        console.error(
-          `[scheduler] Circular dependency detected for "${issue.skillId}". Ignoring dependency.`,
-        );
-        break;
-      default:
-        assertNever(issue);
-    }
-  }
-  dependents.clear();
-  for (const [trigger, skills] of graph.dependents) {
-    dependents.set(trigger, skills);
   }
 }
 
@@ -343,36 +321,43 @@ function tryCatchUp(state: SchedulerState, skill: ScheduledSkill, now: Date): vo
   }
 }
 
-/** Read the trigger's fired/completed markers and its dependents', then act on the decision. */
+/** Read the trigger's progress, decide, then act on the decision. */
 async function checkCatchUp(
   state: SchedulerState,
   skill: SkillConfig,
   job: ScheduledJob,
   prev: Date,
 ): Promise<void> {
-  const triggerFired = await state.ports.isJobKnown(job.id);
-  const triggerCompleted = triggerFired ? await state.ports.isJobCompleted(job.id) : false;
-  // If trigger completed, check which dependents haven't fired
-  const unfiredDepJobs =
-    triggerFired && triggerCompleted ? await unfiredDependentJobs(state, skill.id, prev) : [];
+  const progress = await readTriggerProgress(state, skill.id, job, prev);
+  executeCatchUpDecision(state.ports.enqueueScheduled, decideCatchUp(progress, job), skill.id);
+}
 
-  executeCatchUpDecision(
-    state.ports.enqueueScheduled,
-    decideCatchUp(triggerFired, triggerCompleted, job, unfiredDepJobs),
-    skill.id,
-  );
+/** The trigger's fired and completed markers, then, once it completed, its dependents' fired markers. */
+async function readTriggerProgress(
+  state: SchedulerState,
+  skillId: SkillId,
+  job: ScheduledJob,
+  prev: Date,
+): Promise<TriggerProgress> {
+  if (!(await state.ports.isJobKnown(job.id))) return { kind: 'unfired' };
+  if (!(await state.ports.isJobCompleted(job.id))) return { kind: 'in-flight' };
+  return {
+    kind: 'completed',
+    unfiredDependents: await unfiredDependentJobs(state.dependents, state.ports, skillId, prev),
+  };
 }
 
 async function unfiredDependentJobs(
-  state: SchedulerState,
+  dependents: SchedulerState['dependents'],
+  ports: SchedulerPorts,
   skillId: SkillId,
   prev: Date,
 ): Promise<readonly ScheduledJob[]> {
   const unfired: ScheduledJob[] = [];
-  for (const dep of state.dependents.get(skillId) ?? []) {
+  for (const dep of dependents.get(skillId) ?? []) {
     const depJob = buildScheduledJob(dep, prev);
     if (depJob === null) continue;
-    const depFired = await state.ports.isJobKnown(depJob.id);
+    const depFired = await ports.isJobKnown(depJob.id);
     if (!depFired) unfired.push(depJob);
   }
   return unfired;
@@ -385,7 +370,7 @@ function executeCatchUpDecision(
 ): void {
   switch (decision.action) {
     case 'skip':
-      console.info(`[scheduler] Catch-up: ${decision.reason}, skipping.`);
+      console.info(catchUpSkipLine(decision.reason, skillId));
       return;
     case 'enqueue-standalone':
       console.info(

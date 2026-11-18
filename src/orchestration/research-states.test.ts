@@ -330,6 +330,64 @@ describe('executeState / adding_sources', () => {
     }
   });
 
+  it('merges sourceUrlById across discovered, Claude and hint sources', async () => {
+    const ctx = makeMockContext({
+      notebookId: 'nb-001',
+      searchSessionId: 'session-001',
+      discoveredWebSources: [
+        { title: 'Source 1', url: 'https://example.com/1' },
+        { title: 'Source 2', url: 'https://example.com/2' },
+      ],
+      claudeDiscoveredUrls: ['https://claude-found.com/a'],
+      sourceHints: ['https://example.com/blog', 'https://youtube.com/watch?v=abc'],
+    });
+    const addSourceUrl = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, value: 'id-claude-1' })
+      .mockResolvedValueOnce({ ok: true, value: 'id-hint-1' });
+    const deps = makeMockDeps({ notebookLM: { ...makeMockDeps().notebookLM, addSourceUrl } });
+
+    const event = await executeState({ kind: 'adding_sources' }, ctx, deps);
+
+    expect(event).toEqual({
+      type: 'SOURCES_ADDED',
+      sourceUrlById: {
+        'id-1': 'https://example.com/1',
+        'id-2': 'https://example.com/2',
+        'id-claude-1': 'https://claude-found.com/a',
+        'id-hint-1': 'https://example.com/blog',
+        'id-yt-1': 'https://youtube.com/watch?v=abc',
+      },
+    });
+  });
+
+  it('labels each failed addition by its step and URL', async () => {
+    const ctx = makeMockContext({
+      notebookId: 'nb-001',
+      searchSessionId: 'session-001',
+      discoveredWebSources: [{ title: 'Source 1', url: 'https://example.com/1' }],
+      claudeDiscoveredUrls: ['https://claude-found.com/a'],
+      sourceHints: ['https://example.com/blog'],
+    });
+    const failure = { ok: false, error: { message: 'boom', retriable: true } };
+    const deps = makeMockDeps({
+      notebookLM: {
+        ...makeMockDeps().notebookLM,
+        addDiscoveredSources: vi.fn().mockResolvedValue(failure),
+        addSourceUrl: vi.fn().mockResolvedValue(failure),
+      },
+    });
+
+    const event = await executeState({ kind: 'adding_sources' }, ctx, deps);
+
+    expect(event).toEqual({
+      type: 'ERROR',
+      error:
+        'Failed to add any sources: addDiscoveredSources: boom; addClaudeSource(https://claude-found.com/a): boom; addSourceHint(https://example.com/blog): boom',
+      retriable: true,
+    });
+  });
+
   it('returns ERROR if all sources fail to add', async () => {
     const state: ResearchState = { kind: 'adding_sources' };
     const ctx = makeMockContext({
@@ -999,6 +1057,58 @@ describe('executeState / generating_artifacts', () => {
     }
     expect(deps.notebookLM.createAudioOverview).toHaveBeenCalledWith('nb-001', expect.anything());
     expect(deps.notebookLM.waitForArtifact).toHaveBeenCalled();
+  });
+
+  const sharedUrl = 'https://notebooklm.google.com/notebook/shared-123';
+
+  it('keeps the video when audio fails to start, labelling the audio failure', async () => {
+    const ctx = makeMockContext({ notebookId: 'nb-001', generateAudio: true, generateVideo: true });
+    const createAudioOverview = vi
+      .fn()
+      .mockResolvedValue({ ok: false, error: { message: 'quota exceeded', retriable: false } });
+    const deps = makeMockDeps({
+      notebookLM: { ...makeMockDeps().notebookLM, createAudioOverview },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const event = await executeState({ kind: 'generating_artifacts' }, ctx, deps);
+
+    expect(event).toEqual({
+      type: 'ARTIFACTS_GENERATED',
+      artifacts: [{ type: 'video', artifactId: 'video-001', url: sharedUrl }],
+      artifactFailures: ['Audio: quota exceeded'],
+    });
+    expect(warn).toHaveBeenCalledWith(
+      '[research:artifacts] createAudioOverview failed:',
+      'quota exceeded',
+    );
+    warn.mockRestore();
+  });
+
+  it('keeps the audio when the video does not become ready, labelling the video failure', async () => {
+    const ctx = makeMockContext({ notebookId: 'nb-001', generateAudio: true, generateVideo: true });
+    const waitForArtifact = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, value: 'ready' })
+      .mockResolvedValueOnce({ ok: true, value: 'failed' });
+    const deps = makeMockDeps({ notebookLM: { ...makeMockDeps().notebookLM, waitForArtifact } });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const event = await executeState({ kind: 'generating_artifacts' }, ctx, deps);
+
+    expect(event).toEqual({
+      type: 'ARTIFACTS_GENERATED',
+      artifacts: [{ type: 'audio', artifactId: 'audio-001', url: sharedUrl }],
+      artifactFailures: ['Video: artifact state: failed'],
+    });
+    expect(deps.notebookLM.createVideoOverview).toHaveBeenCalledWith('nb-001', {
+      instructions: 'Create a video overview about: AI agents',
+    });
+    expect(warn).toHaveBeenCalledWith(
+      '[research:artifacts] Video generation failed or timed out:',
+      'artifact state: failed',
+    );
+    warn.mockRestore();
   });
 
   it('returns ERROR (non-retriable) when notebookId is null', async () => {

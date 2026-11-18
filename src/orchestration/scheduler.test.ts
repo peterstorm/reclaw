@@ -256,9 +256,8 @@ describe('createScheduler', () => {
 
     scheduler.reconcile(registry);
 
-    // Let one fire
-    vi.advanceTimersByTime(61_000);
-    await Promise.resolve();
+    // Let one fire, and the startup catch-up check settle
+    await vi.advanceTimersByTimeAsync(61_000);
     const callsAfterFirst = enqueueScheduled.mock.calls.length;
     expect(callsAfterFirst).toBeGreaterThanOrEqual(1);
 
@@ -596,5 +595,3 @@ describe('createScheduler', () => {
     });
   });
 });
-
-// hasCycle, dependencyGraph and decideCatchUp are pure: core/skill-dependencies.test.ts.

@@ -1,6 +1,13 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { decideCatchUp, dependencyGraph, hasCycle } from './skill-dependencies.js';
+import {
+  type TriggerProgress,
+  catchUpSkipLine,
+  decideCatchUp,
+  dependencyGraph,
+  dependencyIssueLog,
+  hasCycle,
+} from './skill-dependencies.js';
 import {
   type JobId,
   type ScheduledJob,
@@ -144,40 +151,72 @@ describe('dependencyGraph', () => {
 
 // ─── decideCatchUp ────────────────────────────────────────────────────────────
 
-describe('decideCatchUp', () => {
-  const cronJob = (id: string, skill: string): ScheduledJob => ({
-    kind: 'scheduled',
-    id: id as JobId,
-    skillId: skillId(skill),
-    triggeredAt: '2026-04-06T00:00:00.000Z',
-    validUntil: '2026-04-06T01:00:00.000Z',
-    trigger: 'cron',
+// ─── dependencyIssueLog ───────────────────────────────────────────────────────
+
+describe('dependencyIssueLog', () => {
+  it('warns about a dependency on a skill outside the registry', () => {
+    expect(
+      dependencyIssueLog({
+        kind: 'missing-trigger',
+        skillId: skillId('orphan'),
+        dependsOn: skillId('ghost'),
+      }),
+    ).toEqual({
+      level: 'warn',
+      line: '[scheduler] Skill "orphan" depends on "ghost" which is not in the registry',
+    });
   });
 
+  it('reports a dependency on a cycle as an error', () => {
+    expect(dependencyIssueLog({ kind: 'cycle', skillId: skillId('a') })).toEqual({
+      level: 'error',
+      line: '[scheduler] Circular dependency detected for "a". Ignoring dependency.',
+    });
+  });
+});
+
+// ─── decideCatchUp ────────────────────────────────────────────────────────────
+
+const cronJob = (id: string, skill: string): ScheduledJob => ({
+  kind: 'scheduled',
+  id: id as JobId,
+  skillId: skillId(skill),
+  triggeredAt: '2026-04-06T00:00:00.000Z',
+  validUntil: '2026-04-06T01:00:00.000Z',
+  trigger: 'cron',
+});
+
+describe('decideCatchUp', () => {
   const triggerJob = cronJob('job-trigger', 'prune');
   const depJob1 = cronJob('job-dep1', 'librarian');
   const depJob2 = cronJob('job-dep2', 'indexer');
 
   it('enqueues standalone when trigger not fired', () => {
-    const result = decideCatchUp(false, false, triggerJob, []);
-    expect(result.action).toBe('enqueue-standalone');
+    expect(decideCatchUp({ kind: 'unfired' }, triggerJob)).toEqual({
+      action: 'enqueue-standalone',
+      job: triggerJob,
+    });
   });
 
   it('skips when trigger fired but not completed (in-flight)', () => {
-    const result = decideCatchUp(true, false, triggerJob, []);
-    expect(result.action).toBe('skip');
-    if (result.action === 'skip') {
-      expect(result.reason).toContain('in-flight');
-    }
+    expect(decideCatchUp({ kind: 'in-flight' }, triggerJob)).toEqual({
+      action: 'skip',
+      reason: 'trigger-in-flight',
+    });
   });
 
   it('skips when trigger completed and all dependents already fired', () => {
-    const result = decideCatchUp(true, true, triggerJob, []);
-    expect(result.action).toBe('skip');
+    expect(decideCatchUp({ kind: 'completed', unfiredDependents: [] }, triggerJob)).toEqual({
+      action: 'skip',
+      reason: 'dependents-already-fired',
+    });
   });
 
   it('enqueues dependents when trigger completed with unfired deps', () => {
-    const result = decideCatchUp(true, true, triggerJob, [depJob1, depJob2]);
+    const result = decideCatchUp(
+      { kind: 'completed', unfiredDependents: [depJob1, depJob2] },
+      triggerJob,
+    );
     expect(result.action).toBe('enqueue-dependents');
     if (result.action === 'enqueue-dependents') {
       expect(result.depJobs).toHaveLength(2);
@@ -187,10 +226,62 @@ describe('decideCatchUp', () => {
   });
 
   it('enqueues single dependent when one of many is unfired', () => {
-    const result = decideCatchUp(true, true, triggerJob, [depJob1]);
+    const result = decideCatchUp({ kind: 'completed', unfiredDependents: [depJob1] }, triggerJob);
     expect(result.action).toBe('enqueue-dependents');
     if (result.action === 'enqueue-dependents') {
       expect(result.depJobs).toHaveLength(1);
     }
+  });
+
+  const jobArb = fc
+    .tuple(fc.uuid(), fc.constantFrom('librarian', 'indexer', 'digest'))
+    .map(([id, skill]) => cronJob(id, skill));
+  const progressArb: fc.Arbitrary<TriggerProgress> = fc.oneof(
+    fc.constant<TriggerProgress>({ kind: 'unfired' }),
+    fc.constant<TriggerProgress>({ kind: 'in-flight' }),
+    fc
+      .array(jobArb, { maxLength: 4 })
+      .map((unfiredDependents): TriggerProgress => ({ kind: 'completed', unfiredDependents })),
+  );
+
+  it('property: only an unfired trigger is re-enqueued; dependents only after it completed', () => {
+    fc.assert(
+      fc.property(progressArb, (progress) => {
+        const decision = decideCatchUp(progress, triggerJob);
+        expect(decision.action === 'enqueue-standalone').toBe(progress.kind === 'unfired');
+        if (decision.action === 'enqueue-standalone') expect(decision.job).toBe(triggerJob);
+        if (decision.action === 'enqueue-dependents') {
+          expect(progress.kind).toBe('completed');
+          expect(decision.depJobs.length).toBeGreaterThan(0);
+        }
+      }),
+    );
+  });
+
+  it('property: a completed trigger enqueues every unfired dependent, and nothing else', () => {
+    fc.assert(
+      fc.property(fc.array(jobArb, { maxLength: 4 }), (unfiredDependents) => {
+        const decision = decideCatchUp({ kind: 'completed', unfiredDependents }, triggerJob);
+        const enqueued = decision.action === 'enqueue-dependents' ? decision.depJobs : [];
+        expect(new Set(enqueued)).toEqual(new Set(unfiredDependents));
+        expect(enqueued).toHaveLength(unfiredDependents.length);
+      }),
+    );
+  });
+});
+
+// ─── catchUpSkipLine ──────────────────────────────────────────────────────────
+
+describe('catchUpSkipLine', () => {
+  it('names an in-flight trigger', () => {
+    expect(catchUpSkipLine('trigger-in-flight', skillId('prune'))).toBe(
+      '[scheduler] Catch-up: trigger "prune" is in-flight, awaiting completion, skipping.',
+    );
+  });
+
+  it('names a completed trigger whose dependents all fired', () => {
+    expect(catchUpSkipLine('dependents-already-fired', skillId('prune'))).toBe(
+      '[scheduler] Catch-up: trigger "prune" completed and all dependents already fired, skipping.',
+    );
   });
 });

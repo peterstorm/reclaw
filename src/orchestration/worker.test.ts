@@ -1233,6 +1233,73 @@ describe('createWorkers', () => {
     expect(bullJob.progress).toBe(10);
   });
 
+  it('research worker warns once when the job cannot checkpoint, and still runs', async () => {
+    makeWorkers();
+    const researchWorker = requireWorker('reclaw-research');
+    const fresh = makeResearchJobData({
+      prompt: 'AI agents research prompt',
+      now: new Date('2026-03-04T10:00:00Z'),
+      sourceHints: [],
+      chatId: 999888777,
+    });
+    if (!fresh.ok) throw new Error(fresh.error);
+    const bullJob: FakeBullJob = {
+      data: fresh.value,
+      id: 'research-job-003',
+      opts: { attempts: 3 },
+      attemptsMade: 0,
+    };
+    researchHandler.mockImplementationOnce(async (jobLike: ResearchJobLike) => {
+      await jobLike.updateData(fresh.value);
+      await jobLike.updateProgress(10);
+      await jobLike.updateData(fresh.value);
+      await jobLike.updateProgress(20);
+      return { hubPath: null, topic: 'AI agents' };
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(researchWorker.processor(bullJob)).resolves.toEqual({
+      hubPath: null,
+      topic: 'AI agents',
+    });
+    expect(warn.mock.calls).toEqual([
+      [
+        '[worker:research] Job research-job-003 has no updateData, updateProgress: those checkpoint calls are skipped (SC-002/SC-003)',
+      ],
+    ]);
+    warn.mockRestore();
+  });
+
+  it('research worker names only the checkpoint method the job lacks', async () => {
+    makeWorkers();
+    const researchWorker = requireWorker('reclaw-research');
+    const fresh = makeResearchJobData({
+      prompt: 'AI agents research prompt',
+      now: new Date('2026-03-04T10:00:00Z'),
+      sourceHints: [],
+      chatId: 999888777,
+    });
+    if (!fresh.ok) throw new Error(fresh.error);
+    const updateData = vi.fn().mockResolvedValue(undefined);
+    const bullJob: FakeBullJob = { data: fresh.value, attemptsMade: 0, updateData };
+    researchHandler.mockImplementationOnce(async (jobLike: ResearchJobLike) => {
+      await jobLike.updateData(fresh.value);
+      await jobLike.updateProgress(10);
+      return { hubPath: null, topic: 'AI agents' };
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await researchWorker.processor(bullJob);
+
+    expect(updateData).toHaveBeenCalledWith(fresh.value);
+    expect(warn.mock.calls).toEqual([
+      [
+        '[worker:research] Job unknown has no updateProgress: those checkpoint calls are skipped (SC-002/SC-003)',
+      ],
+    ]);
+    warn.mockRestore();
+  });
+
   it('research worker throws on missing topic field', async () => {
     makeWorkers();
 

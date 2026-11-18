@@ -333,9 +333,16 @@ function deliveryQueue(deps: WorkerDeps): QueueSpec {
  * Wrap the BullMQ job's checkpoint methods for the research pipeline (SC-002/SC-003).
  * Both are called on `job`, never extracted: BullMQ's Job.updateData and
  * updateProgress assign `this.data` / `this.progress` first, so a detached call
- * throws a TypeError and loses the checkpoint.
+ * throws a TypeError and loses the checkpoint. A production job has both; one
+ * that lacks either is warned about once, and that method's calls are skipped.
  */
 function researchJobLike(job: QueueJob, data: ResearchJobData): ResearchJobLike {
+  const missing = (['updateData', 'updateProgress'] as const).filter((m) => job[m] === undefined);
+  if (missing.length > 0) {
+    console.warn(
+      `[worker:research] Job ${job.id ?? 'unknown'} has no ${missing.join(', ')}: those checkpoint calls are skipped (SC-002/SC-003)`,
+    );
+  }
   return {
     data,
     updateData: async (next) => {

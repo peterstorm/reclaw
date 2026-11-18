@@ -1,3 +1,4 @@
+import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { defined } from './__fixtures__/defined.js';
 import { resolveAnswerCitations } from './citation-resolver.js';
@@ -16,6 +17,8 @@ import {
   buildHubNote,
   buildQANote,
   buildSourceNote,
+  mediaSection,
+  mocWithTopic,
 } from './vault-content.js';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
@@ -735,5 +738,68 @@ describe('VaultNote shape', () => {
     for (const note of notes) {
       expect(note.relativePath).not.toContain('\\');
     }
+  });
+});
+
+// ─── mocWithTopic ──────────────────────────────────────────────────────────────
+
+describe('mocWithTopic', () => {
+  const ctx = makeContext();
+  const entry =
+    '\n- [[research/runs/artificial-intelligence/_index|Artificial Intelligence]] — (2026-03-04)\n';
+
+  it('appends the entry under "## Uncategorized" at the end of the MOC', () => {
+    expect(mocWithTopic('# Research\n', ctx, 'artificial-intelligence')).toBe(
+      `# Research\n\n## Uncategorized\n${entry}`,
+    );
+  });
+
+  it('inserts the entry before "## Related Learning Notes"', () => {
+    const moc = '# Research\n\n## Related Learning Notes\n- [[x]]\n';
+    expect(mocWithTopic(moc, ctx, 'artificial-intelligence')).toBe(
+      `# Research\n\n## Uncategorized\n${entry}\n## Related Learning Notes\n- [[x]]\n`,
+    );
+  });
+
+  it('leaves a MOC that already lists the topic alone', () => {
+    const moc = '# Research\n- [[research/runs/artificial-intelligence/_index|AI]]\n';
+    expect(mocWithTopic(moc, ctx, 'artificial-intelligence')).toBeNull();
+  });
+
+  it('property: adding a topic twice is adding it once, and keeps the rest of the MOC', () => {
+    const slugArb = fc.stringMatching(/^[a-z][a-z0-9-]{0,20}$/);
+    const mocArb = fc.array(fc.constantFrom('# Research', '- [[a]]', '## Related Learning Notes'), {
+      maxLength: 6,
+    });
+    fc.assert(
+      fc.property(mocArb, slugArb, (lines, slug) => {
+        const moc = lines.join('\n');
+        fc.pre(!moc.includes(slug));
+        const once = mocWithTopic(moc, ctx, slug);
+        expect(once).not.toBeNull();
+        expect(mocWithTopic(once ?? '', ctx, slug)).toBeNull();
+        expect(
+          (once ?? '').replace(
+            `\n## Uncategorized\n${entry.replace('artificial-intelligence', slug)}`,
+            '',
+          ),
+        ).toBe(moc);
+      }),
+    );
+  });
+});
+
+// ─── mediaSection ──────────────────────────────────────────────────────────────
+
+describe('mediaSection', () => {
+  it('links each overview under "## Media", in order', () => {
+    expect(
+      mediaSection([
+        { type: 'video', artifactId: 'v1', url: 'https://nb.example/v' },
+        { type: 'audio', artifactId: 'a1', url: 'https://nb.example/a' },
+      ]),
+    ).toBe(
+      '\n\n## Media\n\n- [Video Overview](https://nb.example/v)\n- [Audio Overview](https://nb.example/a)\n',
+    );
   });
 });

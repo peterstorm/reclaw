@@ -1,7 +1,8 @@
 // ─── Vault Content Generator ───────────────────────────────────────────────────
 //
 // Pure functions for generating Obsidian vault note content.
-// No I/O — all functions return {relativePath, content} pairs.
+// No I/O — the note builders return {relativePath, content} pairs; the Research
+// MOC and hub-note media helpers return the text to write.
 //
 // FR-040: Research output lives under research/runs/{topic-slug}/ (RESEARCH_BASE)
 // FR-041: Hub note (_index.md): title, date, quality, links to sources+QAs
@@ -14,7 +15,13 @@ import {
   resolveAnswerCitations,
   sanitizeTitleForWikilink,
 } from './citation-resolver.js';
-import type { QualityResult, ResearchContext, ResolvedNote, SourceMeta } from './research-types.js';
+import type {
+  ArtifactMeta,
+  QualityResult,
+  ResearchContext,
+  ResolvedNote,
+  SourceMeta,
+} from './research-types.js';
 import { RESEARCH_BASE } from './topic-slug.js';
 
 // ─── VaultNote ─────────────────────────────────────────────────────────────────
@@ -294,6 +301,35 @@ ${sourcesSection}
 `;
 
   return { relativePath, content };
+}
+
+// ─── Research MOC and media ───────────────────────────────────────────────────
+
+/**
+ * The Research MOC with the run's entry under "## Uncategorized", before
+ * "## Related Learning Notes" if present; null when the MOC already lists the topic.
+ */
+export function mocWithTopic(
+  mocContent: string,
+  ctx: ResearchContext,
+  topicSlug: string,
+): string | null {
+  if (mocContent.includes(topicSlug)) return null;
+  const researchDate = ctx.startedAt.split('T')[0] ?? ctx.startedAt;
+  const mocEntry = `\n- [[${RESEARCH_BASE}/${topicSlug}/_index|${ctx.topic}]] — (${researchDate})\n`;
+  const relatedIdx = mocContent.indexOf('\n## Related Learning Notes');
+  return relatedIdx !== -1
+    ? `${mocContent.slice(0, relatedIdx)}\n## Uncategorized\n${mocEntry}${mocContent.slice(relatedIdx)}`
+    : `${mocContent}\n## Uncategorized\n${mocEntry}`;
+}
+
+/** The hub note's "## Media" section linking each generated overview. */
+export function mediaSection(artifacts: readonly ArtifactMeta[]): string {
+  const mediaLines = artifacts.map((a) => {
+    const label = a.type === 'audio' ? 'Audio Overview' : 'Video Overview';
+    return `- [${label}](${a.url})`;
+  });
+  return `\n\n## Media\n\n${mediaLines.join('\n')}\n`;
 }
 
 // ─── buildAllVaultNotes ───────────────────────────────────────────────────────

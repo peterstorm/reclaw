@@ -2,10 +2,11 @@
 //
 // Pure rules for skills that run after another skill (`dependsOn`): which
 // dependents each trigger fans out to, which declared dependencies are unusable,
-// and what a startup catch-up should do for a trigger and its dependents. The
-// scheduler (orchestration/scheduler.ts) reads the queue and logs; it decides
-// nothing itself.
+// what a startup catch-up should do for a trigger and its dependents, and the
+// log lines for both. The scheduler (orchestration/scheduler.ts) reads the queue
+// and writes the logs; it decides nothing itself.
 
+import { match } from 'ts-pattern';
 import type { ScheduledJob, SkillConfig, SkillId, SkillRegistry } from './types.js';
 
 /**
@@ -54,46 +55,75 @@ export function dependencyGraph(registry: SkillRegistry): DependencyGraph {
   return { dependents, issues };
 }
 
+/** A dependency issue as the scheduler logs it. */
+export type DependencyIssueLog = { readonly level: 'warn' | 'error'; readonly line: string };
+
+export function dependencyIssueLog(issue: DependencyIssue): DependencyIssueLog {
+  return match(issue)
+    .returnType<DependencyIssueLog>()
+    .with({ kind: 'missing-trigger' }, ({ skillId, dependsOn }) => ({
+      level: 'warn',
+      line: `[scheduler] Skill "${skillId}" depends on "${dependsOn}" which is not in the registry`,
+    }))
+    .with({ kind: 'cycle' }, ({ skillId }) => ({
+      level: 'error',
+      line: `[scheduler] Circular dependency detected for "${skillId}". Ignoring dependency.`,
+    }))
+    .exhaustive();
+}
+
 /**
- * Pure decision for catch-up logic. Returns what action the imperative shell
- * should take, without performing any I/O.
- *
- * States: unfired → fired (enqueued) → completed → dependents-fired
- * Each transition has a Redis marker; catch-up resumes from any state.
+ * How far a trigger's missed firing got, read from its Redis markers:
+ * unfired → fired (enqueued) → completed → dependents fired. Only a completed
+ * trigger has dependents to check, so "completed but never fired" cannot be
+ * written down.
  */
+export type TriggerProgress =
+  | { readonly kind: 'unfired' }
+  | { readonly kind: 'in-flight' }
+  | {
+      readonly kind: 'completed';
+      /** The dependents whose fired markers are absent. */
+      readonly unfiredDependents: readonly ScheduledJob[];
+    };
+
+/** Why a catch-up does nothing. */
+export type CatchUpSkipReason = 'trigger-in-flight' | 'dependents-already-fired';
+
+/** What the scheduler does for a missed trigger firing; it performs no I/O to decide. */
 export type CatchUpDecision =
-  | { readonly action: 'skip'; readonly reason: string }
+  | { readonly action: 'skip'; readonly reason: CatchUpSkipReason }
   | { readonly action: 'enqueue-standalone'; readonly job: ScheduledJob }
   | { readonly action: 'enqueue-dependents'; readonly depJobs: readonly ScheduledJob[] };
 
 export function decideCatchUp(
-  triggerFired: boolean,
-  triggerCompleted: boolean,
+  progress: TriggerProgress,
   triggerJob: ScheduledJob,
-  unfiredDepJobs: readonly ScheduledJob[],
 ): CatchUpDecision {
-  if (!triggerFired) {
-    // Trigger never fired — enqueue it. The worker's completed-event
-    // callback will handle dependents when it finishes.
-    return { action: 'enqueue-standalone', job: triggerJob };
-  }
+  return (
+    match(progress)
+      .returnType<CatchUpDecision>()
+      // Never fired: enqueue it. The worker's completion callback handles its dependents.
+      .with({ kind: 'unfired' }, () => ({ action: 'enqueue-standalone', job: triggerJob }))
+      // Still running or awaiting retry: its completion callback will enqueue the dependents.
+      .with({ kind: 'in-flight' }, () => ({ action: 'skip', reason: 'trigger-in-flight' }))
+      .with({ kind: 'completed' }, ({ unfiredDependents }) =>
+        unfiredDependents.length === 0
+          ? { action: 'skip', reason: 'dependents-already-fired' }
+          : { action: 'enqueue-dependents', depJobs: unfiredDependents },
+      )
+      .exhaustive()
+  );
+}
 
-  if (!triggerCompleted) {
-    // Trigger fired but not yet completed — still running or awaiting retry.
-    // The worker's completion callback will enqueue dependents.
-    return {
-      action: 'skip',
-      reason: `trigger "${triggerJob.skillId}" is in-flight, awaiting completion`,
-    };
-  }
-
-  // Trigger completed. Enqueue any dependents whose fired markers are absent.
-  if (unfiredDepJobs.length === 0) {
-    return {
-      action: 'skip',
-      reason: `trigger "${triggerJob.skillId}" completed and all dependents already fired`,
-    };
-  }
-
-  return { action: 'enqueue-dependents', depJobs: unfiredDepJobs };
+/** The log line for a catch-up of `trigger` that does nothing. */
+export function catchUpSkipLine(reason: CatchUpSkipReason, trigger: SkillId): string {
+  const why = match(reason)
+    .with('trigger-in-flight', () => `trigger "${trigger}" is in-flight, awaiting completion`)
+    .with(
+      'dependents-already-fired',
+      () => `trigger "${trigger}" completed and all dependents already fired`,
+    )
+    .exhaustive();
+  return `[scheduler] Catch-up: ${why}, skipping.`;
 }

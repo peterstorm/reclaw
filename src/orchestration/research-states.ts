@@ -18,10 +18,10 @@
 import { match } from 'ts-pattern';
 import { extractPassageToSourceMap, resolveAnswerCitations } from '../core/citation-resolver.js';
 import { computeMetrics, evaluateQuality } from '../core/research-quality.js';
+import { nextPendingQuestion, semanticCircuitBreaker } from '../core/research-step.js';
 import { buildTelegramSummary } from '../core/research-summary.js';
 import type {
   ArtifactMeta,
-  ChatResponse,
   ResearchContext,
   ResearchEvent,
   ResearchState,
@@ -30,9 +30,14 @@ import type {
 } from '../core/research-types.js';
 import { RESEARCH_BASE, generateTopicSlug } from '../core/topic-slug.js';
 import type { Result } from '../core/types.js';
-import { buildAllVaultNotes, buildEmergencyNote } from '../core/vault-content.js';
+import {
+  buildAllVaultNotes,
+  buildEmergencyNote,
+  mediaSection,
+  mocWithTopic,
+} from '../core/vault-content.js';
 import { parseVaultRelativePath } from '../core/vault-path.js';
-import type { NotebookLMAdapter } from '../infra/notebooklm-client.js';
+import type { AdapterError, NotebookLMAdapter } from '../infra/notebooklm-client.js';
 import type { QuotaTracker } from '../infra/quota-tracker.js';
 import type { ResearchLLMAdapter } from '../infra/research-llm-client.js';
 import type { TelegramAdapter } from '../infra/telegram.js';
@@ -40,9 +45,6 @@ import { createVaultWorkspace, formatVaultPathError } from '../infra/vault-works
 import type { VaultWriterAdapter } from '../infra/vault-writer.js';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-
-/** Minimum answer text length below which we consider the response too short (semantic circuit breaker). */
-const SEMANTIC_MIN_ANSWER_LENGTH = 100;
 
 /** Top N web sources to add from discovery results. FR-012. Plus tier supports up to 300. */
 const MAX_DISCOVERED_SOURCES = 50;
@@ -546,13 +548,6 @@ async function executeQuerying(
   };
 }
 
-/** The first question neither answered nor skipped. */
-function nextPendingQuestion(ctx: ResearchContext): string | undefined {
-  return ctx.questions.find(
-    (q) => !Object.hasOwn(ctx.answers, q) && !ctx.skippedQuestions.includes(q),
-  );
-}
-
 /** FR-051: on a retry, ask a rephrasing of the question; else the question itself. */
 async function questionToAsk(
   pendingQuestion: string,
@@ -567,17 +562,6 @@ async function questionToAsk(
     rephraseResult.error,
   );
   return pendingQuestion;
-}
-
-/**
- * FR-025: an answer with no citations and too little text is low quality.
- * Returns why the breaker tripped, or null for an acceptable answer.
- */
-function semanticCircuitBreaker(response: ChatResponse): string | null {
-  const length = response.text.trim().length;
-  return response.citations.length === 0 && length < SEMANTIC_MIN_ANSWER_LENGTH
-    ? `Semantic circuit breaker: response has 0 citations and is too short (${length} chars < ${SEMANTIC_MIN_ANSWER_LENGTH})`
-    : null;
 }
 
 /**
@@ -681,22 +665,10 @@ async function addToResearchMoc(ctx: ResearchContext, vaultBasePath: string): Pr
   const mocPath = await workspace.value.resolveExistingFile(mocRelativePath.value);
   if (!mocPath.ok) throw new Error(formatVaultPathError(mocPath.error));
   const fs = await import('node:fs/promises');
-  const mocContent = await fs.readFile(mocPath.value, 'utf8');
-  // Only append if this topic isn't already in the MOC
-  if (!mocContent.includes(topicSlug)) {
-    await fs.writeFile(mocPath.value, mocWithTopic(mocContent, ctx, topicSlug), 'utf8');
-    console.info(`[research:vault] Added ${topicSlug} to Research MOC`);
-  }
-}
-
-/** The MOC with the topic's entry under "## Uncategorized", before "## Related Learning Notes" if present. */
-function mocWithTopic(mocContent: string, ctx: ResearchContext, topicSlug: string): string {
-  const researchDate = ctx.startedAt.split('T')[0] ?? ctx.startedAt;
-  const mocEntry = `\n- [[${RESEARCH_BASE}/${topicSlug}/_index|${ctx.topic}]] — (${researchDate})\n`;
-  const relatedIdx = mocContent.indexOf('\n## Related Learning Notes');
-  return relatedIdx !== -1
-    ? `${mocContent.slice(0, relatedIdx)}\n## Uncategorized\n${mocEntry}${mocContent.slice(relatedIdx)}`
-    : `${mocContent}\n## Uncategorized\n${mocEntry}`;
+  const updated = mocWithTopic(await fs.readFile(mocPath.value, 'utf8'), ctx, topicSlug);
+  if (updated === null) return;
+  await fs.writeFile(mocPath.value, updated, 'utf8');
+  console.info(`[research:vault] Added ${topicSlug} to Research MOC`);
 }
 
 /**
@@ -719,12 +691,10 @@ async function executeGeneratingArtifacts(
 
   const notebookId = ctx.notebookId;
   const notebookUrl = await shareableNotebookUrl(notebookId, deps);
-  const requested = overviewsFor(deps.notebookLM).filter((overview) =>
-    overview.type === 'audio' ? ctx.generateAudio : ctx.generateVideo,
-  );
+  const requested = OVERVIEW_ORDER.filter((type) => OVERVIEWS[type].requested(ctx));
   const outcomes: OverviewOutcome[] = [];
-  for (const overview of requested) {
-    outcomes.push(await generateOverview(overview, ctx.topic, notebookId, notebookUrl, deps));
+  for (const type of requested) {
+    outcomes.push(await generateOverview(type, ctx.topic, notebookId, notebookUrl, deps));
   }
   const artifacts = outcomes.flatMap((o) => (o.ok ? [o.value] : []));
   const artifactFailures = outcomes.flatMap((o) => (o.ok ? [] : [o.error]));
@@ -755,54 +725,67 @@ async function shareableNotebookUrl(notebookId: string, deps: ResearchDeps): Pro
   return `https://notebooklm.google.com/notebook/${notebookId}`;
 }
 
-/** One kind of overview the notebook can generate, in generation order. */
-type Overview = Readonly<{
-  type: ArtifactMeta['type'];
-  /** Prefix of its failure entries and log lines. */
-  label: 'Audio' | 'Video';
-  /** The adapter method that starts it, as its log lines name it. */
-  createName: 'createAudioOverview' | 'createVideoOverview';
-  create: (
-    notebookId: string,
-    options: { readonly instructions: string },
-  ) => ReturnType<NotebookLMAdapter['createVideoOverview']>;
-  instructions: (topic: string) => string;
-}>;
+type OverviewType = ArtifactMeta['type'];
 
-const overviewsFor = (notebookLM: NotebookLMAdapter): readonly Overview[] => [
-  {
-    type: 'audio',
+/**
+ * Each overview the notebook can generate, keyed by its artifact type. The
+ * label prefixes its failure entries and log lines, and names the adapter
+ * method that starts it: `create<Label>Overview`.
+ */
+const OVERVIEWS: {
+  readonly [T in OverviewType]: Readonly<{
+    label: Capitalize<T>;
+    requested: (ctx: ResearchContext) => boolean;
+    instructions: (topic: string) => string;
+  }>;
+} = {
+  audio: {
     label: 'Audio',
-    createName: 'createAudioOverview',
-    create: (notebookId, options) => notebookLM.createAudioOverview(notebookId, options),
+    requested: (ctx) => ctx.generateAudio,
     instructions: (topic) => `Create a deep-dive audio overview about: ${topic}`,
   },
-  {
-    type: 'video',
+  video: {
     label: 'Video',
-    createName: 'createVideoOverview',
-    create: (notebookId, options) => notebookLM.createVideoOverview(notebookId, options),
+    requested: (ctx) => ctx.generateVideo,
     instructions: (topic) => `Create a video overview about: ${topic}`,
   },
-];
+};
+
+/** Generation order. */
+const OVERVIEW_ORDER: readonly OverviewType[] = ['audio', 'video'];
+
+/** Starting an overview: the signature research needs from both create methods of the adapter. */
+type StartOverview = (
+  notebookId: string,
+  options: { readonly instructions: string },
+) => Promise<Result<string, AdapterError>>;
+
+/** The adapter method that starts an overview of `type`, under its own name. */
+function overviewStarter(
+  notebookLM: NotebookLMAdapter,
+  type: OverviewType,
+): { readonly name: string; readonly start: StartOverview } {
+  const name = `create${OVERVIEWS[type].label}Overview` as const;
+  return { name, start: (notebookId, options) => notebookLM[name](notebookId, options) };
+}
 
 /** A generated artifact, or the failure entry naming why it is missing. */
 type OverviewOutcome = Result<ArtifactMeta, string>;
 
 /** Create one overview and wait for it. Best-effort: a failure is returned, never thrown. */
 async function generateOverview(
-  overview: Overview,
+  type: OverviewType,
   topic: string,
   notebookId: string,
   notebookUrl: string,
   deps: ResearchDeps,
 ): Promise<OverviewOutcome> {
-  const createResult = await overview.create(notebookId, {
-    instructions: overview.instructions(topic),
-  });
+  const { label, instructions } = OVERVIEWS[type];
+  const starter = overviewStarter(deps.notebookLM, type);
+  const createResult = await starter.start(notebookId, { instructions: instructions(topic) });
   if (!createResult.ok) {
-    console.warn(`[research:artifacts] ${overview.createName} failed:`, createResult.error.message);
-    return { ok: false, error: `${overview.label}: ${createResult.error.message}` };
+    console.warn(`[research:artifacts] ${starter.name} failed:`, createResult.error.message);
+    return { ok: false, error: `${label}: ${createResult.error.message}` };
   }
 
   const waitResult = await deps.notebookLM.waitForArtifact(
@@ -811,23 +794,11 @@ async function generateOverview(
     ARTIFACT_TIMEOUT_MS,
   );
   if (waitResult.ok && waitResult.value === 'ready') {
-    return {
-      ok: true,
-      value: { type: overview.type, artifactId: createResult.value, url: notebookUrl },
-    };
+    return { ok: true, value: { type, artifactId: createResult.value, url: notebookUrl } };
   }
   const reason = waitResult.ok ? `artifact state: ${waitResult.value}` : waitResult.error.message;
-  console.warn(`[research:artifacts] ${overview.label} generation failed or timed out:`, reason);
-  return { ok: false, error: `${overview.label}: ${reason}` };
-}
-
-/** The hub note's "## Media" section linking each generated overview. */
-function mediaSection(artifacts: readonly ArtifactMeta[]): string {
-  const mediaLines = artifacts.map((a) => {
-    const label = a.type === 'audio' ? 'Audio Overview' : 'Video Overview';
-    return `- [${label}](${a.url})`;
-  });
-  return `\n\n## Media\n\n${mediaLines.join('\n')}\n`;
+  console.warn(`[research:artifacts] ${label} generation failed or timed out:`, reason);
+  return { ok: false, error: `${label}: ${reason}` };
 }
 
 /**

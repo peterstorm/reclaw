@@ -1,14 +1,17 @@
 // ─── Research Step ────────────────────────────────────────────────────────────
 //
 // The pure half of one turn of the research pipeline loop: how a resumed job's
-// context starts, how an executor's thrown error becomes an event, and how an
-// executed state's event is traced (FR-080, FR-082) and transitioned. The shell
-// (orchestration/research-handler.ts) runs the executor, times it, and
-// checkpoints what this returns.
+// context starts, which question the querying state asks next and whether its
+// answer is usable (FR-025), how an executor's thrown error becomes an event,
+// and how an executed state's event is traced (FR-080, FR-082) and
+// transitioned. The shells (orchestration/research-handler.ts and
+// research-states.ts) run the executor, time it, and checkpoint what this
+// returns.
 
 import { match } from 'ts-pattern';
 import { MAX_RETRIES, transition } from './research-machine.js';
 import {
+  type ChatResponse,
   type ResearchContext,
   type ResearchEvent,
   type ResearchState,
@@ -24,6 +27,27 @@ export function resumeContext(state: ResearchState, context: ResearchContext): R
   if (isTerminal(state) || !Object.hasOwn(context.retries, state.kind)) return context;
   const { [state.kind]: _, ...retries } = context.retries;
   return { ...context, retries, lastError: null };
+}
+
+/** The first question neither answered nor skipped. */
+export function nextPendingQuestion(ctx: ResearchContext): string | undefined {
+  return ctx.questions.find(
+    (q) => !Object.hasOwn(ctx.answers, q) && !ctx.skippedQuestions.includes(q),
+  );
+}
+
+/** Minimum answer text length below which an uncited answer is too short (semantic circuit breaker). */
+const SEMANTIC_MIN_ANSWER_LENGTH = 100;
+
+/**
+ * FR-025: an answer with no citations and too little text is low quality.
+ * Returns why the breaker tripped, or null for an acceptable answer.
+ */
+export function semanticCircuitBreaker(response: ChatResponse): string | null {
+  const length = response.text.trim().length;
+  return response.citations.length === 0 && length < SEMANTIC_MIN_ANSWER_LENGTH
+    ? `Semantic circuit breaker: response has 0 citations and is too short (${length} chars < ${SEMANTIC_MIN_ANSWER_LENGTH})`
+    : null;
 }
 
 /** Thrown-error messages that no retry can fix: auth, permission, invalid input, 404. */
