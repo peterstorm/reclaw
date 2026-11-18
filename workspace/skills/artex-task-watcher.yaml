@@ -1,5 +1,7 @@
 name: ARTEX Task Watcher
-schedule: "*/15 * * * *" # every 15 min. Pure diff job: only page on task completion transitions. Manually triggerable via /run artex-task-watcher.
+# PAUSED 2026-11-18: schedule null = no cron, skill stays manually runnable via /run artex-task-watcher.
+# To resume: restore `schedule: "*/15 * * * *"` (every 15 min, hot-reloads via the skill watcher).
+schedule: null # every 15 min when active. Pure diff job: only page on task completion transitions. Manually triggerable via /run artex-task-watcher.
 permissionProfile: scheduled
 # Pi/vLLM unreachable (desktop off) or out of quota → rerun once on Claude; the message says so.
 fallback: { backend: claude, model: sonnet }
