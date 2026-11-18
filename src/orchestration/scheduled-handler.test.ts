@@ -39,19 +39,28 @@ const makeScheduledJob = (overrides: Partial<ScheduledJob> = {}): ScheduledJob =
   ...overrides,
 });
 
-const makeSkillConfig = (overrides: Partial<SkillConfig> = {}): SkillConfig => ({
-  id: makeSkillId('morning-briefing'),
-  name: 'Morning Briefing',
-  schedule: '0 7 * * *',
-  promptTemplate:
-    'Date: {{date}}, Day: {{dayOfWeek}}, Personality: {{personality}}. Provide a morning briefing.',
-  permissionProfile: 'scheduled',
-  validityWindowMinutes: 60,
-  timeout: 300,
-  environment: [],
-  dependsOn: null,
-  ...overrides,
-});
+/** Drop undefined-valued keys (runtime and type) so Partial overrides satisfy exactOptionalPropertyTypes. */
+type WithoutUndefined<T> = { [K in keyof T as undefined extends T[K] ? never : K]: T[K] };
+const stripUndefined = <T extends object>(value: T): WithoutUndefined<T> =>
+  Object.fromEntries(
+    Object.entries(value).filter(([, v]) => v !== undefined),
+  ) as WithoutUndefined<T>;
+
+const makeSkillConfig = (overrides: Partial<SkillConfig> = {}): SkillConfig => {
+  const base: SkillConfig = {
+    id: makeSkillId('morning-briefing'),
+    name: 'Morning Briefing',
+    schedule: '0 7 * * *',
+    promptTemplate:
+      'Date: {{date}}, Day: {{dayOfWeek}}, Personality: {{personality}}. Provide a morning briefing.',
+    permissionProfile: 'scheduled',
+    validityWindowMinutes: 60,
+    timeout: 300,
+    environment: [],
+    dependsOn: null,
+  };
+  return stripUndefined({ ...base, ...overrides });
+};
 
 const makeRegistry = (skills: SkillConfig[] = [makeSkillConfig()]): SkillRegistry => {
   return new Map(skills.map((s) => [s.id, s]));
@@ -456,8 +465,9 @@ describe('handleScheduledJob', () => {
     // The Claude-only model must not follow the run to Pi.
     expect(runClaude.mock.calls[1]?.[0].backend).toBe('pi');
     expect(runClaude.mock.calls[1]?.[0]).not.toHaveProperty('modelSelection');
-    expect(result).toMatchObject({ kind: 'completed', sessionBackend: 'pi', suppressed: false });
+    expect(result).toMatchObject({ kind: 'completed', suppressed: false });
     if (result.kind !== 'completed') throw new Error('expected completion');
+    expect(result.session).toEqual({ backend: 'pi', sessionId: 'pi-sess' });
     expect(result.response).toMatch(/^⚠️ Fallback: ran on pi — claude usage quota is exhausted/);
     expect(result.response.endsWith('\n\nQuestion 1…')).toBe(true);
   });
@@ -559,7 +569,9 @@ describe('handleScheduledJob', () => {
       backend: 'claude',
       modelSelection: { model: 'sonnet' },
     });
-    expect(result).toMatchObject({ kind: 'completed', sessionBackend: 'claude' });
+    expect(result).toMatchObject({ kind: 'completed' });
+    if (result.kind !== 'completed') throw new Error('expected completion');
+    expect(result.session).toEqual({ backend: 'claude', sessionId: 'c-sess' });
   });
 
   it('falls back to global scheduledTimeoutMs when skill has no timeout', async () => {
@@ -605,8 +617,7 @@ describe('handleScheduledJob', () => {
       kind: 'completed',
       response: 'Briefing result',
       suppressed: false,
-      sessionId: 'scheduled-session',
-      sessionBackend: 'claude',
+      session: { backend: 'claude', sessionId: 'scheduled-session' },
     });
     expect(telegram.sendChunkedMessage).not.toHaveBeenCalled();
     expect(sessionStore.saveMessageReference).not.toHaveBeenCalled();
@@ -1122,5 +1133,141 @@ describe('handleScheduledJob', () => {
     });
 
     expect(result.kind).toBe('completed');
+  });
+
+  // ─── Script skills (in-process, no agent) ────────────────────────────
+
+  const makeScriptSkillConfig = (overrides: Partial<SkillConfig> = {}): SkillConfig =>
+    makeSkillConfig({
+      promptTemplate: undefined,
+      script: 'watcher.ts',
+      ...overrides,
+    });
+
+  it('runs a script skill in-process: no agent, no session, durable outcome', async () => {
+    const job = makeScheduledJob();
+    const telegram = makeTelegram();
+    const runClaude = makeRunClaude({ ok: true, output: 'unused', sessionId: null, durationMs: 0 });
+    const run = vi.fn(async () => ({ kind: 'message', text: '#26 Fugue races — done' }) as const);
+
+    const result = await handleScheduledJob(job, {
+      runClaude: runClaude as unknown as ScheduledDeps['runClaude'],
+      telegram,
+      skillRegistry: makeRegistry([makeScriptSkillConfig()]),
+      config: makeConfig(),
+      importScriptModule: async () => ({ run }),
+      scriptStateRoot: '/tmp/reclaw-script-test',
+      completionMode: 'durable',
+    });
+
+    expect(runClaude).not.toHaveBeenCalled();
+    expect(run).toHaveBeenCalledOnce();
+    expect(result).toEqual({
+      kind: 'completed',
+      response: '#26 Fugue races — done',
+      suppressed: false,
+      session: null,
+    });
+    // Delivery goes through the durable outbox path — no inline telegram here.
+    expect(telegram.sendChunkedMessage).not.toHaveBeenCalled();
+  });
+
+  it('maps a script silent outcome to the suppressed ALL_CLEAR response', async () => {
+    const job = makeScheduledJob();
+    const telegram = makeTelegram();
+    const run = vi.fn(async () => ({ kind: 'silent' }) as const);
+    const recordSkillQuality = vi.fn();
+
+    const result = await handleScheduledJob(job, {
+      runClaude: makeRunClaude({ ok: true, output: 'x', sessionId: null, durationMs: 0 }),
+      telegram,
+      skillRegistry: makeRegistry([makeScriptSkillConfig()]),
+      config: makeConfig(),
+      importScriptModule: async () => ({ run }),
+      scriptStateRoot: '/tmp/reclaw-script-test',
+      completionMode: 'durable',
+      recordSkillQuality,
+    });
+
+    expect(result).toEqual({
+      kind: 'completed',
+      response: 'ALL_CLEAR',
+      suppressed: true,
+      session: null,
+    });
+    expect(recordSkillQuality.mock.calls[0]?.[0].status).toBe('suppressed');
+  });
+
+  it('delivers a script message inline in legacy mode without session mapping', async () => {
+    const job = makeScheduledJob();
+    const telegram = makeTelegram();
+    const sessionStore = makeSessionStore();
+    const run = vi.fn(async () => ({ kind: 'message', text: '#4 timeout' }) as const);
+
+    await handleScheduledJob(job, {
+      runClaude: makeRunClaude({ ok: true, output: 'x', sessionId: null, durationMs: 0 }),
+      telegram,
+      skillRegistry: makeRegistry([makeScriptSkillConfig()]),
+      config: makeConfig({ authorizedUserIds: [42] }),
+      importScriptModule: async () => ({ run }),
+      scriptStateRoot: '/tmp/reclaw-script-test',
+      sessionStore,
+    });
+
+    expect(telegram.sendChunkedMessage).toHaveBeenCalledOnce();
+    expect(sessionStore.saveMessageReference).not.toHaveBeenCalled();
+  });
+
+  it('fails the job with an orchestration cause and script_error signal when the script throws', async () => {
+    const job = makeScheduledJob();
+    const telegram = makeTelegram();
+    const recordSkillQuality = vi.fn();
+    const run = vi.fn(async () => {
+      throw new Error('artex api unreachable');
+    });
+
+    const result = await handleScheduledJob(job, {
+      runClaude: makeRunClaude({ ok: true, output: 'x', sessionId: null, durationMs: 0 }),
+      telegram,
+      skillRegistry: makeRegistry([makeScriptSkillConfig()]),
+      config: makeConfig(),
+      importScriptModule: async () => ({ run }),
+      scriptStateRoot: '/tmp/reclaw-script-test',
+      completionMode: 'durable',
+      recordSkillQuality,
+    });
+
+    expect(result).toEqual({
+      kind: 'failed',
+      cause: {
+        kind: 'orchestration',
+        message: 'script "watcher.ts" failed: artex api unreachable',
+      },
+    });
+    expect(recordSkillQuality.mock.calls[0]?.[0].status).toBe('script_error');
+    expect(telegram.sendChunkedMessage).not.toHaveBeenCalled();
+  });
+
+  it('hands the script only its granted environment values', async () => {
+    const job = makeScheduledJob();
+    const telegram = makeTelegram();
+    const seen: import('../core/script-skill.js').ScriptContext[] = [];
+    const run = vi.fn(async (context: import('../core/script-skill.js').ScriptContext) => {
+      seen.push(context);
+      return { kind: 'silent' } as const;
+    });
+
+    await handleScheduledJob(job, {
+      runClaude: makeRunClaude({ ok: true, output: 'x', sessionId: null, durationMs: 0 }),
+      telegram,
+      skillRegistry: makeRegistry([makeScriptSkillConfig({ environment: ['GARMIN_EMAIL'] })]),
+      config: makeConfig(),
+      importScriptModule: async () => ({ run }),
+      scriptStateRoot: '/tmp/reclaw-script-test',
+      processEnvironment: { GARMIN_EMAIL: 'me@example.com', TELEGRAM_TOKEN: 'must-not-leak' },
+      completionMode: 'durable',
+    });
+
+    expect(seen[0]?.env).toEqual({ GARMIN_EMAIL: 'me@example.com' });
   });
 });

@@ -7,6 +7,7 @@ import { splitMessage } from '../core/message-splitter.js';
 import { type AgentTarget, requestedModel } from '../core/model-selection.js';
 import { getAllowedTools } from '../core/permissions.js';
 import { buildPrompt } from '../core/prompt-builder.js';
+import type { ScriptModule } from '../core/script-skill.js';
 import type { SkillQualitySignal, SkillRunStatus } from '../core/skill-quality.js';
 import {
   type AgentBackendName,
@@ -24,6 +25,7 @@ import type { AgentOptions, AgentResult } from '../infra/agent-backends/index.js
 import type { AppConfig } from '../infra/config.js';
 import type { SessionStore } from '../infra/session-store.js';
 import type { TelegramAdapter } from '../infra/telegram.js';
+import { type ScriptSkillDeps, defaultScriptStateRoot, runScriptSkill } from './script-skill.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -42,6 +44,12 @@ export type ScheduledDeps = {
   readonly recordSkillQuality?: (signal: SkillQualitySignal) => void;
   /** Production workers persist completion effects in the delivery outbox. */
   readonly completionMode?: 'inline' | 'durable';
+  /** Loader for script-skill modules; defaults to the file-URL dynamic import. */
+  readonly importScriptModule?: (absolutePath: string) => Promise<ScriptModule>;
+  /** Root of script skills' state directories; defaults to ~/.cache/reclaw/script-skills. */
+  readonly scriptStateRoot?: string;
+  /** Clock for script skills; defaults to the system clock. */
+  readonly scriptNow?: () => Date;
 };
 
 export type ScheduledActivityFailure =
@@ -53,8 +61,11 @@ export type ScheduledActivityOutcome =
       readonly kind: 'completed';
       readonly response: string;
       readonly suppressed: boolean;
-      readonly sessionId: ClaudeSessionId | null;
-      readonly sessionBackend: AgentBackendName;
+      /** The agent session that produced this response, when one exists. Script skills have none. */
+      readonly session: {
+        readonly backend: AgentBackendName;
+        readonly sessionId: ClaudeSessionId;
+      } | null;
     }
   | Extract<ScheduledOutcome, { readonly kind: 'skipped' }>
   | { readonly kind: 'failed'; readonly cause: ScheduledActivityFailure };
@@ -117,7 +128,12 @@ export async function handleScheduledJob(
       : scheduledFailed('skill not found');
   }
 
-  // 3–7. Build the prompt and run the agent, with the skill's fallback.
+  // 3–7a. Script skills run in-process: no agent, no prompt, no fallback.
+  if ('script' in skill) {
+    return runScriptScheduledJob(skill, deps, emit);
+  }
+
+  // 3–7b. Build the prompt and run the agent, with the skill's fallback.
   const { result, sessionBackend, notice } = await runSkill(job, skill, deps, now);
 
   // 8. Handle failure — no user notification for scheduled (goes to dead letter)
@@ -133,7 +149,47 @@ export async function handleScheduledJob(
   return completeRun(result, sessionBackend, notice, deps, emit);
 }
 
-// ─── Steps ────────────────────────────────────────────────────────────────────
+// ─── Steps ────────────────────────────────────────────────────────────────
+
+/**
+ * 3–7a. Run an in-process script skill. No agent backend, no session, no
+ * fallback: the script does its own failure handling and returns either a
+ * message or silence. A thrown or timed-out script fails the job (BullMQ
+ * retries); an expected nothing-to-report is a `silent` outcome.
+ */
+async function runScriptScheduledJob(
+  skill: SkillConfig & { readonly script: string },
+  deps: ScheduledDeps,
+  emit: QualityEmit,
+): Promise<ScheduledHandlerOutcome> {
+  const moduleNs = await import('./script-skill.js');
+  const importModule = deps.importScriptModule ?? moduleNs.importScriptModule;
+  const scriptDeps: ScriptSkillDeps = {
+    skillsDir: deps.config.skillsDir,
+    stateRoot: deps.scriptStateRoot ?? defaultScriptStateRoot(),
+    env: deps.processEnvironment ?? {},
+    timeoutMs: skill.timeout ? skill.timeout * 1000 : deps.config.scheduledTimeoutMs,
+    now: deps.scriptNow ?? (() => new Date()),
+    importModule,
+  };
+  const result = await runScriptSkill(skill, scriptDeps);
+  if (!result.ok) {
+    emit('script_error', 0, result.error);
+    return deps.completionMode === 'durable'
+      ? { kind: 'failed', cause: { kind: 'orchestration', message: result.error } }
+      : scheduledFailed(result.error);
+  }
+  const suppressed = result.value.kind === 'silent';
+  const response = suppressed ? SUPPRESS_SENTINEL : result.value.text;
+  emit(suppressed ? 'suppressed' : 'success', response.length, null);
+  if (deps.completionMode === 'durable') {
+    return { kind: 'completed', response, suppressed, session: null };
+  }
+  if (!suppressed) {
+    await deliverInline(response, null, deps);
+  }
+  return scheduledCompleted(response);
+}
 
 /**
  * 3–6. Personality (FR-009), prompt (pure), allowed tools (FR-011) and
@@ -142,7 +198,7 @@ export async function handleScheduledJob(
  */
 async function runSkill(
   job: ScheduledJob,
-  skill: SkillConfig,
+  skill: SkillConfig & { readonly promptTemplate: string },
   deps: ScheduledDeps,
   now: Date,
 ): Promise<FallbackRun> {
@@ -175,7 +231,12 @@ async function completeRun(
 
   if (deps.completionMode === 'durable') {
     emit(isSuppressed ? 'suppressed' : 'success', response.length, null);
-    return { kind: 'completed', response, suppressed: isSuppressed, sessionId, sessionBackend };
+    return {
+      kind: 'completed',
+      response,
+      suppressed: isSuppressed,
+      session: sessionId === null ? null : { backend: sessionBackend, sessionId },
+    };
   }
 
   if (!isSuppressed) {

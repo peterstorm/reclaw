@@ -676,14 +676,18 @@ export type SkillConfig = SkillAgent & {
   readonly id: SkillId;
   readonly name: string;
   readonly schedule: string | null; // cron expression, null = on-demand only
-  readonly promptTemplate: string;
   readonly permissionProfile: 'chat' | 'scheduled';
   readonly validityWindowMinutes: number;
   readonly timeout?: number; // seconds; omit to inherit SCHEDULED_TIMEOUT_MS (20 min default)
   /** Service environment values explicitly granted to this trusted scheduled skill. */
   readonly environment: readonly SkillEnvironmentVariable[];
   readonly dependsOn: SkillId | null; // skill that must complete before this one runs
-};
+  /**
+   * The body: a `promptTemplate` for an agent-subprocess run, or a `script` —
+   * the file name of an in-process TypeScript module in the skills directory.
+   * Exactly one is present (enforced by the parser); narrow with `'script' in skill`.
+   */
+} & ({ readonly promptTemplate: string } | { readonly script: string });
 
 // ─── Skill Registry ────────────────────────────────────────────────────────────
 

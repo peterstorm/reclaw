@@ -38,7 +38,17 @@ const SkillConfigSchema = z
         },
         { message: 'schedule must be a valid cron expression' },
       ),
-    promptTemplate: z.string().min(1, 'promptTemplate must not be empty'),
+    promptTemplate: z.string().min(1, 'promptTemplate must not be empty').optional(),
+    // An in-process script skill: the file name of a TypeScript module in the skills
+    // directory. A single safe filename — no directories, no traversal (the loader
+    // joins it onto skillsDir verbatim).
+    script: z
+      .string()
+      .regex(
+        /^[A-Za-z0-9][A-Za-z0-9._-]*\.ts$/,
+        'script must be a .ts filename in the skills directory',
+      )
+      .optional(),
     permissionProfile: z.enum(['chat', 'scheduled']),
     validityWindowMinutes: z.number().int().positive().default(30),
     // Optional with NO default: an absent timeout must fall through to the scheduled handler's
@@ -84,6 +94,19 @@ function parseSkillAgent(
 ): Result<SkillAgent, string> {
   if (backend !== undefined) return parseAgentTarget(backend, model);
   return model === undefined ? ok({}) : err(`model: ${MODEL_NEEDS_CLAUDE}`);
+}
+
+/**
+ * The skill body: exactly one of a prompt template (agent-subprocess run) or a
+ * script file name (in-process run).
+ */
+function parseSkillBody(
+  promptTemplate: string | undefined,
+  script: string | undefined,
+): Result<{ readonly promptTemplate: string } | { readonly script: string }, string> {
+  if (promptTemplate !== undefined && script === undefined) return ok({ promptTemplate });
+  if (script !== undefined && promptTemplate === undefined) return ok({ script });
+  return err('body: set exactly one of promptTemplate or script');
 }
 
 function parseFallback(
@@ -181,14 +204,26 @@ function assembleSkillConfig(
   if (!fallback.ok) {
     return err(`Skill config validation failed in "${filePath}": ${fallback.error}`);
   }
+  const body = parseSkillBody(data.promptTemplate, data.script);
+  if (!body.ok) {
+    return err(`Skill config validation failed in "${filePath}": ${body.error}`);
+  }
+  if (
+    'script' in body.value &&
+    (data.backend !== undefined || data.model !== undefined || data.fallback !== undefined)
+  ) {
+    return err(
+      `Skill config validation failed in "${filePath}": a script skill runs in-process and takes no backend, model or fallback`,
+    );
+  }
 
   return ok({
     ...agent.value,
     ...(fallback.value !== undefined ? { fallback: fallback.value } : {}),
+    ...body.value,
     id,
     name: data.name,
     schedule: data.schedule,
-    promptTemplate: data.promptTemplate,
     permissionProfile: data.permissionProfile,
     validityWindowMinutes: data.validityWindowMinutes,
     // Only set timeout when explicitly provided — exactOptionalPropertyTypes forbids an

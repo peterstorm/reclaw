@@ -182,8 +182,7 @@ describe('createWorkers', () => {
       kind: 'completed',
       response: 'scheduled response',
       suppressed: false,
-      sessionId: null,
-      sessionBackend: 'claude',
+      session: null,
     });
     reminderHandler = vi
       .fn()

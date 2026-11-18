@@ -13,8 +13,10 @@ function validYaml(overrides: Record<string, unknown> = {}): string {
     timeout: 120,
     ...overrides,
   };
-  // Build minimal YAML manually to avoid extra deps in tests
+  // Build minimal YAML manually to avoid extra deps in tests. Keys mapped to
+  // undefined are omitted — that is how a test removes a base key.
   return Object.entries(base)
+    .filter(([, v]) => v !== undefined)
     .map(([k, v]) => {
       if (typeof v === 'string') return `${k}: "${v}"`;
       if (v === null) return `${k}: null`;
@@ -34,7 +36,10 @@ describe('parseSkillConfig', () => {
       expect(result.value.id).toBe('morning-briefing');
       expect(result.value.name).toBe('Morning Briefing');
       expect(result.value.schedule).toBe('0 8 * * *');
-      expect(result.value.promptTemplate).toBe('Good morning! Today is {{date}}.');
+      expect('promptTemplate' in result.value).toBe(true);
+      if ('promptTemplate' in result.value) {
+        expect(result.value.promptTemplate).toBe('Good morning! Today is {{date}}.');
+      }
       expect(result.value.permissionProfile).toBe('scheduled');
       expect(result.value.validityWindowMinutes).toBe(30);
       expect(result.value.timeout).toBe(120);
@@ -372,6 +377,46 @@ describe('parseSkillConfig', () => {
     const result = parseSkillConfig(yaml, '/skills/badpath.yaml');
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toContain('path separator');
+  });
+
+  // ── Script skills (in-process scheduled skills) ───────────────────────
+
+  it('parses a script skill (no backend, model or fallback)', () => {
+    const yaml = validYaml({ promptTemplate: undefined, script: 'artex-task-watcher.ts' });
+    const result = parseSkillConfig(yaml, '/skills/artex-task-watcher.yaml');
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect('script' in result.value).toBe(true);
+      if ('script' in result.value) expect(result.value.script).toBe('artex-task-watcher.ts');
+      expect(result.value).not.toHaveProperty('promptTemplate');
+    }
+  });
+
+  it('rejects a skill with both promptTemplate and script', () => {
+    const yaml = validYaml({ script: 'job.ts' });
+    const result = parseSkillConfig(yaml, '/skills/both.yaml');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('exactly one of promptTemplate or script');
+  });
+
+  it.each([
+    ['a path', 'dir/job.ts'],
+    ['a traversal', '../job.ts'],
+    ['a non-ts file', 'job.js'],
+    ['an empty stem', '.ts'],
+    ['a flag-like name', '-job.ts'],
+  ])('rejects %s as script', (_case, script) => {
+    const yaml = validYaml({ promptTemplate: undefined, script });
+    const result = parseSkillConfig(yaml, '/skills/job.yaml');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('script');
+  });
+
+  it('rejects a script skill with a backend, model or fallback', () => {
+    const yaml = validYaml({ promptTemplate: undefined, script: 'job.ts', backend: 'pi' });
+    const result = parseSkillConfig(yaml, '/skills/job.yaml');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('in-process');
   });
 });
 

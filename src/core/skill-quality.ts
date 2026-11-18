@@ -20,6 +20,7 @@ export type SkillRunStatus =
   | 'success'
   | 'suppressed'
   | 'claude_error'
+  | 'script_error'
   | 'skill_not_found'
   | 'validity_expired';
 
@@ -28,7 +29,7 @@ export type SkillRunStatus =
  * subtype lets the record type below make the impossible states (`success`,
  * `validity_expired`) unrepresentable rather than merely unreachable.
  */
-export type AnomalyStatus = 'suppressed' | 'claude_error' | 'skill_not_found';
+export type AnomalyStatus = 'suppressed' | 'claude_error' | 'script_error' | 'skill_not_found';
 
 export type SkillQualitySignal = {
   readonly skillId: SkillId;
@@ -48,7 +49,7 @@ export type SkillQualityRecord = {
   readonly durationMs: number;
   readonly outputLength: number;
   readonly errorMessage: string | null;
-  readonly severity: 5 | 7 | 8; // 5 suppressed · 7 claude_error · 8 skill_not_found
+  readonly severity: 5 | 7 | 8; // 5 suppressed · 7 claude_error/script_error · 8 skill_not_found
   readonly summary: string; // human-readable one-liner for the weekly digest
 };
 
@@ -60,7 +61,12 @@ export type SkillQualityRecord = {
  * callers narrow `SkillRunStatus` to `AnomalyStatus`.
  */
 export function shouldRecord(status: SkillRunStatus): status is AnomalyStatus {
-  return status === 'suppressed' || status === 'claude_error' || status === 'skill_not_found';
+  return (
+    status === 'suppressed' ||
+    status === 'claude_error' ||
+    status === 'script_error' ||
+    status === 'skill_not_found'
+  );
 }
 
 // ─── Formatting ──────────────────────────────────────────────────────────────
@@ -68,6 +74,7 @@ export function shouldRecord(status: SkillRunStatus): status is AnomalyStatus {
 const SEVERITY_BY_STATUS: Record<AnomalyStatus, 5 | 7 | 8> = {
   suppressed: 5,
   claude_error: 7,
+  script_error: 7,
   skill_not_found: 8,
 };
 
@@ -81,6 +88,10 @@ function describe(signal: SkillQualitySignal): string {
     case 'claude_error': {
       const reason = signal.errorMessage ?? 'unknown error';
       return `${id} failed at ${at}: ${reason} — duration ${ms}ms`;
+    }
+    case 'script_error': {
+      const reason = signal.errorMessage ?? 'unknown error';
+      return `${id} script failed at ${at}: ${reason} — duration ${ms}ms`;
     }
     case 'skill_not_found':
       return `${id} scheduled but missing from registry at ${at}`;

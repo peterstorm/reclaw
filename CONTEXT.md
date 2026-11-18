@@ -37,6 +37,21 @@ Code: `src/core/{curriculum,master-note,study-log,study-plan,curriculum-moc}.ts`
 | **Feynman check** | Weekly explain-it-back on the weakest fully-read topic; logs the gaps found. | A recall round |
 | **Correction** | A claim in an existing vault note/runbook/receipt found wrong while researching a master note; listed in the note and the corrections ledger. | An override |
 
+## Scheduled skills (cron-driven jobs)
+
+Code: `src/core/skill-config.ts` (parse), `src/core/types.ts` (SkillConfig),
+`src/orchestration/scheduled-handler.ts`, `src/orchestration/script-skill.ts`,
+`src/infra/script-workdir.ts`, `workspace/skills/*.yaml`.
+
+| Term | Meaning | Not to be confused with |
+|---|---|---|
+| **Skill** | One YAML in `workspace/skills/`: name, optional cron `schedule` (null = on-demand only, `/run <id>`), permission profile, and a body. | A Claude Code "skill" or an agent persona |
+| **Prompt body** | `promptTemplate:` — the skill runs as an agent subprocess (FR-007), with optional backend/model/fallback. | — |
+| **Script body** | `script:` — the file name of a TypeScript module in the skills directory; the module exports `run(context)` and the service calls it in-process. No agent subprocess, no LLM, no quota. | A bash script; a cron job outside reclaw |
+| **Script context** | What `run` receives: `skillId`, `stateDir`, the skill's granted `env`, `now`. All I/O collaborators injected; the module's own logic imports pure functions from `src/core/`. | — |
+| **Script state dir** | `~/.cache/reclaw/script-skills/<skill-id>/` — the script's persistent directory; reads resolve absent files to `undefined`, writes are atomic (temp + rename). | The workspace; a Redis store |
+| **Script outcome** | `message` (delivered to every authorized user) or `silent` (nothing sent). A thrown or timed-out script fails the job and BullMQ retries it. | ALL_CLEAR (the prompt-body suppression sentinel a script never needs to emit) |
+
 ## Agent runs (process containment)
 
 Code: `src/core/agent-containment.ts`, `src/infra/agent-backends/runner.ts`,

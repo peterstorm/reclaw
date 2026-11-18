@@ -175,16 +175,16 @@ function scheduledDeliveries(
     (text): TelegramDeliveryOperation => ({ kind: 'send', text, format: 'markdown' }),
   );
   const conversationReference =
-    outcome.sessionId === null
+    outcome.session === null
       ? null
-      : { backend: outcome.sessionBackend, sessionId: outcome.sessionId };
+      : { backend: outcome.session.backend, sessionId: outcome.session.sessionId };
   return [
     ...(chunks.length === 0
       ? []
       : recipients.map((chatId) =>
           makeTelegramBatchDelivery({ activityId, chatId, operations, conversationReference }),
         )),
-    ...cortexDeliveries(activityId, outcome.sessionId, cortexCwd),
+    ...cortexDeliveries(activityId, outcome.session?.sessionId ?? null, cortexCwd),
   ];
 }
 
