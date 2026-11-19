@@ -65,7 +65,7 @@ promptTemplate: |
   - Recompute zones every run from the selected current-5K source and current Garmin threshold — no manual bumps needed.
   - If current 5K fitness improves by >15s on the same evidence basis, or a fresh 5K confirms the improvement, log zone tightening in cortex. Do not tighten merely because the source changed.
   - Never increase both volume AND intensity in the same week.
-  - Log current 5K time, evidence source, operational goal, and derived zones in cortex every time the skill runs.
+  - Store current 5K time, evidence source and operational goal in cortex every time the skill runs, as the `running-coach-5k` state fact (Step 6), so only the latest estimate stays active.
 
   ### Progressive Overload (within 12km cap)
   Distance is capped — progression comes from these levers instead, applied one at a time:
@@ -126,7 +126,7 @@ promptTemplate: |
   | durability | Fartlek, Short Repeats | Cruise Intervals, Tempo with longer blocks (progression priority) |
   | running_economy | Short Repeats, Fartlek (progression priority) | Tempo (maintenance) |
 
-  **Store in cortex:** "Running coach limiter assessment ({{date}}): Current limiter = [X]. Evidence: [1-2 sentences]. Confidence: [high/medium/low]."
+  **Store in cortex** (state, see Step 6): "Running coach limiter assessment ({{date}}): Current limiter = [X]. Evidence: [1-2 sentences]. Confidence: [high/medium/low]." with `--replaces=running-coach-limiter`.
 
   ## Periodic Testing & Block Review (Mondays only)
 
@@ -144,9 +144,9 @@ promptTemplate: |
   3. **3×1K @ interval pace** — 2km warmup + 3×1km @ interval pace with 2min rest + cooldown. Tests VO2max capacity. Use when limiter is vo2max.
   4. **Parkrun** — If the athlete mentions an upcoming parkrun, defer to that as the test (skip Monday test, use parkrun result). Note in cortex.
 
-  Build the test as a Garmin workout JSON. Name it: `"Mon TEST — [Type] ([distance])"`. Store in cortex: "Running coach: Last test {{date}} — [test type]".
+  Build the test as a Garmin workout JSON. Name it: `"Mon TEST — [Type] ([distance])"`. Store in cortex: "Running coach: Last test {{date}} — [test type]" with `--replaces=running-coach-last-test`.
 
-  **Octopus weeks (every 2-3 weeks on Monday):** A multi-stimulus session hitting 2-3 energy systems. See workout-types.md (type 8). Track: "Running coach: Last octopus session {{date}}".
+  **Octopus weeks (every 2-3 weeks on Monday):** A multi-stimulus session hitting 2-3 energy systems. See workout-types.md (type 8). Track: "Running coach: Last octopus session {{date}}" with `--replaces=running-coach-last-octopus`.
 
   **Post-Test Analysis (next Monday after a test):**
   1. Read fitness note from test day; extract actual paces, HR, splits, RPE.
@@ -392,19 +392,22 @@ promptTemplate: |
 
   ## Step 6 — Store in Cortex
 
-  Run `/remember` based on the day:
+  Run `/remember` based on the day.
 
-  **Always store (every day):**
-  - "Running coach {{date}} ({{dayOfWeek}}): [What happened]. Current 5K: [X:XX] via [recent_5k|garmin_threshold]. Operational goal: [X:XX]. Weekly running: Xkm. Weekly CrossFit: N sessions."
+  Two kinds of memory. **State** says what is true now; each state fact has one `--replaces=<tag>`, so storing it retires the previous version (it inherits the old one's pin and priority). Only the current value stays in recall. Use exactly these tags, never a variant. **Events** record what happened on a date and are stored plainly; they accumulate on purpose.
 
-  **Quality-day-specific (Monday and Thursday):**
-  - "Running coach last [Monday|Thursday] type: [type name]"
-  - "Running coach limiter assessment ({{date}}): Current limiter = [X]. Evidence: [summary]. Confidence: [high/medium/low]."
-  - If zone adjustments: "Running coach zone adjustment: [what changed and why]"
-  - If test scheduled: "Running coach: Last test {{date}} — [test type]"
+  **State (replace the previous version):**
+  - Every day: `/remember "Running coach current 5K ({{date}}): [X:XX] via [recent_5k|garmin_threshold] ([evidence]). Operational goal: [X:XX]." --type=context --replaces=running-coach-5k`
+  - Monday / Thursday: `/remember "Running coach last [Monday|Thursday] type ({{date}}): [type name]" --type=context --replaces=running-coach-last-[monday|thursday]-type`
+  - Monday / Thursday: `/remember "Running coach limiter assessment ({{date}}): Current limiter = [X]. Evidence: [summary]. Confidence: [high/medium/low]." --type=context --replaces=running-coach-limiter`
+  - If test scheduled: `/remember "Running coach: Last test {{date}} — [test type]" --type=context --replaces=running-coach-last-test`
+  - If octopus scheduled: `/remember "Running coach: Last octopus session {{date}}" --type=context --replaces=running-coach-last-octopus`
+
+  **Events (plain `/remember`, no `--replaces`):**
+  - Every day: "Running coach {{date}} ({{dayOfWeek}}): [What happened]. Weekly running: Xkm. Weekly CrossFit: N sessions."
+  - If zone adjustments: "Running coach zone adjustment ({{date}}): [what changed and why]"
   - If test report generated: "Running coach test result ({{date}}): [type] — [result]. vs previous: [comparison]. Limiter implication: [assessment]."
   - If block review generated: "Running coach block review ({{date}}): [1-sentence summary]. Next block change: [the one recommendation]."
-  - If octopus scheduled: "Running coach: Last octopus session {{date}}"
   - If RED-S flagged: "Running coach RED-S flag {{date}}: [weight trend + load context]."
 
   **Saturday/Tuesday/rest days:**
