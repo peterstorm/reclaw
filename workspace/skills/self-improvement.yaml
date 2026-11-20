@@ -6,8 +6,6 @@ fallback: { backend: claude, model: sonnet }
 validityWindowMinutes: 120
 timeout: 600
 promptTemplate: |
-  {{personality}}
-
   Today is {{dayOfWeek}}, {{date}}.
 
   You are running a weekly self-improvement analysis of the reclaw system. Your job is to critically examine the codebase, identify improvements, research new ideas, and produce an actionable improvement note.

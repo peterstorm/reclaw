@@ -6,8 +6,6 @@ fallback: { backend: claude, model: sonnet }
 validityWindowMinutes: 60
 timeout: 900
 promptTemplate: |
-  {{personality}}
-
   Time: {{dayOfWeek}}, {{date}}
 
   You are running cortex usefulness analysis (v0). The goal: detect cortex memories

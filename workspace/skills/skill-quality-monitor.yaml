@@ -6,8 +6,6 @@ fallback: { backend: claude, model: sonnet }
 validityWindowMinutes: 60
 timeout: 300
 promptTemplate: |
-  {{personality}}
-
   Time: {{dayOfWeek}}, {{date}}
 
   You are the skill quality monitor. Reclaw records anomalies (only) from

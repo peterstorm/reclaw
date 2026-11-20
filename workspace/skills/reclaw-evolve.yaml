@@ -5,8 +5,6 @@ permissionProfile: scheduled
 fallback: { backend: claude, model: sonnet }
 validityWindowMinutes: 60
 promptTemplate: |
-  {{personality}}
-
   Time: {{dayOfWeek}}, {{date}}
 
   You are the evolution loop. Mine the past week of conversational
@@ -50,11 +48,14 @@ promptTemplate: |
   conversations, (b) scheduled skill runs, (c) cortex internal LLM
   calls (consolidate/prune/extract). Only (a) is useful here.
 
-  A Telegram conversation carries the personality in its SYSTEM prompt
-  (reclaw passes it with `--append-system-prompt`), and both backends record
-  that in the transcript: Claude as a `prompt_snapshot` attachment, Pi as the
-  system message's `addendum` section. Sessions from before 2026-11-20 carried
-  it as a prefix of the first user message instead, so that check stays too.
+  Reclaw passes the personality in the SYSTEM prompt (`--append-system-prompt`)
+  on every run, and both backends record it in the transcript: Claude as a
+  `prompt_snapshot` attachment, Pi as the system message's `addendum` section.
+  A scheduled run's system prompt also ends with the line
+  `Reclaw scheduled skill run: <skill-id>`, so a conversation is a session
+  whose system prompt has the personality and NOT that marker. Sessions from
+  before 2026-11-20 carried the personality as a prefix of the first user
+  message instead, so that check stays too.
 
   Search BOTH transcript directories:
 
@@ -62,6 +63,7 @@ promptTemplate: |
   CLAUDE_DIR=~/.claude/projects/-home-peterstorm-dev-claude-plugins-reclaw-workspace
   PI_DIR=~/.pi/agent/sessions/--home-peterstorm-dev-claude-plugins-reclaw-workspace--
   PERSONA="You are a personal AI assistant"
+  SCHEDULED="Reclaw scheduled skill run:"
 
   rm -f /tmp/reclaw-evolve-sessions.txt
   touch /tmp/reclaw-evolve-sessions.txt
@@ -79,10 +81,10 @@ promptTemplate: |
         *"Time: "*"Step 1"*) continue ;;
         *"Today is"*"Step 1"*) continue ;;
       esac
-      # Conversational: personality in the system-prompt snapshot, or (legacy)
-      # wrapped around the first user message
-      if jq -n -e --arg p "$PERSONA" 'any(inputs; .attachment.type? == "prompt_snapshot"
-            and (.attachment.systemPrompt | tostring | contains($p)))' "$f" >/dev/null 2>&1; then
+      # Conversational: personality in the system-prompt snapshot without the
+      # scheduled-run marker, or (legacy) wrapped around the first user message
+      if jq -n -e --arg p "$PERSONA" --arg s "$SCHEDULED" 'any(inputs; .attachment.type? == "prompt_snapshot"
+            and (.attachment.systemPrompt | tostring | contains($p) and (contains($s) | not)))' "$f" >/dev/null 2>&1; then
         echo "claude:$f"
       else
         case "$FIRST" in
@@ -110,10 +112,10 @@ promptTemplate: |
         *"Time: "*"Step 1"*) continue ;;
         *"Today is"*"Step 1"*) continue ;;
       esac
-      # Conversational: personality in the system message's addendum, or
-      # (legacy) wrapped around the first user message
-      if jq -n -e --arg p "$PERSONA" 'any(inputs; .type == "message" and .message.role? == "system"
-            and ((.message.sections.addendum? // "") | contains($p)))' "$f" >/dev/null 2>&1; then
+      # Conversational: personality in the system message's addendum without
+      # the scheduled-run marker, or (legacy) wrapped around the first user message
+      if jq -n -e --arg p "$PERSONA" --arg s "$SCHEDULED" 'any(inputs; .type == "message" and .message.role? == "system"
+            and ((.message.sections.addendum? // "") | contains($p) and (contains($s) | not)))' "$f" >/dev/null 2>&1; then
         echo "pi:$f"
       else
         case "$FIRST" in

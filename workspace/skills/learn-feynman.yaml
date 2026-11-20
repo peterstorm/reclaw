@@ -8,8 +8,6 @@ permissionProfile: scheduled
 validityWindowMinutes: 240
 timeout: 300
 promptTemplate: |
-  {{personality}}
-
   Today is {{dayOfWeek}}, {{date}}.
 
   Weekly explain-it-back check (Feynman technique) on the user's curriculum. Explaining a

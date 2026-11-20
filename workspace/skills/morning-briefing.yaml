@@ -7,8 +7,6 @@ environment: [GARMIN_EMAIL, GARMIN_PASSWORD]
 validityWindowMinutes: 60
 timeout: 1200
 promptTemplate: |
-  {{personality}}
-
   Today is {{dayOfWeek}}, {{date}}.
 
   Please provide a personalized morning briefing. The user bikes to work at 07:30 from Mjøsensgade 13, 2300 København to Fadet 4, Carlsbergbyen (~4km).

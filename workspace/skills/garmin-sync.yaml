@@ -7,8 +7,6 @@ environment: [GARMIN_EMAIL, GARMIN_PASSWORD]
 validityWindowMinutes: 60
 timeout: 2400
 promptTemplate: |
-  {{personality}}
-
   Today is {{dayOfWeek}}, {{date}}.
 
   You are syncing daily fitness data from Garmin Connect and writing it to the Obsidian vault.

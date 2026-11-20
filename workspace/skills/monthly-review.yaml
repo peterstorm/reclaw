@@ -5,8 +5,6 @@ permissionProfile: scheduled
 fallback: { backend: claude, model: sonnet }
 validityWindowMinutes: 120
 promptTemplate: |
-  {{personality}}
-
   Today is {{dayOfWeek}}, {{date}}.
 
   Generate a monthly review for the previous month. Synthesize weekly reviews, journal entries, and activity into a higher-level retrospective. Write it to an Obsidian note and send a Telegram summary.

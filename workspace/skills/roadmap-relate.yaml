@@ -10,8 +10,6 @@ fallback: { backend: claude, model: sonnet }
 validityWindowMinutes: 240
 timeout: 3600
 promptTemplate: |
-  {{personality}}
-
   Today is {{dayOfWeek}}, {{date}}.
 
   You keep the user's generic AI-engineering roadmap current from its sources and relate it to

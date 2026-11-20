@@ -8,8 +8,6 @@ permissionProfile: scheduled
 validityWindowMinutes: 180
 timeout: 300
 promptTemplate: |
-  {{personality}}
-
   Today is {{dayOfWeek}}, {{date}}.
 
   You are the user's study coach for their personal curriculum: master learning notes in the

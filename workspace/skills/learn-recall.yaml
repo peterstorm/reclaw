@@ -9,8 +9,6 @@ permissionProfile: scheduled
 validityWindowMinutes: 90
 timeout: 300
 promptTemplate: |
-  {{personality}}
-
   Today is {{dayOfWeek}}, {{date}}.
 
   You run a spaced-repetition recall round over the user's curriculum cards. They answer in

@@ -6,8 +6,6 @@ fallback: { backend: claude, model: sonnet }
 validityWindowMinutes: 240
 timeout: 600
 promptTemplate: |
-  {{personality}}
-
   Today is {{dayOfWeek}}, {{date}}.
 
   You are running the Hardware Market Intelligence skill — a weekly analysis of hardware pricing trends and industry signals that produces buy/hold/wait recommendations for PC components the user wants to purchase.

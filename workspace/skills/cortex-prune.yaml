@@ -7,8 +7,6 @@ fallback: { backend: claude, model: sonnet }
 validityWindowMinutes: 60
 timeout: 600
 promptTemplate: |
-  {{personality}}
-
   Time: {{dayOfWeek}}, {{date}}
 
   You are running nightly cortex memory maintenance. Prune stale, redundant, or low-value memories to keep the store lean and high-signal.

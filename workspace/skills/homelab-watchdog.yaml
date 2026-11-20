@@ -6,8 +6,6 @@ fallback: { backend: claude, model: sonnet }
 validityWindowMinutes: 30
 timeout: 900
 promptTemplate: |
-  {{personality}}
-
   Time: {{dayOfWeek}}, {{date}}
 
   You are a homelab watchdog. Run the checks below, triage the results with judgment, and **only send a message if something needs attention**. If everything is healthy, respond with exactly ALL_CLEAR — no backticks, no formatting, no other text.

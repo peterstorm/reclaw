@@ -6,8 +6,6 @@ fallback: { backend: claude, model: sonnet }
 validityWindowMinutes: 120
 timeout: 1800
 promptTemplate: |
-  {{personality}}
-
   Today is {{dayOfWeek}}, {{date}}.
 
   You are running the Insights Engine — a behavioral analysis of the user's patterns, priorities, and unconscious tendencies. Your job is NOT to summarize what happened (the weekly review does that). Your job is to reveal what the user's behavior says about how they think, what they actually prioritize (vs. what they say they care about), and what is shifting over time.

@@ -17,7 +17,13 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { buildChatPrompt, personalityInstructions } from '../../core/prompt-builder.js';
+import {
+  SCHEDULED_PREAMBLE,
+  buildChatPrompt,
+  buildPrompt,
+  personalityInstructions,
+  scheduledRunInstructions,
+} from '../../core/prompt-builder.js';
 import { piBackend } from './pi-backend.js';
 
 const piInstalled = spawnSync('pi', ['--version'], { encoding: 'utf8' }).status === 0;
@@ -147,6 +153,23 @@ describe.skipIf(!piInstalled)('piBackend against the real pi binary', () => {
 
     expect(captured.prompt).toBe(question);
     expect(addendum(captured.systemPrompt)).toBe(instructions);
+  }, 90_000);
+
+  it('a scheduled run: personality and run marker in the addendum, the prompt is only the rendered template', () => {
+    const template =
+      'Today is {{dayOfWeek}}, {{date}}.\n\n{{scheduledPreamble}}\n\nCheck the homelab.';
+    const prompt = buildPrompt(template, { date: '2026-11-21', dayOfWeek: 'Saturday' });
+    const system = scheduledRunInstructions(PERSONALITY, 'homelab-watchdog');
+    const args = piBackend.buildArgs({ appendSystemPrompt: system, allowedTools: [] });
+
+    const captured = runPi(args, prompt, ['--no-session']);
+
+    expect(captured.prompt).toBe(
+      `Today is Saturday, 2026-11-21.\n\n${SCHEDULED_PREAMBLE}\n\nCheck the homelab.`,
+    );
+    expect(addendum(captured.systemPrompt)).toBe(
+      `${instructions}\n\nReclaw scheduled skill run: homelab-watchdog`,
+    );
   }, 90_000);
 
   it('without instructions there is no addendum at all', () => {

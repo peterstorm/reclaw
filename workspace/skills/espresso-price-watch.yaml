@@ -7,8 +7,6 @@ validityWindowMinutes: 60
 timeout: 300
 backend: pi
 promptTemplate: |
-  {{personality}}
-
   Today is {{dayOfWeek}}, {{date}}.
 
   Your job: check the current price + availability of every full-size **Sage** espresso

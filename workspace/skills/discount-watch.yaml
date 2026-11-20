@@ -7,8 +7,6 @@ validityWindowMinutes: 60
 timeout: 900
 backend: pi
 promptTemplate: |
-  {{personality}}
-
   Today is {{dayOfWeek}}, {{date}}.
 
   Your job: check current prices + offers for the user's grocery watchlist via the Prej API

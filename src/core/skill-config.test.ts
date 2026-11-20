@@ -295,6 +295,24 @@ describe('parseSkillConfig', () => {
     if (!result.ok) expect(result.error).toContain('promptTemplate');
   });
 
+  it.each(['Today is {{date}}.\n{{personality}}', '{{personality}}'])(
+    'rejects a template that still names {{personality}} (%j), saying why',
+    (promptTemplate) => {
+      // buildPrompt leaves unknown variables verbatim, so accepting it would
+      // send the literal placeholder to the agent with nothing to say why.
+      const result = parseSkillConfig(
+        `name: "Test"\npromptTemplate: ${JSON.stringify(promptTemplate)}\npermissionProfile: "scheduled"`,
+        '/skills/stale.yaml',
+      );
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toContain('stale.yaml');
+        expect(result.error).toContain('remove {{personality}}');
+        expect(result.error).toContain('system prompt');
+      }
+    },
+  );
+
   it('returns error for invalid permissionProfile value', () => {
     const yaml = validYaml({ permissionProfile: 'admin' });
     const result = parseSkillConfig(yaml, '/skills/bad-profile.yaml');

@@ -6,8 +6,6 @@ fallback: { backend: claude, model: sonnet }
 validityWindowMinutes: 60
 timeout: 1200
 promptTemplate: |
-  {{personality}}
-
   Today is {{dayOfWeek}}, {{date}}.
 
   You are sending the evening report. This has three parts: a day recap, a tomorrow preview, and a journal prompt the user can reply to.

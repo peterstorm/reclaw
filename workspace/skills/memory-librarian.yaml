@@ -5,8 +5,6 @@ permissionProfile: scheduled
 fallback: { backend: claude, model: sonnet }
 validityWindowMinutes: 60
 promptTemplate: |
-  {{personality}}
-
   Time: {{dayOfWeek}}, {{date}}
 
   You are the Memory Librarian — a nightly skill that promotes durable knowledge from ephemeral sources into permanent Obsidian vault notes. You run after cortex-prune, so stale memories have already been cleaned.

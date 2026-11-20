@@ -51,8 +51,7 @@ const makeSkillConfig = (overrides: Partial<SkillConfig> = {}): SkillConfig => {
     id: makeSkillId('morning-briefing'),
     name: 'Morning Briefing',
     schedule: '0 7 * * *',
-    promptTemplate:
-      'Date: {{date}}, Day: {{dayOfWeek}}, Personality: {{personality}}. Provide a morning briefing.',
+    promptTemplate: 'Date: {{date}}, Day: {{dayOfWeek}}. Provide a morning briefing.',
     permissionProfile: 'scheduled',
     validityWindowMinutes: 60,
     timeout: 300,
@@ -210,7 +209,7 @@ describe('handleScheduledJob', () => {
     expect(runAgent).not.toHaveBeenCalled();
   });
 
-  it('uses empty personality fallback when personality file read fails (FR-009)', async () => {
+  it('runs with only the run marker as system prompt when the personality file is unreadable (FR-009)', async () => {
     mockReadFile.mockRejectedValue(new Error('ENOENT: no such file'));
 
     const job = makeScheduledJob();
@@ -230,13 +229,14 @@ describe('handleScheduledJob', () => {
     });
 
     expect(result.kind).toBe('completed');
-    // Prompt has empty personality interpolated
     const callArgs = runAgent.mock.calls[0]?.[0];
-    expect(callArgs.prompt).toContain('Personality: ');
+    expect(callArgs.appendSystemPrompt).toBe('Reclaw scheduled skill run: morning-briefing');
   });
 
-  it('interpolates prompt template with date, dayOfWeek, and personality', async () => {
-    mockReadFile.mockResolvedValue('Test personality content' as unknown as ArrayBuffer);
+  it('interpolates date and dayOfWeek into the prompt, and sends the personality as the system prompt', async () => {
+    // Cortex recall ranks the prompt: a personality in it would steer every
+    // scheduled run's recall toward memories about the personality.
+    mockReadFile.mockResolvedValue('Test personality content\n' as unknown as ArrayBuffer);
 
     const job = makeScheduledJob();
     const telegram = makeTelegram();
@@ -250,14 +250,13 @@ describe('handleScheduledJob', () => {
     });
 
     const callArgs = runAgent.mock.calls[0]?.[0];
-    // Date should be a YYYY-MM-DD string
-    expect(callArgs.prompt).toMatch(/Date: \d{4}-\d{2}-\d{2}/);
-    // Day of week
     expect(callArgs.prompt).toMatch(
-      /Day: (Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)/,
+      /^Date: \d{4}-\d{2}-\d{2}, Day: (Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\. Provide a morning briefing\.$/,
     );
-    // Personality interpolated
-    expect(callArgs.prompt).toContain('Personality: Test personality content');
+    expect(callArgs.prompt).not.toContain('Test personality content');
+    expect(callArgs.appendSystemPrompt).toBe(
+      'Test personality content\n\nReclaw scheduled skill run: morning-briefing',
+    );
   });
 
   it('uses scheduled permission flags (FR-011)', async () => {
@@ -465,6 +464,11 @@ describe('handleScheduledJob', () => {
     // The Claude-only model must not follow the run to Pi.
     expect(runAgent.mock.calls[1]?.[0].backend).toBe('pi');
     expect(runAgent.mock.calls[1]?.[0]).not.toHaveProperty('modelSelection');
+    // The fallback run gets the same system prompt and prompt as the primary.
+    expect(runAgent.mock.calls[1]?.[0].appendSystemPrompt).toBe(
+      runAgent.mock.calls[0]?.[0].appendSystemPrompt,
+    );
+    expect(runAgent.mock.calls[1]?.[0].prompt).toBe(runAgent.mock.calls[0]?.[0].prompt);
     expect(result).toMatchObject({ kind: 'completed', suppressed: false });
     if (result.kind !== 'completed') throw new Error('expected completion');
     expect(result.session).toEqual({ backend: 'pi', sessionId: 'pi-sess' });

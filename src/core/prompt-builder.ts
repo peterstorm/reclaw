@@ -38,7 +38,6 @@ const REPLY_AUTHOR_LABELS: Record<ReplyAuthor, string> = {
 export type PromptContext = {
   readonly date: string;
   readonly dayOfWeek: string;
-  readonly personality: string;
   readonly userMessage?: string; // for chat jobs
   readonly latitude?: number;
   readonly longitude?: number;
@@ -53,15 +52,16 @@ export type PromptContext = {
 /**
  * Interpolate a skill prompt template with context variables.
  * Variables are in {{variable}} format. Supported: date, dayOfWeek,
- * personality, scheduledPreamble, userMessage, latitude, longitude, timezone,
+ * scheduledPreamble, userMessage, latitude, longitude, timezone,
  * locationName, workspacePath (also exposed as `cwd`), scriptsDir.
- * Unknown variables are left unchanged.
+ * Unknown variables are left unchanged. There is no `personality` variable:
+ * the personality is a system prompt (scheduledRunInstructions), and the skill
+ * parser rejects a template that still names it.
  */
 export function buildPrompt(template: string, context: PromptContext): string {
   const vars: Record<string, string> = {
     date: context.date,
     dayOfWeek: context.dayOfWeek,
-    personality: context.personality,
     scheduledPreamble: SCHEDULED_PREAMBLE,
   };
   if (context.userMessage !== undefined) {
@@ -115,6 +115,25 @@ function attachmentOnlyText(
 export function personalityInstructions(personality: string): string | undefined {
   const trimmed = personality.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/**
+ * The line that ends every scheduled run's system prompt. Transcript readers
+ * (reclaw-evolve) tell a scheduled run from a Telegram conversation by it:
+ * both carry the personality in the system prompt, and a prompt-text heuristic
+ * misses every template that does not match it.
+ */
+export const SCHEDULED_RUN_MARKER = 'Reclaw scheduled skill run:';
+
+/**
+ * A scheduled run's system prompt: the personality (when there is one), then
+ * the run marker naming the skill. Never in the prompt itself, for the same
+ * reason as chat (see personalityInstructions): cortex recall ranks the prompt.
+ */
+export function scheduledRunInstructions(personality: string, skillId: string): string {
+  const marker = `${SCHEDULED_RUN_MARKER} ${skillId}`;
+  const persona = personalityInstructions(personality);
+  return persona === undefined ? marker : `${persona}\n\n${marker}`;
 }
 
 /**

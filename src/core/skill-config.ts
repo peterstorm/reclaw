@@ -104,9 +104,26 @@ function parseSkillBody(
   promptTemplate: string | undefined,
   script: string | undefined,
 ): Result<{ readonly promptTemplate: string } | { readonly script: string }, string> {
-  if (promptTemplate !== undefined && script === undefined) return ok({ promptTemplate });
+  if (promptTemplate !== undefined && script === undefined)
+    return parsePromptTemplate(promptTemplate);
   if (script !== undefined && promptTemplate === undefined) return ok({ script });
   return err('body: set exactly one of promptTemplate or script');
+}
+
+/**
+ * A prompt template, refused if it still names `{{personality}}`. The
+ * personality is the run's system prompt, and buildPrompt leaves unknown
+ * variables verbatim, so an old template would otherwise send the literal
+ * placeholder to the agent with nothing to say why.
+ */
+function parsePromptTemplate(
+  promptTemplate: string,
+): Result<{ readonly promptTemplate: string }, string> {
+  return promptTemplate.includes('{{personality}}')
+    ? err(
+        'promptTemplate: remove {{personality}} — the personality is sent as every run`s system prompt, not interpolated into the template',
+      )
+    : ok({ promptTemplate });
 }
 
 function parseFallback(

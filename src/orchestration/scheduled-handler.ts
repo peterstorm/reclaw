@@ -6,7 +6,7 @@ import { localDate, localDayOfWeek } from '../core/clock.js';
 import { splitMessage } from '../core/message-splitter.js';
 import { type AgentTarget, requestedModel } from '../core/model-selection.js';
 import { getAllowedTools } from '../core/permissions.js';
-import { buildPrompt } from '../core/prompt-builder.js';
+import { buildPrompt, scheduledRunInstructions } from '../core/prompt-builder.js';
 import type { ScriptModule } from '../core/script-skill.js';
 import type { SkillQualitySignal, SkillRunStatus } from '../core/skill-quality.js';
 import {
@@ -192,9 +192,10 @@ async function runScriptScheduledJob(
 }
 
 /**
- * 3–6. Personality (FR-009), prompt (pure), allowed tools (FR-011) and
- * environment grants; 7. run the agent subprocess (FR-007), then the skill's
- * fallback if the primary backend could not serve (core/backend-fallback.ts).
+ * 3–6. Personality (FR-009) as the system prompt, prompt (pure), allowed tools
+ * (FR-011) and environment grants; 7. run the agent subprocess (FR-007), then
+ * the skill's fallback if the primary backend could not serve
+ * (core/backend-fallback.ts).
  */
 async function runSkill(
   job: ScheduledJob,
@@ -202,12 +203,15 @@ async function runSkill(
   deps: ScheduledDeps,
   now: Date,
 ): Promise<FallbackRun> {
-  const personality = await loadPersonality(deps.config.personalityPath);
-  const prompt = buildPrompt(skill.promptTemplate, promptVariables(deps.config, now, personality));
+  const instructions = scheduledRunInstructions(
+    await loadPersonality(deps.config.personalityPath),
+    skill.id,
+  );
+  const prompt = buildPrompt(skill.promptTemplate, promptVariables(deps.config, now));
   return runWithFallback(
     job,
     skill,
-    skillRunner(skill, deps, prompt),
+    skillRunner(skill, deps, prompt, instructions),
     skill.backend === 'claude' ? skill : { backend: skill.backend ?? deps.config.agentBackend },
   );
 }
@@ -292,15 +296,10 @@ async function loadPersonality(personalityPath: string): Promise<string> {
   }
 }
 
-function promptVariables(
-  config: AppConfig,
-  now: Date,
-  personality: string,
-): Parameters<typeof buildPrompt>[1] {
+function promptVariables(config: AppConfig, now: Date): Parameters<typeof buildPrompt>[1] {
   return {
     date: localDate(now, config.timezone),
     dayOfWeek: localDayOfWeek(now, config.timezone),
-    personality,
     latitude: config.latitude,
     longitude: config.longitude,
     timezone: config.timezone,
@@ -315,15 +314,22 @@ type SkillRun = (target: AgentTarget) => Promise<AgentResult>;
 /**
  * Runs the skill's prompt on one agent target, with the skill's allowed tools
  * (FR-011) and its explicit service-environment grants. Undefined grant values
- * are omitted so scripts can use their intentional file fallbacks.
+ * are omitted so scripts can use their intentional file fallbacks. The
+ * instructions ride in the system prompt on every target, fallback included.
  */
-function skillRunner(skill: SkillConfig, deps: ScheduledDeps, prompt: string): SkillRun {
+function skillRunner(
+  skill: SkillConfig,
+  deps: ScheduledDeps,
+  prompt: string,
+  instructions: string,
+): SkillRun {
   const environment = resolveSkillEnvironment(deps.processEnvironment ?? {}, skill.environment);
   const allowedTools = getAllowedTools(skill.permissionProfile);
   return (target) => {
     const modelSelection = requestedModel(target);
     return deps.runAgent({
       prompt,
+      appendSystemPrompt: instructions,
       cwd: deps.config.workspacePath,
       allowedTools,
       timeoutMs: skill.timeout ? skill.timeout * 1000 : deps.config.scheduledTimeoutMs,

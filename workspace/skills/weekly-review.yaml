@@ -5,8 +5,6 @@ permissionProfile: scheduled
 fallback: { backend: claude, model: sonnet }
 validityWindowMinutes: 60
 promptTemplate: |
-  {{personality}}
-
   Today is {{dayOfWeek}}, {{date}}.
 
   Generate a weekly review summarizing what the user did this past week (Monday through Saturday plus Sunday morning — this runs Sunday at 10:30, so the current Sunday is only partially covered). Write it to an Obsidian note and send a Telegram summary.

@@ -2,9 +2,11 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import {
   SCHEDULED_PREAMBLE,
+  SCHEDULED_RUN_MARKER,
   buildChatPrompt,
   buildPrompt,
   personalityInstructions,
+  scheduledRunInstructions,
 } from './prompt-builder.js';
 import type { PromptContext } from './prompt-builder.js';
 
@@ -14,7 +16,6 @@ describe('buildPrompt', () => {
   const baseContext: PromptContext = {
     date: '2026-02-26',
     dayOfWeek: 'Thursday',
-    personality: 'You are a helpful agent.',
     userMessage: 'What is the news today?',
   };
 
@@ -28,9 +29,8 @@ describe('buildPrompt', () => {
     expect(result).toBe('It is Thursday.');
   });
 
-  it('interpolates {{personality}}', () => {
-    const result = buildPrompt('{{personality}}', baseContext);
-    expect(result).toBe('You are a helpful agent.');
+  it('has no {{personality}} variable: the personality is a system prompt, never prompt text', () => {
+    expect(buildPrompt('{{personality}}', baseContext)).toBe('{{personality}}');
   });
 
   it('interpolates {{userMessage}}', () => {
@@ -48,11 +48,9 @@ describe('buildPrompt', () => {
   });
 
   it('interpolates all variables in one template', () => {
-    const template = '{{personality}}\nDate: {{date}} ({{dayOfWeek}})\nUser: {{userMessage}}';
+    const template = 'Date: {{date}} ({{dayOfWeek}})\nUser: {{userMessage}}';
     const result = buildPrompt(template, baseContext);
-    expect(result).toBe(
-      'You are a helpful agent.\nDate: 2026-02-26 (Thursday)\nUser: What is the news today?',
-    );
+    expect(result).toBe('Date: 2026-02-26 (Thursday)\nUser: What is the news today?');
   });
 
   it('leaves unknown variables unchanged', () => {
@@ -64,7 +62,6 @@ describe('buildPrompt', () => {
     const ctx: PromptContext = {
       date: '2026-02-26',
       dayOfWeek: 'Thursday',
-      personality: 'Agent.',
     };
     const result = buildPrompt('Message: {{userMessage}}', ctx);
     // userMessage undefined — variable left as-is
@@ -104,8 +101,6 @@ describe('buildPrompt', () => {
   });
 });
 
-// ─── buildChatPrompt ──────────────────────────────────────────────────────────
-
 // ─── personalityInstructions ─────────────────────────────────────────────────
 
 describe('personalityInstructions', () => {
@@ -125,6 +120,36 @@ describe('personalityInstructions', () => {
         const instructions = personalityInstructions(raw);
         expect(instructions === undefined).toBe(raw.trim() === '');
         expect(instructions).not.toBe('');
+      }),
+    );
+  });
+});
+
+// ─── scheduledRunInstructions ─────────────────────────────────────────────────
+
+describe('scheduledRunInstructions', () => {
+  it('is the trimmed personality, a blank line, then the run marker naming the skill', () => {
+    expect(scheduledRunInstructions('  Be concise.\n', 'morning-briefing')).toBe(
+      'Be concise.\n\nReclaw scheduled skill run: morning-briefing',
+    );
+  });
+
+  it('is the marker alone for a blank personality', () => {
+    expect(scheduledRunInstructions(' \n', 'garmin-sync')).toBe(
+      'Reclaw scheduled skill run: garmin-sync',
+    );
+  });
+
+  it('always ends with exactly one marker line, and carries the personality iff it is not blank', () => {
+    // reclaw-evolve separates scheduled runs from conversations by this
+    // marker, so every scheduled run must carry it, whatever the personality.
+    fc.assert(
+      fc.property(fc.string(), fc.stringMatching(/^[a-z0-9-]{1,40}$/), (personality, skillId) => {
+        const instructions = scheduledRunInstructions(personality, skillId);
+        const marker = `${SCHEDULED_RUN_MARKER} ${skillId}`;
+        expect(instructions.endsWith(marker)).toBe(true);
+        const persona = personalityInstructions(personality);
+        expect(instructions).toBe(persona === undefined ? marker : `${persona}\n\n${marker}`);
       }),
     );
   });
