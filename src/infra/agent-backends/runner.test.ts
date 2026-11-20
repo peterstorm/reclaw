@@ -281,6 +281,36 @@ describe('runAgent', () => {
     });
   });
 
+  it('passes appendSystemPrompt to backend.buildArgs and keeps it out of stdin', async () => {
+    const buildArgsSpy = vi.fn(mockBackend.buildArgs);
+    const spyBackend: AgentBackend = { ...mockBackend, buildArgs: buildArgsSpy };
+    const written: string[] = [];
+    const recordingSpawn: SpawnFn = (args, opts) => {
+      const proc = mockSpawn('hello world\n')(args, opts);
+      return {
+        ...proc,
+        stdin: {
+          ...proc.stdin,
+          write: (data) => {
+            written.push(new TextDecoder().decode(data));
+            return data.length;
+          },
+        },
+      };
+    };
+
+    await runAgent(
+      spyBackend,
+      baseOptions({ appendSystemPrompt: 'Be concise.', _spawn: recordingSpawn }),
+    );
+
+    expect(buildArgsSpy).toHaveBeenCalledWith({
+      appendSystemPrompt: 'Be concise.',
+      allowedTools: ['Read', 'Write'],
+    });
+    expect(written).toEqual(['test prompt']);
+  });
+
   it('passes modelSelection to backend.buildArgs when configured', async () => {
     const buildArgsSpy = vi.fn(mockBackend.buildArgs);
     const spyBackend: AgentBackend = { ...mockBackend, buildArgs: buildArgsSpy };

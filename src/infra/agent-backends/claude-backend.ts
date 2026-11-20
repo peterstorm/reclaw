@@ -8,7 +8,7 @@
 import { match } from 'ts-pattern';
 import { type UnknownRecord, isRecord } from '../../core/is-record.js';
 import { assertNever } from '../../core/types.js';
-import type { AgentBackend, AgentModelSelection, StreamDelta } from './types.js';
+import type { AgentBackend, BuildArgsOptions, StreamDelta } from './types.js';
 
 // ─── Implementation ───────────────────────────────────────────────────────────
 
@@ -190,16 +190,16 @@ function parseClaudeOutput(rawOutput: string): ReturnType<AgentBackend['parseRes
 export const claudeBackend: AgentBackend = {
   name: 'claude',
 
-  buildArgs(opts: {
-    resumeSessionId?: string;
-    allowedTools: readonly string[];
-    modelSelection?: AgentModelSelection;
-  }): string[] {
+  buildArgs(opts: BuildArgsOptions): string[] {
     const enabledBuiltins = enabledClaudeBuiltins(opts.allowedTools);
 
     // No model → the CLI default (settings.json `model`). A resumed session keeps the model it
     // was started with, so replies to a pinned skill's message stay on that model. The Claude
     // CLI has no provider concept; `provider` is ignored.
+    //
+    // The appended system prompt is snapshotted with the conversation (the CLI's
+    // --system-prompt-snapshot defaults on) and recorded in the transcript as a
+    // `prompt_snapshot` attachment, which is what reclaw-evolve matches on.
     return [
       'claude',
       '-p',
@@ -210,6 +210,7 @@ export const claudeBackend: AgentBackend = {
       'dontAsk',
       ...(opts.modelSelection?.model ? ['--model', opts.modelSelection.model] : []),
       ...(opts.resumeSessionId ? ['--resume', opts.resumeSessionId] : []),
+      ...(opts.appendSystemPrompt ? ['--append-system-prompt', opts.appendSystemPrompt] : []),
       '--tools',
       enabledBuiltins.join(','),
       ...(opts.allowedTools.length > 0 ? ['--allowedTools', opts.allowedTools.join(',')] : []),
