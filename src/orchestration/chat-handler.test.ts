@@ -194,8 +194,8 @@ describe('handleChatJob', () => {
     expect(callArgs.timeoutMs).toBe(3_600_000);
   });
 
-  it('builds prompt from personality + user message (FR-009)', async () => {
-    mockReadFile.mockResolvedValue('You are a helpful assistant.' as unknown as ArrayBuffer);
+  it('sends the personality as system-prompt instructions, the prompt only as the user message (FR-009)', async () => {
+    mockReadFile.mockResolvedValue('  You are a helpful assistant.\n' as unknown as ArrayBuffer);
 
     const job = makeChatJob({ text: 'What is the capital of France?' });
     const telegram = makeTelegram();
@@ -215,8 +215,10 @@ describe('handleChatJob', () => {
     });
 
     const callArgs = runAgentStreaming.mock.calls[0]?.[0];
-    expect(callArgs.prompt).toContain('You are a helpful assistant.');
-    expect(callArgs.prompt).toContain('What is the capital of France?');
+    expect(callArgs.appendSystemPrompt).toBe('You are a helpful assistant.');
+    // cortex prompt-recall ranks memory against the prompt: it must be the
+    // user's words alone.
+    expect(callArgs.prompt).toBe('What is the capital of France?');
   });
 
   it('includes extracted document text in both fresh and resumed prompts', async () => {
@@ -306,6 +308,9 @@ describe('handleChatJob', () => {
     expect(result.kind).toBe('completed');
     const callArgs = runAgentStreaming.mock.calls[0]?.[0];
     expect(callArgs.prompt).toBe('Hello!');
+    // No personality: the option is absent, never an empty string (an empty
+    // --append-system-prompt argument would still reach the CLI).
+    expect(callArgs).not.toHaveProperty('appendSystemPrompt');
   });
 
   it('sends the status message before running and the response edits it via completion operations', async () => {
@@ -533,7 +538,8 @@ describe('handleChatJob', () => {
 
   // ─── Session tests ──────────────────────────────────────────────────────────
 
-  it('resumes existing valid session — sends message-only prompt', async () => {
+  it('resumes existing valid session — message-only prompt, personality still in the system prompt', async () => {
+    mockReadFile.mockResolvedValue('Be concise.' as unknown as ArrayBuffer);
     const job = makeChatJob({ text: 'follow up question' });
     const telegram = makeTelegram();
     const sessionStore = makeSessionStore();
@@ -560,9 +566,10 @@ describe('handleChatJob', () => {
     });
 
     const callArgs = runAgentStreaming.mock.calls[0]?.[0];
-    // Should send just the user message, not personality+message
     expect(callArgs.prompt).toBe('follow up question');
     expect(callArgs.resumeSessionId).toBe('sess-existing');
+    // Every turn carries it: Pi rebuilds its system prompt on each run.
+    expect(callArgs.appendSystemPrompt).toBe('Be concise.');
   });
 
   it('rebases queued work onto the latest revision within its generation', async () => {
@@ -693,9 +700,10 @@ describe('handleChatJob', () => {
     }
     // Should have called runAgentStreaming twice
     expect(runAgentStreaming).toHaveBeenCalledTimes(2);
-    // First with resume, second without
+    // First with resume, second without; the retry keeps the same prompt
     expect(runAgentStreaming.mock.calls[0]?.[0].resumeSessionId).toBe('sess-stale');
     expect(runAgentStreaming.mock.calls[1]?.[0].resumeSessionId).toBeUndefined();
+    expect(runAgentStreaming.mock.calls[1]?.[0].prompt).toBe('try again');
     // Fallback does not mutate lineage; the session commit is the worker's
     // job (chat-session delivery), not the handler's.
     expect(sessionStore.advance).not.toHaveBeenCalled();

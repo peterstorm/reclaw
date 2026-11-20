@@ -11,7 +11,7 @@
 
 import { type UnknownRecord, isRecord } from '../../core/is-record.js';
 import { assertNever } from '../../core/types.js';
-import type { AgentBackend, AgentModelSelection, StreamDelta } from './types.js';
+import type { AgentBackend, BuildArgsOptions, StreamDelta } from './types.js';
 
 // ─── Pi JSON events ───────────────────────────────────────────────────────────
 //
@@ -122,16 +122,18 @@ const toStreamDelta = (event: PiStreamedEvent): StreamDelta => {
 export const piBackend: AgentBackend = {
   name: 'pi',
 
-  buildArgs(opts: {
-    resumeSessionId?: string;
-    allowedTools: readonly string[];
-    modelSelection?: AgentModelSelection;
-  }): string[] {
+  buildArgs(opts: BuildArgsOptions): string[] {
     const args: string[] = ['pi'];
 
     // --session MUST come BEFORE -p (pi's arg parser requires this ordering)
     if (opts.resumeSessionId) {
       args.push('--session', opts.resumeSessionId);
+    }
+
+    // Pi records the appended text as the system message's `addendum` section,
+    // which is what reclaw-evolve matches on. Also before -p, like --session.
+    if (opts.appendSystemPrompt) {
+      args.push('--append-system-prompt', opts.appendSystemPrompt);
     }
 
     if (opts.modelSelection?.provider) {

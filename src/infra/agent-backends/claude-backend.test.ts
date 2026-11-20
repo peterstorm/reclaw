@@ -34,6 +34,26 @@ describe('claudeBackend', () => {
       expect(args[resumeIdx + 1]).toBe('sess-abc-123');
     });
 
+    it('passes instructions as one --append-system-prompt argument, never as a positional', () => {
+      const instructions = 'You are a personal AI assistant.\n\n---\n\nBe concise.';
+      const args = claudeBackend.buildArgs({
+        allowedTools: ['Read'],
+        resumeSessionId: 'sess-1',
+        appendSystemPrompt: instructions,
+      });
+
+      const idx = args.indexOf('--append-system-prompt');
+      expect(idx).toBeGreaterThan(-1);
+      expect(args[idx + 1]).toBe(instructions);
+      expect(args.filter((arg) => arg === instructions)).toHaveLength(1);
+    });
+
+    it('omits --append-system-prompt without instructions', () => {
+      expect(claudeBackend.buildArgs({ allowedTools: ['Read'] })).not.toContain(
+        '--append-system-prompt',
+      );
+    });
+
     it('passes a selected model as --model', () => {
       const args = claudeBackend.buildArgs({
         allowedTools: ['Read'],

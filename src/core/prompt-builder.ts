@@ -105,21 +105,33 @@ function attachmentOnlyText(
 }
 
 /**
- * Build a chat prompt: personality as system context + userMessage as the
- * request. Returns one backend-neutral prompt for the selected agent subprocess.
+ * FR-009: the personality file as system-prompt instructions, or undefined when
+ * it is blank (a missing file reads as ''). Chat sends this through
+ * `AgentOptions.appendSystemPrompt`, never inside the user prompt: the prompt is
+ * what UserPromptSubmit hooks see, and cortex's prompt-recall ranks memories
+ * against it. A 3.6 KB personality in front of a one-line question made recall
+ * match the personality, not the question.
+ */
+export function personalityInstructions(personality: string): string | undefined {
+  const trimmed = personality.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/**
+ * Build a chat prompt: the user's message, its reply context and attachment
+ * references, and nothing else. Instructions travel separately (see
+ * personalityInstructions). Returns one backend-neutral prompt for the selected
+ * agent subprocess.
  *
- * FR-009: personality/instructions are included as context.
  * Appends spooled attachment references so the agent can read them with its tools.
  */
 export function buildChatPrompt(
-  personality: string,
   userMessage: string,
   imagePaths?: readonly string[],
   documentPaths?: readonly string[],
   replyContext?: ReplyContext,
   storedUploads?: readonly StoredUpload[],
 ): string {
-  const trimmedPersonality = personality.trim();
   const trimmedMessage = userMessage.trim();
   const images = imagePaths ?? [];
   const documents = documentPaths ?? [];
@@ -129,16 +141,9 @@ export function buildChatPrompt(
   const requestPart = hasAttachments
     ? attachmentRequest(trimmedMessage, images, documents, uploads)
     : trimmedMessage;
-  const userPart =
-    replyContext === undefined
-      ? requestPart
-      : `${quotedReplyContext(replyContext)}\n\nCurrent user message:\n${requestPart}`;
-
-  if (trimmedPersonality.length === 0) {
-    return userPart;
-  }
-
-  return `${trimmedPersonality}\n\n---\n\n${userPart}`;
+  return replyContext === undefined
+    ? requestPart
+    : `${quotedReplyContext(replyContext)}\n\nCurrent user message:\n${requestPart}`;
 }
 
 /** A request that carries attachments: the message, or a stand-in when it is empty, then the references. */

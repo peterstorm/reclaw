@@ -43,6 +43,13 @@ export type AgentOptions = {
   /** Explicit per-run grants merged onto the closed agent environment baseline. */
   readonly env?: Readonly<Record<string, string>>;
   readonly resumeSessionId?: string;
+  /**
+   * Instructions appended to the backend's system prompt (both CLIs take
+   * `--append-system-prompt`). Instructions go here, never into `prompt`:
+   * `prompt` is what the user said, and UserPromptSubmit hooks (cortex's
+   * prompt-recall) rank memories against it. Absent, never empty.
+   */
+  readonly appendSystemPrompt?: string;
   readonly modelSelection?: AgentModelSelection;
   readonly backend?: AgentBackendName;
   /**
@@ -86,13 +93,17 @@ export type OnStreamChunk = (chunk: StreamChunk) => void;
 
 // ─── Backend Interface ────────────────────────────────────────────────────────
 
+/** The run options a backend turns into argv. */
+export type BuildArgsOptions = Readonly<{
+  resumeSessionId?: string;
+  appendSystemPrompt?: string;
+  allowedTools: readonly string[];
+  modelSelection?: AgentModelSelection;
+}>;
+
 export interface AgentBackend {
   readonly name: string;
-  buildArgs(opts: {
-    resumeSessionId?: string;
-    allowedTools: readonly string[];
-    modelSelection?: AgentModelSelection;
-  }): string[];
+  buildArgs(opts: BuildArgsOptions): string[];
   cleanEnv(env: Record<string, string | undefined>): Record<string, string | undefined>;
   parseResult(rawOutput: string): {
     text: string | null;

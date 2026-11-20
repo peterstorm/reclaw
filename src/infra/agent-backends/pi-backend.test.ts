@@ -33,6 +33,32 @@ describe('piBackend', () => {
       ]);
     });
 
+    it('passes instructions as --append-system-prompt, after --session and before -p', () => {
+      const result = piBackend.buildArgs({
+        resumeSessionId: 'abc-123',
+        appendSystemPrompt: 'Be concise.',
+        allowedTools: ['Read'],
+      });
+      expect(result).toEqual([
+        'pi',
+        '--session',
+        'abc-123',
+        '--append-system-prompt',
+        'Be concise.',
+        '-p',
+        '--mode',
+        'json',
+        '--tools',
+        'read',
+      ]);
+    });
+
+    it('omits --append-system-prompt without instructions', () => {
+      expect(piBackend.buildArgs({ allowedTools: ['Read'] })).not.toContain(
+        '--append-system-prompt',
+      );
+    });
+
     it('lowercases tool names', () => {
       const result = piBackend.buildArgs({
         allowedTools: ['Read', 'Write', 'Bash'],

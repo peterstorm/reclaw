@@ -50,11 +50,18 @@ promptTemplate: |
   conversations, (b) scheduled skill runs, (c) cortex internal LLM
   calls (consolidate/prune/extract). Only (a) is useful here.
 
+  A Telegram conversation carries the personality in its SYSTEM prompt
+  (reclaw passes it with `--append-system-prompt`), and both backends record
+  that in the transcript: Claude as a `prompt_snapshot` attachment, Pi as the
+  system message's `addendum` section. Sessions from before 2026-11-20 carried
+  it as a prefix of the first user message instead, so that check stays too.
+
   Search BOTH transcript directories:
 
   ```bash
   CLAUDE_DIR=~/.claude/projects/-home-peterstorm-dev-claude-plugins-reclaw-workspace
   PI_DIR=~/.pi/agent/sessions/--home-peterstorm-dev-claude-plugins-reclaw-workspace--
+  PERSONA="You are a personal AI assistant"
 
   rm -f /tmp/reclaw-evolve-sessions.txt
   touch /tmp/reclaw-evolve-sessions.txt
@@ -72,10 +79,16 @@ promptTemplate: |
         *"Time: "*"Step 1"*) continue ;;
         *"Today is"*"Step 1"*) continue ;;
       esac
-      # Conversational sessions contain the personality wrapper
-      case "$FIRST" in
-        *"You are a personal AI assistant"*"---"*) echo "claude:$f" ;;
-      esac
+      # Conversational: personality in the system-prompt snapshot, or (legacy)
+      # wrapped around the first user message
+      if jq -n -e --arg p "$PERSONA" 'any(inputs; .attachment.type? == "prompt_snapshot"
+            and (.attachment.systemPrompt | tostring | contains($p)))' "$f" >/dev/null 2>&1; then
+        echo "claude:$f"
+      else
+        case "$FIRST" in
+          *"$PERSONA"*"---"*) echo "claude:$f" ;;
+        esac
+      fi
     done >> /tmp/reclaw-evolve-sessions.txt
   fi
 
@@ -97,10 +110,16 @@ promptTemplate: |
         *"Time: "*"Step 1"*) continue ;;
         *"Today is"*"Step 1"*) continue ;;
       esac
-      # Conversational sessions contain the personality wrapper
-      case "$FIRST" in
-        *"You are a personal AI assistant"*"---"*) echo "pi:$f" ;;
-      esac
+      # Conversational: personality in the system message's addendum, or
+      # (legacy) wrapped around the first user message
+      if jq -n -e --arg p "$PERSONA" 'any(inputs; .type == "message" and .message.role? == "system"
+            and ((.message.sections.addendum? // "") | contains($p)))' "$f" >/dev/null 2>&1; then
+        echo "pi:$f"
+      else
+        case "$FIRST" in
+          *"$PERSONA"*"---"*) echo "pi:$f" ;;
+        esac
+      fi
     done >> /tmp/reclaw-evolve-sessions.txt
   fi
 
@@ -112,8 +131,9 @@ promptTemplate: |
 
   ## Step 2 — Extract user messages from those sessions
 
-  Strip the personality prefix and `---` separator; what remains is the
-  user's actual message. Collect every user turn across all sessions.
+  User turns are the user's own words. Only a legacy session's first turn
+  carries the personality prefix and `---` separator; strip those. Collect
+  every user turn across all sessions.
 
   ```bash
   while IFS= read -r entry; do
@@ -139,10 +159,9 @@ promptTemplate: |
   wc -l /tmp/reclaw-evolve-user-turns.jsonl
   ```
 
-  Drop the first turn of each session if it begins with the personality
-  prefix (that's the wrapper, not the real message). Keep everything
-  after the `---\n\n` separator. For follow-up turns (no prefix), keep
-  the whole text.
+  If a session's first turn begins with the personality prefix (a legacy
+  session from before 2026-11-20), keep only what follows the `---\n\n`
+  separator. Every other turn is kept whole.
 
   ## Step 3 — Mine correction signals
 

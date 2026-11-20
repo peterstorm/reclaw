@@ -160,11 +160,13 @@ type PreparedRun = {
 
 /** Build the backend's argv and environment, then wrap them in the configured containment. */
 function prepareRun(backend: AgentBackend, options: AgentOptions): PreparedRun {
-  const { cwd, allowedTools, env, resumeSessionId, modelSelection, _spawn } = options;
+  const { cwd, allowedTools, env, resumeSessionId, appendSystemPrompt, modelSelection, _spawn } =
+    options;
 
   const spawnFn: SpawnFn = _spawn ?? getDefaultSpawn();
   const args = backend.buildArgs({
     ...(resumeSessionId ? { resumeSessionId } : {}),
+    ...(appendSystemPrompt ? { appendSystemPrompt } : {}),
     allowedTools,
     ...(modelSelection ? { modelSelection } : {}),
   });

@@ -9,7 +9,7 @@ import { selectExecutionConversation } from '../core/chat-conversation.js';
 import { markdownToTelegramHtml } from '../core/markdown-to-telegram.js';
 import { splitHtml } from '../core/message-splitter.js';
 import { getAllowedTools } from '../core/permissions.js';
-import { buildChatPrompt } from '../core/prompt-builder.js';
+import { buildChatPrompt, personalityInstructions } from '../core/prompt-builder.js';
 import { type StreamState, createStreamState, processChunk } from '../core/stream-state.js';
 import {
   type ChatJob,
@@ -96,7 +96,7 @@ export function planChatTelegramCompletion(
  * FR-016: Timeout enforced by runAgentStreaming.
  */
 export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<ChatActivityOutcome> {
-  const personality = await loadPersonality(deps.config.personalityPath);
+  const instructions = personalityInstructions(await loadPersonality(deps.config.personalityPath));
   const conversation = selectExecutionConversation({
     current: await deps.sessionStore.getCurrent(job.chatId),
     captured: job.conversation,
@@ -104,7 +104,7 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<ChatA
   const statusMsgId = await sendStatusMessage(job.chatId, deps.telegram);
   const status = createStatusStream(job.chatId, deps.telegram, statusMsgId);
 
-  const result = await runChatAgent(job, deps, personality, conversation, status);
+  const result = await runChatAgent(job, deps, instructions, conversation, status);
 
   // FR-012: the user-facing error is sent by the worker's dead-letter handler
   // after the final retry attempt — see formatDeadLetterMessage. Sending here
@@ -209,42 +209,44 @@ function createStatusStream(
   };
 }
 
-const chatPrompt = (job: ChatJob, personality: string): string =>
-  buildChatPrompt(
-    personality,
+/**
+ * FR-011 chat permission profile; FR-016 timeout is enforced by runAgentStreaming.
+ * FR-009: the personality rides in the system prompt on every turn, resumed or
+ * not. Pi rebuilds its system prompt per run, so a resumed Pi turn would lose it
+ * otherwise; Claude reuses its conversation snapshot, so passing it is harmless.
+ */
+const chatAgentOptions = (
+  config: AppConfig,
+  conversation: ConversationTarget,
+  job: ChatJob,
+  instructions: string | undefined,
+  resumeSessionId: string | undefined,
+): AgentOptions => ({
+  prompt: buildChatPrompt(
     job.text,
     job.imagePaths,
     job.documentPaths,
     job.replyContext,
     job.storedUploads,
-  );
-
-/** FR-011 chat permission profile; FR-016 timeout is enforced by runAgentStreaming. */
-const chatAgentOptions = (
-  config: AppConfig,
-  conversation: ConversationTarget,
-  prompt: string,
-  resumeSessionId: string | undefined,
-): AgentOptions => ({
-  prompt,
+  ),
   cwd: config.workspacePath,
   allowedTools: getAllowedTools('chat'),
   timeoutMs: config.chatTimeoutMs,
   ...(resumeSessionId ? { resumeSessionId } : {}),
+  ...(instructions ? { appendSystemPrompt: instructions } : {}),
   backend: conversation.backend,
 });
 
 /**
- * Run the agent on the selected conversation. A resumed turn skips the
- * personality (already in the agent's context) and is retried fresh only when
- * the typed failure proves the persisted session itself is unusable; provider
- * and transport failures retain lineage and are left to BullMQ rather than
- * causing duplicate fresh execution.
+ * Run the agent on the selected conversation. A resumed turn is retried fresh
+ * only when the typed failure proves the persisted session itself is unusable;
+ * provider and transport failures retain lineage and are left to BullMQ rather
+ * than causing duplicate fresh execution.
  */
 async function runChatAgent(
   job: ChatJob,
   deps: ChatDeps,
-  personality: string,
+  instructions: string | undefined,
   conversation: ConversationTarget,
   status: StatusStream,
 ): Promise<AgentResult> {
@@ -254,7 +256,8 @@ async function runChatAgent(
     chatAgentOptions(
       deps.config,
       conversation,
-      chatPrompt(job, isResuming ? '' : personality),
+      job,
+      instructions,
       conversation.sessionId ?? undefined,
     ),
     status.onChunk,
@@ -269,7 +272,7 @@ async function runChatAgent(
   console.info(`[chat] Invalid session for chatId=${job.chatId}, retrying fresh`);
   status.restart();
   return deps.runAgentStreaming(
-    chatAgentOptions(deps.config, conversation, chatPrompt(job, personality), undefined),
+    chatAgentOptions(deps.config, conversation, job, instructions, undefined),
     status.onChunk,
   );
 }
