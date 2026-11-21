@@ -12,13 +12,13 @@ import {
 import {
   type ConversationGeneration,
   type ConversationRevision,
-  makeClaudeSessionId,
+  makeAgentSessionId,
   makeJobId,
 } from './types.js';
 
 function fixtureIds() {
   const jobId = makeJobId('telegram:42:chat');
-  const sessionId = makeClaudeSessionId('session-1');
+  const sessionId = makeAgentSessionId('session-1');
   if (!jobId.ok || !sessionId.ok) throw new Error('invalid fixture');
   const activityId = makeActivityId('chat', jobId.value);
   return { jobId: jobId.value, sessionId: sessionId.value, activityId };

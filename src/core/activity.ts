@@ -1,13 +1,13 @@
 import { z } from 'zod';
 import type {
   AgentBackendName,
-  ClaudeSessionId,
+  AgentSessionId,
   ConversationGeneration,
   ConversationRevision,
   JobId,
   Result,
 } from './types.js';
-import { err, makeClaudeSessionId, ok } from './types.js';
+import { err, makeAgentSessionId, ok } from './types.js';
 
 /** Durable identity of one expensive source-job execution. */
 export type ActivityId = string & { readonly __brand: 'ActivityId' };
@@ -49,14 +49,14 @@ type TelegramBatchState = {
 /** Persisted before conversation-scoped message references were introduced. */
 type LegacyTelegramBatchDelivery = TelegramBatchState & {
   readonly schemaVersion: 1;
-  readonly sessionId: ClaudeSessionId | null;
+  readonly sessionId: AgentSessionId | null;
 };
 
 export type TelegramBatchDelivery = TelegramBatchState & {
   readonly schemaVersion: 2;
   readonly conversationReference: {
     readonly backend: AgentBackendName;
-    readonly sessionId: ClaudeSessionId;
+    readonly sessionId: AgentSessionId;
   } | null;
 };
 
@@ -67,7 +67,7 @@ type LegacyChatSessionDelivery = {
   readonly id: DeliveryId;
   readonly activityId: ActivityId;
   readonly chatId: number;
-  readonly sessionId: ClaudeSessionId;
+  readonly sessionId: AgentSessionId;
   readonly lastActivityAt: string;
 };
 
@@ -80,7 +80,7 @@ export type ChatSessionDelivery = {
   readonly expectedGeneration: ConversationGeneration;
   readonly expectedRevision: ConversationRevision;
   readonly backend: AgentBackendName;
-  readonly sessionId: ClaudeSessionId;
+  readonly sessionId: AgentSessionId;
   readonly lastActivityAt: string;
 };
 
@@ -89,7 +89,7 @@ export type CortexDelivery = {
   readonly kind: 'cortex';
   readonly id: DeliveryId;
   readonly activityId: ActivityId;
-  readonly sessionId: ClaudeSessionId;
+  readonly sessionId: AgentSessionId;
   readonly cwd: string;
 };
 
@@ -177,7 +177,7 @@ export function makeTelegramBatchDelivery(params: {
   readonly operations: readonly TelegramDeliveryOperation[];
   readonly conversationReference?: {
     readonly backend: AgentBackendName;
-    readonly sessionId: ClaudeSessionId;
+    readonly sessionId: AgentSessionId;
   } | null;
   readonly discriminator?: string;
 }): TelegramBatchDelivery {
@@ -204,7 +204,7 @@ export function makeChatSessionDelivery(params: {
   readonly expectedGeneration: ConversationGeneration;
   readonly expectedRevision: ConversationRevision;
   readonly backend: AgentBackendName;
-  readonly sessionId: ClaudeSessionId;
+  readonly sessionId: AgentSessionId;
   readonly lastActivityAt: string;
 }): ChatSessionDelivery {
   return {
@@ -223,7 +223,7 @@ export function makeChatSessionDelivery(params: {
 
 export function makeCortexDelivery(params: {
   readonly activityId: ActivityId;
-  readonly sessionId: ClaudeSessionId;
+  readonly sessionId: AgentSessionId;
   readonly cwd: string;
 }): CortexDelivery {
   return {
@@ -265,7 +265,7 @@ const sessionIdSchema = z
   .string()
   .min(1)
   .transform((value, ctx) => {
-    const parsed = makeClaudeSessionId(value);
+    const parsed = makeAgentSessionId(value);
     if (!parsed.ok) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: parsed.error });
       return z.NEVER;

@@ -19,8 +19,6 @@ export type SkillId = string & { readonly __brand: 'SkillId' };
 
 /** Backend session ID for multi-turn conversations. */
 export type AgentSessionId = string & { readonly __brand: 'AgentSessionId' };
-/** Compatibility alias retained while call sites migrate from Claude-only naming. */
-export type ClaudeSessionId = AgentSessionId;
 
 export type AgentBackendName = 'claude' | 'pi';
 
@@ -160,11 +158,6 @@ export function makeAgentSessionId(raw: string): Result<AgentSessionId, string> 
     return { ok: false, error: 'AgentSessionId must not be empty.' };
   }
   return { ok: true, value: raw as AgentSessionId };
-}
-
-/** Compatibility constructor retained for existing consumers. */
-export function makeClaudeSessionId(raw: string): Result<ClaudeSessionId, string> {
-  return makeAgentSessionId(raw);
 }
 
 export function makeConversationGeneration(raw: number): Result<ConversationGeneration, string> {
