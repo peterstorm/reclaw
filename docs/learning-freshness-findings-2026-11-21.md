@@ -3,7 +3,7 @@
 Deep dive into whether the curriculum loop (the learn-* skills plus scripts/learn.ts) keeps the
 master notes up to date as the Obsidian vault grows. Every number here is measured; the commands
 that produce them are in section 8, Receipts. Nothing here is a plan — the plan is
-`docs/learning-freshness-plan-2026-11-21.md`.
+.claude/plans/2026-11-21-learning-freshness.md.
 
 ## 1. What the loop actually reads
 
