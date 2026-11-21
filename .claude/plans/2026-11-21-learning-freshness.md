@@ -99,6 +99,7 @@ is a failing build, not a code review.
 | refresh | only the sections a changed source implicates + the unified diff hunks + the manifest | ≤ 24k chars in, ≤ 8k out | untouched lessons, the vault, the registry, history |
 | build | registry entry + prereq *headings* + ranked candidate paths + code-extracted source text | ≤ 20k chars before sources, ≤ 60k total | the whole vault, other notes' bodies, MOCs |
 | Feynman | the note's lessons + weakest card questions + the user's explanation | ≤ 12k chars in, ≤ 2k out | the rest of the vault |
+| lesson reply / pretest guesses | one lesson's text + its cards | ≤ 6k chars | the rest of the note, every other topic |
 | ingest | — | 0 model | — |
 
 The untrusted-content envelope also moves into code: `learn source-text` wraps file content in a
@@ -221,6 +222,7 @@ manifest, bumps `sources_checked` and `revised`, re-parses the rendered note, wr
 | `learn grade … [--note "clause"]` | `--note`, and `--render` prints the feedback block | log only (as today) | label only |
 | `learn source-candidates <slug>` | new: ranked vault notes, excerpts, matched terms | nothing | no |
 | `learn source-text <path> [--max N]` | new: fenced, data-only extract | nothing | no |
+| `learn section <slug> <lesson>` | new: one lesson's text + its cards (pretest replies, follow-ups) | nothing | no |
 | `learn refresh <slug>` | new: `noop` or `needs-model` + context | nothing | no (decides) |
 | `learn refresh-apply --patch -` | new | note + manifest | prose only |
 | `learn build-apply --draft -` | new | note + manifest | prose only |
@@ -254,7 +256,7 @@ lines or `ALL_CLEAR`. It never edits the registry.
 The prompts shrink to mechanics, because the knowledge lives in commands:
 
 - learn-lesson: `learn lesson --message` → relay verbatim; on reply run `learn read …`; pretest
-  guesses and questions are the only place it thinks.
+  guesses and questions use `learn section <slug> <n>` (the lesson and its cards, nothing else).
 - learn-recall: `learn round --message` → relay; on reply map each answer to a label
   (`again|hard|good|easy`) with at most one clause, run `learn grade … --note "…"`; `--render`
   supplies the feedback block.
