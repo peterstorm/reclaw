@@ -3,6 +3,7 @@ import { resolveSkillEnvironment } from '../core/agent-environment.js';
 import { type AgentFailure, formatAgentFailure } from '../core/agent-failure.js';
 import { fallbackNotice, planFallback } from '../core/backend-fallback.js';
 import { localDate, localDayOfWeek } from '../core/clock.js';
+import { ALL_CLEAR } from '../core/learning-messages.js';
 import { splitMessage } from '../core/message-splitter.js';
 import { type AgentTarget, requestedModel } from '../core/model-selection.js';
 import { getAllowedTools } from '../core/permissions.js';
@@ -75,7 +76,7 @@ export type ScheduledHandlerOutcome = ScheduledOutcome | ScheduledActivityOutcom
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 /** Sentinel output that scheduled skills use to signal "nothing to report". */
-const SUPPRESS_SENTINEL = 'ALL_CLEAR';
+const SUPPRESS_SENTINEL = ALL_CLEAR;
 
 // ─── Handler (imperative shell) ───────────────────────────────────────────────
 

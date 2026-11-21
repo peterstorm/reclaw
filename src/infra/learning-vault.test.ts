@@ -62,4 +62,34 @@ describe.each([
     expect(await vault.sourceExists(REGISTRY_PATH)).toBe(true);
     expect(await vault.sourceExists('nope/missing.md')).toBe(false);
   });
+
+  it('indexes note basenames, so a renamed source can be found by name', async () => {
+    const vault = await make();
+    const index = await vault.indexByBasename('');
+    expect(index.get('a.md')).toEqual([notePath('a')]);
+    expect(index.get('registry.yaml')).toBeUndefined();
+  });
+
+  it('replaces the registry, and reads the replacement back', async () => {
+    const vault = await make();
+    await vault.writeRegistry('# rewritten\n');
+    expect(await vault.readRegistry()).toBe('# rewritten\n');
+  });
+});
+
+describe('fsLearningVault outside the vault', () => {
+  it('indexes a ~/ subtree in declared form, never the whole home', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'learning-home-'));
+    roots.push(home);
+    await mkdir(join(home, '.dotfiles/docs/runbooks'), { recursive: true });
+    await writeFile(join(home, '.dotfiles/docs/runbooks/triage.md'), '# triage\n');
+    await writeFile(join(home, 'elsewhere.md'), '# elsewhere\n');
+
+    const vaultRoot = await mkdtemp(join(tmpdir(), 'learning-vault-'));
+    roots.push(vaultRoot);
+    const vault = fsLearningVault(vaultRoot, home);
+    const index = await vault.indexByBasename('~/.dotfiles');
+    expect(index.get('triage.md')).toEqual(['~/.dotfiles/docs/runbooks/triage.md']);
+    expect(index.get('elsewhere.md')).toBeUndefined();
+  });
 });

@@ -2,7 +2,7 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { type CardSpec, defaultCards, renderNote } from './__fixtures__/learning.js';
 import type { TopicSlug } from './curriculum.js';
-import { parseMasterNote } from './master-note.js';
+import { lessonSection, parseMasterNote } from './master-note.js';
 
 const slug = 'kv-cache' as TopicSlug;
 
@@ -175,6 +175,40 @@ describe('parseMasterNote', () => {
           JSON.stringify(result.value.cards.map((c) => [c.lesson, c.question, c.answer])) ===
           JSON.stringify(cards.map((c) => [c.lesson, c.question, c.answer]))
         );
+      }),
+    );
+  });
+});
+
+describe('lessonSection', () => {
+  const note = renderNote({ slug, lessons: 3, cardsPerLesson: 3 });
+
+  it('returns one lesson: its title and its body up to the next lesson', () => {
+    const section = lessonSection(note.replace('Body of lesson 2.', 'The mechanism, in full.'), 2);
+    expect(section.ok).toBe(true);
+    if (!section.ok) return;
+    expect(section.value.title).toBe('Part 2');
+    expect(section.value.body).toContain('The mechanism, in full.');
+    expect(section.value.body).toContain('Pretest 2a?');
+    expect(section.value.body).not.toContain('Body of lesson 1.');
+    expect(section.value.body).not.toContain('Recall cards');
+  });
+
+  it('reports an unknown lesson and a note without frontmatter', () => {
+    const missing = lessonSection(note, 9);
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.error).toContain('lesson 9 not found');
+    expect(lessonSection('# no frontmatter', 1).ok).toBe(false);
+  });
+
+  // The payload contract: what the model sees for one lesson never includes another's body.
+  it('never crosses into another lesson (property)', () => {
+    fc.assert(
+      fc.property(fc.integer({ min: 1, max: 3 }), (lesson) => {
+        const section = lessonSection(note, lesson);
+        if (!section.ok) return false;
+        const others = [1, 2, 3].filter((n) => n !== lesson);
+        return others.every((n) => !section.value.body.includes(`Body of lesson ${n}.`));
       }),
     );
   });

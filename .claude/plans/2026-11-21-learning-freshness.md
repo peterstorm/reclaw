@@ -310,6 +310,53 @@ preserve review history. The design already handles it (stable ids, retire-on-me
 the property test and the reader-facing "revised after you read it" line ship when there is real
 history to verify against.
 
+## 5.1 Shipped in this branch (2026-11-21)
+
+**P1 — done.** `learn fix-sources [--apply]`: existence sweep over every declared source,
+per-root basename index (`~/x` walks only that home subtree), plan of single-candidate
+renames, dry run by default. `--apply` splices the YAML at the parser's byte ranges, so
+comments, alignment and quoting stay byte-identical, then re-parses before writing and
+rechecks what is left. Ambiguity is reported, never guessed; a replay is a no-op.
+
+Receipts (live vault): 445 declarations checked, 395 already resolved, **50 fixed, 0
+ambiguous, 0 unresolved**, registry diff = 50 lines in / 50 out, nothing else touched. After:
+`validate --sources` → `valid: true, missingSources: 0`; a second `fix-sources` reports
+445/445 resolved. Registry committed in the notes repo as `38d2c87`.
+
+Builder gate switched to `validate --sources` (skill prompt + `master-note-guide.md` §Finish),
+scoped to the built slug so the historical renames of other topics cannot block it.
+
+**P3 — done, with one substitution.** Shipped: `learn lesson --message`, `learn round
+--message`, `learn round-result <round|last>`, `learn last-round`, `learn section <slug> <n>`;
+`ALL_CLEAR` is the shared suppression sentinel in `learning-messages.ts`. The lesson and recall
+skills are now relay-verbatim: no template, no model-authored formatting.
+
+Substitutions, recorded as deviations:
+- `last-round` is new and not in §4.7: `round --message` deliberately carries no ids or
+  answers, so the grader fetches both with one read-only call instead of a second `round`
+  (which would record a second round).
+- `grade --render` / `--note` deferred: `round-result` renders the whole graded round from the
+  log, so a per-grade `--render` would duplicate it. The optional clause stays possible later;
+  today the renderer uses the reference answer's first sentence.
+
+Tests: `learning-messages.test.ts` (byte-level message shapes, never an answer in a round
+payload), `master-note.test.ts` `lessonSection` (never crosses into another lesson),
+`source-repair.test.ts` (single-candidate only, splice preserves the rest, idempotent,
+property: exactly the missing declarations change), `learn-command.test.ts` (end-to-end over the
+fake vault, incl. refused commands writing nothing). Full suite 2915 green, `tsc` and `biome`
+clean.
+
+**P0 — CLI half proven, live half pending.** On a copy of the vault
+(`RECLAW_VAULT_ROOT=/tmp/vault-copy`): lesson message rendered → `read` unlocked 5 cards →
+`already-read` on replay → round of 3 asked and logged → `last-round` returned ids + reference
+answers → two grades (`hard`, `good`) via quoted heredoc → `round-result last` rendered the
+feedback with a relative next-due → `section` returned one 8.7k-char lesson and its 5 cards. The
+remaining acceptance is one real Telegram "done" reply: no `[chat] … resume=true` for a learn
+session has been observed yet, and the live log still has zero events.
+
+**Not started:** P2 (manifests + drift), P4 (renderer + `build-apply`), P5 (refresh), P6
+(ingest + scout), P7 (post-read refresh). Order unchanged: P2 before P5, P4 before P5.
+
 ## 6. Tests
 
 - Property: drift is a pure function of hashes (identical digests ⇒ `ok`; one changed hash ⇒

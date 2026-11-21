@@ -1,8 +1,9 @@
 name: Learn — Recall Round
 # 11:30 / 15:30 / 19:30: asks up to 3 FSRS-due recall cards (interleaved across topics, new
-# cards capped per day). The user answers in their own words by swipe-replying; this same
-# session grades each answer against the card's reference answer and records the grade via
-# scripts/learn.ts. Models judge answers; the CLI owns scheduling. Replaces vault-review.
+# cards capped per day). The CLI renders the questions (`round --message`) and the graded
+# result (`round-result`); the user answers by swipe-replying in their own words, and this
+# same session grades each answer — the one irreducible judgment the model owns. Scheduling
+# is FSRS's job. Replaces vault-review.
 # See vault: reclaw/skills/learning-loop.md
 schedule: "30 11,15,19 * * *"
 permissionProfile: scheduled
@@ -15,33 +16,28 @@ promptTemplate: |
 
   You run a spaced-repetition recall round over the user's curriculum cards. They answer in
   their own words by swipe-replying to your message; you grade later in this same session.
-  Scheduling (FSRS) is entirely the CLI's job — you only judge answers and record grades.
+  Scheduling (FSRS) is entirely the CLI's job — you only judge answers, assign one of four
+  labels, and record them.
 
-  ## Step 1 — Pick the round
+  ## Step 1 — Get the questions
 
   ```
-  bun {{scriptsDir}}/learn.ts round
+  bun {{scriptsDir}}/learn.ts round --message
   ```
 
-  - `kind: nothing-due` → respond with exactly ALL_CLEAR — no backticks, nothing else.
-  - `kind: round` → `{ round, cards: [{ id, topicTitle, notePath, lesson, question, answer, isNew }] }`.
-    Keep `round`, every card `id` and every reference `answer` — you need them to grade.
-  - If the command fails, send its error line. Never invent CLI output.
+  The CLI picks the cards, records the round AND renders the message. Relay what it printed,
+  verbatim. It prints exactly ALL_CLEAR — nothing else — when nothing is due; relay that too,
+  the runtime suppresses it.
 
-  ## Step 2 — Send the questions — NEVER the answers
+  ## Step 2 — Keep the round for grading
 
-  Exactly this shape:
+  ```
+  bun {{scriptsDir}}/learn.ts last-round
+  ```
 
-  🧠 **Recall** — <N> question(s)
-
-  **1.** <question> _(<topicTitle>)_ <append " 🆕" if isNew>
-  **2.** …
-
-  Reply with numbered answers in your own words — short is fine, "?" if you don't know.
-  From memory, no peeking.
-
-  This message is the last assistant message and is relayed verbatim. Do not reveal, hint at,
-  or paraphrase any reference answer in it.
+  → `{ round, askedAt, cards: [{ id, topicTitle, lesson, question, answer, graded }] }`. This
+  is your whole grading input: map each numbered question to its `id`, and grade against its
+  reference `answer` — which the learner never saw.
 
   ## When the user replies (this session is resumed) — grade
 
@@ -62,10 +58,14 @@ promptTemplate: |
   ANSWER
   ```
 
-  Then reply with one block per graded question:
-  - **1. good ✓** — one line confirming the key point (or naming what was slightly off).
-  - **2. again ✗** — the reference answer in 1–3 sentences, then "Re-read: <topicTitle>, Lesson <lesson>."
-  End with "Next up: <the soonest nextDueAt among these cards, as a relative time>".
+  Then relay the rendered round result verbatim:
+
+  ```
+  bun {{scriptsDir}}/learn.ts round-result <round>
+  ```
+
+  (`round-result last` works too.) Add nothing after it except, when the user asked a question,
+  a one-line answer fetched from `bun {{scriptsDir}}/learn.ts section <topic-slug> <lesson>`.
 
   Rules:
   - Answered only some? Grade those only. Unanswered cards stay pending and return in a later
@@ -76,5 +76,3 @@ promptTemplate: |
   - Broken card ("that question is ambiguous / wrong"): run
     `bun {{scriptsDir}}/learn.ts suspend <card-id> <their reason>` and say it is suspended
     until the note is fixed. Don't grade it.
-  - A follow-up question about the material → answer briefly from the note at
-    `~/dev/notes/remotevault/<notePath>`.

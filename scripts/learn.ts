@@ -6,8 +6,10 @@
  * this file only wires the filesystem vault adapter and the clock.
  *
  * Usage: bun scripts/learn.ts <command> [...]   (run with no args for the command list)
- * Prints one JSON object on stdout. Exit 1 with the reason on stderr when a command is
- * refused (unknown card, corrupt log, …) — nothing is written in that case.
+ * Prints one JSON object on stdout, except for a `--message` command or `round-result`,
+ * which print the finished Telegram message as text for the skill to relay verbatim.
+ * Exit 1 with the reason on stderr when a command is refused (unknown card, corrupt
+ * log, …) — nothing is written in that case.
  *
  * Env: RECLAW_VAULT_ROOT overrides the vault location (default ~/dev/notes/remotevault).
  */
@@ -26,7 +28,11 @@ const vault = fsLearningVault(process.env.RECLAW_VAULT_ROOT ?? DEFAULT_VAULT_ROO
 const result = await runLearnCommand(args, vault, new Date());
 
 if (result.ok) {
-  process.stdout.write(`${JSON.stringify(result.value, null, 2)}\n`);
+  process.stdout.write(
+    result.value.kind === 'text'
+      ? `${result.value.text}\n`
+      : `${JSON.stringify(result.value.value, null, 2)}\n`,
+  );
 } else {
   process.stderr.write(`learn: ${result.error}\n`);
   process.exit(1);

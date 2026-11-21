@@ -169,8 +169,9 @@ of silently dropping the card.
 
 1. Write the note to `~/dev/notes/remotevault/<notePath>`. Never overwrite an existing
    note at that path — if one exists, stop and report.
-2. Run `cd ~/dev/claude-plugins/reclaw && bun scripts/learn.ts validate` and fix the note
-   until `noteErrors` has no entry for this slug.
+2. Run `cd ~/dev/claude-plugins/reclaw && bun scripts/learn.ts validate --sources` and fix
+   the note until `noteErrors` has no entry for this slug and `missingSources` has no entry
+   starting with `<slug>:`.
 3. Append one line under today's heading in `~/dev/notes/remotevault/changelog.md`:
    `- **added** [[learning/curriculum/<domain>/<slug>|<Title>]] — master learning note (<N> lessons, <K> cards)`
    (create the `## YYYY-MM-DD` heading at the top, below frontmatter, if missing).

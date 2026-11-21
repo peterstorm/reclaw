@@ -105,18 +105,36 @@ export function fakeVault(
   registry: string,
   notes: Readonly<Record<string, string>> = {},
   initialLog = '',
-): LearningVault & { log: () => string } {
+): LearningVault & { log: () => string; registry: () => string } {
   let log = initialLog;
+  let registryText = registry;
   const files: Record<string, string> = { [REGISTRY_PATH]: registry, ...notes };
   return {
-    readRegistry: async () => registry,
+    readRegistry: async () => registryText,
     readNote: async (path) => files[path] ?? null,
     readLog: async () => log,
     appendLog: async (lines) => {
       if (lines.length > 0) log += `${lines.join('\n')}\n`;
     },
     sourceExists: async (path) => path in files,
+    indexByBasename: async (root) => {
+      const index = new Map<string, string[]>();
+      for (const path of Object.keys(files)) {
+        if (!path.endsWith('.md')) continue;
+        if (root !== '' && !path.startsWith(`${root}/`)) continue;
+        const name = path.split('/').at(-1) ?? path;
+        const paths = index.get(name) ?? [];
+        paths.push(path);
+        index.set(name, paths);
+      }
+      return index;
+    },
+    writeRegistry: async (text) => {
+      registryText = text;
+      files[REGISTRY_PATH] = text;
+    },
     log: () => log,
+    registry: () => registryText,
   };
 }
 

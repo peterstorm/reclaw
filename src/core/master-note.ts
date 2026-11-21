@@ -136,6 +136,29 @@ function parseCardBlock(lines: readonly string[]): {
   return { cards, malformed };
 }
 
+/** One lesson as written: its title, and the body under it up to the next H2. */
+export type LessonSection = Readonly<{ lesson: number; title: string; body: string }>;
+
+/**
+ * A single lesson's text, for the payload the lesson skill sees when the learner replies
+ * with pretest guesses or a question about the material. The whole note never has to
+ * reach the model.
+ */
+export function lessonSection(markdown: string, lesson: number): Result<LessonSection, string> {
+  const split = splitFrontmatter(markdown);
+  if (!split.ok) return err(split.error);
+  for (const section of h2Sections(split.value.body)) {
+    const heading = LESSON_HEADING.exec(section.heading);
+    if (heading === null || Number(heading[1]) !== lesson) continue;
+    return ok({
+      lesson,
+      title: (heading[2] ?? '').trim(),
+      body: section.lines.join('\n').trim(),
+    });
+  }
+  return err(`lesson ${lesson} not found`);
+}
+
 /** Parse a master note for `expected`. Every structural problem is reported at once. */
 export function parseMasterNote(
   markdown: string,
