@@ -13,7 +13,7 @@ import { getAllowedTools } from '../core/permissions.js';
 import type { ConversationLineage } from '../core/session.js';
 import type { ChatJob } from '../core/types.js';
 import type {
-  ClaudeSessionId,
+  AgentSessionId,
   ConversationGeneration,
   ConversationRevision,
 } from '../core/types.js';
@@ -232,7 +232,7 @@ describe('handleChatJob', () => {
       generation: 0 as ConversationGeneration,
       revision: 0 as ConversationRevision,
       backend: 'claude',
-      sessionId: 'existing-session' as ClaudeSessionId,
+      sessionId: 'existing-session' as AgentSessionId,
       lastActivityAt: new Date().toISOString(),
     });
     const runAgentStreaming = makeRunAgentStreaming({
@@ -548,7 +548,7 @@ describe('handleChatJob', () => {
       generation: 0 as ConversationGeneration,
       revision: 0 as ConversationRevision,
       backend: 'claude',
-      sessionId: 'sess-existing' as ClaudeSessionId,
+      sessionId: 'sess-existing' as AgentSessionId,
       lastActivityAt: new Date().toISOString(),
     } satisfies ConversationLineage);
     const runAgentStreaming = makeRunAgentStreaming({
@@ -578,7 +578,7 @@ describe('handleChatJob', () => {
         generation: 3 as ConversationGeneration,
         revision: 0 as ConversationRevision,
         backend: 'pi',
-        sessionId: 'session-at-ingress' as ClaudeSessionId,
+        sessionId: 'session-at-ingress' as AgentSessionId,
       },
     });
     const sessionStore = makeSessionStore();
@@ -587,7 +587,7 @@ describe('handleChatJob', () => {
       generation: 3 as ConversationGeneration,
       revision: 2 as ConversationRevision,
       backend: 'pi',
-      sessionId: 'session-latest' as ClaudeSessionId,
+      sessionId: 'session-latest' as AgentSessionId,
       lastActivityAt: new Date().toISOString(),
     } satisfies ConversationLineage);
     const runAgentStreaming = makeRunAgentStreaming({
@@ -622,7 +622,7 @@ describe('handleChatJob', () => {
         generation: 3 as ConversationGeneration,
         revision: 1 as ConversationRevision,
         backend: 'claude',
-        sessionId: 'session-old-generation' as ClaudeSessionId,
+        sessionId: 'session-old-generation' as AgentSessionId,
       },
     });
     const sessionStore = makeSessionStore();
@@ -668,7 +668,7 @@ describe('handleChatJob', () => {
       generation: 0 as ConversationGeneration,
       revision: 0 as ConversationRevision,
       backend: 'claude',
-      sessionId: 'sess-stale' as ClaudeSessionId,
+      sessionId: 'sess-stale' as AgentSessionId,
       lastActivityAt: new Date().toISOString(),
     } satisfies ConversationLineage);
 
@@ -732,7 +732,7 @@ describe('handleChatJob', () => {
       generation: 0 as ConversationGeneration,
       revision: 0 as ConversationRevision,
       backend: 'claude',
-      sessionId: 'sess-valid' as ClaudeSessionId,
+      sessionId: 'sess-valid' as AgentSessionId,
       lastActivityAt: new Date().toISOString(),
     } satisfies ConversationLineage);
     const runAgentStreaming = makeRunAgentStreaming({ ok: false, failure });

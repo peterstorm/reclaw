@@ -12,7 +12,7 @@ import type { ClaudeModel } from '../core/model-selection.js';
 import { getAllowedTools } from '../core/permissions.js';
 import type { ScheduledJob, SkillConfig, SkillRegistry } from '../core/types.js';
 import type {
-  ClaudeSessionId,
+  AgentSessionId,
   ConversationGeneration,
   ConversationRevision,
 } from '../core/types.js';
@@ -899,7 +899,7 @@ describe('handleScheduledJob', () => {
     expect(sessionStore.saveMessageReference).toHaveBeenCalledWith(42, 500, {
       schemaVersion: 1,
       backend: 'claude',
-      sessionId: 'sess-watchdog-1' as ClaudeSessionId,
+      sessionId: 'sess-watchdog-1' as AgentSessionId,
     });
   });
 
@@ -929,7 +929,7 @@ describe('handleScheduledJob', () => {
       expect(sessionStore.saveMessageReference).toHaveBeenCalledWith(42, messageId, {
         schemaVersion: 1,
         backend: 'claude',
-        sessionId: 'sess-multi' as ClaudeSessionId,
+        sessionId: 'sess-multi' as AgentSessionId,
       });
     }
   });

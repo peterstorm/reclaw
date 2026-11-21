@@ -44,8 +44,9 @@ ConversationLineage {
 session commit within one generation. Both are branded non-negative safe
 integers.
 
-`AgentSessionId` replaces the Claude-only domain meaning; `ClaudeSessionId`
-remains a compatibility type alias during source migration.
+`AgentSessionId` replaces the Claude-only domain meaning; the ClaudeSessionId
+compatibility type alias and makeClaudeSessionId constructor were removed once
+the last call sites migrated (2026-11-21).
 
 ### Immutable chat target
 

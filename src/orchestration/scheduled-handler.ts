@@ -11,7 +11,7 @@ import type { ScriptModule } from '../core/script-skill.js';
 import type { SkillQualitySignal, SkillRunStatus } from '../core/skill-quality.js';
 import {
   type AgentBackendName,
-  type ClaudeSessionId,
+  type AgentSessionId,
   type ScheduledJob,
   type ScheduledOutcome,
   type SkillConfig,
@@ -20,7 +20,7 @@ import {
   scheduledFailed,
   scheduledSkipped,
 } from '../core/types.js';
-import { makeClaudeSessionId } from '../core/types.js';
+import { makeAgentSessionId } from '../core/types.js';
 import type { AgentOptions, AgentResult } from '../infra/agent-backends/index.js';
 import type { AppConfig } from '../infra/config.js';
 import type { SessionStore } from '../infra/session-store.js';
@@ -64,7 +64,7 @@ export type ScheduledActivityOutcome =
       /** The agent session that produced this response, when one exists. Script skills have none. */
       readonly session: {
         readonly backend: AgentBackendName;
-        readonly sessionId: ClaudeSessionId;
+        readonly sessionId: AgentSessionId;
       } | null;
     }
   | Extract<ScheduledOutcome, { readonly kind: 'skipped' }>
@@ -226,7 +226,7 @@ async function completeRun(
   emit: QualityEmit,
 ): Promise<ScheduledHandlerOutcome> {
   const { response, isSuppressed } = composeResponse(result.output, notice);
-  const parsedSessionId = result.sessionId === null ? null : makeClaudeSessionId(result.sessionId);
+  const parsedSessionId = result.sessionId === null ? null : makeAgentSessionId(result.sessionId);
   const sessionId = parsedSessionId === null || !parsedSessionId.ok ? null : parsedSessionId.value;
 
   if (deps.completionMode === 'durable') {
@@ -385,7 +385,7 @@ function composeResponse(
 async function deliverInline(
   response: string,
   session: {
-    readonly sessionId: ClaudeSessionId;
+    readonly sessionId: AgentSessionId;
     readonly sessionBackend: AgentBackendName;
   } | null,
   deps: ScheduledDeps,

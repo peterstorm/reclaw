@@ -22,7 +22,7 @@ import type {
   SkillId,
   TelegramUserId,
 } from '../core/types.js';
-import { makeClaudeSessionId, makeRecurringReminderJob } from '../core/types.js';
+import { makeAgentSessionId, makeRecurringReminderJob } from '../core/types.js';
 import type { AppConfig } from '../infra/config.js';
 import type { SessionStore } from '../infra/session-store.js';
 import { DEFAULT_ATTACHMENT_DIR, type TelegramAdapter } from '../infra/telegram.js';
@@ -477,7 +477,7 @@ describe('createWorkers', () => {
   });
 
   it('commits chat session state before source completion without rerunning the activity', async () => {
-    const session = makeClaudeSessionId('next-turn-session');
+    const session = makeAgentSessionId('next-turn-session');
     if (!session.ok) throw new Error(session.error);
     chatHandler.mockResolvedValue({
       kind: 'completed',
@@ -524,7 +524,7 @@ describe('createWorkers', () => {
   });
 
   it('stamps a chat activity and its session commit from one clock read', async () => {
-    const session = makeClaudeSessionId('clocked-session');
+    const session = makeAgentSessionId('clocked-session');
     if (!session.ok) throw new Error(session.error);
     chatHandler.mockResolvedValue({
       kind: 'completed',
@@ -680,7 +680,7 @@ describe('createWorkers', () => {
   });
 
   it('repairs conversation mapping for an already-checkpointed edited message', async () => {
-    const session = makeClaudeSessionId('chat-session');
+    const session = makeAgentSessionId('chat-session');
     if (!session.ok) throw new Error(session.error);
     makeWorkers();
     const deliveryWorker = requireWorker('reclaw-delivery');
@@ -729,7 +729,7 @@ describe('createWorkers', () => {
   });
 
   it('delivery worker saves message-session mappings without resending completed operations', async () => {
-    const session = makeClaudeSessionId('scheduled-session');
+    const session = makeAgentSessionId('scheduled-session');
     if (!session.ok) throw new Error(session.error);
     makeWorkers();
     const deliveryWorker = requireWorker('reclaw-delivery');

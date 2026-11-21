@@ -12,11 +12,11 @@ import { getAllowedTools } from '../core/permissions.js';
 import { buildChatPrompt, personalityInstructions } from '../core/prompt-builder.js';
 import { type StreamState, createStreamState, processChunk } from '../core/stream-state.js';
 import {
+  type AgentSessionId,
   type ChatJob,
-  type ClaudeSessionId,
   type ConversationTarget,
   chatJobSourcePaths,
-  makeClaudeSessionId,
+  makeAgentSessionId,
 } from '../core/types.js';
 import type {
   AgentOptions,
@@ -44,7 +44,7 @@ export type ChatActivityOutcome =
   | {
       readonly kind: 'completed';
       readonly response: string;
-      readonly sessionId: ClaudeSessionId | null;
+      readonly sessionId: AgentSessionId | null;
       readonly conversationGeneration: ChatJob['conversation']['generation'];
       readonly conversationRevision: ChatJob['conversation']['revision'];
       readonly conversationBackend: ChatJob['conversation']['backend'];
@@ -251,7 +251,9 @@ async function runChatAgent(
   status: StatusStream,
 ): Promise<AgentResult> {
   const isResuming = conversation.sessionId !== null;
-  console.info(`[chat] Running Claude for chatId=${job.chatId} resume=${isResuming}`);
+  console.info(
+    `[chat] Running ${conversation.backend} for chatId=${job.chatId} resume=${isResuming}`,
+  );
   const result = await deps.runAgentStreaming(
     chatAgentOptions(
       deps.config,
@@ -263,7 +265,7 @@ async function runChatAgent(
     status.onChunk,
   );
   console.info(
-    `[chat] Claude finished for chatId=${job.chatId} ok=${result.ok}${result.ok ? ` duration=${result.durationMs}ms` : ` error=${formatAgentFailure(result.failure)}`}`,
+    `[chat] ${conversation.backend} finished for chatId=${job.chatId} ok=${result.ok}${result.ok ? ` duration=${result.durationMs}ms` : ` error=${formatAgentFailure(result.failure)}`}`,
   );
 
   if (result.ok || !isResuming || !agentFailurePolicy(result.failure).mayRetryWithoutSession) {
@@ -278,9 +280,9 @@ async function runChatAgent(
 }
 
 /** A malformed backend session id drops session lineage instead of failing the turn. */
-function sessionLineageOf(rawSessionId: string | null, chatId: number): ClaudeSessionId | null {
+function sessionLineageOf(rawSessionId: string | null, chatId: number): AgentSessionId | null {
   if (rawSessionId === null) return null;
-  const parsed = makeClaudeSessionId(rawSessionId);
+  const parsed = makeAgentSessionId(rawSessionId);
   if (parsed.ok) return parsed.value;
   console.warn(
     `[chat] Backend returned a malformed session id for chatId=${chatId}; continuing without session lineage:`,

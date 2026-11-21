@@ -22,8 +22,8 @@ import {
 import { parseChatJob, parseScheduledJob } from '../core/job-schemas.js';
 import { splitMessage } from '../core/message-splitter.js';
 import {
+  type AgentSessionId,
   type ChatJob,
-  type ClaudeSessionId,
   type ScheduledJob,
   chatJobSourcePaths,
 } from '../core/types.js';
@@ -113,7 +113,7 @@ const cortexWorkspace = (deps: ActivityQueueDeps): string | null =>
 
 function cortexDeliveries(
   activityId: ActivityId,
-  sessionId: ClaudeSessionId | null,
+  sessionId: AgentSessionId | null,
   cwd: string | null,
 ): readonly CortexDelivery[] {
   return sessionId === null || cwd === null
