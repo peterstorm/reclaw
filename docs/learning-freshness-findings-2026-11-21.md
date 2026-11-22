@@ -329,3 +329,33 @@ Documentation corrections from the comment-analyzer, applied where they live:
   `sourceDigest` as P2; the scope type and `unreadable` contract are described there.
 - The port documents that symlinked directories and files are skipped by the walk.
 - `read` and `section` share one lesson-range error wording instead of two copies.
+
+## P0 live acceptance — observed 2026-11-22
+
+The loop had never written a study event. It now has, on the deployed `main` checkout:
+
+```
+journalctl --user -u reclaw.service --since "2026-11-22 07:00"
+  07:00:00  [worker:scheduled] Processing job scheduled:learn-lesson:2026-11-22T06-00-00.000Z
+  08:09:31  [chat] Running pi for chatId=5061662914 resume=true
+  08:09:52  [cortex] Extraction completed for session 01a201d7-0d6f-7327-96aa-d09ddae1c810
+
+session 01a201d7-0d6f-7327-96aa-d09ddae1c810 (pi transcript)
+  06:00:13  tool  learn.ts lesson          → {kind:"lesson", topic:"harness-engineering-fundamentals", lesson:1}
+  06:00:31  assistant                      → the lesson-1 message (sent)
+  07:09:35  user                           → "Done" (quoted reply to that message)
+  07:09:45  tool  learn.ts read … 1        → {kind:"recorded", unlockedCards:5}
+  07:09:51  assistant                      → "✅ Lesson 1 logged — 5 cards unlocked…"
+
+learning/curriculum/.state/study-log.jsonl
+  {"kind":"lesson-read","at":"2026-11-22T07:09:45.707Z","topic":"harness-engineering-fundamentals","lesson":1}
+
+notes repo: a19f1cf "vault: auto-sync 2026-11-22T07:20:32Z" — one line, the event above
+learn status: cards.unlocked 5, cards.due 5, last7Days.lessonsRead 1, next lesson 2/3
+```
+
+Two things this does **not** prove. The run used `main`'s template-composed lesson skill and
+`main`'s `scripts/learn.ts`, so this branch's relay-verbatim path is still covered only by tests
+and scratch-vault receipts; it goes live when the service checkout pulls the merge. And the
+recall half (round → grades) had not yet had a real reply at the time of writing — the five
+unlocked cards are due, so the next `learn-recall` at 11:30 is its first live test.

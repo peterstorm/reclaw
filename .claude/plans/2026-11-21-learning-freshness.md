@@ -350,13 +350,26 @@ property: exactly the missing declarations change), `learn-command.test.ts` (end
 fake vault, incl. refused commands writing nothing). Full suite 2915 green, `tsc` and `biome`
 clean.
 
-**P0 — CLI half proven, live half pending.** On a copy of the vault
-(`RECLAW_VAULT_ROOT=/tmp/vault-copy`): lesson message rendered → `read` unlocked 5 cards →
-`already-read` on replay → round of 3 asked and logged → `last-round` returned ids + reference
-answers → two grades (`hard`, `good`) via quoted heredoc → `round-result last` rendered the
-feedback with a relative next-due → `section` returned one 8.7k-char lesson and its 5 cards. The
-remaining acceptance is one real Telegram "done" reply: no `[chat] … resume=true` for a learn
-session has been observed yet, and the live log still has zero events.
+**P0 — proven live (2026-11-22).** The live loop had never produced a study event; it now has
+the full chain, on the deployed `main` checkout rather than this branch:
+
+- `07:00:00` the scheduled `learn-lesson` job ran (`learn-lesson:2026-11-22T06-00-00.000Z`);
+  the agent called `lesson`, sent the lesson-1 message.
+- `08:09:31` the learner's **"Done"** reply resumed the same session
+  (`[chat] Running pi for chatId=… resume=true`).
+- `08:09:45` the agent ran `read harness-engineering-fundamentals 1` →
+  `{"kind":"recorded","unlockedCards":5}` and confirmed in one line.
+- The first line of `learning/curriculum/.state/study-log.jsonl` is that event
+  (`kind: lesson-read, topic: harness-engineering-fundamentals, lesson: 1`), the vault sync
+  committed it (`a19f1cf`, one line), and `learn status` now reports `cards.unlocked: 5`,
+  `cards.due: 5`, `last7Days.lessonsRead: 1`, with the next lesson being 2/3.
+
+Earlier the CLI half was proven on a vault copy (`README`-style receipt above); both halves are
+now observed. **What this does not prove:** the run used `main`'s template-composed lesson
+skill and `main`'s `scripts/learn.ts`, so this branch's relay-verbatim path (`--message`,
+`round-result`, `fix-sources`) is still only covered by tests and scratch-vault receipts — it
+becomes live when the service's checkout pulls this branch's merge (the skill watcher reloads
+prompts without a restart; `scripts/` needs the same pull).
 
 **Not started:** P2 (manifests + drift), P4 (renderer + `build-apply`), P5 (refresh), P6
 (ingest + scout), P7 (post-read refresh). Order unchanged: P2 before P5, P4 before P5.
