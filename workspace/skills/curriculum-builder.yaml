@@ -46,14 +46,15 @@ promptTemplate: |
   ## Step 3 — Validate (mandatory)
 
   ```
-  cd ~/dev/claude-plugins/reclaw && bun scripts/learn.ts validate --sources
+  cd ~/dev/claude-plugins/reclaw && bun scripts/learn.ts validate --sources --slug <slug>
   ```
 
-  Fix the note until `noteErrors` has no entry for this slug AND `missingSources` has no entry
-  starting with `<slug>:`. Every source you declare must be a path that exists right now — a
-  dead source is a claim the note's research cannot be checked against. If you cannot get it
-  valid, delete the note file you created (a broken note blocks the user's reading queue) and
-  report the failure with the remaining errors.
+  `--slug <slug>` scopes the check to the note you just wrote, so a pre-existing broken note
+  elsewhere does not block you. Fix the note until `valid` is true AND `missingSources` is
+  empty. Every source you declare must be a path that exists right now — a dead source is a
+  claim the note's research cannot be checked against. If you cannot get it valid, delete the
+  note file you created (a broken note blocks the user's reading queue) and report the failure
+  with the remaining errors.
 
   ## Step 4 — Report
 

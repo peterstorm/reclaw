@@ -19,26 +19,26 @@ import {
   parseCurriculum,
 } from '../core/curriculum.js';
 import {
-  ALL_CLEAR,
-  type GradedAnswer,
   renderLessonMessage,
   renderRoundMessage,
   renderRoundResult,
 } from '../core/learning-messages.js';
-import type { LearningVault } from '../core/learning-vault-port.js';
+import type { BasenameIndex, LearningVault } from '../core/learning-vault-port.js';
 import { type MasterNote, lessonSection, parseMasterNote } from '../core/master-note.js';
+import { ALL_CLEAR } from '../core/scheduled-output.js';
 import {
+  type SourceRepairError,
+  type VaultScope,
   applySourceRepair,
-  baseNameOf,
   planSourceRepair,
-  sourceRootOf,
+  scopeKey,
+  scopeOf,
   uniquePaths,
 } from '../core/source-repair.js';
 import {
   GRADES,
   type Grade,
   MAX_ANSWER_CHARS,
-  type RoundId,
   type StudyEvent,
   parseStudyLog,
   serializeEvent,
@@ -49,10 +49,12 @@ import {
   type GradeError,
   type LessonPlan,
   type ReadError,
-  type RoundCard,
+  type RoundViewError,
   type StudyState,
   foldStudy,
   gradeCard,
+  gradedRound,
+  lastAsked,
   logFeynman,
   markLessonRead,
   nextBuild,
@@ -79,7 +81,7 @@ export const LEARN_USAGE = `usage: learn <command>
   fix-sources [--apply]                    re-point renamed sources (--apply writes the registry)
   feynman                                  pick this week's explain-it-back topic
   feynman-log <topic-slug> [--gaps "gap one; gap two"]
-  validate [--sources]                     check registry, notes, log (+ source paths)`;
+  validate [--sources] [--slug S]            check registry, notes, log (+ source paths)`;
 
 /** What a command prints: data for a skill, or the finished message for the learner. */
 export type LearnOutput =
@@ -104,7 +106,7 @@ type Command =
   | { kind: 'fix-sources'; apply: boolean }
   | { kind: 'feynman' }
   | { kind: 'feynman-log'; topic: string; gaps: readonly string[] }
-  | { kind: 'validate'; sources: boolean };
+  | { kind: 'validate'; sources: boolean; slug: string | undefined };
 
 function flag(args: readonly string[], name: string): string | undefined {
   const i = args.indexOf(name);
@@ -179,7 +181,8 @@ const COMMAND_PARSERS: {
       .filter((g) => g !== '');
     return ok({ kind: 'feynman-log', topic, gaps });
   },
-  validate: (args) => ok({ kind: 'validate', sources: args.includes('--sources') }),
+  validate: (args) =>
+    ok({ kind: 'validate', sources: args.includes('--sources'), slug: flag(args, '--slug') }),
 };
 
 const isCommandName = (s: string | undefined): s is CommandName =>
@@ -253,7 +256,6 @@ export async function runLearnCommand(
   const session: Session = {
     state,
     curriculum: loaded.value.curriculum,
-    vault,
     now,
     append: (events) => vault.appendLog(events.map(serializeEvent)),
   };
@@ -278,11 +280,10 @@ export async function runLearnCommand(
 
 // ─── Commands that decide, then append ────────────────────────────────────────
 
-/** What a deciding command works on: folded state, the curriculum, the clock, the writers. */
+/** What a deciding command works on: folded state, the curriculum, the clock, the writer. */
 type Session = Readonly<{
   state: StudyState;
   curriculum: Curriculum;
-  vault: LearningVault;
   now: Date;
   append: (events: readonly StudyEvent[]) => Promise<void>;
 }>;
@@ -297,21 +298,23 @@ async function runLesson(c: CommandOf<'lesson'>, { state, now }: Session): Comma
 }
 
 /** One lesson's text and its cards: the payload for pretest replies and follow-ups. */
-async function runSection(c: CommandOf<'section'>, { state, curriculum, vault }: Session) {
+async function runSection(c: CommandOf<'section'>, { state, curriculum }: Session) {
   const topic = curriculum.bySlug.get(c.topic as TopicSlug);
   if (topic === undefined) return err(`unknown topic "${c.topic}"`);
   const note = state.notes.get(topic.slug);
   if (note === undefined) return err(`topic "${c.topic}" has no master note yet`);
-  const raw = await vault.readNote(notePathFor(topic));
-  const section = lessonSection(raw ?? '', c.lesson);
-  if (!section.ok) return err(`topic "${c.topic}": ${section.error}`);
+  const section = lessonSection(note, c.lesson);
+  if (!section.ok)
+    return err(
+      `topic "${c.topic}" has lessons 1–${section.error.lessonCount}, not ${section.error.lesson}`,
+    );
   return ok(
     json({
       kind: 'section',
       topic: topic.slug,
       topicTitle: note.title,
       notePath: notePathFor(topic),
-      lesson: section.value.lesson,
+      lesson: section.value.number,
       lessonTitle: section.value.title,
       body: section.value.body,
       cards: note.cards
@@ -349,76 +352,36 @@ async function runRound(c: CommandOf<'round'>, { state, now, append }: Session):
   );
 }
 
-/** The graded round, numbered in the order it was asked, or ALL_CLEAR when nothing landed. */
+/** The graded round, numbered in the order it was asked; a round with no grade is refused. */
 async function runRoundResult(
   c: CommandOf<'round-result'>,
   { state, now }: Session,
 ): CommandResult {
-  const id = c.round === 'last' ? (latestRound(state)?.round ?? null) : (c.round as RoundId);
-  if (id === null) return err('no round has been asked yet');
-  const round = state.rounds.get(id);
-  if (round === undefined) return err(`unknown round "${c.round}"`);
-  const items: GradedAnswer[] = [];
-  for (const cardId of round.cards) {
-    const progress = state.cards.get(cardId);
-    const graded = progress?.grades.find((g) => g.round === id);
-    if (progress === undefined || graded === undefined) continue;
-    items.push({
-      card: roundCardOf(state, cardId, progress.card),
-      grade: graded.grade,
-      nextDueAt: progress.fsrs.due,
-    });
-  }
-  return ok(text(renderRoundResult(items, now)));
+  const items = gradedRound(state, c.round);
+  if (!items.ok) return err(roundViewError(items.error));
+  return ok(text(renderRoundResult(items.value, now)));
 }
 
-/** The round asked most recently, or null when none has been. */
-function latestRound(
-  state: StudyState,
-): Readonly<{ round: RoundId; at: Date; cards: readonly RoundCard['id'][] }> | null {
-  let latest: Readonly<{ round: RoundId; at: Date; cards: readonly RoundCard['id'][] }> | null =
-    null;
-  for (const [round, asked] of state.rounds)
-    if (latest === null || asked.at > latest.at)
-      latest = { round, at: asked.at, cards: asked.cards };
-  return latest;
+function roundViewError(error: RoundViewError): string {
+  return match(error)
+    .with({ kind: 'no-rounds' }, () => 'no round has been asked yet')
+    .with({ kind: 'unknown-round' }, (e) => `unknown round "${e.round}"`)
+    .with(
+      { kind: 'no-grades' },
+      (e) => `round "${e.round}" has no graded card yet — grade at least one, then ask again`,
+    )
+    .exhaustive();
 }
 
 /** The round just asked, with every card's reference answer: the grader's whole input. */
 function lastRoundView(state: StudyState): unknown {
-  const round = latestRound(state);
+  const round = lastAsked(state);
   if (round === null) return { kind: 'no-round' };
-  const cards = round.cards.flatMap((id) => {
-    const progress = state.cards.get(id);
-    if (progress === undefined) return [];
-    return [
-      {
-        id,
-        topicTitle: state.curriculum.bySlug.get(progress.card.topic)?.title ?? progress.card.topic,
-        lesson: progress.card.lesson,
-        question: progress.card.question,
-        answer: progress.card.answer,
-        graded: progress.grades.some((g) => g.round === round.round),
-      },
-    ];
-  });
-  return { kind: 'last-round', round: round.round, askedAt: round.at.toISOString(), cards };
-}
-
-function roundCardOf(
-  state: StudyState,
-  id: RoundCard['id'],
-  card: Readonly<{ topic: TopicSlug; lesson: number; question: string; answer: string }>,
-): RoundCard {
-  const topic = state.curriculum.bySlug.get(card.topic);
   return {
-    id,
-    topicTitle: topic?.title ?? card.topic,
-    notePath: topic === undefined ? '' : notePathFor(topic),
-    lesson: card.lesson,
-    question: card.question,
-    answer: card.answer,
-    isNew: false,
+    kind: 'last-round',
+    round: round.round,
+    askedAt: round.askedAt.toISOString(),
+    cards: round.cards,
   };
 }
 
@@ -480,59 +443,103 @@ async function runFixSources(
   for (const path of declared) if (await vault.sourceExists(path)) existing.add(path);
   const missing = declared.filter((path) => !existing.has(path));
 
-  const roots = uniquePaths(missing.map(sourceRootOf));
-  const indexes = new Map(
-    await Promise.all(
-      roots.map(async (root) => [root, await vault.indexByBasename(root)] as const),
-    ),
+  const scopes = new Map<string, VaultScope>();
+  for (const path of missing) {
+    const scope = scopeOf(path);
+    if (scope !== null) scopes.set(scopeKey(scope), scope);
+  }
+  const indexes = new Map<string, BasenameIndex>();
+  for (const [key, scope] of scopes) indexes.set(key, await vault.indexByBasename(scope));
+
+  // A rename planned from a tree that could not be fully listed is a guess: refuse instead.
+  const unreadable = uniquePaths([...indexes.values()].flatMap((i) => i.unreadable));
+  if (unreadable.length > 0)
+    return err(
+      `cannot plan a repair — these roots could not be listed, so a rename would be guessed:\n- ${unreadable.join('\n- ')}`,
+    );
+
+  const plan = planSourceRepair(
+    curriculum,
+    existing,
+    (scope) => indexes.get(scopeKey(scope))?.byName ?? new Map(),
   );
-  const candidates = new Map(
-    missing.map((path) => [path, indexes.get(sourceRootOf(path))?.get(baseNameOf(path)) ?? []]),
-  );
-  const plan = planSourceRepair(curriculum, existing, candidates);
   const report = {
     checked: plan.checked,
     resolved: plan.resolved,
     fixes: plan.fixes,
     ambiguous: plan.ambiguous,
     unresolved: plan.unresolved,
+    unscoped: plan.unscoped,
   };
   if (!c.apply || plan.fixes.length === 0)
     return ok(json({ kind: 'source-repair', applied: 0, ...report }));
 
   const rewritten = applySourceRepair(registryText, plan);
-  if (!rewritten.ok) return err(rewritten.error);
-  const reparsed = parseCurriculum(rewritten.value);
+  if (!rewritten.ok) return err(sourceRepairErrorMessage(rewritten.error));
+  const reparsed = parseCurriculum(rewritten.value.text);
   if (!reparsed.ok)
     return err(`repair would break the registry:\n- ${reparsed.error.join('\n- ')}`);
-  await vault.writeRegistry(rewritten.value);
+  await vault.writeRegistry(rewritten.value.text);
 
   const remaining: string[] = [];
   for (const path of uniquePaths(reparsed.value.topics.flatMap((t) => t.sources)))
     if (!(await vault.sourceExists(path))) remaining.push(path);
-  return ok(json({ kind: 'source-repair', applied: plan.fixes.length, remaining, ...report }));
+  return ok(
+    json({ kind: 'source-repair', applied: rewritten.value.applied, remaining, ...report }),
+  );
 }
 
-/** Report every registry, note and log problem; with `--sources`, also missing source files. */
+function sourceRepairErrorMessage(error: SourceRepairError): string {
+  return match(error)
+    .with({ kind: 'registry-unparseable' }, (e) => `registry YAML parse error: ${e.reason}`)
+    .with({ kind: 'no-topics' }, () => 'registry has no topics sequence')
+    .with({ kind: 'unknown-topic' }, (e) => `topic "${e.topic}" not found in the registry`)
+    .with({ kind: 'no-sources' }, (e) => `topic "${e.topic}" has no sources sequence`)
+    .with(
+      { kind: 'declaration-absent' },
+      (e) =>
+        `topic "${e.topic}" declares neither "${e.from}" nor its target — the registry changed since the plan`,
+    )
+    .exhaustive();
+}
+
+/**
+ * Report every registry, note and log problem; with `--sources`, also missing source files.
+ * `--slug` narrows it to one topic — the builder checks only the note it just wrote, so a
+ * pre-existing broken note elsewhere does not block it.
+ */
 async function runValidate(
   c: CommandOf<'validate'>,
   { curriculum, state, noteErrors, logErrors }: Loaded,
   vault: LearningVault,
 ): CommandResult {
+  const topics =
+    c.slug === undefined ? curriculum.topics : curriculum.topics.filter((t) => t.slug === c.slug);
+  if (topics.length === 0) return err(`unknown topic "${c.slug ?? ''}"`);
+  const inScope = new Set(topics.map((t) => t.slug));
+
   const missingSources: string[] = [];
   if (c.sources)
-    for (const topic of curriculum.topics)
+    for (const topic of topics)
       for (const source of topic.sources)
         if (!(await vault.sourceExists(source))) missingSources.push(`${topic.slug}: ${source}`);
-  const valid = noteErrors.size === 0 && logErrors.length === 0 && missingSources.length === 0;
+  const scopedNoteErrors = Object.fromEntries(
+    [...noteErrors].filter(([slug]) => inScope.has(slug)),
+  );
+  const notes = [...state.notes.values()].filter((note) => inScope.has(note.topic));
+  const valid =
+    Object.keys(scopedNoteErrors).length === 0 &&
+    logErrors.length === 0 &&
+    missingSources.length === 0;
   return ok(
     json({
       kind: 'validation',
       valid,
-      topics: curriculum.topics.length,
-      builtNotes: state.notes.size,
-      cards: [...state.notes.values()].reduce((n, note) => n + note.cards.length, 0),
-      noteErrors: Object.fromEntries(noteErrors),
+      slug: c.slug ?? null,
+      topics: topics.length,
+      builtNotes: notes.length,
+      cards: notes.reduce((n, note) => n + note.cards.length, 0),
+      noteErrors: scopedNoteErrors,
       logErrors,
       orphanEvents: state.orphanEvents,
       ...(c.sources ? { missingSources } : {}),

@@ -2,7 +2,8 @@
 // models, so tests state intent ("2 lessons, 3 cards each") instead of pasting markdown.
 
 import { CURRICULUM_ROOT, REGISTRY_PATH } from '../curriculum.js';
-import type { LearningVault } from '../learning-vault-port.js';
+import type { BasenameIndex, LearningVault } from '../learning-vault-port.js';
+import { scopeKey } from '../source-repair.js';
 
 export type TopicSpec = Readonly<{
   slug: string;
@@ -117,17 +118,23 @@ export function fakeVault(
       if (lines.length > 0) log += `${lines.join('\n')}\n`;
     },
     sourceExists: async (path) => path in files,
-    indexByBasename: async (root) => {
+    indexByBasename: async (scope) => {
+      const root = scopeKey(scope);
       const index = new Map<string, string[]>();
       for (const path of Object.keys(files)) {
         if (!path.endsWith('.md')) continue;
-        if (root !== '' && !path.startsWith(`${root}/`)) continue;
+        const inHome = path.startsWith('~/');
+        if (root === '') {
+          if (inHome) continue;
+        } else if (!path.startsWith(`${root}/`)) {
+          continue;
+        }
         const name = path.split('/').at(-1) ?? path;
         const paths = index.get(name) ?? [];
         paths.push(path);
         index.set(name, paths);
       }
-      return index;
+      return { byName: index, unreadable: [] } satisfies BasenameIndex;
     },
     writeRegistry: async (text) => {
       registryText = text;

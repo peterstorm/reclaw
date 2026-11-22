@@ -2,15 +2,16 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import type { DomainId, Topic, TopicSlug } from './curriculum.js';
 import {
-  ALL_CLEAR,
+  keyPoint,
   relativeFrom,
   renderLessonMessage,
   renderRoundMessage,
   renderRoundResult,
 } from './learning-messages.js';
 import type { CardId, Lesson } from './master-note.js';
+import { ALL_CLEAR } from './scheduled-output.js';
 import type { Grade, RoundId } from './study-log.js';
-import type { LessonPlan, RoundCard, RoundPlan } from './study-plan.js';
+import type { GradedAnswer, LessonPlan, RoundCard, RoundPlan } from './study-plan.js';
 
 const T0 = new Date('2026-10-17T07:00:00.000Z');
 const hours = (h: number) => new Date(T0.getTime() + h * 3_600_000);
@@ -31,6 +32,7 @@ const lesson = (number: number, pretest = ['Q1?', 'Q2?']): Lesson => ({
   number,
   title: `Why ${number}`,
   pretest,
+  body: `Body of lesson ${number}.`,
 });
 
 const lessonPlan = (over: Partial<LessonPlan & { kind: 'lesson' }> = {}): LessonPlan => ({
@@ -90,9 +92,17 @@ describe('renderLessonMessage', () => {
     );
   });
 
-  it('says nothing (ALL_CLEAR) while the note is not built or the curriculum is done', () => {
+  it('says nothing (ALL_CLEAR) only while the note is not built', () => {
     expect(renderLessonMessage({ kind: 'awaiting-build', topic })).toBe(ALL_CLEAR);
-    expect(renderLessonMessage({ kind: 'curriculum-complete' })).toBe(ALL_CLEAR);
+  });
+
+  // A finished curriculum is still a reply the learner is waiting for; the sentinel would
+  // arrive as the literal word ALL_CLEAR, because nothing suppresses an interactive message.
+  it('celebrates a finished curriculum instead of rendering the sentinel', () => {
+    const text = renderLessonMessage({ kind: 'curriculum-complete' });
+    expect(text).not.toBe(ALL_CLEAR);
+    expect(text).toContain('Curriculum complete');
+    expect(text).toContain('registry.yaml');
   });
 
   it('reports an invalid note with at most three errors, and no model judgement', () => {
@@ -118,6 +128,17 @@ describe('renderLessonMessage', () => {
         if (nonEmpty.length === 0) return true;
         const text = renderLessonMessage(lessonPlan({ lesson: lesson(1, nonEmpty) }));
         return nonEmpty.every((q) => text.includes(q));
+      }),
+    );
+  });
+
+  it('never renders the suppression sentinel for a plan the learner is waiting on (property)', () => {
+    fc.assert(
+      fc.property(fc.integer({ min: 1, max: 4 }), fc.integer({ min: 0, max: 40 }), (n, due) => {
+        const text = renderLessonMessage(
+          lessonPlan({ lesson: lesson(n), dueCards: due, backlogHigh: due > 30 }),
+        );
+        return text !== ALL_CLEAR && !text.includes(ALL_CLEAR);
       }),
     );
   });
@@ -154,15 +175,23 @@ describe('renderRoundMessage', () => {
 });
 
 describe('renderRoundResult', () => {
-  const graded = (id: string, grade: Grade, nextDueAt: Date | null = hours(3)) => ({
-    card: card(id),
+  const graded = (
+    position: number,
+    id: string,
+    grade: Grade,
+    nextDueAt: Date = hours(3),
+  ): GradedAnswer => ({
+    position,
+    topicTitle: 'KV Cache Fundamentals',
+    lesson: 1,
+    answer: `Reference answer ${id}.`,
     grade,
     nextDueAt,
   });
 
   it('keeps the asked order and gives the reference answer only where it was missed', () => {
     const text = renderRoundResult(
-      [graded('c01', 'good'), graded('c02', 'again'), graded('c03', 'hard')],
+      [graded(1, 'c01', 'good'), graded(2, 'c02', 'again'), graded(3, 'c03', 'hard')],
       T0,
     );
     expect(text).toContain('**1. good ✓** — Reference answer c01.');
@@ -172,22 +201,63 @@ describe('renderRoundResult', () => {
     expect(text).toContain('Next up: in 3h.');
   });
 
+  // A skipped question leaves its number behind: "override 2" must keep meaning card 2.
+  it('numbers by the position in the round, not by the order of the graded items', () => {
+    const text = renderRoundResult([graded(1, 'c01', 'good'), graded(3, 'c03', 'good')], T0);
+    expect(text).toContain('**1. good ✓**');
+    expect(text).toContain('**3. good ✓**');
+    expect(text).not.toContain('**2.');
+  });
+
   it('picks the soonest due card for the next-up line', () => {
     const text = renderRoundResult(
-      [graded('c01', 'good', hours(48)), graded('c02', 'good', hours(2))],
+      [graded(1, 'c01', 'good', hours(48)), graded(2, 'c02', 'good', hours(2))],
       T0,
     );
     expect(text).toContain('Next up: in 2h.');
   });
 
-  it('is ALL_CLEAR when nothing was graded', () => {
-    expect(renderRoundResult([], T0)).toBe(ALL_CLEAR);
+  // Nothing suppresses an interactive reply, so the empty case must be a sentence.
+  it('says nothing was graded in words, never with the sentinel', () => {
+    const text = renderRoundResult([], T0);
+    expect(text).not.toBe(ALL_CLEAR);
+    expect(text).toContain('Nothing graded yet');
+  });
+
+  it('never renders the sentinel for any graded round (property)', () => {
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(
+          fc.record({
+            position: fc.integer({ min: 1, max: 9 }),
+            grade: fc.constantFrom<Grade>('again', 'hard', 'good', 'easy'),
+          }),
+          { minLength: 0, maxLength: 5, selector: (g) => g.position },
+        ),
+        (items) => {
+          const text = renderRoundResult(
+            items.map((i) => graded(i.position, `c${i.position}`, i.grade)),
+            T0,
+          );
+          return text !== ALL_CLEAR && !text.includes(ALL_CLEAR);
+        },
+      ),
+    );
+  });
+});
+
+describe('keyPoint', () => {
+  it('keeps the first sentence, and caps a runaway one', () => {
+    expect(keyPoint('First sentence. Second one.')).toBe('First sentence.');
+    expect(keyPoint('No terminator here')).toBe('No terminator here');
+    const long = keyPoint(`${'x'.repeat(400)}.`);
+    expect(long.length).toBe(240);
+    expect(long.endsWith('…')).toBe(true);
   });
 });
 
 describe('relativeFrom', () => {
   it.each([
-    [null, null],
     [new Date(T0.getTime() - 60_000), 'now'],
     [T0, 'now'],
     [hours(0.5), 'in 30m'],

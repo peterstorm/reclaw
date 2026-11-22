@@ -7,11 +7,21 @@
 // mid-write leaves the old file intact.
 
 import type { Dirent } from 'node:fs';
-import { access, appendFile, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
+import {
+  access,
+  appendFile,
+  mkdir,
+  readFile,
+  readdir,
+  rename,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { REGISTRY_PATH, STUDY_LOG_PATH } from '../core/curriculum.js';
-import type { LearningVault } from '../core/learning-vault-port.js';
+import type { BasenameIndex, LearningVault } from '../core/learning-vault-port.js';
+import type { VaultScope } from '../core/source-repair.js';
 
 const readIfExists = async (path: string): Promise<string | null> => {
   try {
@@ -22,32 +32,41 @@ const readIfExists = async (path: string): Promise<string | null> => {
   }
 };
 
+/** Paths that mean "there is no such file", as opposed to "nobody could look". */
+const ABSENT: ReadonlySet<string> = new Set(['ENOENT', 'ENOTDIR']);
+
+const errorCode = (e: unknown): string | undefined => (e as NodeJS.ErrnoException).code;
+
 export const DEFAULT_VAULT_ROOT = join(homedir(), 'dev/notes/remotevault');
 
 /** Directories that never hold a curriculum source: metadata, dependencies, trash. */
 const SKIP_DIRS: ReadonlySet<string> = new Set(['.git', 'node_modules', '.obsidian', '.trash']);
 
-/** Every markdown file under `root`, as paths relative to it. Unreadable dirs are skipped. */
-async function walkMarkdown(root: string): Promise<readonly string[]> {
-  const found: string[] = [];
-  const visit = async (dir: string): Promise<void> => {
+type Walked = Readonly<{ files: readonly string[]; unreadable: readonly string[] }>;
+
+/** Every markdown file under `dir`, as paths relative to `dir`; unlisted dirs are reported. */
+async function walkMarkdown(dir: string, root: string): Promise<Walked> {
+  const files: string[] = [];
+  const unreadable: string[] = [];
+  const visit = async (current: string): Promise<void> => {
     let entries: Dirent[];
     try {
-      entries = await readdir(dir, { withFileTypes: true });
+      entries = await readdir(current, { withFileTypes: true });
     } catch {
+      unreadable.push(relative(root, current) || '.');
       return;
     }
     for (const entry of entries) {
-      const path = join(dir, entry.name);
+      const path = join(current, entry.name);
       if (entry.isDirectory()) {
         if (!SKIP_DIRS.has(entry.name)) await visit(path);
       } else if (entry.isFile() && entry.name.endsWith('.md')) {
-        found.push(relative(root, path));
+        files.push(relative(root, path));
       }
     }
   };
-  await visit(root);
-  return found;
+  await visit(dir);
+  return { files, unreadable };
 }
 
 export function fsLearningVault(vaultRoot: string, home: string = homedir()): LearningVault {
@@ -75,23 +94,30 @@ export function fsLearningVault(vaultRoot: string, home: string = homedir()): Le
     sourceExists: async (path) => {
       try {
         await access(resolveSource(path));
-        return true;
-      } catch {
-        return false;
+        return (await stat(resolveSource(path))).isFile();
+      } catch (e) {
+        if (ABSENT.has(errorCode(e) ?? '')) return false;
+        throw e;
       }
     },
-    indexByBasename: async (root) => {
-      const scoped = root.startsWith('~/');
-      const dir = scoped ? join(home, root.slice(2)) : inVault(root);
-      const index = new Map<string, string[]>();
-      for (const rel of await walkMarkdown(dir)) {
-        const declared = scoped ? `${root}/${rel.split('\\').join('/')}` : rel;
+    indexByBasename: async (scope: VaultScope): Promise<BasenameIndex> => {
+      const dir = scope.kind === 'home' ? join(home, scope.subtree.slice(2)) : inVault('');
+      const prefix = scope.kind === 'home' ? scope.subtree : '';
+      const walked = await walkMarkdown(dir, dir);
+      const byName = new Map<string, string[]>();
+      for (const rel of walked.files) {
+        const declared = posixJoin(prefix, rel);
         const name = basename(declared);
-        const paths = index.get(name) ?? [];
+        const paths = byName.get(name) ?? [];
         paths.push(declared);
-        index.set(name, paths);
+        byName.set(name, paths);
       }
-      return index;
+      return {
+        byName,
+        unreadable: walked.unreadable.map((rel) =>
+          rel === '.' ? prefix || '.' : posixJoin(prefix, rel),
+        ),
+      };
     },
     writeRegistry: async (text) => {
       const path = inVault(REGISTRY_PATH);
@@ -102,3 +128,9 @@ export function fsLearningVault(vaultRoot: string, home: string = homedir()): Le
     },
   };
 }
+
+/** Declared paths always use `/`, whichever separator the filesystem produced. */
+const posixJoin = (prefix: string, path: string): string => {
+  const normalized = path.split('\\').join('/');
+  return prefix === '' ? normalized : `${prefix}/${normalized}`;
+};

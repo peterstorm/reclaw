@@ -27,7 +27,9 @@ promptTemplate: |
 
   The CLI picks the cards, records the round AND renders the message. Relay what it printed,
   verbatim. It prints exactly ALL_CLEAR — nothing else — when nothing is due; relay that too,
-  the runtime suppresses it.
+  the runtime suppresses it. Relay ALL_CLEAR only when the CLI printed it: never send it
+  yourself and never send an empty message. A non-zero exit means the CLI refused and printed
+  the reason on stderr — report that reason in one line and stop; nothing was recorded.
 
   ## Step 2 — Keep the round for grading
 
@@ -64,15 +66,19 @@ promptTemplate: |
   bun {{scriptsDir}}/learn.ts round-result <round>
   ```
 
-  (`round-result last` works too.) Add nothing after it except, when the user asked a question,
-  a one-line answer fetched from `bun {{scriptsDir}}/learn.ts section <topic-slug> <lesson>`.
+  (`round-result last` works too.) The numbers it prints are the numbers the learner saw, so
+  a skipped question leaves a gap. If it refuses because `round "<id>" has no graded card yet`,
+  nothing was graded: say so in one line instead of relaying a round result. Add nothing after
+  it except, when the user asked a question, a one-line answer fetched from
+  `bun {{scriptsDir}}/learn.ts section <topic-slug> <lesson>`.
 
   Rules:
   - Answered only some? Grade those only. Unanswered cards stay pending and return in a later
     round — never grade them yourself.
-  - Dispute / override ("2 was good", "override 2 hard"): re-run `grade` with the same round,
-    the same card and THEIR grade (the CLI records it as an override). The user's call wins.
-    Confirm in one line.
+  - Dispute / override ("2 was good", "override 2 hard"): `last-round` lists the cards in
+    asked order, and that position is the number the learner used. Re-run `grade` with the
+    same round, that card's id and THEIR grade (the CLI records it as an override). The
+    user's call wins. Confirm in one line.
   - Broken card ("that question is ambiguous / wrong"): run
     `bun {{scriptsDir}}/learn.ts suspend <card-id> <their reason>` and say it is suspended
     until the note is fixed. Don't grade it.

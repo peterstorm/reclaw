@@ -439,6 +439,106 @@ function toRoundCard(state: StudyState, p: CardProgress): RoundCard {
   };
 }
 
+/** One card as it was asked: what grading needs, without the question-plan-only fields. */
+export type AskedCard = Readonly<{
+  id: CardId;
+  topicTitle: string;
+  lesson: number;
+  question: string;
+  answer: string;
+  graded: boolean;
+}>;
+
+export type AskedRound = Readonly<{
+  round: RoundId;
+  askedAt: Date;
+  cards: readonly AskedCard[];
+}>;
+
+export type RoundViewError =
+  | Readonly<{ kind: 'no-rounds' }>
+  | Readonly<{ kind: 'unknown-round'; round: string }>
+  | Readonly<{ kind: 'no-grades'; round: RoundId }>;
+
+/** The round asked most recently, or null when none has been. */
+export function lastAsked(state: StudyState): AskedRound | null {
+  const latest = latestRound(state.rounds);
+  if (latest === null) return null;
+  return {
+    round: latest.round,
+    askedAt: latest.at,
+    cards: latest.cards.map((id) => askedCard(state, id, latest.round)),
+  };
+}
+
+function latestRound(
+  rounds: StudyState['rounds'],
+): Readonly<{ round: RoundId; at: Date; cards: readonly CardId[] }> | null {
+  let latest: Readonly<{ round: RoundId; at: Date; cards: readonly CardId[] }> | null = null;
+  for (const [round, asked] of rounds)
+    if (latest === null || asked.at > latest.at)
+      latest = { round, at: asked.at, cards: asked.cards };
+  return latest;
+}
+
+function askedCard(state: StudyState, id: CardId, round: RoundId): AskedCard {
+  const progress = state.cards.get(id);
+  const card = progress?.card;
+  return {
+    id,
+    topicTitle:
+      card === undefined ? '' : (state.curriculum.bySlug.get(card.topic)?.title ?? card.topic),
+    lesson: card?.lesson ?? 0,
+    question: card?.question ?? '',
+    answer: card?.answer ?? '',
+    graded: progress?.grades.some((g) => g.round === round) === true,
+  };
+}
+
+/** One graded answer, numbered by the position the card held in the round it was asked. */
+export type GradedAnswer = Readonly<{
+  position: number;
+  topicTitle: string;
+  lesson: number;
+  answer: string;
+  grade: Grade;
+  nextDueAt: Date;
+}>;
+
+/**
+ * The graded cards of a round in asked order; an ungraded card is omitted and leaves its
+ * number behind, so a number the learner is told to override always means the same card.
+ * A round with no grade at all is an error, not an empty message: nothing suppresses a
+ * reply, so the sentinel would reach the learner as the word ALL_CLEAR.
+ */
+export function gradedRound(
+  state: StudyState,
+  roundSlug: string,
+): Result<readonly GradedAnswer[], RoundViewError> {
+  const latest = lastAsked(state);
+  const id = roundSlug === 'last' ? (latest?.round ?? null) : (roundSlug as RoundId);
+  if (id === null) return err({ kind: 'no-rounds' });
+  const round = state.rounds.get(id);
+  if (round === undefined) return err({ kind: 'unknown-round', round: roundSlug });
+
+  const items: GradedAnswer[] = [];
+  round.cards.forEach((cardId, i) => {
+    const progress = state.cards.get(cardId);
+    const graded = progress?.grades.find((g) => g.round === id);
+    if (progress === undefined || graded === undefined) return;
+    items.push({
+      position: i + 1,
+      topicTitle: state.curriculum.bySlug.get(progress.card.topic)?.title ?? progress.card.topic,
+      lesson: progress.card.lesson,
+      answer: progress.card.answer,
+      grade: graded.grade,
+      nextDueAt: progress.fsrs.due,
+    });
+  });
+  if (items.length === 0) return err({ kind: 'no-grades', round: id });
+  return ok(items);
+}
+
 export type GradeError =
   | Readonly<{ kind: 'unknown-round'; round: string }>
   | Readonly<{ kind: 'unknown-card'; card: string }>

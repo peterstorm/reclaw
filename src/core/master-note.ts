@@ -32,6 +32,8 @@ export type Lesson = Readonly<{
   number: number;
   title: string;
   pretest: readonly string[];
+  /** The lesson's prose, from under its heading up to the next H2. */
+  body: string;
 }>;
 
 export type RecallCard = Readonly<{
@@ -137,26 +139,28 @@ function parseCardBlock(lines: readonly string[]): {
 }
 
 /** One lesson as written: its title, and the body under it up to the next H2. */
-export type LessonSection = Readonly<{ lesson: number; title: string; body: string }>;
+export type LessonSection = Pick<Lesson, 'number' | 'title' | 'body'>;
+
+export type LessonSectionError = Readonly<{
+  kind: 'unknown-lesson';
+  lesson: number;
+  lessonCount: number;
+}>;
 
 /**
  * A single lesson's text, for the payload the lesson skill sees when the learner replies
- * with pretest guesses or a question about the material. The whole note never has to
- * reach the model.
+ * with pretest guesses or a question about the material. The lookup is on the note that is
+ * already parsed into study state: no second read, and no second parse that could disagree
+ * with the one that unlocked the cards.
  */
-export function lessonSection(markdown: string, lesson: number): Result<LessonSection, string> {
-  const split = splitFrontmatter(markdown);
-  if (!split.ok) return err(split.error);
-  for (const section of h2Sections(split.value.body)) {
-    const heading = LESSON_HEADING.exec(section.heading);
-    if (heading === null || Number(heading[1]) !== lesson) continue;
-    return ok({
-      lesson,
-      title: (heading[2] ?? '').trim(),
-      body: section.lines.join('\n').trim(),
-    });
-  }
-  return err(`lesson ${lesson} not found`);
+export function lessonSection(
+  note: MasterNote,
+  lesson: number,
+): Result<LessonSection, LessonSectionError> {
+  const found = note.lessons.find((l) => l.number === lesson);
+  if (found === undefined)
+    return err({ kind: 'unknown-lesson', lesson, lessonCount: note.lessons.length });
+  return ok({ number: found.number, title: found.title, body: found.body });
 }
 
 /** Parse a master note for `expected`. Every structural problem is reported at once. */
@@ -214,7 +218,12 @@ function parseLessons(sections: readonly Section[]): Checked<readonly Lesson[]> 
     if (number !== lessons.length + 1)
       errors.push(`lesson numbering: found Lesson ${number}, expected ${lessons.length + 1}`);
     if (pretest.length === 0) errors.push(`Lesson ${number}: no numbered pretest questions`);
-    lessons.push({ number, title: (m[2] ?? '').trim(), pretest });
+    lessons.push({
+      number,
+      title: (m[2] ?? '').trim(),
+      pretest,
+      body: section.lines.join('\n').trim(),
+    });
   }
   if (lessons.length < LESSON_BOUNDS.min || lessons.length > LESSON_BOUNDS.max)
     errors.push(

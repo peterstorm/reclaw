@@ -2,18 +2,20 @@
 // observable behaviour of the LearningVault port, so tests that use the fake prove
 // something about production.
 
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { fakeVault, notePath, renderNote, renderRegistry } from '../core/__fixtures__/learning.js';
 import { REGISTRY_PATH } from '../core/curriculum.js';
 import type { LearningVault } from '../core/learning-vault-port.js';
+import type { VaultScope } from '../core/source-repair.js';
 import { fsLearningVault } from './learning-vault.js';
 
 const registry = renderRegistry([{ slug: 'a' }]);
 const note = renderNote({ slug: 'a', lessons: 2 });
 const roots: string[] = [];
+const VAULT: VaultScope = { kind: 'vault' };
 
 async function fsVault(): Promise<LearningVault> {
   const root = await mkdtemp(join(tmpdir(), 'learning-vault-'));
@@ -65,9 +67,10 @@ describe.each([
 
   it('indexes note basenames, so a renamed source can be found by name', async () => {
     const vault = await make();
-    const index = await vault.indexByBasename('');
-    expect(index.get('a.md')).toEqual([notePath('a')]);
-    expect(index.get('registry.yaml')).toBeUndefined();
+    const index = await vault.indexByBasename(VAULT);
+    expect(index.byName.get('a.md')).toEqual([notePath('a')]);
+    expect(index.byName.get('registry.yaml')).toBeUndefined();
+    expect(index.unreadable).toEqual([]);
   });
 
   it('replaces the registry, and reads the replacement back', async () => {
@@ -88,8 +91,36 @@ describe('fsLearningVault outside the vault', () => {
     const vaultRoot = await mkdtemp(join(tmpdir(), 'learning-vault-'));
     roots.push(vaultRoot);
     const vault = fsLearningVault(vaultRoot, home);
-    const index = await vault.indexByBasename('~/.dotfiles');
-    expect(index.get('triage.md')).toEqual(['~/.dotfiles/docs/runbooks/triage.md']);
-    expect(index.get('elsewhere.md')).toBeUndefined();
+    const index = await vault.indexByBasename({ kind: 'home', subtree: '~/.dotfiles' });
+    expect(index.byName.get('triage.md')).toEqual(['~/.dotfiles/docs/runbooks/triage.md']);
+    expect(index.byName.get('elsewhere.md')).toBeUndefined();
+    expect(index.unreadable).toEqual([]);
+  });
+
+  it('reports a root it cannot list instead of treating it as empty', async () => {
+    if (process.getuid?.() === 0) return; // root ignores the mode bits
+    const home = await mkdtemp(join(tmpdir(), 'learning-home-'));
+    roots.push(home);
+    const locked = join(home, '.locked');
+    await mkdir(join(locked, 'notes'), { recursive: true });
+    await writeFile(join(locked, 'notes/kept.md'), '# kept\n');
+    await chmod(locked, 0o000);
+    try {
+      const vaultRoot = await mkdtemp(join(tmpdir(), 'learning-vault-'));
+      roots.push(vaultRoot);
+      const vault = fsLearningVault(vaultRoot, home);
+      const index = await vault.indexByBasename({ kind: 'home', subtree: '~/.locked' });
+      expect(index.unreadable).toEqual(['~/.locked']);
+    } finally {
+      await chmod(locked, 0o755);
+    }
+  });
+
+  it('treats a directory in place of a file as absent, not as unreadable', async () => {
+    const vaultRoot = await mkdtemp(join(tmpdir(), 'learning-vault-'));
+    roots.push(vaultRoot);
+    await mkdir(join(vaultRoot, 'dir.md'), { recursive: true });
+    const vault = fsLearningVault(vaultRoot);
+    expect(await vault.sourceExists('dir.md')).toBe(false);
   });
 });

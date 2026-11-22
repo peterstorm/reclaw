@@ -1,20 +1,20 @@
 // ─── Learning Messages ────────────────────────────────────────────────────────
 //
-// The Telegram text of the loop, rendered by code from the plans the core already
-// decides. The model used to compose all of this from a template — pure formatting, one
-// hallucination risk per message, and a prompt that had to describe the layout exactly.
-// Rendering here makes the message a function of the plan: byte-stable, testable, and free.
+// The Telegram text the recall loop renders in code, from the plans and views the core
+// already decided. The model used to compose all of this from a template — pure
+// formatting, one hallucination risk per message, and a prompt that had to describe the
+// layout exactly. Rendering here makes the message a function of the plan: byte-stable,
+// testable, and free.
 //
-// Every message the loop sends is one of these: a lesson, a recall round, a graded round
-// result. `nothing-due`, `awaiting-build` and `buffer-full` all render as ALL_CLEAR, the
-// sentinel the scheduled handler suppresses (`SUPPRESS_SENTINEL` in the orchestration).
+// Rendered here: the lesson, the round's questions, the graded round. Still composed by
+// their skills: the Feynman ask and the builder's note-ready report. `awaiting-build` is
+// the only plan that renders as ALL_CLEAR — the runtime's suppression sentinel. A message
+// a learner is waiting for (a finished curriculum, a round with nothing graded) never
+// renders as the sentinel, because nothing suppresses an interactive reply.
 
-import type { Grade } from './study-log.js';
-import type { LessonPlan, RoundCard, RoundPlan } from './study-plan.js';
+import { ALL_CLEAR } from './scheduled-output.js';
+import type { GradedAnswer, LessonPlan, RoundPlan } from './study-plan.js';
 import { assertNever } from './types.js';
-
-/** "Nothing to say": the scheduled handler suppresses a message that is exactly this. */
-export const ALL_CLEAR = 'ALL_CLEAR';
 
 /** The lesson the reader is on, with its pretest questions and Obsidian pointer. */
 function lessonBody(p: Extract<LessonPlan, { kind: 'lesson' }>): string {
@@ -46,8 +46,12 @@ export function renderLessonMessage(plan: LessonPlan): string {
     case 'lesson':
       return lessonBody(plan);
     case 'awaiting-build':
-    case 'curriculum-complete':
       return ALL_CLEAR;
+    case 'curriculum-complete':
+      return [
+        "🎉 **Curriculum complete** — you've read every topic in it.",
+        'Add new topics in `learning/curriculum/registry.yaml` (or ask for a fresh batch) to keep going.',
+      ].join('\n');
     case 'note-invalid':
       return [
         `⚠️ **Note invalid** — ${plan.topic.slug}`,
@@ -75,14 +79,7 @@ export function renderRoundMessage(plan: RoundPlan): string {
   ].join('\n');
 }
 
-/** A card as it was asked, plus the grade it got and when it comes back. */
-export type GradedAnswer = Readonly<{
-  card: RoundCard;
-  grade: Grade;
-  nextDueAt: Date | null;
-}>;
-
-const MARK: Readonly<Record<Grade, string>> = {
+const MARK: Readonly<Record<GradedAnswer['grade'], string>> = {
   again: '✗',
   hard: '~',
   good: '✓',
@@ -90,14 +87,13 @@ const MARK: Readonly<Record<Grade, string>> = {
 };
 
 /** The reference answer's first sentence: the key point a correct answer must contain. */
-function keyPoint(answer: string): string {
+export function keyPoint(answer: string): string {
   const first = answer.split(/(?<=[.!?])\s+/)[0] ?? answer;
-  return first.length > 240 ? `${first.slice(0, 237)}…` : first;
+  return first.length > 240 ? `${first.slice(0, 239)}…` : first;
 }
 
 /** A relative instant for the "next up" line; rounds are hours to months apart. */
-export function relativeFrom(now: Date, at: Date | null): string | null {
-  if (at === null) return null;
+export function relativeFrom(now: Date, at: Date): string {
   const minutes = Math.round((at.getTime() - now.getTime()) / 60_000);
   if (minutes <= 0) return 'now';
   if (minutes < 60) return `in ${minutes}m`;
@@ -107,26 +103,20 @@ export function relativeFrom(now: Date, at: Date | null): string | null {
 }
 
 /**
- * The graded round, numbered in the order the cards were asked: what was right, what the
- * reference answer was where it was not, and when the soonest card returns.
+ * The graded round, numbered by each card's position in the round it was asked, so a
+ * skipped question leaves a gap instead of renumbering the answers after it (the recall
+ * skill's "override 2 hard" names a number, not a card).
  */
 export function renderRoundResult(items: readonly GradedAnswer[], now: Date): string {
-  if (items.length === 0) return ALL_CLEAR;
-  const blocks = items.map((item, i) => {
-    const { card, grade } = item;
-    const head = `**${i + 1}. ${grade} ${MARK[grade]}**`;
-    if (grade === 'again')
-      return `${head} — ${card.answer}\nRe-read: ${card.topicTitle}, Lesson ${card.lesson}.`;
-    return `${head} — ${keyPoint(card.answer)}`;
+  if (items.length === 0) return 'Nothing graded yet — the cards stay pending.';
+  const blocks = items.map((item) => {
+    const head = `**${item.position}. ${item.grade} ${MARK[item.grade]}**`;
+    return item.grade === 'again'
+      ? `${head} — ${item.answer}\nRe-read: ${item.topicTitle}, Lesson ${item.lesson}.`
+      : `${head} — ${keyPoint(item.answer)}`;
   });
   const soonest = items
     .map((i) => i.nextDueAt)
-    .filter((d): d is Date => d !== null)
-    .sort((a, b) => a.getTime() - b.getTime())[0];
-  const relative = soonest === undefined ? null : relativeFrom(now, soonest);
-  return [
-    ...blocks,
-    '',
-    relative === null ? 'Next up: no further cards due.' : `Next up: ${relative}.`,
-  ].join('\n');
+    .sort((a, b) => a.getTime() - b.getTime())[0] as Date;
+  return [...blocks, '', `Next up: ${relativeFrom(now, soonest)}.`].join('\n');
 }

@@ -226,3 +226,77 @@ Checked and found sound: splice offsets applied in descending order (no shifting
 block sequence styles, `~/` root scoping (never walks all of home), replay idempotence,
 `last-round`/`round-result` agreement, `ALL_CLEAR` shared with the scheduled handler, refusal
 paths writing nothing, and the 445/445 live recheck after `--apply`.
+
+## Review pass 2 (2026-11-21, registered panel at HEAD a32b1dd)
+
+The retry succeeded as a successor run, `review.learn-p1-p3.20261121b` (start input
+`{"kind":"all","files":null,"dryRun":false}`, 20 files of changed-path union, frozen digests
+authority `0d4a93a9` / frozen-source `7401e543` / frozen-diff `0af59d90`). All seven reviewer
+slots returned on attempt 1, the refutation panel ran three verifiers, and every verdict
+upheld: **3 critical, 0 refuted, 41 advisory**. Result digest
+`f5d47238964384cce709147f6fa0c3b5543af74281c326a3a4fdfda56aa3f0b4`; disposition
+`policy.learn-p1-p3.20261121b` (39 advisory accepted, 2 deferred to P2/P5:
+typed build/refresh payload union, read-to-write CAS on the registry).
+
+### The three criticals, and what each fix is
+
+1. **A partial basename index could plan a rename** (`src/infra/learning-vault.ts:37`, silent
+   failure). The walk caught every `readdir` error and returned what it had, so an unlistable
+   subtree looked empty and `fix-sources` planned from a tree it had not seen.
+   Now the port returns `{ byName, unreadable }` (`learning-vault-port.ts`), the adapter
+   records every directory it could not list, and `runFixSources` refuses with exit 1 before
+   planning anything. `sourceExists` no longer answers "gone" for a path nobody could look at:
+   only `ENOENT`/`ENOTDIR` mean absent, anything else throws; a directory is not a file.
+2. **`scripts/learn.ts` had no test at all** (`pr-test-analyzer`), so the stdin gate fixed
+   earlier was unpinned and the exit-code contract was only prose. `scripts/learn.test.ts` now
+   spawns the real script against a temp vault: `--message` prints text, a data command prints
+   JSON, `grade … --answer -` reads the answer from stdin and logs it verbatim, `lesson
+   --answer -` returns with stdin still open (the regression), a refusal exits 1 with nothing
+   written, and coverage includes `scripts/**/*.ts`.
+3. **`round-result` could send the learner the word `ALL_CLEAR`** when the round had no grade
+   (`runRoundResult` → `renderRoundResult`). Nothing suppresses an interactive reply, so the
+   sentinel would arrive as a message. `gradedRound` now returns a typed error
+   (`no-rounds` / `unknown-round` / `no-grades`) and the command refuses with exit 1; the
+   renderer's empty case is a sentence, never the sentinel. `renderLessonMessage` likewise
+   renders a real completion message for `curriculum-complete`; only `awaiting-build` stays
+   `ALL_CLEAR`.
+
+### Advisory themes applied (accepted 39; the ones that changed behaviour)
+
+- Source scope is now a closed type (`VaultScope`: vault | home subtree). An absolute path or
+  `~/x.md` has no walkable root: it is existence-checked and reported as `unscoped`, never
+  matched by basename against a directory it never lived in.
+- Round views moved into the pure core (`lastAsked`, `gradedRound`, `AskedRound`,
+  `GradedAnswer` with `position`), so the shell projects nothing and `last-round` and
+  `round-result` read the same source; numbers are asked positions, so a skipped card leaves
+  a gap and "override 2" keeps meaning card 2.
+- `lessonSection` reads the note already parsed into study state, with a typed
+  `unknown-lesson {lessonCount}` error — no second read, no second parse that could disagree.
+- Typed errors replace strings: `SourceRepairError` (incl. `declaration-absent`, so a plan that
+  no longer matches the text is refused while a replay still applies nothing) and
+  `applySourceRepair` returns `{ text, applied }`, so `--apply` reports the declarations it
+  actually spliced.
+- `validate --slug` scopes the check to the note the builder just wrote (a pre-existing broken
+  note elsewhere no longer blocks it); both prompt files now call it.
+- `ALL_CLEAR` moved to the neutral `src/core/scheduled-output.ts`.
+- The learn command's session carries only the appender: the registry writer reaches exactly
+  one command (`fix-sources`), through its own parameter.
+- `learn-recall` says what to do when the CLI exits non-zero and that it must never emit
+  `ALL_CLEAR` on its own.
+
+### Receipts (this pass)
+
+```
+bun scripts/learn.ts fix-sources              → checked 445, resolved 445, fixes 0, unscoped 0
+bun scripts/learn.ts validate                 → valid true, 117 topics, 24 notes, 369 cards
+bun scripts/learn.ts validate --sources --slug adts-illegal-states-unrepresentable
+                                              → valid true, topics 1, cards 16, missingSources []
+bun scripts/learn.ts round-result last        → exit 1: "no round has been asked yet"
+# scratch vault, after asking a 3-card round and grading only card 2:
+bun scripts/learn.ts round-result last        → exit 1: 'round "r-…" has no graded card yet'
+bun scripts/learn.ts grade r-… harness-engineering-fundamentals/c04 hard --answer - <<'A'
+bun scripts/learn.ts round-result last        → "**2. hard ~** — …" (no renumbering), "Next up: in 5h"
+tsc --noEmit                                  → clean
+biome check src scripts                       → clean
+vitest run                                    → 125 files, 2939 tests, all pass
+```

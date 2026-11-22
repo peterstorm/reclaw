@@ -14,6 +14,8 @@ import {
   countDue,
   foldStudy,
   gradeCard,
+  gradedRound,
+  lastAsked,
   logFeynman,
   markLessonRead,
   nextBuild,
@@ -228,6 +230,63 @@ describe('recall rounds', () => {
     ).toMatchObject({
       ok: false,
       error: { kind: 'unknown-card' },
+    });
+  });
+});
+
+describe('round views', () => {
+  it('has no last round until one is asked, then reports it with every card', () => {
+    const w = world();
+    expect(lastAsked(state(w))).toBeNull();
+    expect(gradedRound(state(w), 'last')).toMatchObject({
+      ok: false,
+      error: { kind: 'no-rounds' },
+    });
+
+    read(w, 'a', 1, T0);
+    const r = round(w, hours(1), 2);
+    if (r.kind !== 'round') throw new Error('expected round');
+    const asked = lastAsked(state(w));
+    expect(asked?.round).toBe(r.round);
+    expect(asked?.askedAt).toEqual(hours(1));
+    expect(asked?.cards.map((c) => [c.id, c.graded])).toEqual([
+      ['a/c01', false],
+      ['a/c02', false],
+    ]);
+    expect(asked?.cards[0]?.answer).toBe('Answer 1.');
+  });
+
+  it('numbers graded answers by asked position, leaving a gap for a skipped card', () => {
+    const w = world();
+    read(w, 'a', 1, T0);
+    const r = round(w, hours(1), 3);
+    if (r.kind !== 'round') throw new Error('expected round');
+    const [first, , third] = r.cards;
+    if (first === undefined || third === undefined) throw new Error('expected three cards');
+    grade(w, r.round, first.id, 'good', hours(1));
+    grade(w, r.round, third.id, 'again', hours(1));
+
+    const view = gradedRound(state(w), r.round);
+    expect(view.ok && view.value.map((i) => [i.position, i.grade, i.answer])).toEqual([
+      [1, 'good', 'Answer 1.'],
+      [3, 'again', 'Answer 3.'],
+    ]);
+    // `last` resolves to the same round.
+    expect(gradedRound(state(w), 'last')).toMatchObject({ ok: true });
+  });
+
+  it('refuses a round with no grade and an unknown round, instead of an empty view', () => {
+    const w = world();
+    read(w, 'a', 1, T0);
+    const r = round(w, hours(1), 2);
+    if (r.kind !== 'round') throw new Error('expected round');
+    expect(gradedRound(state(w), r.round)).toMatchObject({
+      ok: false,
+      error: { kind: 'no-grades', round: r.round },
+    });
+    expect(gradedRound(state(w), 'r-nope')).toMatchObject({
+      ok: false,
+      error: { kind: 'unknown-round', round: 'r-nope' },
     });
   });
 });

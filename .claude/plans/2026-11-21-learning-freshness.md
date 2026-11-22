@@ -421,3 +421,30 @@ session has been observed yet, and the live log still has zero events.
 - Inbound-link ranking for ingest (needs a link graph; recency + size + term overlap first).
 - Auto-refresh of a note the reader is inside (needs post-read semantics, P7).
 - Pruning topics the vault has outgrown — human decision, informed by ingest.
+
+### 5.2 Review pass 2 (same day, HEAD a32b1dd → this commit)
+
+The registered panel finally ran as successor run `review.learn-p1-p3.20261121b` (7 reviewers,
+3 verifiers): 3 critical upheld, 41 advisory (39 accepted, 2 deferred). Everything below is
+applied, tested and green. Full receipts are in
+`docs/learning-freshness-findings-2026-11-21.md` → "Review pass 2".
+
+- **Walk scope can be partial** → the index reports `unreadable` roots and `fix-sources`
+  refuses (exit 1) rather than planning from a tree it never saw; `sourceExists` rethrows
+  anything that is not `ENOENT`/`ENOTDIR` and treats a directory as not-a-file.
+- **No test for `scripts/learn.ts`** → `scripts/learn.test.ts` spawns the real script
+  (text vs JSON, the `--answer -` stdin gate, the regression where a non-grade command with
+  `--answer -` blocked on an open pipe, exit 1 + empty stdout on refusal); `scripts/**/*.ts`
+  added to coverage.
+- **`round-result` rendered `ALL_CLEAR`** when nothing was graded → `gradedRound` returns
+  `no-rounds | unknown-round | no-grades`; the command refuses; the renderer's empty case is a
+  sentence. `curriculum-complete` renders a real message; only `awaiting-build` is silent.
+- Advisory, behaviour-changing: `VaultScope` closed type (absolute / `~/x.md` declarations are
+  `unscoped`, never basename-matched), round views (`lastAsked`, `gradedRound`, `GradedAnswer`
+  with asked `position`) moved into `study-plan.ts`, `lessonSection` reads the parsed note and
+  returns `unknown-lesson {lessonCount}`, typed `SourceRepairError` + `declaration-absent`,
+  `applySourceRepair` returns `{ text, applied }`, `validate --slug` (both prompt files use it),
+  `ALL_CLEAR` in `scheduled-output.ts`, session narrowed to the appender, recall skill's
+  non-zero-exit and never-emit-the-sentinel rules.
+- **Deferred, deliberately:** typed build/refresh payload union (P2/P5 shape it), read-to-write
+  CAS on the registry (needs P2's `sourceDigest`). Both are recorded in the disposition.

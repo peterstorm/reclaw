@@ -181,10 +181,13 @@ describe('parseMasterNote', () => {
 });
 
 describe('lessonSection', () => {
-  const note = renderNote({ slug, lessons: 3, cardsPerLesson: 3 });
+  const raw = renderNote({ slug, lessons: 3, cardsPerLesson: 3 });
+  const parsed = parseMasterNote(raw.replace('Body of lesson 2.', 'The mechanism, in full.'), slug);
+  if (!parsed.ok) throw new Error(parsed.error.join('\n'));
+  const note = parsed.value;
 
   it('returns one lesson: its title and its body up to the next lesson', () => {
-    const section = lessonSection(note.replace('Body of lesson 2.', 'The mechanism, in full.'), 2);
+    const section = lessonSection(note, 2);
     expect(section.ok).toBe(true);
     if (!section.ok) return;
     expect(section.value.title).toBe('Part 2');
@@ -194,11 +197,11 @@ describe('lessonSection', () => {
     expect(section.value.body).not.toContain('Recall cards');
   });
 
-  it('reports an unknown lesson and a note without frontmatter', () => {
+  it('reports an unknown lesson with the range the note does have', () => {
     const missing = lessonSection(note, 9);
     expect(missing.ok).toBe(false);
-    if (!missing.ok) expect(missing.error).toContain('lesson 9 not found');
-    expect(lessonSection('# no frontmatter', 1).ok).toBe(false);
+    if (missing.ok) return;
+    expect(missing.error).toEqual({ kind: 'unknown-lesson', lesson: 9, lessonCount: 3 });
   });
 
   // The payload contract: what the model sees for one lesson never includes another's body.

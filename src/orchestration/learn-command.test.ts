@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { fakeVault, notePath, renderNote, renderRegistry } from '../core/__fixtures__/learning.js';
-import { ALL_CLEAR } from '../core/learning-messages.js';
+import { REGISTRY_PATH } from '../core/curriculum.js';
+import { ALL_CLEAR } from '../core/scheduled-output.js';
 import { parseLearnArgs, runLearnCommand } from './learn-command.js';
 
 const T0 = new Date('2026-10-17T07:00:00.000Z');
@@ -139,7 +140,7 @@ describe('learn command — end to end over a fake vault', () => {
     ]);
     expect(await runLearnCommand(['section', 'a', '9'], vaultWith(), T0)).toMatchObject({
       ok: false,
-      error: expect.stringContaining('lesson 9 not found'),
+      error: expect.stringContaining('has lessons 1–2, not 9'),
     });
   });
 
@@ -179,6 +180,51 @@ describe('learn command — end to end over a fake vault', () => {
     expect(Object.keys(report.noteErrors as object)).toEqual(['a']);
   });
 
+  it('validate --slug checks only the note the builder just wrote', async () => {
+    const vault = fakeVault(registry, {
+      [notePath('a')]: renderNote({ slug: 'a', lessons: 2 }),
+      [notePath('b')]: renderNote({ slug: 'b', lessons: 1, cardsPerLesson: 6 }),
+    });
+    const global = await run(vault, ['validate']);
+    expect(global).toMatchObject({ valid: false, topics: 2, builtNotes: 1 });
+
+    const scoped = await run(vault, ['validate', '--sources', '--slug', 'a']);
+    expect(scoped).toMatchObject({
+      slug: 'a',
+      topics: 1,
+      builtNotes: 1,
+      noteErrors: {},
+      missingSources: ['a: missing/note.md'],
+    });
+    expect(await runLearnCommand(['validate', '--slug', 'zzz'], vault, T0)).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('unknown topic'),
+    });
+
+    // The builder's gate: one broken note elsewhere must not block the note just written.
+    const clean = fakeVault(
+      renderRegistry([{ slug: 'a', sources: [REGISTRY_PATH] }, { slug: 'b' }]),
+      {
+        [notePath('a')]: renderNote({ slug: 'a', lessons: 2 }),
+        [notePath('b')]: renderNote({ slug: 'b', lessons: 1, cardsPerLesson: 6 }),
+      },
+    );
+    expect(await run(clean, ['validate', '--sources', '--slug', 'a'])).toMatchObject({
+      valid: true,
+      topics: 1,
+    });
+  });
+
+  it('celebrates the end of the curriculum instead of printing the sentinel', async () => {
+    const only = renderRegistry([{ slug: 'a' }]);
+    const vault = fakeVault(only, { [notePath('a')]: renderNote({ slug: 'a', lessons: 2 }) });
+    await run(vault, ['read', 'a', '1']);
+    await run(vault, ['read', 'a', '2']);
+    const message = await runText(vault, ['lesson', '--message']);
+    expect(message).not.toBe(ALL_CLEAR);
+    expect(message).toContain('Curriculum complete');
+  });
+
   it('build-next proposes the next unbuilt topic with its registry entry', async () => {
     expect(await run(vaultWith(), ['build-next'])).toMatchObject({
       kind: 'build',
@@ -205,6 +251,27 @@ describe('learn command — end to end over a fake vault', () => {
       kind: 'recorded',
       topic: 'a',
       gaps: 2,
+    });
+  });
+});
+
+describe('round-result', () => {
+  it('refuses a round with nothing graded instead of printing the suppression sentinel', async () => {
+    const vault = vaultWith();
+    await run(vault, ['read', 'a', '1']);
+    await run(vault, ['round', '--size', '2'], at(1));
+
+    const refused = await runLearnCommand(['round-result', 'last'], vault, at(1));
+    expect(refused).toMatchObject({ ok: false, error: expect.stringContaining('no graded card') });
+    expect(refused.ok ? '' : refused.error).not.toContain(ALL_CLEAR);
+
+    expect(await runLearnCommand(['round-result', 'r-nope'], vault, at(1))).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('unknown round'),
+    });
+    expect(await runLearnCommand(['round-result', 'last'], vaultWith(), at(1))).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('no round has been asked'),
     });
   });
 });
@@ -241,6 +308,34 @@ describe('fix-sources', () => {
     const again = await run(vault, ['fix-sources', '--apply']);
     expect(again).toMatchObject({ applied: 0 });
     expect(vault.registry()).toBe(once);
+  });
+
+  // A rename planned from a tree nobody could fully list is a guess. Refuse, and write nothing.
+  it('refuses to plan when a root could not be listed', async () => {
+    const vault = build();
+    const partial = {
+      ...vault,
+      indexByBasename: async () => ({
+        byName: new Map([['source.md', ['new/source.md']]]),
+        unreadable: ['.'],
+      }),
+    };
+    const refused = await runLearnCommand(['fix-sources', '--apply'], partial, T0);
+    expect(refused).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('could not be listed'),
+    });
+    expect(vault.registry()).toBe(moved);
+  });
+
+  it('reports an absolute declaration as unscoped and never matches it by name', async () => {
+    const withAbsolute = fakeVault(renderRegistry([{ slug: 'a', sources: ['/etc/hosts.md'] }]), {
+      'somewhere/hosts.md': '# same name\n',
+    });
+    expect(await run(withAbsolute, ['fix-sources'])).toMatchObject({
+      fixes: [],
+      unscoped: [{ topic: 'a', from: '/etc/hosts.md' }],
+    });
   });
 });
 
