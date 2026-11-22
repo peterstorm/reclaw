@@ -18,10 +18,10 @@ import { DEFAULT_VAULT_ROOT, fsLearningVault } from '../src/infra/learning-vault
 import { runLearnCommand } from '../src/orchestration/learn-command.js';
 
 const args = process.argv.slice(2);
-// `--answer -` reads the learner's answer from stdin, so skills can pass free text through a
-// quoted heredoc instead of shell-quoting it ($, backticks and quotes stay literal).
+// `grade … --answer -` reads the learner's answer from stdin, so skills can pass free text
+// through a quoted heredoc instead of shell-quoting it ($, backticks and quotes stay literal).
 const answerAt = args.indexOf('--answer');
-if (answerAt !== -1 && args[answerAt + 1] === '-')
+if (args[0] === 'grade' && answerAt !== -1 && args[answerAt + 1] === '-')
   args[answerAt + 1] = (await Bun.stdin.text()).trim();
 
 const vault = fsLearningVault(process.env.RECLAW_VAULT_ROOT ?? DEFAULT_VAULT_ROOT);

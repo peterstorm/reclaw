@@ -172,11 +172,6 @@ describe('renderRoundResult', () => {
     expect(text).toContain('Next up: in 3h.');
   });
 
-  it('uses the grader clause when it has one', () => {
-    const text = renderRoundResult([{ ...graded('c01', 'hard'), note: 'missed the p^N term' }], T0);
-    expect(text).toContain('**1. hard ~** — missed the p^N term');
-  });
-
   it('picks the soonest due card for the next-up line', () => {
     const text = renderRoundResult(
       [graded('c01', 'good', hours(48)), graded('c02', 'good', hours(2))],

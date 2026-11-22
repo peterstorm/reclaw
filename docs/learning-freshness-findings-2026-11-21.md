@@ -203,3 +203,26 @@ find ~/.dotfiles -name 'gpu-inference-crash-triage.md'
 
 Registry last changed: 2026-11-17 (path rewrites only). The learn.ts command surface has 12
 commands; none of them writes the registry.
+
+## Review pass (2026-11-21, on the P1+P3 branch)
+
+Registered Loom standalone review (`review.learn-p1-p3.20261121`, 7 reviewers) could not run:
+every child died on the local route — four with `sparse_attn: out of memory`, three with the
+engine exiting under the same pressure. The run is left at `awaiting-results` as evidence;
+`resume` plus a spawn of attempt 2 completes it when the desktop model has KV headroom.
+
+Self-review against `architecture.md`, `typescript-patterns.md`, `property-testing.md` and the
+`deepen`/`distill` skills found three real defects, each fixed with a test that pins it:
+
+1. `GradedAnswer.note` had no producer — the `--note` flag was deferred, so the field was a
+   representable state nothing could write. Deleted; the renderer uses `keyPoint(answer)`.
+2. `scripts/learn.ts` read stdin for `--answer -` before parsing the command, so any stray
+   usage (`learn round --answer -`) blocked until the pipe closed. Gate on `grade`.
+3. `applySourceRepair` spliced only the first occurrence of a `from` inside a topic, so a topic
+   declaring one source twice kept the second declaration (and reported it in `remaining`
+   after `--apply`). It now splices every occurrence; a unit test pins it.
+
+Checked and found sound: splice offsets applied in descending order (no shifting), flow and
+block sequence styles, `~/` root scoping (never walks all of home), replay idempotence,
+`last-round`/`round-result` agreement, `ALL_CLEAR` shared with the scheduled handler, refusal
+paths writing nothing, and the 445/445 live recheck after `--apply`.

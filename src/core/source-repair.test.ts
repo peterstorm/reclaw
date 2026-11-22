@@ -96,6 +96,21 @@ describe('applySourceRepair', () => {
     expect(twice.ok && twice.value).toBe(applied.value);
   });
 
+  it('rewrites every occurrence when one source is declared twice in a topic', () => {
+    const duplicated = renderRegistry([
+      { slug: 'a', sources: ['ai/gone.md', 'ai/fine.md', 'ai/gone.md'] },
+    ]);
+    const plan = planSourceRepair(
+      curriculumOf(duplicated),
+      new Set(['ai/fine.md']),
+      new Map([['ai/gone.md', ['moved/ai/gone.md']]]),
+    );
+    const applied = applySourceRepair(duplicated, plan);
+    expect(applied.ok && applied.value).toBe(
+      duplicated.replaceAll('"ai/gone.md"', '"moved/ai/gone.md"'),
+    );
+  });
+
   it('splices the token in place: comments, alignment, quoting and every other line survive', () => {
     const handwritten = renderRegistry([
       { slug: 'a', sources: ['ai/gone.md', 'ai/fine.md'] },

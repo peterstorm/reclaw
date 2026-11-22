@@ -121,16 +121,18 @@ export function applySourceRepair(
     if (!isMap(topic)) return err(`topic "${fix.topic}" not found in the registry`);
     const sources = topic.get('sources');
     if (!isSeq(sources)) return err(`topic "${fix.topic}" has no sources sequence`);
-    const node = sources.items.find((item) => isScalar(item) && item.value === fix.from);
-    if (!isScalar(node)) continue;
-    const start = node.range?.[0];
-    const valueEnd = node.range?.[1];
-    if (start === undefined || valueEnd === undefined) continue;
-    edits.push({
-      start,
-      end: valueEnd,
-      text: quoteLike(registryText.slice(start, valueEnd), fix.to),
-    });
+    // A topic may declare one source twice; both occurrences are the same declaration.
+    for (const node of sources.items) {
+      if (!isScalar(node) || node.value !== fix.from) continue;
+      const start = node.range?.[0];
+      const valueEnd = node.range?.[1];
+      if (start === undefined || valueEnd === undefined) continue;
+      edits.push({
+        start,
+        end: valueEnd,
+        text: quoteLike(registryText.slice(start, valueEnd), fix.to),
+      });
+    }
   }
 
   let text = registryText;

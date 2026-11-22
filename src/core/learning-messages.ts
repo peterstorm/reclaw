@@ -79,8 +79,6 @@ export function renderRoundMessage(plan: RoundPlan): string {
 export type GradedAnswer = Readonly<{
   card: RoundCard;
   grade: Grade;
-  /** The grader's optional clause on what was slightly off; absent is fine. */
-  note?: string;
   nextDueAt: Date | null;
 }>;
 
@@ -119,7 +117,7 @@ export function renderRoundResult(items: readonly GradedAnswer[], now: Date): st
     const head = `**${i + 1}. ${grade} ${MARK[grade]}**`;
     if (grade === 'again')
       return `${head} — ${card.answer}\nRe-read: ${card.topicTitle}, Lesson ${card.lesson}.`;
-    return `${head} — ${item.note ?? keyPoint(card.answer)}`;
+    return `${head} — ${keyPoint(card.answer)}`;
   });
   const soonest = items
     .map((i) => i.nextDueAt)
