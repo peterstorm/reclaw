@@ -259,11 +259,17 @@ describe('round-result', () => {
   it('refuses a round with nothing graded instead of printing the suppression sentinel', async () => {
     const vault = vaultWith();
     await run(vault, ['read', 'a', '1']);
-    await run(vault, ['round', '--size', '2'], at(1));
+    const asked = await run(vault, ['round', '--size', '2'], at(1));
 
     const refused = await runLearnCommand(['round-result', 'last'], vault, at(1));
     expect(refused).toMatchObject({ ok: false, error: expect.stringContaining('no graded card') });
     expect(refused.ok ? '' : refused.error).not.toContain(ALL_CLEAR);
+
+    // The primary form names the round; grading one card makes the same round render.
+    const round = String(asked.round);
+    const card = (asked.cards as { id: string }[])[0]?.id ?? '';
+    await run(vault, ['grade', round, card, 'good'], at(1));
+    expect(await runText(vault, ['round-result', round], at(1))).toContain('**1. good ✓**');
 
     expect(await runLearnCommand(['round-result', 'r-nope'], vault, at(1))).toMatchObject({
       ok: false,
@@ -335,6 +341,46 @@ describe('fix-sources', () => {
     expect(await run(withAbsolute, ['fix-sources'])).toMatchObject({
       fixes: [],
       unscoped: [{ topic: 'a', from: '/etc/hosts.md' }],
+    });
+  });
+
+  // The plan's §6 case: an ambiguous declaration is reported AND leaves the registry alone,
+  // while the provable rename in the same run is applied.
+  it('applies the provable rename and leaves the ambiguous line byte-identical', async () => {
+    const text = renderRegistry([{ slug: 'a', sources: ['old/source.md', 'dup/twin.md'] }]);
+    const vault = fakeVault(text, {
+      'new/source.md': '# moved\n',
+      'one/twin.md': '# one\n',
+      'two/twin.md': '# two\n',
+    });
+    const applied = await run(vault, ['fix-sources', '--apply']);
+    expect(applied).toMatchObject({
+      applied: 1,
+      fixes: [{ topic: 'a', from: 'old/source.md', to: 'new/source.md' }],
+      ambiguous: [{ topic: 'a', from: 'dup/twin.md', candidates: ['one/twin.md', 'two/twin.md'] }],
+    });
+    expect(vault.registry()).toContain('"dup/twin.md"');
+    expect(vault.registry()).toContain('"new/source.md"');
+    expect(vault.registry().split('\n').length).toBe(text.split('\n').length);
+  });
+
+  it('looks a ~/ declaration up under its own subtree, never the vault', async () => {
+    const vault = fakeVault(
+      renderRegistry([{ slug: 'a', sources: ['~/.dotfiles/docs/runbook.md'] }]),
+      {
+        // Same basename in the vault: a root-blind index would pick this one.
+        'vault/runbook.md': '# vault\n',
+        '~/.dotfiles/scripts/runbook.md': '# dotfiles\n',
+      },
+    );
+    expect(await run(vault, ['fix-sources'])).toMatchObject({
+      fixes: [
+        {
+          topic: 'a',
+          from: '~/.dotfiles/docs/runbook.md',
+          to: '~/.dotfiles/scripts/runbook.md',
+        },
+      ],
     });
   });
 });

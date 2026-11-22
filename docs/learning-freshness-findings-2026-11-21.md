@@ -22,8 +22,9 @@ entry names it. There is no watcher, no index, no incremental ingest.
 
 Three doors let outside knowledge in:
 
-1. **sources: in the registry** — 468 declarations over 265 distinct paths. Read in full by the
-   nightly builder; existence-checked by `validate --sources`.
+1. **sources: in the registry** — 445 source declarations over 242 distinct paths
+   (the 468 dash-prefixed lines under `topics:` include 23 inline subdomain entries). Read in
+   full by the nightly builder; existence-checked by `validate --sources`.
 2. **The builder's vault grep** — workspace/skills/shared/master-note-guide.md step 1 requires
    `grep -ril` across the vault for the topic's key terms, explicitly to catch "notes the
    registry missed". This is the only undeclared discovery path, and it runs only for the one
@@ -185,7 +186,7 @@ ls ~/dev/notes/remotevault/learning/curriculum/.state   # does not exist
 
 # registry shape
 grep -c '^  - slug:' ~/dev/notes/remotevault/learning/curriculum/registry.yaml   # 117
-grep -c '^      - '  ~/dev/notes/remotevault/learning/curriculum/registry.yaml   # 468 declarations
+grep -c '^      - '  ~/dev/notes/remotevault/learning/curriculum/registry.yaml   # 468 lines, 445 of them sources
 grep '^      - '     ~/dev/notes/remotevault/learning/curriculum/registry.yaml | sort -u | wc -l  # 265 distinct
 
 # churn (the vault is git-synced hourly)
@@ -300,3 +301,31 @@ tsc --noEmit                                  → clean
 biome check src scripts                       → clean
 vitest run                                    → 125 files, 2939 tests, all pass
 ```
+
+### Advisory follow-through (same commit series)
+
+Beyond the themes above, the panel named specific missing cases; each now has a test:
+
+- `fix-sources --apply` over a registry that mixes a provable rename with an ambiguous
+  declaration: `applied: 1`, the ambiguous line byte-identical, both candidates reported
+  (`learn-command.test.ts`). This is the plan's §6 "ambiguous ⇒ no write" case at the CLI,
+  not only at the planner.
+- `.git`, `node_modules`, `.obsidian` and `.trash` are kept out of the rename index, so a
+  trashed copy can never be proposed as the new home of a deleted source
+  (`learning-vault.test.ts`).
+- A `~/.dotfiles/…` declaration is resolved under its own subtree even when the vault holds a
+  file with the same basename (`learn-command.test.ts`).
+- `round-result <round>` is exercised in its primary named form, not only `last`
+  (`learn-command.test.ts`).
+- `keyPoint`'s first-sentence extraction and 240-character cap (`learning-messages.test.ts`).
+
+Documentation corrections from the comment-analyzer, applied where they live:
+
+- 445 source declarations over **242 distinct paths** — the 468 dash-prefixed lines under
+  `topics:` include 23 inline subdomain entries (findings §1, plan §4.4, receipts).
+- yaml `node.range` gives **character offsets**, not byte offsets; the splice is a string
+  slice, and both the plan and `source-repair.ts` now say so.
+- Plan §4.4 marks `indexByBasename`/`writeRegistry` as shipped in P1 and only
+  `sourceDigest` as P2; the scope type and `unreadable` contract are described there.
+- The port documents that symlinked directories and files are skipped by the walk.
+- `read` and `section` share one lesson-range error wording instead of two copies.

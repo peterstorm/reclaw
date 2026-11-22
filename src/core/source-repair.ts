@@ -121,7 +121,7 @@ export type SourceRepairRewrite = Readonly<{
   applied: number;
 }>;
 
-/** One splice into the registry text: byte offsets come from the parser, never from us. */
+/** One splice into the registry text: character offsets come from the parser, never from us. */
 type Edit = Readonly<{ start: number; end: number; text: string }>;
 
 /** Keep the scalar's own quoting: the registry's style is the human's, not ours. */
@@ -137,7 +137,8 @@ const quoteLike = (token: string, value: string): string => {
  * time. A topic that no longer exists, or a declaration that is at neither its old nor its
  * new path, is an error — that is drift, not a replay.
  *
- * The rewrite is spliced at the parser's byte ranges rather than re-emitted, so comments,
+ * The rewrite is spliced at the parser's character offsets (yaml node ranges are string
+ * indices) rather than re-emitted, so comments,
  * alignment, quoting and every untouched topic survive exactly as the human wrote them.
  */
 export function applySourceRepair(

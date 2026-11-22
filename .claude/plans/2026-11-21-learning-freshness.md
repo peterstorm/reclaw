@@ -144,14 +144,18 @@ export function sourceDrift(
 ```
 
 Port additions (read-only; the in-memory fake implements them the same way, following the existing
-contract test in src/infra/learning-vault.test.ts):
+contract test in src/infra/learning-vault.test.ts). Shipped in P1 unless marked:
 
 ```ts
-sourceDigest(path: string): Promise<string | null>;                 // sha256, null if missing
-indexByBasename(): Promise<ReadonlyMap<string, readonly string[]>>; // rename resolution
+sourceDigest(path: string): Promise<string | null>;                 // P2 — sha256, null if missing
+indexByBasename(scope: VaultScope): Promise<BasenameIndex>;         // shipped, typed by root
+writeRegistry(text: string): Promise<void>;                         // shipped (fix-sources --apply)
 ```
 
-Cost: 265 declared paths, a few MB hashed per run. Lesson and round never walk the vault.
+The root is a closed type (`{kind:'vault'} | {kind:'home'; subtree}`), so `''` vs `~/x` cannot be
+confused; the index carries `unreadable` roots and the caller refuses to plan from a partial one.
+
+Cost: 242 distinct declared paths (445 declarations before dedupe), a few MB hashed per run. Lesson and round never walk the vault.
 
 ### 4.5 Note drafts: rendering moves into code
 
@@ -314,7 +318,7 @@ history to verify against.
 
 **P1 — done.** `learn fix-sources [--apply]`: existence sweep over every declared source,
 per-root basename index (`~/x` walks only that home subtree), plan of single-candidate
-renames, dry run by default. `--apply` splices the YAML at the parser's byte ranges, so
+renames, dry run by default. `--apply` splices the YAML at the parser's character offsets, so
 comments, alignment and quoting stay byte-identical, then re-parses before writing and
 rechecks what is left. Ambiguity is reported, never guessed; a replay is a no-op.
 

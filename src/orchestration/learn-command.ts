@@ -305,9 +305,7 @@ async function runSection(c: CommandOf<'section'>, { state, curriculum }: Sessio
   if (note === undefined) return err(`topic "${c.topic}" has no master note yet`);
   const section = lessonSection(note, c.lesson);
   if (!section.ok)
-    return err(
-      `topic "${c.topic}" has lessons 1–${section.error.lessonCount}, not ${section.error.lesson}`,
-    );
+    return err(lessonRangeError(c.topic, section.error.lesson, section.error.lessonCount));
   return ok(
     json({
       kind: 'section',
@@ -603,12 +601,13 @@ function readErrorMessage(error: ReadError): string {
   return match(error)
     .with({ kind: 'unknown-topic' }, (e) => `unknown topic "${e.topic}"`)
     .with({ kind: 'not-built' }, (e) => `topic "${e.topic}" has no master note yet`)
-    .with(
-      { kind: 'unknown-lesson' },
-      (e) => `topic "${e.topic}" has lessons 1–${e.lessonCount}, not ${e.lesson}`,
-    )
+    .with({ kind: 'unknown-lesson' }, (e) => lessonRangeError(e.topic, e.lesson, e.lessonCount))
     .exhaustive();
 }
+
+/** One wording for "that lesson number is out of range", shared by read and section. */
+const lessonRangeError = (topic: string, lesson: number, lessonCount: number): string =>
+  `topic "${topic}" has lessons 1–${lessonCount}, not ${lesson}`;
 
 function gradeErrorMessage(error: GradeError): string {
   return match(error)

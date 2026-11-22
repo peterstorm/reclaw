@@ -97,6 +97,19 @@ describe('fsLearningVault outside the vault', () => {
     expect(index.unreadable).toEqual([]);
   });
 
+  it('keeps metadata, dependency and trash directories out of the rename index', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'learning-vault-'));
+    roots.push(root);
+    for (const dir of ['notes', '.git', 'node_modules', '.obsidian', '.trash']) {
+      await mkdir(join(root, dir), { recursive: true });
+      await writeFile(join(root, dir, 'same.md'), `# ${dir}\n`);
+    }
+    const vault = fsLearningVault(root);
+    const index = await vault.indexByBasename({ kind: 'vault' } as VaultScope);
+    // A `.trash` copy must never be proposed as the new home of a deleted source.
+    expect(index.byName.get('same.md')).toEqual(['notes/same.md']);
+  });
+
   it('reports a root it cannot list instead of treating it as empty', async () => {
     if (process.getuid?.() === 0) return; // root ignores the mode bits
     const home = await mkdtemp(join(tmpdir(), 'learning-home-'));

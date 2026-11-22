@@ -32,7 +32,11 @@ export type LearningVault = Readonly<{
    * "no", because that answer would claim a file is gone when nobody looked.
    */
   sourceExists: (path: string) => Promise<boolean>;
-  /** Every markdown note under a root, keyed by basename. Rename repair only. */
+  /**
+   * Every regular markdown file under a root, keyed by basename. Symlinked directories and
+   * files are skipped, as are `.git`, `node_modules`, `.obsidian` and `.trash`; an unlistable
+   * directory is reported in `unreadable` rather than silently omitted. Rename repair only.
+   */
   indexByBasename: (scope: VaultScope) => Promise<BasenameIndex>;
   /** Replace the curriculum registry — the only write outside the log, and only on `--apply`. */
   writeRegistry: (text: string) => Promise<void>;
