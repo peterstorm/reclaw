@@ -56,6 +56,12 @@ export type NoteSpec = Readonly<{
   cardsPerLesson?: number;
   cards?: readonly CardSpec[];
   minutes?: number;
+  /** Frontmatter `curriculum.sources_checked` (`YYYY-MM-DD`); omitted from the note when absent. */
+  sourcesChecked?: string;
+  /** Rendered as an `## Updates since build` section before `## Sources`, as a refresh adds it. */
+  updates?: string;
+  /** Extra prose appended to lesson 1: a change a refresh must not make. */
+  lessonOneExtra?: string;
 }>;
 
 export const defaultCards = (lessons: number, perLesson: number): CardSpec[] =>
@@ -76,6 +82,7 @@ export function renderNote(spec: NoteSpec): string {
     'curriculum:',
     `  slug: ${spec.slug}`,
     `  minutes: ${spec.minutes ?? spec.lessons * 12}`,
+    ...(spec.sourcesChecked === undefined ? [] : [`  sources_checked: ${spec.sourcesChecked}`]),
     '---',
     `# Note ${spec.slug}`,
     '',
@@ -88,6 +95,7 @@ export function renderNote(spec: NoteSpec): string {
       `> 2. Pretest ${l}b?`,
       '',
       `Body of lesson ${l}.`,
+      ...(l === 1 && spec.lessonOneExtra !== undefined ? [spec.lessonOneExtra] : []),
       '',
     );
   }
@@ -97,6 +105,7 @@ export function renderNote(spec: NoteSpec): string {
     for (const line of c.answer.split('\n')) out.push(`> ${line}`);
     out.push('');
   }
+  if (spec.updates !== undefined) out.push('## Updates since build', spec.updates, '');
   out.push('## Sources', '- somewhere');
   return out.join('\n');
 }

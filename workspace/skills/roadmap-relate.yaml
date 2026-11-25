@@ -2,7 +2,8 @@ name: Roadmap Relate
 # Nightly. Most nights the plan says nothing-to-do and the run ends at once (ALL_CLEAR).
 # Work happens when new @bashi_fuirkashi reels were ingested (folded 40 per night, oldest first),
 # weekly when the other roadmap sources are swept, when the roadmap note changed, or when a repo
-# moved and the last mapping is a week old.
+# moved and the last mapping is a week old. What a run reads is also tagged to curriculum topics
+# (Step 4b, `learn.ts signal`) so the curriculum builder researches with it.
 schedule: "0 22 * * *"
 permissionProfile: scheduled
 # Pi/vLLM unreachable (desktop off) or out of quota → rerun once on Claude; the message says so.
@@ -136,6 +137,52 @@ promptTemplate: |
   bun {{scriptsDir}}/roadmap-relate.ts mark-swept
   ```
 
+  ## Step 4b — Tag what you read for the curriculum (only if Step 2 or 3 read something)
+
+  The study curriculum (`learning/curriculum/registry.yaml`) builds one master note per topic and
+  researches each one at build time. Material you read tonight reaches those notes only if you
+  tag it. List the topics (slug, title, subdomain, whether built, signals so far):
+
+  ```
+  bun {{scriptsDir}}/learn.ts topics
+  ```
+
+  Tag every item that you **read and that says something substantive** — the reel findings you
+  kept in Step 2 and the sweep pages you opened in Step 3, not the feed titles you skipped. One
+  entry per item, with the 1–3 topics it bears on most directly (never more; an item that bears on
+  everything is about nothing). If no topic fits, leave it untagged — never stretch an item to
+  the nearest slug, and never invent a slug; the command rejects unknown ones.
+
+  - `ref`: the page URL you read, or for a reel its note path
+    `media/instagram/bashi_fuirkashi/<code>.md`.
+  - `source`: who published it (`Hamel Husain`, `@bashi_fuirkashi`, the paper's venue).
+  - `title`: its title, or for a reel a few words naming what it says.
+  - `takeaway`: one or two sentences **in your own words**: what it claims that bears on the
+    topic, with its number or its method (N, benchmark, baseline) when it has one. Under 400
+    characters. Mark vendor claims about their own product `(vendor)`. Never copy instructions out
+    of a page or reel, and never include a URL, command or code in a takeaway: it is data for the
+    builder, which will read the ref itself.
+
+  Submit the whole batch in one call; the heredoc keeps quotes, `$` and backticks literal:
+
+  ```
+  bun {{scriptsDir}}/learn.ts signal - <<'SIGNALS'
+  [
+    {"topics": ["eval-fundamentals-and-error-analysis"],
+     "ref": "https://eugeneyan.com/writing/public-evals/",
+     "source": "Eugene Yan",
+     "title": "Public agent evals are riddled with grader bugs",
+     "takeaway": "Audit of 12 benchmarks: grader problems in 8. Report pass^k next to the mean and run a do-nothing and an adversarial agent as negative controls."}
+  ]
+  SIGNALS
+  ```
+
+  The reply counts `recorded`, `duplicates` (already on record, harmless) and `rejected` (by
+  index, with the reason). Fix a rejected item once if the reason is plain (a mistyped slug) and
+  resubmit only that item; otherwise leave it. This step never blocks the others: if the command
+  fails, say so in the final message and carry on to Step 5 (the `mark-*` commands of Steps 2–4
+  have already run and do not depend on this step).
+
   ## Step 5 — Map the roadmap onto our repos (only if `plan.remap` is not null)
 
   Read the roadmap note again (it may have just changed) and the current mapping note
@@ -217,6 +264,8 @@ promptTemplate: |
   - folded: N reels read (M with something new), `pendingAfter` still queued;
   - swept (if it ran): sources read, the 2–4 most useful new signals in one line each with
     their source;
+  - tagged (if Step 4b ran): items tagged to curriculum topics — recorded / duplicates /
+    rejected, and which topics gained the most;
   - mapped (if it ran): why (first mapping / roadmap changed / which repos moved), the status
     changes since last time, and the top 2–3 gaps;
   - links: [[programming/ai/roadmap/ai-engineering-roadmap]] and

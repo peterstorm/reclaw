@@ -282,6 +282,488 @@ describe('round-result', () => {
   });
 });
 
+describe('signals — new material tagged to topics', () => {
+  const entry = (over: Record<string, unknown> = {}) => ({
+    topics: ['b'],
+    ref: 'https://eugeneyan.com/writing/public-evals/?utm_source=rss',
+    source: 'Eugene Yan',
+    title: 'Public agent evals are broken',
+    takeaway: 'Report pass^k next to the mean; run a do-nothing control.',
+    ...over,
+  });
+  const submit = (vault: Vault, items: readonly unknown[], now = T0) =>
+    run(vault, ['signal', JSON.stringify(items)], now);
+
+  it('records new items once, however often the same batch is submitted', async () => {
+    const vault = vaultWith();
+    const batch = [entry(), entry({ topics: ['a', 'b'], ref: 'media/instagram/h/abc.md' })];
+
+    expect(await submit(vault, batch)).toEqual({
+      kind: 'signals-recorded',
+      recorded: 3,
+      duplicates: 0,
+      rejected: [],
+    });
+    const written = vault.log();
+    expect(written.trim().split('\n')).toHaveLength(3);
+    expect(written).toContain('"ref":"https://eugeneyan.com/writing/public-evals/"');
+
+    expect(await submit(vault, batch, at(1))).toMatchObject({ recorded: 0, duplicates: 3 });
+    expect(vault.log()).toBe(written);
+  });
+
+  it('reports bad items by index, records the good ones and writes nothing for the bad', async () => {
+    const vault = vaultWith();
+    const result = await submit(vault, [
+      entry(),
+      entry({ topics: ['ghost'] }),
+      entry({ ref: 'ftp://nope', topics: ['a'] }),
+    ]);
+    expect(result).toMatchObject({
+      recorded: 1,
+      rejected: [
+        { index: 1, reason: 'unknown topic "ghost"' },
+        { index: 2, reason: expect.stringContaining('ftp://nope') },
+      ],
+    });
+    expect(vault.log().trim().split('\n')).toHaveLength(1);
+  });
+
+  it('refuses a submission that is not a JSON array, and writes nothing', async () => {
+    const vault = vaultWith();
+    for (const bad of ['nope', '{}', '[]']) {
+      expect(await runLearnCommand(['signal', bad], vault, T0)).toMatchObject({
+        ok: false,
+        error: expect.stringContaining('signal batch'),
+      });
+    }
+    expect(vault.log()).toBe('');
+  });
+
+  it('hands the builder the target topic’s signals, oldest first, and no one else’s', async () => {
+    const vault = vaultWith();
+    await submit(vault, [entry({ ref: 'https://example.com/old', title: 'Old' })], T0);
+    await submit(vault, [entry({ ref: 'https://example.com/new', title: 'New' })], at(24));
+    await submit(vault, [entry({ topics: ['a'], ref: 'https://example.com/other' })], at(25));
+
+    const next = await run(vault, ['build-next'], at(26));
+    expect(next).toMatchObject({
+      kind: 'build',
+      topic: { slug: 'b' },
+      signalsThrough: at(24).toISOString(),
+    });
+    const signals = next.signals as { ref: string; title: string; takeaway: string }[];
+    expect(signals.map((s) => s.title)).toEqual(['Old', 'New']);
+    expect(signals[0]).toEqual({
+      at: T0.toISOString(),
+      source: 'Eugene Yan',
+      title: 'Old',
+      ref: 'https://example.com/old',
+      takeaway: 'Report pass^k next to the mean; run a do-nothing control.',
+    });
+  });
+
+  it('lists every topic with its built flag and signal count, and one topic’s signals', async () => {
+    const vault = vaultWith();
+    await submit(vault, [entry(), entry({ ref: 'https://example.com/2' })]);
+
+    expect(await run(vault, ['topics'])).toEqual({
+      kind: 'topics',
+      topics: [
+        {
+          slug: 'a',
+          title: 'Title of a',
+          subdomain: 'core',
+          built: true,
+          signals: 0,
+          pendingReview: 0,
+        },
+        {
+          slug: 'b',
+          title: 'Title of b',
+          subdomain: 'core',
+          built: false,
+          signals: 2,
+          pendingReview: 2,
+        },
+      ],
+    });
+    expect(await run(vault, ['signals'])).toMatchObject({ kind: 'topics' });
+    const one = await run(vault, ['signals', 'b']);
+    expect(one).toMatchObject({ kind: 'signals', topic: 'b' });
+    expect(one.signals).toHaveLength(2);
+    expect(await runLearnCommand(['signals', 'zzz'], vault, T0)).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('unknown topic'),
+    });
+  });
+
+  it('counts a signal for a topic that left the registry as an orphan, not as material', async () => {
+    const orphan = `${JSON.stringify({
+      kind: 'signal-noted',
+      at: T0.toISOString(),
+      topic: 'ghost',
+      ref: 'https://example.com/x',
+      source: 's',
+      title: 't',
+      takeaway: 'k',
+    })}\n`;
+    const vault = vaultWith(undefined, orphan);
+    expect(await run(vault, ['status'])).toMatchObject({ orphanEvents: 1 });
+    expect(await run(vault, ['build-next'])).toMatchObject({ signals: [] });
+  });
+
+  it('never disturbs the study state: a signal neither unlocks nor schedules a card', async () => {
+    const vault = vaultWith();
+    const before = await run(vault, ['status'], at(1));
+    await submit(vault, [entry({ topics: ['a'] })]);
+    expect(await run(vault, ['status'], at(1))).toEqual(before);
+  });
+
+  it('refuses to record on a corrupt study log', async () => {
+    const vault = vaultWith(undefined, 'garbage\n');
+    expect(await runLearnCommand(['signal', JSON.stringify([entry()])], vault, T0)).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('corrupt'),
+    });
+    expect(vault.log()).toBe('garbage\n');
+  });
+});
+
+describe('refresh — built notes pick up later signals', () => {
+  const dated = renderNote({ slug: 'a', lessons: 2, sourcesChecked: '2026-10-01' });
+  const vaultAt = (note: string = dated, log = '') =>
+    fakeVault(registry, { [notePath('a')]: note }, log);
+  const tag = (vault: Vault, ref: string, now: Date) =>
+    run(
+      vault,
+      [
+        'signal',
+        JSON.stringify([
+          {
+            topics: ['a'],
+            ref,
+            source: 'Example',
+            title: ref,
+            takeaway: 'Says a thing.',
+          },
+        ]),
+      ],
+      now,
+    );
+
+  it('has nothing to refresh until enough signals are pending', async () => {
+    const vault = vaultAt();
+    expect(await run(vault, ['refresh-next'])).toEqual({ kind: 'nothing-to-refresh' });
+    await tag(vault, 'https://example.com/1', at(1));
+    expect(await run(vault, ['refresh-next'], at(2))).toEqual({ kind: 'nothing-to-refresh' });
+    await tag(vault, 'https://example.com/2', at(3));
+    expect(await run(vault, ['refresh-next'], at(4))).toMatchObject({
+      kind: 'refresh',
+      topic: 'a',
+      notePath: 'learning/curriculum/ai/a.md',
+      sourcesChecked: '2026-10-01',
+      pending: 2,
+      lessonCount: 2,
+      lessonsRead: 0,
+      signalsThrough: at(3).toISOString(),
+    });
+  });
+
+  it('a recorded review clears what it covered and leaves later signals pending', async () => {
+    const vault = vaultAt();
+    await tag(vault, 'https://example.com/1', at(1));
+    await tag(vault, 'https://example.com/2', at(2));
+    const plan = await run(vault, ['refresh-next'], at(3));
+
+    // A signal that lands while the builder works is newer than `through`, so it stays pending.
+    await tag(vault, 'https://example.com/3', at(4));
+    const done = await run(
+      vault,
+      [
+        'signals-reviewed',
+        'a',
+        '--through',
+        String(plan.signalsThrough),
+        '--used',
+        '1',
+        '--expect',
+        String(plan.fingerprint),
+      ],
+      at(5),
+    );
+    expect(done).toMatchObject({ kind: 'signals-reviewed', topic: 'a', used: 1 });
+    expect(await run(vault, ['topics'], at(5))).toMatchObject({
+      topics: [
+        expect.objectContaining({ slug: 'a', signals: 3, pendingReview: 1 }),
+        expect.anything(),
+      ],
+    });
+    expect(await run(vault, ['refresh-next'], at(5))).toEqual({ kind: 'nothing-to-refresh' });
+
+    await tag(vault, 'https://example.com/4', at(6));
+    expect(await run(vault, ['refresh-next'], at(7))).toMatchObject({
+      kind: 'refresh',
+      pending: 2,
+    });
+  });
+
+  it('accepts a note refreshed the permitted way: updates, sources_checked, nothing else', async () => {
+    const vault = vaultAt();
+    await tag(vault, 'https://example.com/1', at(1));
+    await tag(vault, 'https://example.com/2', at(2));
+    const plan = await run(vault, ['refresh-next'], at(3));
+
+    const refreshed = fakeVault(
+      registry,
+      {
+        [notePath('a')]: renderNote({
+          slug: 'a',
+          lessons: 2,
+          sourcesChecked: '2026-11-25',
+          updates: '- **2026-11-25** A newer number. [Page](https://example.com/1)',
+        }),
+      },
+      vault.log(),
+    );
+    expect(
+      await run(
+        refreshed,
+        [
+          'signals-reviewed',
+          'a',
+          '--through',
+          String(plan.signalsThrough),
+          '--expect',
+          String(plan.fingerprint),
+        ],
+        at(4),
+      ),
+    ).toMatchObject({ kind: 'signals-reviewed' });
+  });
+
+  it('refuses, and records nothing, when the refresh touched a lesson', async () => {
+    const vault = vaultAt();
+    await tag(vault, 'https://example.com/1', at(1));
+    await tag(vault, 'https://example.com/2', at(2));
+    const plan = await run(vault, ['refresh-next'], at(3));
+    const before = vault.log();
+
+    const tampered = fakeVault(
+      registry,
+      {
+        [notePath('a')]: renderNote({
+          slug: 'a',
+          lessons: 2,
+          sourcesChecked: '2026-10-01',
+          lessonOneExtra: 'A rewritten paragraph.',
+        }),
+      },
+      before,
+    );
+    const refused = await runLearnCommand(
+      [
+        'signals-reviewed',
+        'a',
+        '--through',
+        String(plan.signalsThrough),
+        '--expect',
+        String(plan.fingerprint),
+      ],
+      tampered,
+      at(4),
+    );
+    expect(refused).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('lessons or cards changed'),
+    });
+    expect(tampered.log()).toBe(before);
+    // Still pending: the refresh will be offered again.
+    expect(await run(tampered, ['refresh-next'], at(5))).toMatchObject({
+      kind: 'refresh',
+      pending: 2,
+    });
+  });
+
+  // Why the skill bumps `sources_checked` only AFTER the review is recorded: until a review exists
+  // that date is the baseline, so bumping it first and dying leaves signals older than the new
+  // date looking reviewed. This pins the hazard the ordering rule exists for.
+  it('treats a bumped sources_checked as the new baseline while no review is recorded', async () => {
+    const vault = vaultAt();
+    await tag(vault, 'https://example.com/1', at(1));
+    await tag(vault, 'https://example.com/2', at(2));
+    expect(await run(vault, ['refresh-next'], at(3))).toMatchObject({ kind: 'refresh' });
+
+    const bumpedFirst = fakeVault(
+      registry,
+      { [notePath('a')]: renderNote({ slug: 'a', lessons: 2, sourcesChecked: '2026-12-01' }) },
+      vault.log(),
+    );
+    expect(await run(bumpedFirst, ['refresh-next'], at(4))).toEqual({ kind: 'nothing-to-refresh' });
+  });
+
+  it('leaves a fully read note alone, and an unbuilt topic to the builder', async () => {
+    const vault = vaultAt();
+    await tag(vault, 'https://example.com/1', at(1));
+    await tag(vault, 'https://example.com/2', at(2));
+    await run(vault, ['read', 'a', '1'], at(3));
+    await run(vault, ['read', 'a', '2'], at(3));
+    expect(await run(vault, ['refresh-next'], at(4))).toEqual({ kind: 'nothing-to-refresh' });
+  });
+
+  it('after a build, review covers what the builder was shown and nothing newer', async () => {
+    const vault = vaultWith();
+    const body = (ref: string) => [{ topics: ['b'], ref, source: 'S', title: 'T', takeaway: 'K' }];
+    await run(vault, ['signal', JSON.stringify(body('https://example.com/1'))], at(1));
+    const next = await run(vault, ['build-next'], at(2));
+    expect(next).toMatchObject({
+      kind: 'build',
+      topic: { slug: 'b' },
+      signalsThrough: at(1).toISOString(),
+    });
+    await run(vault, ['signal', JSON.stringify(body('https://example.com/2'))], at(3));
+
+    // The builder writes the note, then records its review through the instant it was shown.
+    const built = fakeVault(
+      registry,
+      {
+        [notePath('a')]: renderNote({ slug: 'a', lessons: 2 }),
+        [notePath('b')]: renderNote({ slug: 'b', lessons: 2, sourcesChecked: '2026-10-17' }),
+      },
+      vault.log(),
+    );
+    await run(
+      built,
+      ['signals-reviewed', 'b', '--through', String(next.signalsThrough), '--used', '1', '--built'],
+      at(4),
+    );
+    expect(await run(built, ['topics'], at(4))).toMatchObject({
+      topics: [
+        expect.anything(),
+        expect.objectContaining({ slug: 'b', signals: 2, pendingReview: 1 }),
+      ],
+    });
+  });
+
+  // A build offers the oldest batch, never the newest: whatever does not fit is not lost, it is
+  // pending for the first refresh of the note once it is built. And a run of equal instants (one
+  // submission) is never cut, or the review "through" that instant would swallow its tail.
+  describe('more signals than one batch', () => {
+    const tagMany = async (vault: Vault, count: number, spread: boolean) => {
+      for (let i = 0; i < count; i++)
+        await run(
+          vault,
+          [
+            'signal',
+            JSON.stringify([
+              {
+                topics: ['b'],
+                ref: `https://example.com/${i}`,
+                source: 'S',
+                title: `T${i}`,
+                takeaway: 'K',
+              },
+            ]),
+          ],
+          at(spread ? i + 1 : 1),
+        );
+    };
+    const builtB = (vault: Vault) =>
+      fakeVault(
+        registry,
+        {
+          [notePath('a')]: renderNote({ slug: 'a', lessons: 2 }),
+          [notePath('b')]: renderNote({ slug: 'b', lessons: 2, sourcesChecked: '2026-10-17' }),
+        },
+        vault.log(),
+      );
+
+    it('builds with the oldest 25, then leaves the rest for a refresh of the built note', async () => {
+      const vault = vaultWith();
+      await tagMany(vault, 30, true);
+      const next = await run(vault, ['build-next'], at(40));
+      const shown = next.signals as { title: string }[];
+      expect(shown).toHaveLength(25);
+      expect(shown[0]?.title).toBe('T0');
+      expect(shown.at(-1)?.title).toBe('T24');
+      expect(next.signalsThrough).toBe(at(25).toISOString());
+
+      const built = builtB(vault);
+      await run(
+        built,
+        [
+          'signals-reviewed',
+          'b',
+          '--through',
+          String(next.signalsThrough),
+          '--used',
+          '3',
+          '--built',
+        ],
+        at(41),
+      );
+      const refresh = await run(built, ['refresh-next'], at(42));
+      expect(refresh).toMatchObject({ kind: 'refresh', topic: 'b', pending: 5 });
+      expect((refresh.signals as { title: string }[]).map((s) => s.title)).toEqual([
+        'T25',
+        'T26',
+        'T27',
+        'T28',
+        'T29',
+      ]);
+    });
+
+    it('keeps 30 signals of one instant whole instead of cutting at 25', async () => {
+      const vault = vaultWith();
+      await tagMany(vault, 30, false);
+      const next = await run(vault, ['build-next'], at(40));
+      expect(next.signals).toHaveLength(30);
+      const built = builtB(vault);
+      await run(
+        built,
+        [
+          'signals-reviewed',
+          'b',
+          '--through',
+          String(next.signalsThrough),
+          '--used',
+          '1',
+          '--built',
+        ],
+        at(41),
+      );
+      expect(await run(built, ['refresh-next'], at(42))).toEqual({ kind: 'nothing-to-refresh' });
+      expect(await run(built, ['topics'], at(42))).toMatchObject({
+        topics: [expect.anything(), expect.objectContaining({ slug: 'b', pendingReview: 0 })],
+      });
+    });
+  });
+
+  it('refuses a review it cannot stand behind', async () => {
+    const vault = vaultAt();
+    await tag(vault, 'https://example.com/1', at(1));
+    const written = vault.log();
+    const at1 = at(1).toISOString();
+    for (const args of [
+      // Neither flag, or both: a build and a refresh are different operations.
+      ['signals-reviewed', 'a', '--through', at1],
+      ['signals-reviewed', 'a', '--through', at1, '--built', '--expect', 'deadbeef'],
+      ['signals-reviewed', 'a', '--through', 'yesterday', '--built'],
+      // An instant that is not that of a signal on record (the mark only moves forward).
+      ['signals-reviewed', 'a', '--through', at(99).toISOString(), '--built'],
+      ['signals-reviewed', 'a', '--through', at(0).toISOString(), '--built'],
+      // More signals used than exist up to it.
+      ['signals-reviewed', 'a', '--through', at1, '--used', '2', '--built'],
+      ['signals-reviewed', 'a', '--through', at1, '--used', '-1', '--built'],
+      ['signals-reviewed', 'b', '--through', at1, '--built'],
+      ['signals-reviewed', 'zzz', '--through', at1, '--built'],
+      ['signals-reviewed', 'a'],
+    ])
+      expect((await runLearnCommand(args, vault, at(2))).ok, args.join(' ')).toBe(false);
+    expect(vault.log()).toBe(written);
+  });
+});
+
 describe('fix-sources', () => {
   const moved = renderRegistry([{ slug: 'a', sources: ['old/source.md', 'nowhere/gone.md'] }]);
   const build = () =>
@@ -393,6 +875,8 @@ describe('parseLearnArgs', () => {
     [['round-result']],
     [['round', '--size', '0']],
     [['suspend', 'a/c01']],
+    [['signal']],
+    [['signal', '   ']],
     [['bogus']],
     [[]],
   ])('rejects %j', (args) => {

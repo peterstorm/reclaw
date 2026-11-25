@@ -30,9 +30,46 @@ export type StudyEvent =
     }>
   | Readonly<{ kind: 'card-suspended'; at: string; card: CardId; reason: string }>
   | Readonly<{ kind: 'card-unsuspended'; at: string; card: CardId }>
-  | Readonly<{ kind: 'feynman-checked'; at: string; topic: TopicSlug; gaps: readonly string[] }>;
+  | Readonly<{ kind: 'feynman-checked'; at: string; topic: TopicSlug; gaps: readonly string[] }>
+  | SignalNoted
+  | SignalsReviewed;
+
+/**
+ * The curriculum builder worked through a topic's signals, up to the newest one it was shown
+ * (`through`, the `at` of that signal): at build time, or when it refreshed the built note.
+ * Signals newer than `through` are still pending. `used` is how many held up and went into the
+ * note; it is a count for the record, nothing decides on it.
+ */
+export type SignalsReviewed = Readonly<{
+  kind: 'signals-reviewed';
+  at: string;
+  topic: TopicSlug;
+  through: string;
+  used: number;
+}>;
+
+/**
+ * New material (a post, a feed item, an ingested reel) that bears on a curriculum topic, tagged
+ * by a scheduled skill. `ref` is the item's identity: an http(s) URL, or a vault-relative note
+ * path. The curriculum builder reads these as extra sources; they never touch the registry.
+ */
+export type SignalNoted = Readonly<{
+  kind: 'signal-noted';
+  at: string;
+  topic: TopicSlug;
+  ref: string;
+  /** Who published it, e.g. "Hamel Husain" or "@bashi_fuirkashi". */
+  source: string;
+  title: string;
+  /** One or two sentences: what the item says that bears on the topic. Data, not instructions. */
+  takeaway: string;
+}>;
 
 export const MAX_ANSWER_CHARS = 4000;
+export const MAX_SIGNAL_REF_CHARS = 500;
+export const MAX_SIGNAL_SOURCE_CHARS = 80;
+export const MAX_SIGNAL_TITLE_CHARS = 200;
+export const MAX_SIGNAL_TAKEAWAY_CHARS = 600;
 
 const isoInstant = z.string().refine((s) => !Number.isNaN(Date.parse(s)), 'invalid timestamp');
 
@@ -69,6 +106,22 @@ const EventSchema = z.discriminatedUnion('kind', [
     at: isoInstant,
     topic: z.string().min(1),
     gaps: z.array(z.string()),
+  }),
+  z.object({
+    kind: z.literal('signal-noted'),
+    at: isoInstant,
+    topic: z.string().min(1),
+    ref: z.string().min(1).max(MAX_SIGNAL_REF_CHARS),
+    source: z.string().min(1).max(MAX_SIGNAL_SOURCE_CHARS),
+    title: z.string().min(1).max(MAX_SIGNAL_TITLE_CHARS),
+    takeaway: z.string().min(1).max(MAX_SIGNAL_TAKEAWAY_CHARS),
+  }),
+  z.object({
+    kind: z.literal('signals-reviewed'),
+    at: isoInstant,
+    topic: z.string().min(1),
+    through: isoInstant,
+    used: z.number().int().min(0),
   }),
 ]);
 

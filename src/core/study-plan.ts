@@ -18,7 +18,14 @@ import { type Card, type Grade as FsrsGrade, Rating, State, createEmptyCard, fsr
 import type { Curriculum, StudySettings, Topic, TopicSlug } from './curriculum.js';
 import { notePathFor } from './curriculum.js';
 import type { CardId, Lesson, MasterNote, RecallCard } from './master-note.js';
-import { type Grade, type RoundId, type StudyEvent, roundIdAt } from './study-log.js';
+import {
+  type Grade,
+  type RoundId,
+  type SignalNoted,
+  type StudyEvent,
+  roundIdAt,
+} from './study-log.js';
+import { type SignalLedger, ledgerOf, oldestBatch, signalsAfter } from './topic-signals.js';
 import { type Result, assertNever, err, ok } from './types.js';
 
 const HOUR_MS = 3_600_000;
@@ -47,6 +54,10 @@ export type StudyState = Readonly<{
   cards: ReadonlyMap<CardId, CardProgress>;
   rounds: ReadonlyMap<RoundId, Readonly<{ at: Date; cards: readonly CardId[] }>>;
   feynmanAt: ReadonlyMap<TopicSlug, Date>;
+  /** New material tagged to registry topics, one entry per (topic, ref). Built or not. */
+  signals: SignalLedger;
+  /** Per topic: the newest signal instant the builder has reviewed. Later signals are pending. */
+  signalsReviewedThrough: ReadonlyMap<TopicSlug, Date>;
   /** Events naming cards/topics that no longer exist in any note — kept, but ignored. */
   orphanEvents: number;
 }>;
@@ -95,7 +106,7 @@ export function foldStudy(
   const cardIndex = new Map<CardId, RecallCard>();
   for (const note of notes.values()) for (const c of note.cards) cardIndex.set(c.id, c);
 
-  const log = replayLog(chronological(events), notes, cardIndex);
+  const log = replayLog(chronological(events), curriculum, notes, cardIndex);
   return {
     curriculum,
     notes,
@@ -104,6 +115,8 @@ export function foldStudy(
     cards: unlockedCards(curriculum.settings, cardIndex, log),
     rounds: log.rounds,
     feynmanAt: log.feynmanAt,
+    signals: ledgerOf(log.signals),
+    signalsReviewedThrough: log.signalsReviewedThrough,
     orphanEvents: log.orphanEvents,
   };
 }
@@ -123,12 +136,16 @@ type ReplayedLog = Readonly<{
   feynmanAt: ReadonlyMap<TopicSlug, Date>;
   /** Per card, per round: the first instant graded + the last grade given. */
   gradesByCard: ReadonlyMap<CardId, ReadonlyMap<RoundId, GradeRecord>>;
+  /** Signals for topics still in the registry, in log order (not yet de-duplicated). */
+  signals: readonly SignalNoted[];
+  signalsReviewedThrough: ReadonlyMap<TopicSlug, Date>;
   orphanEvents: number;
 }>;
 
 /** The study log folded in order; the maps are filled here and nowhere else. */
 function replayLog(
   ordered: readonly StudyEvent[],
+  curriculum: Curriculum,
   notes: ReadonlyMap<TopicSlug, MasterNote>,
   cardIndex: ReadonlyMap<CardId, RecallCard>,
 ): ReplayedLog {
@@ -137,6 +154,8 @@ function replayLog(
   const suspended = new Map<CardId, boolean>();
   const feynmanAt = new Map<TopicSlug, Date>();
   const gradesByCard = new Map<CardId, Map<RoundId, GradeRecord>>();
+  const signals: SignalNoted[] = [];
+  const signalsReviewedThrough = new Map<TopicSlug, Date>();
   let orphanEvents = 0;
   for (const e of ordered) {
     const at = new Date(e.at);
@@ -163,11 +182,34 @@ function replayLog(
       case 'feynman-checked':
         feynmanAt.set(e.topic, at);
         break;
+      case 'signal-noted':
+        if (curriculum.bySlug.has(e.topic)) signals.push(e);
+        else orphanEvents++;
+        break;
+      case 'signals-reviewed': {
+        if (!curriculum.bySlug.has(e.topic)) {
+          orphanEvents++;
+          break;
+        }
+        const through = new Date(e.through);
+        const known = signalsReviewedThrough.get(e.topic);
+        if (known === undefined || through > known) signalsReviewedThrough.set(e.topic, through);
+        break;
+      }
       default:
         return assertNever(e);
     }
   }
-  return { lessonsRead, rounds, suspended, feynmanAt, gradesByCard, orphanEvents };
+  return {
+    lessonsRead,
+    rounds,
+    suspended,
+    feynmanAt,
+    gradesByCard,
+    signals,
+    signalsReviewedThrough,
+    orphanEvents,
+  };
 }
 
 /** A re-grade within a round keeps the round's first grading instant and takes the new grade. */
@@ -230,7 +272,7 @@ export type LessonPlan =
   | Readonly<{ kind: 'note-invalid'; topic: Topic; errors: readonly string[] }>
   | Readonly<{ kind: 'curriculum-complete' }>;
 
-const isFullyRead = (state: StudyState, topic: TopicSlug): boolean => {
+export const isFullyRead = (state: StudyState, topic: TopicSlug): boolean => {
   return (
     state.notes
       .get(topic)
@@ -616,6 +658,19 @@ export type BuildPlan =
       notePath: string;
       /** Built prerequisite notes, to link and to avoid re-teaching. */
       prereqNotes: readonly Readonly<{ slug: TopicSlug; title: string; notePath: string }>[];
+      /**
+       * Material tagged to this topic, the oldest batch first (see `oldestBatch`): extra sources
+       * for the research. Signals beyond the batch stay pending and reach the note through a
+       * refresh once it is built.
+       */
+      signals: readonly SignalNoted[];
+      /**
+       * The newest instant among `signals` (null when there are none). The builder records it
+       * with `learn signals-reviewed --through`: everything up to it was shown, so it is not
+       * offered again, and anything newer, including a signal that arrives during the run,
+       * stays pending.
+       */
+      signalsThrough: string | null;
       unreadAhead: number;
     }>
   | Readonly<{ kind: 'buffer-full'; unreadAhead: number }>
@@ -631,6 +686,7 @@ export function nextBuild(state: StudyState): BuildPlan {
   if (target === undefined) return { kind: 'all-built' };
   if (unreadAhead >= state.curriculum.settings.buildBuffer)
     return { kind: 'buffer-full', unreadAhead };
+  const batch = oldestBatch(unreviewedSignals(state, target.slug, new Date(0)));
   return {
     kind: 'build',
     topic: target,
@@ -642,8 +698,22 @@ export function nextBuild(state: StudyState): BuildPlan {
         ? [{ slug, title: note.title, notePath: notePathFor(t) }]
         : [];
     }),
+    signals: batch?.signals ?? [],
+    signalsThrough: batch?.through ?? null,
     unreadAhead,
   };
+}
+
+/**
+ * A topic's signals no build or refresh has reviewed, oldest first: those after the last
+ * review's instant, or, with none recorded, after `baseline`.
+ */
+export function unreviewedSignals(
+  state: StudyState,
+  topic: TopicSlug,
+  baseline: Date,
+): readonly SignalNoted[] {
+  return signalsAfter(state.signals, topic, state.signalsReviewedThrough.get(topic) ?? baseline);
 }
 
 // ─── Feynman ──────────────────────────────────────────────────────────────────

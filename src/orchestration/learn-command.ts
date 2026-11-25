@@ -25,6 +25,14 @@ import {
 } from '../core/learning-messages.js';
 import type { BasenameIndex, LearningVault } from '../core/learning-vault-port.js';
 import { type MasterNote, lessonSection, parseMasterNote } from '../core/master-note.js';
+import {
+  type RefreshPlan,
+  type ReviewCommand,
+  type ReviewError,
+  nextRefresh,
+  pendingFor,
+  reviewSignals,
+} from '../core/note-refresh.js';
 import { ALL_CLEAR } from '../core/scheduled-output.js';
 import {
   type SourceRepairError,
@@ -39,6 +47,7 @@ import {
   GRADES,
   type Grade,
   MAX_ANSWER_CHARS,
+  type SignalNoted,
   type StudyEvent,
   parseStudyLog,
   serializeEvent,
@@ -64,6 +73,7 @@ import {
   setSuspended,
   summarize,
 } from '../core/study-plan.js';
+import { parseSignalBatch, planSignals, recentSignals } from '../core/topic-signals.js';
 import { type Result, err, ok } from '../core/types.js';
 
 export const LEARN_USAGE = `usage: learn <command>
@@ -78,6 +88,12 @@ export const LEARN_USAGE = `usage: learn <command>
   suspend <card-id> <reason...>            stop asking a (bad) card
   unsuspend <card-id>
   build-next                               next topic for the curriculum builder
+  refresh-next                             built, unfinished note with enough pending signals, if any
+  signals-reviewed <topic-slug> --through ISO [--used N] (--built | --expect FINGERPRINT)
+                                           record that a build (--built) or refresh (--expect) reviewed signals up to ISO
+  topics                                   every topic: slug, title, built, signal count (for tagging)
+  signal <json|->                          tag new material to topics: [{topics, ref, source, title, takeaway}]
+  signals [topic-slug]                     signals per topic, or one topic's signals
   fix-sources [--apply]                    re-point renamed sources (--apply writes the registry)
   feynman                                  pick this week's explain-it-back topic
   feynman-log <topic-slug> [--gaps "gap one; gap two"]
@@ -103,6 +119,11 @@ type Command =
   | { kind: 'suspend'; card: string; reason: string }
   | { kind: 'unsuspend'; card: string }
   | { kind: 'build-next' }
+  | { kind: 'refresh-next' }
+  | { kind: 'signals-reviewed'; review: ReviewCommand }
+  | { kind: 'topics' }
+  | { kind: 'signal'; batch: string }
+  | { kind: 'signals'; topic: string | undefined }
   | { kind: 'fix-sources'; apply: boolean }
   | { kind: 'feynman' }
   | { kind: 'feynman-log'; topic: string; gaps: readonly string[] }
@@ -137,6 +158,40 @@ const COMMAND_PARSERS: {
   status: () => ok({ kind: 'status' }),
   lesson: (args) => ok({ kind: 'lesson', message: args.includes('--message') }),
   'build-next': () => ok({ kind: 'build-next' }),
+  'refresh-next': () => ok({ kind: 'refresh-next' }),
+  'signals-reviewed': (args) => {
+    const topic = args[1];
+    const through = flag(args, '--through');
+    const used = Number(flag(args, '--used') ?? '0');
+    const fingerprint = flag(args, '--expect');
+    const built = args.includes('--built');
+    // A build and a refresh are different operations: exactly one flag says which, so a refresh
+    // cannot skip the fingerprint guard by leaving a flag out.
+    if (
+      topic === undefined ||
+      through === undefined ||
+      !Number.isInteger(used) ||
+      used < 0 ||
+      built === (fingerprint !== undefined)
+    )
+      return err(
+        'signals-reviewed <topic-slug> --through <ISO instant> [--used N] (--built | --expect <fingerprint>)',
+      );
+    const common = { topic, through, used };
+    return ok({
+      kind: 'signals-reviewed',
+      review:
+        fingerprint === undefined
+          ? { kind: 'after-build', ...common }
+          : { kind: 'after-refresh', ...common, fingerprint },
+    });
+  },
+  topics: () => ok({ kind: 'topics' }),
+  signal: ([, batch]) =>
+    batch === undefined || batch.trim() === ''
+      ? err('signal <json-array | ->  (items: {topics, ref, source, title, takeaway})')
+      : ok({ kind: 'signal', batch }),
+  signals: ([, topic]) => ok({ kind: 'signals', topic }),
   feynman: () => ok({ kind: 'feynman' }),
   'fix-sources': (args) => ok({ kind: 'fix-sources', apply: args.includes('--apply') }),
   read: (args) => {
@@ -271,6 +326,11 @@ export async function runLearnCommand(
     .with({ kind: 'grade' }, (c) => runGrade(c, session))
     .with({ kind: 'suspend' }, { kind: 'unsuspend' }, (c) => runSuspend(c, session))
     .with({ kind: 'build-next' }, async () => ok(json(buildView(nextBuild(state)))))
+    .with({ kind: 'refresh-next' }, async () => ok(json(refreshView(nextRefresh(state)))))
+    .with({ kind: 'signals-reviewed' }, (c) => runSignalsReviewed(c, session))
+    .with({ kind: 'topics' }, async () => ok(json(topicsView(state))))
+    .with({ kind: 'signal' }, (c) => runSignal(c, session))
+    .with({ kind: 'signals' }, async (c) => runSignals(c, state))
     .with({ kind: 'fix-sources' }, (c) => runFixSources(c, loaded.value, vault))
     .with({ kind: 'feynman' }, async () => ok(json(feynmanView(pickFeynman(state, now)))))
     .with({ kind: 'feynman-log' }, (c) => runFeynmanLog(c, session))
@@ -427,6 +487,87 @@ async function runFeynmanLog(
   await append([result.value]);
   return ok(json({ kind: 'recorded', topic: c.topic, gaps: c.gaps.length }));
 }
+
+// ─── Signals ──────────────────────────────────────────────────────────────────
+
+/**
+ * Record tagged material. Items are parsed and de-duplicated by the core; only what is new is
+ * appended, so submitting the same batch twice records it once. Bad items come back by index.
+ */
+async function runSignal(
+  c: CommandOf<'signal'>,
+  { state, curriculum, now, append }: Session,
+): CommandResult {
+  const batch = parseSignalBatch(c.batch, curriculum, now);
+  if (!batch.ok) return err(batch.error);
+  const { fresh, duplicates } = planSignals(state.signals, batch.value.events);
+  await append(fresh);
+  return ok(
+    json({
+      kind: 'signals-recorded',
+      recorded: fresh.length,
+      duplicates,
+      rejected: batch.value.rejected,
+    }),
+  );
+}
+
+/** Record that a build or refresh reviewed a topic's signals up to `--through`. */
+async function runSignalsReviewed(
+  c: CommandOf<'signals-reviewed'>,
+  { state, now, append }: Session,
+): CommandResult {
+  const event = reviewSignals(state, c.review, now);
+  if (!event.ok) return err(reviewErrorMessage(event.error));
+  await append([event.value]);
+  return ok(
+    json({
+      kind: 'signals-reviewed',
+      topic: event.value.topic,
+      through: event.value.through,
+      used: event.value.used,
+    }),
+  );
+}
+
+function reviewErrorMessage(error: ReviewError): string {
+  return match(error)
+    .with({ kind: 'unknown-topic' }, (e) => `unknown topic "${e.topic}"`)
+    .with({ kind: 'not-built' }, (e) => `topic "${e.topic}" has no valid master note`)
+    .with({ kind: 'invalid-instant' }, (e) => `--through "${e.through}" is not an ISO instant`)
+    .with(
+      { kind: 'no-signal-at' },
+      (e) =>
+        `--through "${e.through}" is not the instant of any signal tagged to this topic — pass the signalsThrough the plan printed`,
+    )
+    .with(
+      { kind: 'used-exceeds-signals' },
+      (e) => `--used ${e.used} exceeds the ${e.available} signal(s) up to --through`,
+    )
+    .with(
+      { kind: 'content-changed' },
+      (e) =>
+        `the note's lessons or cards changed (fingerprint ${e.actual}, expected ${e.expected}) — restore the backup and redo the refresh without touching them; nothing was recorded`,
+    )
+    .exhaustive();
+}
+
+/** Signals per topic, or — given a topic — that topic's signals, newest first. */
+function runSignals(c: CommandOf<'signals'>, state: StudyState): Result<LearnOutput, string> {
+  if (c.topic === undefined) return ok(json(topicsView(state)));
+  const topic = state.curriculum.bySlug.get(c.topic as TopicSlug);
+  if (topic === undefined) return err(`unknown topic "${c.topic}"`);
+  return ok(
+    json({
+      kind: 'signals',
+      topic: topic.slug,
+      signals: recentSignals(state.signals, topic.slug, SIGNALS_LISTED).map(signalView),
+    }),
+  );
+}
+
+/** Enough to review a topic's backlog without printing a feed's worth. */
+const SIGNALS_LISTED = 100;
 
 // ─── Source repair ────────────────────────────────────────────────────────────
 
@@ -585,10 +726,56 @@ function buildView(plan: BuildPlan): unknown {
       topic: p.topic,
       notePath: p.notePath,
       prereqNotes: p.prereqNotes,
+      signals: p.signals.map(signalView),
+      signalsThrough: p.signalsThrough,
       unreadAhead: p.unreadAhead,
     }))
     .with({ kind: 'buffer-full' }, { kind: 'all-built' }, (p) => p)
     .exhaustive();
+}
+
+function refreshView(plan: RefreshPlan): unknown {
+  return match(plan)
+    .with({ kind: 'refresh' }, (p) => ({
+      kind: p.kind,
+      topic: p.topic.slug,
+      topicTitle: p.topic.title,
+      notePath: p.notePath,
+      fingerprint: p.fingerprint,
+      sourcesChecked: p.sourcesChecked,
+      lessonsRead: p.lessonsRead,
+      lessonCount: p.lessonCount,
+      pending: p.pending,
+      signals: p.signals.map(signalView),
+      signalsThrough: p.signalsThrough,
+    }))
+    .with({ kind: 'nothing-to-refresh' }, (p) => p)
+    .exhaustive();
+}
+
+/** A signal as a skill reads it: the event without its log bookkeeping. */
+const signalView = (s: SignalNoted) => ({
+  at: s.at,
+  source: s.source,
+  title: s.title,
+  ref: s.ref,
+  takeaway: s.takeaway,
+});
+
+/** Every topic in study order, for tagging: what it is, whether it is built, its signal count. */
+function topicsView(state: StudyState): unknown {
+  return {
+    kind: 'topics',
+    topics: state.curriculum.topics.map((t) => ({
+      slug: t.slug,
+      title: t.title,
+      subdomain: t.subdomain,
+      built: state.notes.has(t.slug) || state.brokenNotes.has(t.slug),
+      signals: state.signals.get(t.slug)?.length ?? 0,
+      /** Signals no build or refresh has reviewed yet (all of them, for an unbuilt topic). */
+      pendingReview: pendingFor(state, t.slug).length,
+    })),
+  };
 }
 
 function feynmanView(plan: FeynmanPlan): unknown {

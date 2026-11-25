@@ -53,6 +53,8 @@ export type StudySettings = Readonly<{
   requestRetention: number;
   /** Days between Feynman checks of the same topic. */
   feynmanCooldownDays: number;
+  /** Pending signals a built, unfinished note needs before the builder spends a run refreshing it. */
+  refreshMinSignals: number;
 }>;
 
 export type Curriculum = Readonly<{
@@ -83,6 +85,7 @@ const SettingsSchema = z
     backlogThreshold: z.number().int().min(1).default(30),
     requestRetention: z.number().min(0.7).max(0.97).default(0.9),
     feynmanCooldownDays: z.number().int().min(1).default(21),
+    refreshMinSignals: z.number().int().min(1).max(50).default(2),
   })
   .default({});
 

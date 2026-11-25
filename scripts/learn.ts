@@ -23,6 +23,9 @@ const args = process.argv.slice(2);
 const answerAt = args.indexOf('--answer');
 if (args[0] === 'grade' && answerAt !== -1 && args[answerAt + 1] === '-')
   args[answerAt + 1] = (await Bun.stdin.text()).trim();
+// `signal -` reads the tagged batch (a JSON array) from stdin for the same reason: takeaways are
+// free text that can hold quotes, `$` and backticks.
+if (args[0] === 'signal' && args[1] === '-') args[1] = (await Bun.stdin.text()).trim();
 
 const vault = fsLearningVault(process.env.RECLAW_VAULT_ROOT ?? DEFAULT_VAULT_ROOT);
 const result = await runLearnCommand(args, vault, new Date());

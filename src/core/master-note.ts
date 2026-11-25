@@ -48,6 +48,8 @@ export type MasterNote = Readonly<{
   topic: TopicSlug;
   title: string;
   minutes: number;
+  /** `YYYY-MM-DD` the note's sources were last checked; null when the frontmatter has none. */
+  sourcesChecked: string | null;
   lessons: readonly Lesson[];
   cards: readonly RecallCard[];
 }>;
@@ -61,6 +63,7 @@ const H2 = /^## /;
 const PRETEST_CALLOUT = /^> \[!example\]/;
 const NUMBERED_ITEM = /^>\s*\d+\.\s+(.+)$/;
 const CARD_HEADER = /^> \[!question\]- (c\d{2,3}) · L(\d+) · (.+?)\s*$/;
+const SOURCES_CHECKED = /^\d{4}-\d{2}-\d{2}$/;
 /**
  * Outside a card, a line that opens a question callout (Obsidian matches callout types
  * case-insensitively) or any `>` line is a broken card — an error, never a silent drop.
@@ -182,6 +185,7 @@ export function parseMasterNote(
     topic: expected,
     title: front.value.title,
     minutes: front.value.minutes,
+    sourcesChecked: front.value.sourcesChecked,
     lessons: lessons.value,
     cards: cards.value,
   });
@@ -193,7 +197,7 @@ type Checked<T> = Readonly<{ value: T; errors: readonly string[] }>;
 function parseFront(
   rawFront: unknown,
   expected: TopicSlug,
-): Checked<{ title: string; minutes: number }> {
+): Checked<{ title: string; minutes: number; sourcesChecked: string | null }> {
   const errors: string[] = [];
   const front = (rawFront ?? {}) as Record<string, unknown>;
   const meta = (front.curriculum ?? {}) as Record<string, unknown>;
@@ -204,7 +208,28 @@ function parseFront(
   const minutes = typeof meta.minutes === 'number' ? meta.minutes : Number.NaN;
   if (!Number.isInteger(minutes) || minutes <= 0)
     errors.push('frontmatter: curriculum.minutes must be a positive integer');
-  return { value: { title, minutes }, errors };
+  const sourcesChecked = parseSourcesChecked(meta.sources_checked);
+  if (!sourcesChecked.ok) errors.push(sourcesChecked.error);
+  return {
+    value: { title, minutes, sourcesChecked: sourcesChecked.ok ? sourcesChecked.value : null },
+    errors,
+  };
+}
+
+/**
+ * Absent is fine (an older note); present, it must be a real `YYYY-MM-DD` date. A typo read as
+ * "unknown" would make every signal ever tagged to the topic look pending, so it is an error.
+ */
+function parseSourcesChecked(raw: unknown): Result<string | null, string> {
+  if (raw === undefined || raw === null) return ok(null);
+  if (typeof raw === 'string' && SOURCES_CHECKED.test(raw)) {
+    const time = Date.parse(`${raw}T00:00:00.000Z`);
+    // `2026-02-31` parses in some engines by rolling over; only a date that survives a round trip counts.
+    if (!Number.isNaN(time) && new Date(time).toISOString().startsWith(raw)) return ok(raw);
+  }
+  return err(
+    `frontmatter: curriculum.sources_checked must be a YYYY-MM-DD date, got ${JSON.stringify(raw)}`,
+  );
 }
 
 function parseLessons(sections: readonly Section[]): Checked<readonly Lesson[]> {
