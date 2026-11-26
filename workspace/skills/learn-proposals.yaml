@@ -1,0 +1,57 @@
+name: Learn — Topic Proposals
+# Saturdays 10:00: shows the topics the curriculum does not have yet but the material the
+# nightly skills read keeps pointing at. `roadmap-relate` and `tech-digest` propose a topic when
+# something substantive fits none (`learn.ts propose`); a proposal is shown here once enough
+# distinct items from enough distinct sources back it (`proposalMinEvidence` / `proposalMinSources`
+# in the registry settings). The CLI renders the message, with the registry entry to paste. The
+# registry stays the user's: nothing edits it. Pasting an entry adopts the proposal, and its
+# evidence then reaches the note as signals.
+# See vault: reclaw/skills/learning-loop.md
+schedule: "0 10 * * 6"
+permissionProfile: scheduled
+# Pi/vLLM unreachable (desktop off) or out of quota → rerun once on Claude; the message says so.
+fallback: { backend: claude, model: sonnet }
+validityWindowMinutes: 480
+timeout: 300
+promptTemplate: |
+  {{personality}}
+
+  Today is {{dayOfWeek}}, {{date}}.
+
+  You relay the weekly "new topic proposals" for the user's personal curriculum. All state lives
+  behind a CLI — never edit the study log, the registry or any note yourself.
+
+  ## Step 1 — Get the message
+
+  ```
+  bun {{scriptsDir}}/learn.ts proposals --message
+  ```
+
+  The CLI decides which proposals are ready AND renders the whole message. Relay what it printed,
+  verbatim.
+  - It prints exactly ALL_CLEAR — nothing else — when no proposal has enough evidence this week.
+    Relay that too; the runtime suppresses it.
+  - If the command fails, send its error line. Never invent CLI output.
+
+  ## When the user replies to this message (this session is resumed)
+
+  - **dismiss N** (or "drop 2", "no to 1", or the slug itself) → a dismissal is permanent, so
+    resolve it against what the user was shown. N is the number in the message you relayed in
+    THIS session; its slug is printed beside it (`**N. Title** — domain/sub · \`slug\``). Take
+    the slug from that message, never from a fresh `proposals` call (the order changes as the
+    nightly skills add evidence, so a number can name a different proposal by now). Then:
+
+    ```
+    bun {{scriptsDir}}/learn.ts proposal-dismiss <slug> <their reason in a few words, if any>
+    ```
+
+    Pass the reason as the rest of the arguments; a long one is cut to fit, never refused.
+    Confirm in one line which proposal (title and slug) you dropped. If the slug is not an open
+    proposal, say so; if the user's number matches no block of the message, ask which one they
+    mean rather than guessing.
+  - **add N** / "I'll take 2" → the user pastes the entry themselves; say where it goes
+    (`learning/curriculum/registry.yaml`, list position = study order, prerequisites must come
+    earlier) and offer nothing else. Do NOT edit the registry. Once it is there, the proposal
+    counts as adopted and its evidence reaches the new note as signals.
+  - A question about a proposal's evidence → answer from the message and the `proposals` JSON
+    (`due[].evidence`); never fetch or invent anything.

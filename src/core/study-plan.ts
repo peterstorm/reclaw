@@ -18,7 +18,23 @@ import { type Card, type Grade as FsrsGrade, Rating, State, createEmptyCard, fsr
 import type { Curriculum, StudySettings, Topic, TopicSlug } from './curriculum.js';
 import { notePathFor } from './curriculum.js';
 import type { CardId, Lesson, MasterNote, RecallCard } from './master-note.js';
-import { type Grade, type RoundId, type StudyEvent, roundIdAt } from './study-log.js';
+import {
+  type Grade,
+  type ProposalDismissed,
+  type RoundId,
+  type SignalNoted,
+  type StudyEvent,
+  type TopicProposed,
+  roundIdAt,
+} from './study-log.js';
+import { type ProposalBook, adoptedSignals, foldProposals } from './topic-proposals.js';
+import {
+  type ReviewBatch,
+  type SignalLedger,
+  ledgerOf,
+  oldestBatch,
+  signalsAfter,
+} from './topic-signals.js';
 import { type Result, assertNever, err, ok } from './types.js';
 
 const HOUR_MS = 3_600_000;
@@ -47,6 +63,12 @@ export type StudyState = Readonly<{
   cards: ReadonlyMap<CardId, CardProgress>;
   rounds: ReadonlyMap<RoundId, Readonly<{ at: Date; cards: readonly CardId[] }>>;
   feynmanAt: ReadonlyMap<TopicSlug, Date>;
+  /** New material tagged to registry topics, one entry per (topic, ref). Built or not. */
+  signals: SignalLedger;
+  /** Per topic: the newest signal instant the builder has reviewed. Later signals are pending. */
+  signalsReviewedThrough: ReadonlyMap<TopicSlug, Date>;
+  /** Proposed new topics: still open, adopted into the registry, or dismissed. */
+  proposals: ProposalBook;
   /** Events naming cards/topics that no longer exist in any note — kept, but ignored. */
   orphanEvents: number;
 }>;
@@ -95,7 +117,8 @@ export function foldStudy(
   const cardIndex = new Map<CardId, RecallCard>();
   for (const note of notes.values()) for (const c of note.cards) cardIndex.set(c.id, c);
 
-  const log = replayLog(chronological(events), notes, cardIndex);
+  const log = replayLog(chronological(events), curriculum, notes, cardIndex);
+  const proposals = foldProposals(log.proposalEvents, curriculum);
   return {
     curriculum,
     notes,
@@ -104,12 +127,16 @@ export function foldStudy(
     cards: unlockedCards(curriculum.settings, cardIndex, log),
     rounds: log.rounds,
     feynmanAt: log.feynmanAt,
+    // A proposal the registry has adopted brings its evidence along as signals for the new topic.
+    signals: ledgerOf(chronological([...log.signals, ...adoptedSignals(proposals)])),
+    signalsReviewedThrough: log.signalsReviewedThrough,
+    proposals,
     orphanEvents: log.orphanEvents,
   };
 }
 
-/** Events by instant; events at the same instant keep their log order. */
-const chronological = (events: readonly StudyEvent[]): readonly StudyEvent[] =>
+/** Events by instant; events at the same instant keep their order. */
+const chronological = <E extends Readonly<{ at: string }>>(events: readonly E[]): readonly E[] =>
   events
     .map((e, i) => ({ e, i, t: Date.parse(e.at) }))
     .sort((a, b) => a.t - b.t || a.i - b.i)
@@ -123,12 +150,18 @@ type ReplayedLog = Readonly<{
   feynmanAt: ReadonlyMap<TopicSlug, Date>;
   /** Per card, per round: the first instant graded + the last grade given. */
   gradesByCard: ReadonlyMap<CardId, ReadonlyMap<RoundId, GradeRecord>>;
+  /** Signals for topics still in the registry, in log order (not yet de-duplicated). */
+  signals: readonly SignalNoted[];
+  signalsReviewedThrough: ReadonlyMap<TopicSlug, Date>;
+  /** Proposal events in log order, for `foldProposals`. */
+  proposalEvents: readonly (TopicProposed | ProposalDismissed)[];
   orphanEvents: number;
 }>;
 
 /** The study log folded in order; the maps are filled here and nowhere else. */
 function replayLog(
   ordered: readonly StudyEvent[],
+  curriculum: Curriculum,
   notes: ReadonlyMap<TopicSlug, MasterNote>,
   cardIndex: ReadonlyMap<CardId, RecallCard>,
 ): ReplayedLog {
@@ -137,6 +170,9 @@ function replayLog(
   const suspended = new Map<CardId, boolean>();
   const feynmanAt = new Map<TopicSlug, Date>();
   const gradesByCard = new Map<CardId, Map<RoundId, GradeRecord>>();
+  const signals: SignalNoted[] = [];
+  const signalsReviewedThrough = new Map<TopicSlug, Date>();
+  const proposalEvents: (TopicProposed | ProposalDismissed)[] = [];
   let orphanEvents = 0;
   for (const e of ordered) {
     const at = new Date(e.at);
@@ -163,11 +199,39 @@ function replayLog(
       case 'feynman-checked':
         feynmanAt.set(e.topic, at);
         break;
+      case 'signal-noted':
+        if (curriculum.bySlug.has(e.topic)) signals.push(e);
+        else orphanEvents++;
+        break;
+      case 'signals-reviewed': {
+        if (!curriculum.bySlug.has(e.topic)) {
+          orphanEvents++;
+          break;
+        }
+        const through = new Date(e.through);
+        const known = signalsReviewedThrough.get(e.topic);
+        if (known === undefined || through > known) signalsReviewedThrough.set(e.topic, through);
+        break;
+      }
+      case 'topic-proposed':
+      case 'proposal-dismissed':
+        proposalEvents.push(e);
+        break;
       default:
         return assertNever(e);
     }
   }
-  return { lessonsRead, rounds, suspended, feynmanAt, gradesByCard, orphanEvents };
+  return {
+    lessonsRead,
+    rounds,
+    suspended,
+    feynmanAt,
+    gradesByCard,
+    signals,
+    signalsReviewedThrough,
+    proposalEvents,
+    orphanEvents,
+  };
 }
 
 /** A re-grade within a round keeps the round's first grading instant and takes the new grade. */
@@ -230,7 +294,7 @@ export type LessonPlan =
   | Readonly<{ kind: 'note-invalid'; topic: Topic; errors: readonly string[] }>
   | Readonly<{ kind: 'curriculum-complete' }>;
 
-const isFullyRead = (state: StudyState, topic: TopicSlug): boolean => {
+export const isFullyRead = (state: StudyState, topic: TopicSlug): boolean => {
   return (
     state.notes
       .get(topic)
@@ -616,6 +680,14 @@ export type BuildPlan =
       notePath: string;
       /** Built prerequisite notes, to link and to avoid re-teaching. */
       prereqNotes: readonly Readonly<{ slug: TopicSlug; title: string; notePath: string }>[];
+      /**
+       * The oldest batch of material tagged to this topic (see `oldestBatch`), as extra sources
+       * for the research, or null when there is none. The builder records `throughOf(batch)` with
+       * `learn signals-reviewed --through`: everything up to it was shown, so it is not offered
+       * again, and anything newer, including a signal that arrives during the run, stays
+       * pending. Signals beyond the batch reach the note through a refresh once it is built.
+       */
+      batch: ReviewBatch | null;
       unreadAhead: number;
     }>
   | Readonly<{ kind: 'buffer-full'; unreadAhead: number }>
@@ -642,8 +714,21 @@ export function nextBuild(state: StudyState): BuildPlan {
         ? [{ slug, title: note.title, notePath: notePathFor(t) }]
         : [];
     }),
+    batch: oldestBatch(pendingFor(state, target.slug)),
     unreadAhead,
   };
+}
+
+/**
+ * A topic's signals no build or refresh has reviewed, oldest first, whatever the state of its
+ * note: those after the last review's instant or, with none recorded, after the start of the day
+ * the note's sources were checked (all of them for a topic with no dated note). The one rule
+ * `build-next`, `refresh-next` and `topics` all answer from, so they cannot disagree.
+ */
+export function pendingFor(state: StudyState, topic: TopicSlug): readonly SignalNoted[] {
+  const checked = state.notes.get(topic)?.sourcesChecked ?? null;
+  const baseline = new Date(checked === null ? 0 : `${checked}T00:00:00.000Z`);
+  return signalsAfter(state.signals, topic, state.signalsReviewedThrough.get(topic) ?? baseline);
 }
 
 // ─── Feynman ──────────────────────────────────────────────────────────────────

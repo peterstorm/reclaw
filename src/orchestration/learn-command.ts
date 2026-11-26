@@ -15,16 +15,25 @@ import { match } from 'ts-pattern';
 import {
   type Curriculum,
   type TopicSlug,
+  findTopic,
   notePathFor,
   parseCurriculum,
 } from '../core/curriculum.js';
 import {
   renderLessonMessage,
+  renderProposalsMessage,
   renderRoundMessage,
   renderRoundResult,
 } from '../core/learning-messages.js';
 import type { BasenameIndex, LearningVault } from '../core/learning-vault-port.js';
 import { type MasterNote, lessonSection, parseMasterNote } from '../core/master-note.js';
+import {
+  type RefreshPlan,
+  type ReviewCommand,
+  type ReviewError,
+  nextRefresh,
+  reviewSignals,
+} from '../core/note-refresh.js';
 import { ALL_CLEAR } from '../core/scheduled-output.js';
 import {
   type SourceRepairError,
@@ -39,9 +48,10 @@ import {
   GRADES,
   type Grade,
   MAX_ANSWER_CHARS,
+  type SignalNoted,
   type StudyEvent,
   parseStudyLog,
-  serializeEvent,
+  serializeWritable,
 } from '../core/study-log.js';
 import {
   type BuildPlan,
@@ -59,12 +69,28 @@ import {
   markLessonRead,
   nextBuild,
   nextLesson,
+  pendingFor,
   pickFeynman,
   pickRound,
   setSuspended,
   summarize,
 } from '../core/study-plan.js';
+import {
+  MAX_PROPOSALS_SHOWN,
+  dismissProposal,
+  dueProposals,
+  parseProposalBatch,
+  planProposals,
+  registryEntryOf,
+} from '../core/topic-proposals.js';
+import { parseSignalBatch, planSignals, recentSignals, throughOf } from '../core/topic-signals.js';
 import { type Result, err, ok } from '../core/types.js';
+
+/** The parser of a command whose one argument is a JSON batch (or `-`, replaced by stdin before this runs). */
+const stdinBatch =
+  <K extends 'signal' | 'propose'>(kind: K, usage: string) =>
+  ([, batch]: readonly string[]): Result<{ kind: K; batch: string }, string> =>
+    batch === undefined || batch.trim() === '' ? err(usage) : ok({ kind, batch });
 
 export const LEARN_USAGE = `usage: learn <command>
   status                                   progress summary
@@ -78,6 +104,16 @@ export const LEARN_USAGE = `usage: learn <command>
   suspend <card-id> <reason...>            stop asking a (bad) card
   unsuspend <card-id>
   build-next                               next topic for the curriculum builder
+  refresh-next                             built, unfinished note with enough pending signals, if any
+  signals-reviewed <topic-slug> --through ISO [--used N] (--built | --expect FINGERPRINT)
+                                           record that a build (--built) or refresh (--expect) reviewed signals up to ISO
+  topics                                   domains/subdomains, and every topic: slug, title, domain, built, signals, pendingReview (for tagging)
+  signal <json|->                          tag new material to topics: [{topics, ref, source, title, takeaway}]
+  signals [topic-slug]                     signals per topic, or one topic's signals
+  propose <json|->                         propose new topics for material that fits none:
+                                           [{title, domain, subdomain, outcome, evidence: [...]}]
+  proposals [--message]                    proposals with enough evidence to show (--message: the Telegram text)
+  proposal-dismiss <slug> [reason...]      drop a proposal for good
   fix-sources [--apply]                    re-point renamed sources (--apply writes the registry)
   feynman                                  pick this week's explain-it-back topic
   feynman-log <topic-slug> [--gaps "gap one; gap two"]
@@ -103,6 +139,14 @@ type Command =
   | { kind: 'suspend'; card: string; reason: string }
   | { kind: 'unsuspend'; card: string }
   | { kind: 'build-next' }
+  | { kind: 'refresh-next' }
+  | { kind: 'signals-reviewed'; review: ReviewCommand }
+  | { kind: 'topics' }
+  | { kind: 'signal'; batch: string }
+  | { kind: 'signals'; topic: string | undefined }
+  | { kind: 'propose'; batch: string }
+  | { kind: 'proposals'; message: boolean }
+  | { kind: 'proposal-dismiss'; slug: string; reason: string }
   | { kind: 'fix-sources'; apply: boolean }
   | { kind: 'feynman' }
   | { kind: 'feynman-log'; topic: string; gaps: readonly string[] }
@@ -137,6 +181,51 @@ const COMMAND_PARSERS: {
   status: () => ok({ kind: 'status' }),
   lesson: (args) => ok({ kind: 'lesson', message: args.includes('--message') }),
   'build-next': () => ok({ kind: 'build-next' }),
+  'refresh-next': () => ok({ kind: 'refresh-next' }),
+  'signals-reviewed': (args) => {
+    const topic = args[1];
+    const through = flag(args, '--through');
+    const used = Number(flag(args, '--used') ?? '0');
+    const fingerprint = flag(args, '--expect');
+    const built = args.includes('--built');
+    // A build and a refresh are different operations: exactly one flag says which, so a refresh
+    // cannot skip the fingerprint guard by leaving a flag out.
+    if (
+      topic === undefined ||
+      through === undefined ||
+      !Number.isInteger(used) ||
+      used < 0 ||
+      built === (fingerprint !== undefined)
+    )
+      return err(
+        'signals-reviewed <topic-slug> --through <ISO instant> [--used N] (--built | --expect <fingerprint>)',
+      );
+    const common = { topic, through, used };
+    return ok({
+      kind: 'signals-reviewed',
+      review:
+        fingerprint === undefined
+          ? { kind: 'after-build', ...common }
+          : { kind: 'after-refresh', ...common, fingerprint },
+    });
+  },
+  topics: () => ok({ kind: 'topics' }),
+  signal: stdinBatch(
+    'signal',
+    'signal <json-array | ->  (items: {topics, ref, source, title, takeaway})',
+  ),
+  signals: ([, topic]) => ok({ kind: 'signals', topic }),
+  propose: stdinBatch(
+    'propose',
+    'propose <json-array | ->  (items: {title, domain, subdomain, outcome, evidence})',
+  ),
+  proposals: (args) => ok({ kind: 'proposals', message: args.includes('--message') }),
+  'proposal-dismiss': (args) => {
+    const slug = args[1];
+    return slug === undefined
+      ? err('proposal-dismiss <slug> [reason...]')
+      : ok({ kind: 'proposal-dismiss', slug, reason: args.slice(2).join(' ').trim() });
+  },
   feynman: () => ok({ kind: 'feynman' }),
   'fix-sources': (args) => ok({ kind: 'fix-sources', apply: args.includes('--apply') }),
   read: (args) => {
@@ -257,10 +346,48 @@ export async function runLearnCommand(
     state,
     curriculum: loaded.value.curriculum,
     now,
-    append: (events) => vault.appendLog(events.map(serializeEvent)),
+    append: checkedAppend(vault),
   };
 
-  return match(command.value)
+  try {
+    return await dispatch(command.value, session, loaded.value, vault);
+  } catch (e) {
+    // The one throw the shell expects: a command built an event the log would reject. Nothing was
+    // written; anything else is an infrastructure failure and stays an exception.
+    if (e instanceof UnwritableEventError) return err(e.message);
+    throw e;
+  }
+}
+
+/** A command built an event the study log's reader would reject; nothing was written. */
+export class UnwritableEventError extends Error {
+  constructor(readonly reasons: readonly string[]) {
+    super(`refusing to write an event the study log rejects:\n- ${reasons.join('\n- ')}`);
+    this.name = 'UnwritableEventError';
+  }
+}
+
+/**
+ * The session's append: every event is checked against the schema the reader enforces before it is
+ * written, because a line the reader rejects would make the whole log corrupt, far from the command
+ * that wrote it. All events are checked before any is written.
+ */
+export const checkedAppend =
+  (vault: Pick<LearningVault, 'appendLog'>) =>
+  async (events: readonly StudyEvent[]): Promise<void> => {
+    const lines = serializeWritable(events);
+    if (!lines.ok) throw new UnwritableEventError(lines.error);
+    await vault.appendLog(lines.value);
+  };
+
+function dispatch(
+  command: Command,
+  session: Session,
+  loaded: Loaded,
+  vault: LearningVault,
+): Promise<Result<LearnOutput, string>> {
+  const { state, now } = session;
+  return match(command)
     .with({ kind: 'status' }, async () => ok(json(summarize(state, now))))
     .with({ kind: 'lesson' }, (c) => runLesson(c, session))
     .with({ kind: 'read' }, (c) => runRead(c, session))
@@ -271,10 +398,18 @@ export async function runLearnCommand(
     .with({ kind: 'grade' }, (c) => runGrade(c, session))
     .with({ kind: 'suspend' }, { kind: 'unsuspend' }, (c) => runSuspend(c, session))
     .with({ kind: 'build-next' }, async () => ok(json(buildView(nextBuild(state)))))
-    .with({ kind: 'fix-sources' }, (c) => runFixSources(c, loaded.value, vault))
+    .with({ kind: 'refresh-next' }, async () => ok(json(refreshView(nextRefresh(state)))))
+    .with({ kind: 'signals-reviewed' }, (c) => runSignalsReviewed(c, session))
+    .with({ kind: 'topics' }, async () => ok(json(topicsView(state))))
+    .with({ kind: 'signal' }, (c) => runSignal(c, session))
+    .with({ kind: 'signals' }, async (c) => runSignals(c, state))
+    .with({ kind: 'propose' }, (c) => runPropose(c, session))
+    .with({ kind: 'proposals' }, async (c) => ok(runProposals(c, state)))
+    .with({ kind: 'proposal-dismiss' }, (c) => runProposalDismiss(c, session))
+    .with({ kind: 'fix-sources' }, (c) => runFixSources(c, loaded, vault))
     .with({ kind: 'feynman' }, async () => ok(json(feynmanView(pickFeynman(state, now)))))
     .with({ kind: 'feynman-log' }, (c) => runFeynmanLog(c, session))
-    .with({ kind: 'validate' }, (c) => runValidate(c, loaded.value, vault))
+    .with({ kind: 'validate' }, (c) => runValidate(c, loaded, vault))
     .exhaustive();
 }
 
@@ -427,6 +562,155 @@ async function runFeynmanLog(
   await append([result.value]);
   return ok(json({ kind: 'recorded', topic: c.topic, gaps: c.gaps.length }));
 }
+
+// ─── Signals ──────────────────────────────────────────────────────────────────
+
+/**
+ * Record tagged material. Items are parsed and de-duplicated by the core; only what is new is
+ * appended, so submitting the same batch twice records it once. Bad items come back by index.
+ */
+async function runSignal(
+  c: CommandOf<'signal'>,
+  { state, curriculum, now, append }: Session,
+): CommandResult {
+  const batch = parseSignalBatch(c.batch, curriculum, now);
+  if (!batch.ok) return err(batch.error);
+  const { fresh, duplicates } = planSignals(state.signals, batch.value.events);
+  await append(fresh);
+  return ok(
+    json({
+      kind: 'signals-recorded',
+      recorded: fresh.length,
+      duplicates,
+      rejected: batch.value.rejected,
+    }),
+  );
+}
+
+/** Record that a build or refresh reviewed a topic's signals up to `--through`. */
+async function runSignalsReviewed(
+  c: CommandOf<'signals-reviewed'>,
+  { state, now, append }: Session,
+): CommandResult {
+  const event = reviewSignals(state, c.review, now);
+  if (!event.ok) return err(reviewErrorMessage(event.error));
+  await append([event.value]);
+  return ok(
+    json({
+      kind: 'signals-reviewed',
+      topic: event.value.topic,
+      through: event.value.through,
+      used: event.value.used,
+    }),
+  );
+}
+
+function reviewErrorMessage(error: ReviewError): string {
+  return match(error)
+    .with({ kind: 'unknown-topic' }, (e) => `unknown topic "${e.topic}"`)
+    .with({ kind: 'not-built' }, (e) => `topic "${e.topic}" has no valid master note`)
+    .with({ kind: 'invalid-instant' }, (e) => `--through "${e.through}" is not an ISO instant`)
+    .with(
+      { kind: 'no-signal-at' },
+      (e) =>
+        `--through "${e.through}" is not the instant of any signal tagged to this topic — pass the signalsThrough the plan printed`,
+    )
+    .with(
+      { kind: 'used-exceeds-signals' },
+      (e) => `--used ${e.used} exceeds the ${e.available} signal(s) up to --through`,
+    )
+    .with(
+      { kind: 'not-a-build' },
+      (e) =>
+        `--built is for the review after a build: this topic was already reviewed through ${e.reviewedThrough}, so use --through ${e.reviewedThrough} (or --expect for a refresh)`,
+    )
+    .with(
+      { kind: 'content-changed' },
+      (e) =>
+        `the note's lessons or cards changed (fingerprint ${e.actual}, expected ${e.expected}) — restore the backup and redo the refresh without touching them; nothing was recorded`,
+    )
+    .exhaustive();
+}
+
+/** Signals per topic, or — given a topic — that topic's signals, newest first. */
+function runSignals(c: CommandOf<'signals'>, state: StudyState): Result<LearnOutput, string> {
+  if (c.topic === undefined) return ok(json(topicsView(state)));
+  const topic = findTopic(state.curriculum, c.topic);
+  if (topic === undefined) return err(`unknown topic "${c.topic}"`);
+  return ok(
+    json({
+      kind: 'signals',
+      topic: topic.slug,
+      signals: recentSignals(state.signals, topic.slug, SIGNALS_LISTED).map(signalView),
+    }),
+  );
+}
+
+// ─── Proposals ────────────────────────────────────────────────────────────────
+
+/**
+ * Record proposals. They are parsed and planned by the core; only what adds evidence is
+ * appended, so the same batch twice records it once, and a proposal the user dismissed is
+ * counted and dropped rather than resurrected.
+ */
+async function runPropose(
+  c: CommandOf<'propose'>,
+  { state, curriculum, now, append }: Session,
+): CommandResult {
+  const batch = parseProposalBatch(c.batch, curriculum, now);
+  if (!batch.ok) return err(batch.error);
+  const plan = planProposals(state.proposals, batch.value.events);
+  await append(plan.fresh);
+  return ok(
+    json({
+      kind: 'proposals-recorded',
+      recorded: plan.fresh.length,
+      duplicates: plan.duplicates,
+      dismissed: plan.dismissed,
+      rejected: batch.value.rejected,
+    }),
+  );
+}
+
+/** The proposals ready to show (capped, in the order the message numbers them) and the rest. */
+function runProposals(c: CommandOf<'proposals'>, state: StudyState): LearnOutput {
+  const due = dueProposals(state.proposals, state.curriculum.settings);
+  const shown = due.slice(0, MAX_PROPOSALS_SHOWN);
+  const waiting = due.length - shown.length;
+  if (c.message) return text(renderProposalsMessage(shown, waiting));
+  return json({
+    kind: 'proposals',
+    due: shown.map((p) => ({
+      slug: p.slug,
+      title: p.title,
+      domain: p.domain,
+      subdomain: p.subdomain,
+      outcome: p.outcome,
+      evidence: p.evidence,
+      registryEntry: registryEntryOf(p),
+    })),
+    waiting,
+    gathering: state.proposals.open
+      .filter((p) => !due.includes(p))
+      .map((p) => ({ slug: p.slug, title: p.title, evidence: p.evidence.length })),
+    adopted: state.proposals.adopted.map((p) => p.slug),
+    dismissed: [...state.proposals.dismissed.keys()],
+  });
+}
+
+async function runProposalDismiss(
+  c: CommandOf<'proposal-dismiss'>,
+  { state, now, append }: Session,
+): CommandResult {
+  const event = dismissProposal(state.proposals, c.slug, c.reason, now);
+  if (!event.ok) return err(`"${event.error.slug}" is not an open proposal`);
+  if (event.value === null) return ok(json({ kind: 'already-dismissed', slug: c.slug }));
+  await append([event.value]);
+  return ok(json({ kind: 'proposal-dismissed', slug: c.slug }));
+}
+
+/** Enough to review a topic's backlog without printing a feed's worth. */
+const SIGNALS_LISTED = 100;
 
 // ─── Source repair ────────────────────────────────────────────────────────────
 
@@ -585,10 +869,65 @@ function buildView(plan: BuildPlan): unknown {
       topic: p.topic,
       notePath: p.notePath,
       prereqNotes: p.prereqNotes,
+      signals: p.batch?.signals.map(signalView) ?? [],
+      signalsThrough: p.batch === null ? null : throughOf(p.batch),
       unreadAhead: p.unreadAhead,
     }))
     .with({ kind: 'buffer-full' }, { kind: 'all-built' }, (p) => p)
     .exhaustive();
+}
+
+function refreshView(plan: RefreshPlan): unknown {
+  return match(plan)
+    .with({ kind: 'refresh' }, (p) => ({
+      kind: p.kind,
+      topic: p.topic.slug,
+      topicTitle: p.topic.title,
+      notePath: p.notePath,
+      fingerprint: p.fingerprint,
+      sourcesChecked: p.sourcesChecked,
+      lessonsRead: p.lessonsRead,
+      lessonCount: p.lessonCount,
+      pending: p.pending,
+      signals: p.batch.signals.map(signalView),
+      signalsThrough: throughOf(p.batch),
+    }))
+    .with({ kind: 'nothing-to-refresh' }, (p) => p)
+    .exhaustive();
+}
+
+/** A signal as a skill reads it: the event without its log bookkeeping. */
+const signalView = (s: SignalNoted) => ({
+  at: s.at,
+  source: s.source,
+  title: s.title,
+  ref: s.ref,
+  takeaway: s.takeaway,
+});
+
+/**
+ * Every topic in study order, for tagging: what it is, whether it is built, its signal count.
+ * The domains and subdomains are what a proposal for a new topic must choose from.
+ */
+function topicsView(state: StudyState): unknown {
+  return {
+    kind: 'topics',
+    domains: state.curriculum.domains.map((d) => ({
+      id: d.id,
+      title: d.title,
+      subdomains: d.subdomains.map((s) => s.id),
+    })),
+    topics: state.curriculum.topics.map((t) => ({
+      slug: t.slug,
+      title: t.title,
+      domain: t.domain,
+      subdomain: t.subdomain,
+      built: state.notes.has(t.slug) || state.brokenNotes.has(t.slug),
+      signals: state.signals.get(t.slug)?.length ?? 0,
+      /** Signals no build or refresh has reviewed yet (all of them, for an unbuilt topic). */
+      pendingReview: pendingFor(state, t.slug).length,
+    })),
+  };
 }
 
 function feynmanView(plan: FeynmanPlan): unknown {

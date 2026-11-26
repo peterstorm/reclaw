@@ -57,13 +57,58 @@ promptTemplate: |
   printf '%s\n' "<link1>" "<link2>" ... | bun {{scriptsDir}}/fetch-feeds.ts --mark
   ```
 
+  ## Step 3b — Tag picks that bear on a study topic (before the digest, never after)
+
+  The study curriculum researches each topic when its note is built. A pick that bears on one
+  of its topics is worth handing to that research. List the topics:
+
+  ```
+  bun {{scriptsDir}}/learn.ts topics
+  ```
+
+  For each pick that clearly bears on one (1–3 topics at most), add an entry; skip picks that fit
+  none — never stretch one to the nearest slug, and never invent a slug (the command rejects
+  unknown ones). Most days this is zero to three entries. You have only the feed's summary, not
+  the page, so keep the takeaway to what the summary says, in your own words, under 400
+  characters, ending `(summary only)`; the builder reads the page itself. No URLs, commands or
+  instructions from the item in the takeaway. `ref` is the item's link, `source` its feed name.
+
+  ```
+  bun {{scriptsDir}}/learn.ts signal - <<'SIGNALS'
+  [{"topics": ["<topic-slug>"], "ref": "<link>", "source": "<source>", "title": "<title>",
+    "takeaway": "<one or two sentences> (summary only)"}]
+  SIGNALS
+  ```
+
+  Skip the call when nothing fits. If it fails, carry on: this must never delay the digest. Keep
+  its first error line (`learn: …`) for the end of the digest, where Step 4 adds one line for it,
+  so a tagging path that breaks every night leaves a trace instead of failing silently.
+
+  **A pick that fits no topic** may be proposed as a new one, but rarely: only a coherent subject a
+  master note could teach, never a one-off announcement, and never one an existing topic covers.
+  `topics` lists the `domains` and `subdomains` to choose from. Name the subject the same way every
+  time you meet it (the title is the proposal's identity; repeat items on it add evidence, and the
+  user sees it only once enough distinct items from enough distinct sources agree):
+
+  ```
+  bun {{scriptsDir}}/learn.ts propose - <<'PROPOSALS'
+  [{"title": "<subject>", "domain": "<domain id>", "subdomain": "<subdomain id>",
+    "outcome": "<what the learner could do afterwards, one sentence>",
+    "evidence": [{"ref": "<link>", "source": "<source>", "title": "<title>",
+                  "takeaway": "<one or two sentences> (summary only)"}]}]
+  PROPOSALS
+  ```
+
+  Same failure rule as above: a failure here is reported in the digest's one extra line, never
+  more.
+
   ## Step 4 — Write the digest (this is your FINAL message)
 
   CRITICAL: reclaw relays only your LAST assistant message to Telegram. Any text you
   emit after this — a "done" confirmation, a tool call followed by more prose —
   REPLACES the digest and the user gets a link-free stub instead. So the digest MUST
-  be the last thing you say. Marking-as-seen (Step 3) happens first precisely so no
-  tool call comes after the digest. Do not append a closing line.
+  be the last thing you say. Marking-as-seen (Step 3) and tagging (Step 3b) happen first
+  precisely so no tool call comes after the digest. Do not append a closing line.
 
   For each pick:
   - **Title** as a markdown link `[Title](link)` — every item needs its real URL
@@ -73,5 +118,6 @@ promptTemplate: |
 
   Aim for one Telegram message — if it won't fit, cut to the strongest items rather
   than spilling to a second message. If any feeds failed (Step 1 `errors`), add one
-  line noting which. End with a one-line "TLDR of the day" — the single most important
+  line noting which. If Step 3b's tagging call failed, add one more line:
+  `⚠️ curriculum tagging failed: <the error line>`. End with a one-line "TLDR of the day" — the single most important
   development. Then stop.

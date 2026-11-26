@@ -6,7 +6,8 @@
 // layout exactly. Rendering here makes the message a function of the plan: byte-stable,
 // testable, and free.
 //
-// Rendered here: the lesson, the round's questions, the graded round. Still composed by
+// Rendered here: the lesson, the round's questions, the graded round, the weekly topic
+// proposals (ALL_CLEAR in a week with none ready). Still composed by
 // their skills: the Feynman ask and the builder's note-ready report. `awaiting-build` is
 // the only plan that renders as ALL_CLEAR — the runtime's suppression sentinel. A message
 // a learner is waiting for (a finished curriculum, a round with nothing graded) never
@@ -14,6 +15,7 @@
 
 import { ALL_CLEAR } from './scheduled-output.js';
 import type { GradedAnswer, LessonPlan, RoundPlan } from './study-plan.js';
+import { type Proposal, distinctSources, registryEntryOf } from './topic-proposals.js';
 import { assertNever } from './types.js';
 
 /** The lesson the reader is on, with its pretest questions and Obsidian pointer. */
@@ -119,4 +121,36 @@ export function renderRoundResult(items: readonly GradedAnswer[], now: Date): st
     .map((i) => i.nextDueAt)
     .sort((a, b) => a.getTime() - b.getTime())[0] as Date;
   return [...blocks, '', `Next up: ${relativeFrom(now, soonest)}.`].join('\n');
+}
+
+/**
+ * The weekly proposals message: the topics enough evidence now supports, each with the registry
+ * entry to paste. Nothing due is ALL_CLEAR, which the runtime suppresses: a quiet week sends
+ * nothing. `due` is already ordered and capped by the caller; `waiting` is how many more are due.
+ */
+export function renderProposalsMessage(due: readonly Proposal[], waiting: number): string {
+  if (due.length === 0) return ALL_CLEAR;
+  // A dismissal is permanent, so each block names its slug: a reply is resolved against what was
+  // shown, not against a list that nightly evidence may have reordered since.
+  const blocks = due.map((p, i) =>
+    [
+      `**${i + 1}. ${p.title}** — ${p.domain}/${p.subdomain} · \`${p.slug}\``,
+      p.outcome,
+      `Evidence (${p.evidence.length} items, ${distinctSources(p)} sources):`,
+      ...p.evidence.map((e) => `• ${e.source}: ${e.title} — ${e.ref}`),
+      '',
+      '```yaml',
+      registryEntryOf(p),
+      '```',
+    ].join('\n'),
+  );
+  return [
+    `🧭 **New topic proposals** — ${due.length} ready for your registry`,
+    '',
+    ...blocks.flatMap((b) => [b, '']),
+    'To adopt one, paste its entry into `learning/curriculum/registry.yaml` where it belongs in study order (prerequisites must come earlier); its evidence then reaches the note as signals. Reply **dismiss N** to drop one for good.',
+    ...(waiting > 0
+      ? ['', `${waiting} more are ready; they appear once you dismiss or adopt some of these.`]
+      : []),
+  ].join('\n');
 }
