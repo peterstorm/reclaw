@@ -5,6 +5,8 @@ name: Learn — Feynman Check
 # See vault: reclaw/skills/learning-loop.md
 schedule: "0 17 * * 0"
 permissionProfile: scheduled
+# Pi/vLLM unreachable (desktop off) or out of quota → rerun once on Claude; the message says so.
+fallback: { backend: claude, model: sonnet }
 validityWindowMinutes: 240
 timeout: 300
 promptTemplate: |
