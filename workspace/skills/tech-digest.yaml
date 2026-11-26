@@ -84,6 +84,24 @@ promptTemplate: |
   its first error line (`learn: …`) for the end of the digest, where Step 4 adds one line for it,
   so a tagging path that breaks every night leaves a trace instead of failing silently.
 
+  **A pick that fits no topic** may be proposed as a new one, but rarely: only a coherent subject a
+  master note could teach, never a one-off announcement, and never one an existing topic covers.
+  `topics` lists the `domains` and `subdomains` to choose from. Name the subject the same way every
+  time you meet it (the title is the proposal's identity; repeat items on it add evidence, and the
+  user sees it only once enough distinct items from enough distinct sources agree):
+
+  ```
+  bun {{scriptsDir}}/learn.ts propose - <<'PROPOSALS'
+  [{"title": "<subject>", "domain": "<domain id>", "subdomain": "<subdomain id>",
+    "outcome": "<what the learner could do afterwards, one sentence>",
+    "evidence": [{"ref": "<link>", "source": "<source>", "title": "<title>",
+                  "takeaway": "<one or two sentences> (summary only)"}]}]
+  PROPOSALS
+  ```
+
+  Same failure rule as above: a failure here is reported in the digest's one extra line, never
+  more.
+
   ## Step 4 — Write the digest (this is your FINAL message)
 
   CRITICAL: reclaw relays only your LAST assistant message to Telegram. Any text you

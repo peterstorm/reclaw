@@ -32,6 +32,37 @@ describe('parseCurriculum', () => {
     expect(result.ok && result.value.settings.roundSize).toBe(5);
   });
 
+  it('defaults the refresh and proposal settings', () => {
+    const result = parseCurriculum(renderRegistry([{ slug: 'a' }]));
+    expect(result.ok && result.value.settings).toMatchObject({
+      refreshMinSignals: 2,
+      proposalMinEvidence: 3,
+      proposalMinSources: 2,
+    });
+  });
+
+  it.each([
+    ['refreshMinSignals', 0],
+    ['refreshMinSignals', 51],
+    ['proposalMinEvidence', 0],
+    ['proposalMinEvidence', 21],
+    ['proposalMinSources', 0],
+    ['proposalMinSources', 11],
+    ['proposalMinSources', 1.5],
+  ])('refuses %s = %s', (key, value) => {
+    expect(parseCurriculum(renderRegistry([{ slug: 'a' }], { [key]: value })).ok).toBe(false);
+  });
+
+  it.each([
+    ['refreshMinSignals', 1],
+    ['refreshMinSignals', 50],
+    ['proposalMinEvidence', 20],
+    ['proposalMinSources', 10],
+  ])('accepts %s = %s', (key, value) => {
+    const result = parseCurriculum(renderRegistry([{ slug: 'a' }], { [key]: value }));
+    expect(result.ok && (result.value.settings as Record<string, number>)[key]).toBe(value);
+  });
+
   it.each([
     ['a prereq that appears later', [{ slug: 'a', prereqs: ['b'] }, { slug: 'b' }], 'earlier'],
     ['a self prereq', [{ slug: 'a', prereqs: ['a'] }], 'earlier'],

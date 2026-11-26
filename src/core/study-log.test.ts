@@ -2,19 +2,29 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import {
   GRADES,
+  MAX_EVIDENCE_PER_SUBMISSION,
+  MAX_PROPOSAL_OUTCOME_CHARS,
+  MAX_PROPOSAL_REASON_CHARS,
+  MAX_PROPOSAL_TITLE_CHARS,
   MAX_SIGNAL_SOURCE_CHARS,
   MAX_SIGNAL_TAKEAWAY_CHARS,
   MAX_SIGNAL_TITLE_CHARS,
+  type ProposalSlug,
   type StudyEvent,
   parseStudyLog,
   roundIdAt,
   serializeEvent,
+  serializeWritable,
 } from './study-log.js';
 
 const instant = fc
   .integer({ min: Date.parse('2026-01-01'), max: Date.parse('2030-01-01') })
   .map((t) => new Date(t).toISOString());
 const id = fc.stringMatching(/^[a-z][a-z0-9-]{0,20}(\/c\d{2})?$/);
+
+const proposalSlug = fc.stringMatching(
+  /^[a-z][a-z0-9]{0,10}(-[a-z0-9]{1,6}){0,3}$/,
+) as fc.Arbitrary<ProposalSlug>;
 
 const event: fc.Arbitrary<StudyEvent> = fc.oneof(
   fc.record({
@@ -68,6 +78,30 @@ const event: fc.Arbitrary<StudyEvent> = fc.oneof(
     topic: id,
     through: instant,
     used: fc.integer({ min: 0, max: 100 }),
+  }),
+  fc.record({
+    kind: fc.constant('topic-proposed' as const),
+    at: instant,
+    slug: proposalSlug,
+    title: fc.string({ minLength: 1, maxLength: MAX_PROPOSAL_TITLE_CHARS }),
+    domain: id,
+    subdomain: id,
+    outcome: fc.string({ minLength: 1, maxLength: MAX_PROPOSAL_OUTCOME_CHARS }),
+    evidence: fc.array(
+      fc.record({
+        ref: fc.webUrl(),
+        source: fc.string({ minLength: 1, maxLength: MAX_SIGNAL_SOURCE_CHARS }),
+        title: fc.string({ minLength: 1, maxLength: MAX_SIGNAL_TITLE_CHARS }),
+        takeaway: fc.string({ minLength: 1, maxLength: MAX_SIGNAL_TAKEAWAY_CHARS }),
+      }),
+      { minLength: 1, maxLength: MAX_EVIDENCE_PER_SUBMISSION },
+    ),
+  }),
+  fc.record({
+    kind: fc.constant('proposal-dismissed' as const),
+    at: instant,
+    slug: proposalSlug,
+    reason: fc.string({ maxLength: MAX_PROPOSAL_REASON_CHARS }),
   }),
 ) as fc.Arbitrary<StudyEvent>;
 
@@ -149,6 +183,71 @@ describe('study log', () => {
     });
     expect(result.error[0]).toContain('through');
     expect(result.error[1]).toContain('used');
+  });
+
+  it('refuses a malformed topic proposal, naming the line', () => {
+    const evidence = { ref: 'https://example.com/x', source: 's', title: 't', takeaway: 'k' };
+    const base = {
+      kind: 'topic-proposed',
+      at: '2026-11-25T22:00:00.000Z',
+      slug: 'some-topic',
+      title: 'Some topic',
+      domain: 'ai',
+      subdomain: 'core',
+      outcome: 'o',
+      evidence: [evidence],
+    };
+    const bad = [
+      { ...base, slug: 'Not A Slug' },
+      { ...base, slug: 'x'.repeat(61) },
+      { ...base, evidence: [] },
+      { ...base, evidence: Array.from({ length: 6 }, () => evidence) },
+      { ...base, evidence: [{ ...evidence, takeaway: '' }] },
+      { kind: 'proposal-dismissed', at: base.at, slug: '', reason: '' },
+    ];
+    const result = parseStudyLog(`${bad.map((e) => JSON.stringify(e)).join('\n')}\n`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toHaveLength(6);
+    result.error.forEach((message, i) => {
+      expect(message).toContain(`study log line ${i + 1}:`);
+    });
+    expect(result.error[0]).toContain('slug');
+  });
+
+  // The invariant that keeps one bad write from making the whole log unreadable: whatever the
+  // writer appends is first checked against the schema the reader enforces.
+  describe('serializeWritable', () => {
+    const ok = (events: readonly StudyEvent[]) => serializeWritable(events).ok;
+    const dismissal = (reason: string): StudyEvent => ({
+      kind: 'proposal-dismissed',
+      at: '2026-11-25T22:00:00.000Z',
+      slug: 'a' as ProposalSlug,
+      reason,
+    });
+
+    it('accepts what the reader accepts and returns the exact lines', () => {
+      const events = [dismissal('fine'), dismissal('')];
+      expect(serializeWritable(events)).toEqual({ ok: true, value: events.map(serializeEvent) });
+      expect(serializeWritable([])).toEqual({ ok: true, value: [] });
+    });
+
+    it('refuses an event the reader would reject, naming the problem', () => {
+      const tooLong = dismissal('x'.repeat(MAX_PROPOSAL_REASON_CHARS + 1));
+      const result = serializeWritable([dismissal('fine'), tooLong]);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error[0]).toContain('reason');
+    });
+
+    it('agrees with parseStudyLog on every event: every generated event is writable and parses back (property)', () => {
+      fc.assert(
+        fc.property(fc.array(event, { maxLength: 10 }), (events) => {
+          expect(ok(events)).toBe(true);
+          const lines = events.map(serializeEvent).join('\n');
+          expect(parseStudyLog(lines).ok).toBe(true);
+        }),
+      );
+    });
   });
 
   it('derives compact, second-resolution round ids', () => {

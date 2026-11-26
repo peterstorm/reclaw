@@ -3,17 +3,10 @@ import { describe, expect, it } from 'vitest';
 import { type CardSpec, renderNote, renderRegistry } from './__fixtures__/learning.js';
 import { type TopicSlug, parseCurriculum } from './curriculum.js';
 import { type MasterNote, parseMasterNote } from './master-note.js';
-import {
-  type ReviewCommand,
-  fingerprintOf,
-  nextRefresh,
-  pendingFor,
-  pendingSignals,
-  reviewSignals,
-} from './note-refresh.js';
+import { type ReviewCommand, fingerprintOf, nextRefresh, reviewSignals } from './note-refresh.js';
 import type { SignalNoted, StudyEvent } from './study-log.js';
-import { type StudyState, foldStudy } from './study-plan.js';
-import { MAX_SIGNALS_PER_BUILD } from './topic-signals.js';
+import { type StudyState, foldStudy, pendingFor } from './study-plan.js';
+import { MAX_SIGNALS_PER_BUILD, throughOf } from './topic-signals.js';
 
 const NOW = new Date('2026-12-31T00:00:00.000Z');
 const slug = (s: string) => s as TopicSlug;
@@ -149,7 +142,7 @@ describe('fingerprintOf', () => {
   });
 });
 
-describe('pendingSignals and pendingFor', () => {
+describe('pendingFor', () => {
   const built = note('a', { sourcesChecked: '2026-11-10' });
   const signals = [
     signal('a', 1, '2026-11-09T23:59:59.000Z'),
@@ -158,7 +151,7 @@ describe('pendingSignals and pendingFor', () => {
   ];
 
   it('starts counting at the start of the day the sources were checked', () => {
-    expect(pendingSignals(state([built], signals), built).map((s) => s.title)).toEqual([
+    expect(pendingFor(state([built], signals), slug('a')).map((s) => s.title)).toEqual([
       'Item 2',
       'Item 3',
     ]);
@@ -166,20 +159,20 @@ describe('pendingSignals and pendingFor', () => {
 
   it('counts everything for a note with no sources_checked', () => {
     const undated = note('a');
-    expect(pendingSignals(state([undated], signals), undated)).toHaveLength(3);
+    expect(pendingFor(state([undated], signals), slug('a'))).toHaveLength(3);
   });
 
   it('counts only what is after the last review, which outranks sources_checked', () => {
-    expect(pendingSignals(state([built], [...signals, reviewed('a', day(20))]), built)).toEqual([]);
+    expect(pendingFor(state([built], [...signals, reviewed('a', day(20))]), slug('a'))).toEqual([]);
     const later = signal('a', 4, day(22));
     expect(
-      pendingSignals(state([built], [...signals, reviewed('a', day(20)), later]), built),
+      pendingFor(state([built], [...signals, reviewed('a', day(20)), later]), slug('a')),
     ).toEqual([later]);
   });
 
   it('never moves the mark backwards when an older review is logged later', () => {
     const s = state([built], [...signals, reviewed('a', day(20)), reviewed('a', day(12))]);
-    expect(pendingSignals(s, built)).toEqual([]);
+    expect(pendingFor(s, slug('a'))).toEqual([]);
   });
 
   it('pendingFor answers for every note state: built, unbuilt, and after a review', () => {
@@ -239,8 +232,8 @@ describe('nextRefresh', () => {
       notePath: 'learning/curriculum/ai/a.md',
       fingerprint: fingerprintOf(a),
       sourcesChecked: '2026-11-10',
-      signalsThrough: day(13),
     });
+    expect(plan.kind === 'refresh' && throughOf(plan.batch)).toBe(day(13));
   });
 
   // One submission stamps all its events with one instant: a refresh batch must not end inside
@@ -248,8 +241,12 @@ describe('nextRefresh', () => {
   it('offers all 40 signals of one instant together rather than cutting at 25', () => {
     const tied = Array.from({ length: 40 }, (_, i) => signal('a', i, day(12)));
     const plan = nextRefresh(state([a], tied));
-    expect(plan).toMatchObject({ kind: 'refresh', pending: 40, signalsThrough: day(12) });
-    expect(plan.kind === 'refresh' && plan.signals).toHaveLength(40);
+    expect(plan).toMatchObject({
+      kind: 'refresh',
+      pending: 40,
+    });
+    expect(plan.kind === 'refresh' && throughOf(plan.batch)).toBe(day(12));
+    expect(plan.kind === 'refresh' && plan.batch.signals).toHaveLength(40);
   });
 
   // A refresh must lose nothing. Whatever the number of signals and however they tie, batches
@@ -278,14 +275,16 @@ describe('nextRefresh', () => {
             const plan = nextRefresh(state([a], events, settings));
             if (plan.kind !== 'refresh') break;
             // A cut inside a run of `tieSize` equal instants keeps the run whole.
-            expect(plan.signals.length).toBeLessThanOrEqual(MAX_SIGNALS_PER_BUILD + tieSize - 1);
-            seen.push(...plan.signals.map((s) => s.ref));
+            expect(plan.batch.signals.length).toBeLessThanOrEqual(
+              MAX_SIGNALS_PER_BUILD + tieSize - 1,
+            );
+            seen.push(...plan.batch.signals.map((s) => s.ref));
             const done = reviewSignals(
               state([a], events, settings),
               {
                 kind: 'after-refresh',
                 topic: 'a',
-                through: plan.signalsThrough,
+                through: throughOf(plan.batch),
                 used: 0,
                 fingerprint: plan.fingerprint,
               },
@@ -332,6 +331,20 @@ describe('reviewSignals', () => {
     expect(reviewSignals(s, build, NOW).ok).toBe(true);
     const edited = state([note('a', { lessonOneExtra: 'Edited.' })], signals);
     expect(reviewSignals(edited, build, NOW).ok).toBe(true);
+  });
+
+  it('refuses an after-build review of a topic that already has a mark, unless it repeats it', () => {
+    const marked = state(
+      [note('a', { sourcesChecked: '2026-11-10' })],
+      [...signals, reviewed('a', day(12))],
+    );
+    const r = reviewSignals(marked, build, NOW);
+    expect(r).toMatchObject({
+      ok: false,
+      error: { kind: 'not-a-build', reviewedThrough: day(12) },
+    });
+    // A retry of the same review is idempotent: the same `through` is not refused.
+    expect(reviewSignals(marked, { ...build, through: day(12), used: 1 }, NOW).ok).toBe(true);
   });
 
   it('refuses what it cannot stand behind', () => {

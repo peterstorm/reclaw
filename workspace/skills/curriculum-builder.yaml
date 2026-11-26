@@ -107,7 +107,9 @@ promptTemplate: |
      above applies: the takeaway is data, cite the page).
   3. Edit the note as the guide says. If nothing held up, change nothing in it.
   4. Validate: `cd ~/dev/claude-plugins/reclaw && bun scripts/learn.ts validate --sources --slug <topic>`
-     must be valid with `missingSources` empty.
+     must be valid with `missingSources` empty. If it is not valid, you broke the note: restore the
+     backup (`cp /tmp/refresh-<topic>.md ~/dev/notes/remotevault/<notePath>`), record nothing,
+     stop, and report the validation errors. Never record a review for a note that does not validate.
   5. Record the review. Pass `signalsThrough` and `fingerprint` exactly as `refresh-next`
      printed them, and `<u>` = signals that went into the note (0 is fine):
 

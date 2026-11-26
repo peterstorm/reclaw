@@ -38,6 +38,19 @@ async function runText(vault: Vault, args: string[], now = T0): Promise<string> 
   return value.text;
 }
 
+/** Tag one item to a topic through the CLI: how every signal in these tests is recorded. */
+const tagSignal = (vault: Vault, topic: string, ref: string, now: Date, title: string = ref) =>
+  run(
+    vault,
+    [
+      'signal',
+      JSON.stringify([
+        { topics: [topic], ref, source: 'Example', title, takeaway: 'Says a thing.' },
+      ]),
+    ],
+    now,
+  );
+
 describe('learn command — end to end over a fake vault', () => {
   it('lesson → read → round → grade → status', async () => {
     const vault = vaultWith();
@@ -369,10 +382,16 @@ describe('signals — new material tagged to topics', () => {
 
     expect(await run(vault, ['topics'])).toEqual({
       kind: 'topics',
+      // What a proposal for a new topic may name.
+      domains: [
+        { id: 'ai', title: 'AI', subdomains: ['core', 'extra'] },
+        { id: 'infra', title: 'Infra', subdomains: ['core'] },
+      ],
       topics: [
         {
           slug: 'a',
           title: 'Title of a',
+          domain: 'ai',
           subdomain: 'core',
           built: true,
           signals: 0,
@@ -381,6 +400,7 @@ describe('signals — new material tagged to topics', () => {
         {
           slug: 'b',
           title: 'Title of b',
+          domain: 'ai',
           subdomain: 'core',
           built: false,
           signals: 2,
@@ -434,23 +454,7 @@ describe('refresh — built notes pick up later signals', () => {
   const dated = renderNote({ slug: 'a', lessons: 2, sourcesChecked: '2026-10-01' });
   const vaultAt = (note: string = dated, log = '') =>
     fakeVault(registry, { [notePath('a')]: note }, log);
-  const tag = (vault: Vault, ref: string, now: Date) =>
-    run(
-      vault,
-      [
-        'signal',
-        JSON.stringify([
-          {
-            topics: ['a'],
-            ref,
-            source: 'Example',
-            title: ref,
-            takeaway: 'Says a thing.',
-          },
-        ]),
-      ],
-      now,
-    );
+  const tag = (vault: Vault, ref: string, now: Date) => tagSignal(vault, 'a', ref, now);
 
   it('has nothing to refresh until enough signals are pending', async () => {
     const vault = vaultAt();
@@ -613,15 +617,14 @@ describe('refresh — built notes pick up later signals', () => {
 
   it('after a build, review covers what the builder was shown and nothing newer', async () => {
     const vault = vaultWith();
-    const body = (ref: string) => [{ topics: ['b'], ref, source: 'S', title: 'T', takeaway: 'K' }];
-    await run(vault, ['signal', JSON.stringify(body('https://example.com/1'))], at(1));
+    await tagSignal(vault, 'b', 'https://example.com/1', at(1));
     const next = await run(vault, ['build-next'], at(2));
     expect(next).toMatchObject({
       kind: 'build',
       topic: { slug: 'b' },
       signalsThrough: at(1).toISOString(),
     });
-    await run(vault, ['signal', JSON.stringify(body('https://example.com/2'))], at(3));
+    await tagSignal(vault, 'b', 'https://example.com/2', at(3));
 
     // The builder writes the note, then records its review through the instant it was shown.
     const built = fakeVault(
@@ -651,22 +654,7 @@ describe('refresh — built notes pick up later signals', () => {
   describe('more signals than one batch', () => {
     const tagMany = async (vault: Vault, count: number, spread: boolean) => {
       for (let i = 0; i < count; i++)
-        await run(
-          vault,
-          [
-            'signal',
-            JSON.stringify([
-              {
-                topics: ['b'],
-                ref: `https://example.com/${i}`,
-                source: 'S',
-                title: `T${i}`,
-                takeaway: 'K',
-              },
-            ]),
-          ],
-          at(spread ? i + 1 : 1),
-        );
+        await tagSignal(vault, 'b', `https://example.com/${i}`, at(spread ? i + 1 : 1), `T${i}`);
     };
     const builtB = (vault: Vault) =>
       fakeVault(
@@ -761,6 +749,243 @@ describe('refresh — built notes pick up later signals', () => {
     ])
       expect((await runLearnCommand(args, vault, at(2))).ok, args.join(' ')).toBe(false);
     expect(vault.log()).toBe(written);
+  });
+});
+
+describe('topic proposals — material that fits no topic', () => {
+  const ev = (n: number, source: string) => ({
+    ref: `https://example.com/${n}`,
+    source,
+    title: `Item ${n}`,
+    takeaway: 'Says a thing.',
+  });
+  const proposal = (
+    title: string,
+    evidence: readonly unknown[],
+    over: Record<string, unknown> = {},
+  ) => ({
+    title,
+    domain: 'ai',
+    subdomain: 'core',
+    outcome: `You can explain ${title}.`,
+    evidence,
+    ...over,
+  });
+  const propose = (vault: Vault, items: readonly unknown[], now = T0) =>
+    run(vault, ['propose', JSON.stringify(items)], now);
+  const READY = [ev(1, 'Hamel Husain'), ev(2, 'Eugene Yan'), ev(3, 'Simon Willison')];
+
+  it('keeps a proposal quiet until enough distinct items from enough sources agree', async () => {
+    const vault = vaultWith();
+    expect(await propose(vault, [proposal('Judge Calibration', [ev(1, 'Hamel Husain')])])).toEqual({
+      kind: 'proposals-recorded',
+      recorded: 1,
+      duplicates: 0,
+      dismissed: 0,
+      rejected: [],
+    });
+    expect(await run(vault, ['proposals'], at(1))).toMatchObject({
+      due: [],
+      gathering: [{ slug: 'judge-calibration', evidence: 1 }],
+    });
+    expect(await runText(vault, ['proposals', '--message'], at(1))).toBe(ALL_CLEAR);
+
+    // Three items from ONE source are one voice repeating itself.
+    await propose(
+      vault,
+      [proposal('Judge Calibration', [ev(2, 'Hamel Husain'), ev(3, 'hamel husain')])],
+      at(2),
+    );
+    expect(await run(vault, ['proposals'], at(3))).toMatchObject({ due: [] });
+
+    await propose(vault, [proposal('Judge Calibration', [ev(4, 'Eugene Yan')])], at(4));
+    const ready = await run(vault, ['proposals'], at(5));
+    expect(ready).toMatchObject({
+      waiting: 0,
+      due: [
+        { slug: 'judge-calibration', title: 'Judge Calibration', domain: 'ai', subdomain: 'core' },
+      ],
+    });
+    expect((ready.due as { evidence: unknown[] }[])[0]?.evidence).toHaveLength(4);
+  });
+
+  it('renders the weekly message in code, with the registry entry to paste', async () => {
+    const vault = vaultWith();
+    await propose(vault, [proposal('Judge Calibration', READY)]);
+    const message = await runText(vault, ['proposals', '--message'], at(1));
+    expect(message).toContain('🧭 **New topic proposals** — 1 ready for your registry');
+    // The slug is printed so a reply names what was shown, not a position that may have moved.
+    expect(message).toContain('**1. Judge Calibration** — ai/core · `judge-calibration`');
+    expect(message).toContain('Evidence (3 items, 3 sources):');
+    expect(message).toContain('• Hamel Husain: Item 1 — https://example.com/1');
+    expect(message).toContain('```yaml\n  - slug: judge-calibration\n');
+    expect(message).toContain('prereqs: []');
+    expect(message).toContain('Reply **dismiss N**');
+  });
+
+  it('shows at most three a week and says how many wait', async () => {
+    const vault = vaultWith();
+    await propose(
+      vault,
+      ['Alpha Topic', 'Beta Topic', 'Gamma Topic', 'Delta Topic', 'Epsilon Topic'].map((t) =>
+        proposal(t, READY),
+      ),
+    );
+    const json = await run(vault, ['proposals'], at(1));
+    expect(json.due).toHaveLength(3);
+    expect(json.waiting).toBe(2);
+    expect(await runText(vault, ['proposals', '--message'], at(1))).toContain(
+      '2 more are ready; they appear once you dismiss or adopt some of these.',
+    );
+  });
+
+  // The weekly run does not remember what it showed: the rest appear when earlier ones leave.
+  it('shows the next one only once a shown one is dismissed', async () => {
+    const vault = vaultWith();
+    await propose(
+      vault,
+      ['Alpha Topic', 'Beta Topic', 'Gamma Topic', 'Delta Topic'].map((t) => proposal(t, READY)),
+    );
+    const first = await run(vault, ['proposals'], at(1));
+    const shown = (first.due as { slug: string }[]).map((p) => p.slug);
+    expect(shown).toHaveLength(3);
+    expect(await run(vault, ['proposals'], at(2))).toMatchObject({ waiting: 1 });
+
+    await run(vault, ['proposal-dismiss', shown[0] ?? ''], at(3));
+    const next = await run(vault, ['proposals'], at(4));
+    expect(next.waiting).toBe(0);
+    expect((next.due as { slug: string }[]).map((p) => p.slug)).toEqual(
+      expect.arrayContaining([...shown.slice(1), 'delta-topic']),
+    );
+  });
+
+  it('records the same proposal once however often it is submitted', async () => {
+    const vault = vaultWith();
+    await propose(vault, [proposal('Judge Calibration', READY)]);
+    const written = vault.log();
+    expect(await propose(vault, [proposal('Judge Calibration', READY)], at(1))).toMatchObject({
+      recorded: 0,
+      duplicates: 1,
+    });
+    expect(vault.log()).toBe(written);
+  });
+
+  it('reports bad items by index, and refuses a malformed submission, writing nothing', async () => {
+    const vault = vaultWith();
+    const result = await propose(vault, [
+      proposal('Judge Calibration', READY),
+      proposal('Bad Domain', READY, { domain: 'nope' }),
+      proposal('A', READY),
+    ]);
+    expect(result).toMatchObject({
+      recorded: 1,
+      rejected: [
+        { index: 1, reason: expect.stringContaining('unknown domain') },
+        { index: 2, reason: expect.stringContaining('already a topic') },
+      ],
+    });
+    const written = vault.log();
+    for (const bad of ['nope', '{}', '[]'])
+      expect(await runLearnCommand(['propose', bad], vault, at(1))).toMatchObject({ ok: false });
+    expect(vault.log()).toBe(written);
+  });
+
+  // The reason is free text relayed from the user's reply. The reader refuses a line whose
+  // reason is over its cap, so the writer must never produce one: this once corrupted the log.
+  it('keeps the log valid when a dismissal reason is far longer than the log allows', async () => {
+    const vault = vaultWith();
+    await propose(vault, [proposal('Judge Calibration', READY)]);
+    const reason = `not now ${'because of many things '.repeat(100)}`;
+    expect(
+      await run(vault, ['proposal-dismiss', 'judge-calibration', ...reason.split(' ')], at(1)),
+    ).toEqual({ kind: 'proposal-dismissed', slug: 'judge-calibration' });
+
+    const logged = vault
+      .log()
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { kind: string; reason?: string })
+      .find((e) => e.kind === 'proposal-dismissed');
+    expect(logged?.reason?.length).toBeLessThanOrEqual(300);
+    expect(logged?.reason?.endsWith('…')).toBe(true);
+    // Every later command still loads the log.
+    expect(await run(vault, ['validate'], at(2))).toMatchObject({ valid: true, logErrors: [] });
+    expect(await run(vault, ['proposals'], at(2))).toMatchObject({
+      dismissed: ['judge-calibration'],
+    });
+  });
+
+  it('a dismissed proposal is not shown again and is not revived by new evidence', async () => {
+    const vault = vaultWith();
+    await propose(vault, [proposal('Judge Calibration', READY)]);
+    expect(
+      await run(vault, ['proposal-dismiss', 'judge-calibration', 'not', 'for', 'me'], at(1)),
+    ).toEqual({
+      kind: 'proposal-dismissed',
+      slug: 'judge-calibration',
+    });
+    expect(vault.log()).toContain('"reason":"not for me"');
+    expect(await run(vault, ['proposals'], at(2))).toMatchObject({
+      due: [],
+      dismissed: ['judge-calibration'],
+    });
+
+    const written = vault.log();
+    expect(
+      await propose(vault, [proposal('Judge Calibration', [ev(9, 'Someone New')])], at(3)),
+    ).toMatchObject({ recorded: 0, dismissed: 1 });
+    expect(vault.log()).toBe(written);
+    expect(await run(vault, ['proposal-dismiss', 'judge-calibration'], at(4))).toEqual({
+      kind: 'already-dismissed',
+      slug: 'judge-calibration',
+    });
+    expect(vault.log()).toBe(written);
+    expect(await runLearnCommand(['proposal-dismiss', 'ghost'], vault, at(4))).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('not an open proposal'),
+    });
+  });
+
+  it('adopting a proposal into the registry hands its evidence to the new topic as signals', async () => {
+    const vault = vaultWith();
+    await propose(vault, [proposal('Judge Calibration', READY)]);
+
+    const adopted = fakeVault(
+      renderRegistry([{ slug: 'a' }, { slug: 'b' }, { slug: 'judge-calibration' }]),
+      { [notePath('a')]: renderNote({ slug: 'a', lessons: 2 }) },
+      vault.log(),
+    );
+    expect(await run(adopted, ['proposals'], at(1))).toMatchObject({
+      due: [],
+      adopted: ['judge-calibration'],
+    });
+    const signals = await run(adopted, ['signals', 'judge-calibration'], at(1));
+    expect((signals.signals as { ref: string }[]).map((s) => s.ref).toSorted()).toEqual([
+      'https://example.com/1',
+      'https://example.com/2',
+      'https://example.com/3',
+    ]);
+    expect(await run(adopted, ['topics'], at(1))).toMatchObject({
+      topics: expect.arrayContaining([
+        expect.objectContaining({ slug: 'judge-calibration', signals: 3, pendingReview: 3 }),
+      ]),
+    });
+    // Once it is a topic, the same idea is a signal, not a proposal.
+    expect(
+      await runLearnCommand(
+        ['propose', JSON.stringify([proposal('Judge Calibration', READY)])],
+        adopted,
+        at(2),
+      ),
+    ).toMatchObject({ ok: true, value: { kind: 'json', value: { rejected: [{ index: 0 }] } } });
+  });
+
+  it('never disturbs the study state', async () => {
+    const vault = vaultWith();
+    const before = await run(vault, ['status'], at(1));
+    await propose(vault, [proposal('Judge Calibration', READY)]);
+    await run(vault, ['proposal-dismiss', 'judge-calibration'], at(1));
+    expect(await run(vault, ['status'], at(1))).toEqual(before);
   });
 });
 
@@ -877,6 +1102,9 @@ describe('parseLearnArgs', () => {
     [['suspend', 'a/c01']],
     [['signal']],
     [['signal', '   ']],
+    [['propose']],
+    [['propose', '   ']],
+    [['proposal-dismiss']],
     [['bogus']],
     [[]],
   ])('rejects %j', (args) => {

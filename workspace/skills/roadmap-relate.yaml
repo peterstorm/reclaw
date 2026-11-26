@@ -141,7 +141,8 @@ promptTemplate: |
 
   The study curriculum (`learning/curriculum/registry.yaml`) builds one master note per topic and
   researches each one at build time. Material you read tonight reaches those notes only if you
-  tag it. List the topics (slug, title, subdomain, whether built, signals so far):
+  tag it. List the topics (slug, title, domain, subdomain, whether built, signals so far, signals
+  still pending review) and, under `domains`, every domain with its subdomains:
 
   ```
   bun {{scriptsDir}}/learn.ts topics
@@ -182,6 +183,35 @@ promptTemplate: |
   resubmit only that item; otherwise leave it. This step never blocks the others: if the command
   fails, say so in the final message and carry on to Step 5 (the `mark-*` commands of Steps 2–4
   have already run and do not depend on this step).
+
+  **Material that fits no topic.** The same `topics` output lists `domains` and their
+  `subdomains`. An item you read that is substantive, bears on a skill an AI engineer should
+  learn, and fits **no** existing topic is not tagged; propose a new topic for it instead. Be
+  sparing: only when the item is about a coherent subject a master note could teach (not a
+  one-off product announcement), and never when an existing topic covers it. Name the subject
+  once and the same way each time you meet it, because the title decides the proposal's identity:
+  the next item on the same subject must reuse that title, and its evidence accumulates until
+  enough distinct items from enough distinct sources make it worth showing the user.
+
+  ```
+  bun {{scriptsDir}}/learn.ts propose - <<'PROPOSALS'
+  [
+    {"title": "LLM Judge Calibration",
+     "domain": "ai-engineering", "subdomain": "evaluation",
+     "outcome": "Calibrate an LLM judge against human labels and report its agreement.",
+     "evidence": [
+       {"ref": "https://example.com/post", "source": "Hamel Husain",
+        "title": "Who validates the validators", "takeaway": "One or two sentences in your own words."}
+     ]}
+  ]
+  PROPOSALS
+  ```
+
+  `domain` and `subdomain` must be ids from `topics.domains`; `outcome` is one sentence naming what
+  the learner could do afterwards; `evidence` holds 1–5 items shaped like a signal's `ref`,
+  `source`, `title` and `takeaway` (same rules). The reply counts `recorded`, `duplicates`,
+  `dismissed` (a proposal the user already declined: nothing is recorded) and `rejected` by index.
+  You never decide whether a proposal is shown: code does, once the evidence is enough.
 
   ## Step 5 — Map the roadmap onto our repos (only if `plan.remap` is not null)
 
@@ -265,7 +295,7 @@ promptTemplate: |
   - swept (if it ran): sources read, the 2–4 most useful new signals in one line each with
     their source;
   - tagged (if Step 4b ran): items tagged to curriculum topics — recorded / duplicates /
-    rejected, and which topics gained the most;
+    rejected, and which topics gained the most; new-topic proposals recorded, if any;
   - mapped (if it ran): why (first mapping / roadmap changed / which repos moved), the status
     changes since last time, and the top 2–3 gaps;
   - links: [[programming/ai/roadmap/ai-engineering-roadmap]] and

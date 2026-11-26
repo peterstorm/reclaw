@@ -17,28 +17,15 @@
 // sources were checked.
 
 import type { Topic, TopicSlug } from './curriculum.js';
-import { notePathFor } from './curriculum.js';
+import { findTopic, notePathFor } from './curriculum.js';
 import type { MasterNote } from './master-note.js';
-import type { SignalNoted, SignalsReviewed } from './study-log.js';
-import { type StudyState, isFullyRead, unreviewedSignals } from './study-plan.js';
-import { oldestBatch } from './topic-signals.js';
+import { hash53Hex } from './short-hash.js';
+import type { SignalsReviewed } from './study-log.js';
+import { type StudyState, isFullyRead, pendingFor } from './study-plan.js';
+import { type ReviewBatch, oldestBatch } from './topic-signals.js';
 import { type Result, err, ok } from './types.js';
 
 // ─── Fingerprint ──────────────────────────────────────────────────────────────
-
-/** cyrb53: a small, deterministic 53-bit string hash. It detects accidents, not attackers. */
-function cyrb53(text: string): number {
-  let h1 = 0xdeadbeef;
-  let h2 = 0x41c6ce57;
-  for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i);
-    h1 = Math.imul(h1 ^ code, 2654435761);
-    h2 = Math.imul(h2 ^ code, 1597334677);
-  }
-  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-  return 4294967296 * (2097151 & h2) + (h1 >>> 0);
-}
 
 /** A short digest of everything a refresh must leave alone: every lesson and every card. */
 export function fingerprintOf(note: MasterNote): string {
@@ -46,29 +33,7 @@ export function fingerprintOf(note: MasterNote): string {
     note.lessons.map((l) => [l.number, l.title, l.pretest, l.body]),
     note.cards.map((c) => [c.id, c.lesson, c.question, c.answer]),
   ]);
-  return cyrb53(canonical).toString(16).padStart(14, '0');
-}
-
-// ─── Pending ──────────────────────────────────────────────────────────────────
-
-/** Where a never-reviewed note's signals start counting: the start of its `sources_checked` day. */
-const baselineOf = (note: MasterNote): Date =>
-  new Date(note.sourcesChecked === null ? 0 : `${note.sourcesChecked}T00:00:00.000Z`);
-
-/** The signals tagged to the note's topic that no build or refresh has reviewed, oldest first. */
-export const pendingSignals = (state: StudyState, note: MasterNote): readonly SignalNoted[] =>
-  unreviewedSignals(state, note.topic, baselineOf(note));
-
-/**
- * The signals still pending for any topic, whatever the state of its note: a built note counts
- * from its `sources_checked` day, an unbuilt or unreadable one from the start. `topics` and
- * `refresh-next` both answer from here, so they cannot disagree.
- */
-export function pendingFor(state: StudyState, topic: TopicSlug): readonly SignalNoted[] {
-  const note = state.notes.get(topic);
-  return note === undefined
-    ? unreviewedSignals(state, topic, new Date(0))
-    : pendingSignals(state, note);
+  return hash53Hex(canonical);
 }
 
 // ─── Next refresh ─────────────────────────────────────────────────────────────
@@ -83,12 +48,13 @@ export type RefreshPlan =
       sourcesChecked: string | null;
       lessonsRead: number;
       lessonCount: number;
-      /** Every pending signal, of which `signals` are the oldest batch. */
+      /** Every pending signal, of which `batch` is the oldest run. */
       pending: number;
-      /** The oldest batch (see `oldestBatch`), so nothing is skipped over. */
-      signals: readonly SignalNoted[];
-      /** The newest instant in `signals`: what to pass to `signals-reviewed --through`. */
-      signalsThrough: string;
+      /**
+       * The oldest batch (see `oldestBatch`), so nothing is skipped over. `throughOf(batch)` is
+       * what to pass to `signals-reviewed --through`.
+       */
+      batch: ReviewBatch;
     }>
   | Readonly<{ kind: 'nothing-to-refresh' }>;
 
@@ -104,7 +70,7 @@ export function nextRefresh(state: StudyState): RefreshPlan {
   for (const topic of state.curriculum.topics) {
     const note = state.notes.get(topic.slug);
     if (note === undefined || isFullyRead(state, topic.slug)) continue;
-    const pending = pendingSignals(state, note);
+    const pending = pendingFor(state, topic.slug);
     const batch =
       pending.length >= state.curriculum.settings.refreshMinSignals ? oldestBatch(pending) : null;
     if (batch === null) continue;
@@ -117,8 +83,7 @@ export function nextRefresh(state: StudyState): RefreshPlan {
       lessonsRead: lessonsReadOf(state, note),
       lessonCount: note.lessons.length,
       pending: pending.length,
-      signals: batch.signals,
-      signalsThrough: batch.through,
+      batch,
     };
   }
   return { kind: 'nothing-to-refresh' };
@@ -131,13 +96,17 @@ export type ReviewError =
   | Readonly<{ kind: 'not-built'; topic: TopicSlug }>
   | Readonly<{ kind: 'invalid-instant'; through: string }>
   | Readonly<{ kind: 'no-signal-at'; through: string }>
+  | Readonly<{ kind: 'not-a-build'; topic: TopicSlug; reviewedThrough: string }>
   | Readonly<{ kind: 'used-exceeds-signals'; used: number; available: number }>
   | Readonly<{ kind: 'content-changed'; expected: string; actual: string }>;
 
 /**
  * A review of a topic's signals, by the builder that was shown them up to `through`. After a
  * build the note is new, so there is nothing to hold it to; after a refresh it must still match
- * the fingerprint the plan carried. Two operations, two shapes: a refresh cannot omit the guard.
+ * the fingerprint the plan carried. Two operations, two shapes, and `after-build` is refused for
+ * a topic that already has a review mark newer than its `through`: a topic is built once, so a
+ * second review can only be a refresh. (A refresh of a note built with no signals has no mark
+ * yet, so the builder choosing `--expect` there is a convention the command cannot check.)
  */
 export type ReviewCommand =
   | Readonly<{ kind: 'after-build'; topic: string; through: string; used: number }>
@@ -160,7 +129,7 @@ export function reviewSignals(
   cmd: ReviewCommand,
   now: Date,
 ): Result<SignalsReviewed, ReviewError> {
-  const topic = state.curriculum.bySlug.get(cmd.topic as TopicSlug);
+  const topic = findTopic(state.curriculum, cmd.topic);
   if (topic === undefined) return err({ kind: 'unknown-topic', topic: cmd.topic });
   const note = state.notes.get(topic.slug);
   if (note === undefined) return err({ kind: 'not-built', topic: topic.slug });
@@ -173,6 +142,14 @@ export function reviewSignals(
     return err({ kind: 'no-signal-at', through: cmd.through });
   const available = signals.filter((s) => Date.parse(s.at) <= through.getTime()).length;
   if (cmd.used > available) return err({ kind: 'used-exceeds-signals', used: cmd.used, available });
+
+  const reviewed = state.signalsReviewedThrough.get(topic.slug);
+  if (
+    cmd.kind === 'after-build' &&
+    reviewed !== undefined &&
+    reviewed.getTime() !== through.getTime()
+  )
+    return err({ kind: 'not-a-build', topic: topic.slug, reviewedThrough: reviewed.toISOString() });
 
   if (cmd.kind === 'after-refresh') {
     const actual = fingerprintOf(note);

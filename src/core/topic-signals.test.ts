@@ -7,11 +7,11 @@ import {
   MAX_BATCH_ITEMS,
   MAX_TOPICS_PER_ITEM,
   ledgerOf,
-  normalizeRef,
   oldestBatch,
   parseSignalBatch,
   planSignals,
   recentSignals,
+  throughOf,
 } from './topic-signals.js';
 
 const NOW = new Date('2026-11-25T22:00:00.000Z');
@@ -51,48 +51,6 @@ const signal = (over: Partial<SignalNoted> = {}): SignalNoted => ({
   title: 'A',
   takeaway: 'Says a thing.',
   ...over,
-});
-
-describe('normalizeRef', () => {
-  it('drops the fragment and utm_* parameters but keeps the rest of the query', () => {
-    expect(normalizeRef('https://example.com/p?id=7&utm_source=x&UTM_Campaign=y#section')).toEqual({
-      ok: true,
-      value: 'https://example.com/p?id=7',
-    });
-  });
-
-  it('accepts a vault note path and refuses anything else', () => {
-    expect(normalizeRef('media/instagram/bashi_fuirkashi/DcRCPsHDTLH.md')).toEqual({
-      ok: true,
-      value: 'media/instagram/bashi_fuirkashi/DcRCPsHDTLH.md',
-    });
-    for (const bad of [
-      'ftp://example.com/x',
-      'javascript:alert(1)',
-      'https://user:pw@example.com/x',
-      '../secrets.md',
-      '/etc/passwd.md',
-      'media/instagram/x.mp4',
-      '',
-    ])
-      expect(normalizeRef(bad).ok, bad).toBe(false);
-  });
-
-  it('refuses a ref over the length cap', () => {
-    expect(normalizeRef(`https://example.com/${'a'.repeat(500)}`).ok).toBe(false);
-  });
-
-  it('is idempotent and never leaves a fragment or tracking parameter', () => {
-    fc.assert(
-      fc.property(fc.webUrl({ withFragments: true, withQueryParameters: true }), (url) => {
-        const once = normalizeRef(`${url}${url.includes('?') ? '&' : '?'}utm_medium=feed`);
-        if (!once.ok) return; // over the length cap
-        expect(normalizeRef(once.value)).toEqual(once);
-        expect(once.value).not.toContain('#');
-        expect(once.value.toLowerCase()).not.toContain('utm_');
-      }),
-    );
-  });
 });
 
 describe('parseSignalBatch', () => {
@@ -284,12 +242,13 @@ describe('oldestBatch', () => {
     const pending = Array.from({ length: 10 }, (_, i) => sig(i, i));
     const batch = oldestBatch(pending, 4);
     expect(batch?.signals.map((s) => s.ref.slice(-1))).toEqual(['0', '1', '2', '3']);
-    expect(batch?.through).toBe(at(3));
+    expect(batch && throughOf(batch)).toBe(at(3));
   });
 
   it('takes everything when there are fewer than the limit', () => {
     const pending = [sig(0, 0), sig(1, 1)];
-    expect(oldestBatch(pending, 25)).toMatchObject({ through: at(1) });
+    const batch = oldestBatch(pending, 25);
+    expect(batch && throughOf(batch)).toBe(at(1));
     expect(oldestBatch(pending, 25)?.signals).toHaveLength(2);
   });
 
@@ -299,7 +258,7 @@ describe('oldestBatch', () => {
     const tied = Array.from({ length: 40 }, (_, i) => sig(i, 5));
     const batch = oldestBatch([sig(100, 1), ...tied, sig(101, 9)], 25);
     expect(batch?.signals).toHaveLength(41);
-    expect(batch?.through).toBe(at(5));
+    expect(batch && throughOf(batch)).toBe(at(5));
   });
 
   it('partitions any ordered pending list into batches: none skipped, none repeated (property)', () => {
@@ -313,7 +272,7 @@ describe('oldestBatch', () => {
           const batch = oldestBatch(rest, limit);
           if (batch === null) throw new Error('a non-empty list always yields a batch');
           seen.push(...batch.signals);
-          rest = rest.filter((s) => Date.parse(s.at) > Date.parse(batch.through));
+          rest = rest.filter((s) => Date.parse(s.at) > Date.parse(throughOf(batch)));
         }
         expect(seen).toEqual(pending);
       }),

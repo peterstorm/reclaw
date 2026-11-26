@@ -55,6 +55,10 @@ export type StudySettings = Readonly<{
   feynmanCooldownDays: number;
   /** Pending signals a built, unfinished note needs before the builder spends a run refreshing it. */
   refreshMinSignals: number;
+  /** Distinct evidence items a topic proposal needs before it is shown. */
+  proposalMinEvidence: number;
+  /** Distinct sources those items must come from: one voice repeating itself is not a trend. */
+  proposalMinSources: number;
 }>;
 
 export type Curriculum = Readonly<{
@@ -67,6 +71,10 @@ export type Curriculum = Readonly<{
 export const CURRICULUM_ROOT = 'learning/curriculum';
 export const REGISTRY_PATH = `${CURRICULUM_ROOT}/registry.yaml`;
 export const STUDY_LOG_PATH = `${CURRICULUM_ROOT}/.state/study-log.jsonl`;
+
+/** The registry topic with this slug, if any: the one place a plain string becomes a lookup key. */
+export const findTopic = (curriculum: Curriculum, slug: string): Topic | undefined =>
+  curriculum.bySlug.get(slug as TopicSlug);
 
 /** Where a topic's master note lives, vault-relative. */
 export const notePathFor = (topic: Pick<Topic, 'domain' | 'slug'>): string =>
@@ -86,6 +94,8 @@ const SettingsSchema = z
     requestRetention: z.number().min(0.7).max(0.97).default(0.9),
     feynmanCooldownDays: z.number().int().min(1).default(21),
     refreshMinSignals: z.number().int().min(1).max(50).default(2),
+    proposalMinEvidence: z.number().int().min(1).max(20).default(3),
+    proposalMinSources: z.number().int().min(1).max(10).default(2),
   })
   .default({});
 

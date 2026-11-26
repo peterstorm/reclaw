@@ -25,6 +25,9 @@ import { type Result, err, ok } from './types.js';
 /** Globally unique card id: `<topic-slug>/<local id>`, e.g. `kv-cache/c03`. */
 export type CardId = string & { readonly __brand: 'CardId' };
 
+/** A real calendar day as `YYYY-MM-DD`; only `parseSourcesChecked` makes one. */
+export type IsoDate = string & { readonly __brand: 'IsoDate' };
+
 export const cardIdOf = (slug: TopicSlug, localId: string): CardId =>
   `${slug}/${localId}` as CardId;
 
@@ -48,8 +51,8 @@ export type MasterNote = Readonly<{
   topic: TopicSlug;
   title: string;
   minutes: number;
-  /** `YYYY-MM-DD` the note's sources were last checked; null when the frontmatter has none. */
-  sourcesChecked: string | null;
+  /** The day the note's sources were last checked; null when the frontmatter has none. */
+  sourcesChecked: IsoDate | null;
   lessons: readonly Lesson[];
   cards: readonly RecallCard[];
 }>;
@@ -197,7 +200,7 @@ type Checked<T> = Readonly<{ value: T; errors: readonly string[] }>;
 function parseFront(
   rawFront: unknown,
   expected: TopicSlug,
-): Checked<{ title: string; minutes: number; sourcesChecked: string | null }> {
+): Checked<{ title: string; minutes: number; sourcesChecked: IsoDate | null }> {
   const errors: string[] = [];
   const front = (rawFront ?? {}) as Record<string, unknown>;
   const meta = (front.curriculum ?? {}) as Record<string, unknown>;
@@ -220,12 +223,13 @@ function parseFront(
  * Absent is fine (an older note); present, it must be a real `YYYY-MM-DD` date. A typo read as
  * "unknown" would make every signal ever tagged to the topic look pending, so it is an error.
  */
-function parseSourcesChecked(raw: unknown): Result<string | null, string> {
+function parseSourcesChecked(raw: unknown): Result<IsoDate | null, string> {
   if (raw === undefined || raw === null) return ok(null);
   if (typeof raw === 'string' && SOURCES_CHECKED.test(raw)) {
     const time = Date.parse(`${raw}T00:00:00.000Z`);
     // `2026-02-31` parses in some engines by rolling over; only a date that survives a round trip counts.
-    if (!Number.isNaN(time) && new Date(time).toISOString().startsWith(raw)) return ok(raw);
+    if (!Number.isNaN(time) && new Date(time).toISOString().startsWith(raw))
+      return ok(raw as IsoDate);
   }
   return err(
     `frontmatter: curriculum.sources_checked must be a YYYY-MM-DD date, got ${JSON.stringify(raw)}`,
