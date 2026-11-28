@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import type { Redis } from 'ioredis';
 import { formatAgentFailure } from './core/agent-failure.js';
 import { createAsyncMutex } from './core/async-mutex.js';
+import { describeChatFallback } from './core/backend-fallback.js';
 import {
   type ServiceModelSelections,
   resolveModelSelection,
@@ -264,7 +265,12 @@ async function loadAppConfig(loadConfigFn: () => Result<AppConfig, string>): Pro
 
 type AgentRunnerConfig = Pick<
   AppConfig,
-  'agentBackend' | 'agentContainment' | 'piProvider' | 'piModel' | 'piScheduledModel'
+  | 'agentBackend'
+  | 'agentContainment'
+  | 'piProvider'
+  | 'piModel'
+  | 'piScheduledModel'
+  | 'chatFallback'
 >;
 type InjectedAgentRunners = Pick<BootstrapDeps, 'runAgentFn' | 'runAgentStreamingFn'>;
 
@@ -287,6 +293,7 @@ async function createAgentRunners(
   );
   console.info(`[main] Agent backend: ${resolveBackend(config).name}`);
   console.info(describeContainment(config.agentContainment));
+  console.info(describeChatFallback(config.agentBackend, config.chatFallback));
 
   // Resolve the backend first, then the model for THAT backend — the Pi defaults must never
   // reach a Claude run (a per-skill `backend: claude` would otherwise get `--model <vLLM id>`).

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   type ActivityResult,
+  commitParamsOf,
   makeActivityId,
   makeChatSessionDelivery,
   makeDeliveryId,
@@ -71,6 +72,7 @@ describe('activity result codec', () => {
       chatId: 42,
       expectedGeneration: 0 as ConversationGeneration,
       expectedRevision: 0 as ConversationRevision,
+      expectedBackend: 'pi',
       backend: 'claude',
       sessionId,
       lastActivityAt: '2026-08-14T08:00:00.000Z',
@@ -94,6 +96,80 @@ describe('activity result codec', () => {
   it('rejects malformed and unknown-version persisted data', () => {
     expect(parseActivityResult('not-json').ok).toBe(false);
     expect(parseActivityResult(JSON.stringify({ schemaVersion: 2 })).ok).toBe(false);
+  });
+});
+
+describe('commitParamsOf', () => {
+  const v2 = () => {
+    const { sessionId, activityId } = fixtureIds();
+    return {
+      schemaVersion: 2,
+      kind: 'chat-session',
+      id: `delivery-${activityId}`,
+      activityId,
+      chatId: 42,
+      expectedGeneration: 3,
+      expectedRevision: 5,
+      backend: 'pi',
+      sessionId,
+      lastActivityAt: '2026-08-14T08:00:00.000Z',
+    };
+  };
+
+  it('commits a fallback session onto the backend that answered, guarded by the one it ran on', () => {
+    const { sessionId, activityId } = fixtureIds();
+    const delivery = makeChatSessionDelivery({
+      activityId,
+      chatId: 42,
+      expectedGeneration: 3 as ConversationGeneration,
+      expectedRevision: 5 as ConversationRevision,
+      expectedBackend: 'pi',
+      backend: 'claude',
+      sessionId,
+      lastActivityAt: '2026-08-14T08:00:00.000Z',
+    });
+
+    expect(commitParamsOf(delivery)).toEqual({
+      chatId: 42,
+      expectedGeneration: 3,
+      expectedRevision: 5,
+      expectedBackend: 'pi',
+      backend: 'claude',
+      sessionId,
+      lastActivityAt: '2026-08-14T08:00:00.000Z',
+    });
+  });
+
+  it('reads a persisted pre-fallback v2 delivery as guarded by its own session backend', () => {
+    const parsed = parseDeliveryJob(v2());
+    if (!parsed.ok || parsed.value.kind !== 'chat-session') throw new Error('v2 must still parse');
+
+    expect(commitParamsOf(parsed.value)).toMatchObject({
+      expectedBackend: 'pi',
+      backend: 'pi',
+      expectedGeneration: 3,
+      expectedRevision: 5,
+    });
+  });
+
+  it('never commits a legacy v1 delivery: it carries no CAS coordinates', () => {
+    const { sessionId, activityId } = fixtureIds();
+    const parsed = parseDeliveryJob({
+      schemaVersion: 1,
+      kind: 'chat-session',
+      id: `delivery-${activityId}`,
+      activityId,
+      chatId: 42,
+      sessionId,
+      lastActivityAt: '2026-08-14T08:00:00.000Z',
+    });
+    if (!parsed.ok || parsed.value.kind !== 'chat-session') throw new Error('v1 must still parse');
+
+    expect(commitParamsOf(parsed.value)).toBeNull();
+  });
+
+  it('rejects a v3 delivery without its expected backend instead of guessing one', () => {
+    expect(parseDeliveryJob({ ...v2(), schemaVersion: 3 }).ok).toBe(false);
   });
 });
 

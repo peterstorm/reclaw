@@ -1,6 +1,6 @@
 # ADR 0011: Conversation Lineage with Generation and Revision CAS
 
-- Status: Accepted
+- Status: Accepted; amended by ADR 0015 (a chat fallback commit may move the lineage's backend)
 - Date: 2026-08-14
 - Deciders: Reclaw maintainers
 

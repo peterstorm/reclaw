@@ -1,5 +1,6 @@
 import { type UnknownRecord, isRecord } from '../core/is-record.js';
 import {
+  type ConversationCommit,
   type ConversationCommitResult,
   type ConversationLineage,
   type ConversationSelection,
@@ -13,12 +14,7 @@ import {
   serializeConversationLineage,
   serializeMessageConversationReference,
 } from '../core/session.js';
-import type {
-  AgentBackendName,
-  AgentSessionId,
-  ConversationGeneration,
-  ConversationRevision,
-} from '../core/types.js';
+import type { AgentBackendName } from '../core/types.js';
 
 const SESSION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -37,14 +33,7 @@ export type ConversationStore = {
     selection: ConversationSelection,
     now: string,
   ) => Promise<ConversationLineage>;
-  readonly commitSession: (params: {
-    readonly chatId: number;
-    readonly expectedGeneration: ConversationGeneration;
-    readonly expectedRevision: ConversationRevision;
-    readonly backend: AgentBackendName;
-    readonly sessionId: AgentSessionId;
-    readonly lastActivityAt: string;
-  }) => Promise<ConversationCommitResult>;
+  readonly commitSession: (params: ConversationCommit) => Promise<ConversationCommitResult>;
   readonly saveMessageReference: (
     chatId: number,
     messageId: number,
@@ -121,9 +110,9 @@ local next = {
   schemaVersion = 1,
   generation = generation,
   revision = revision + 1,
-  backend = ARGV[5],
-  sessionId = ARGV[6],
-  lastActivityAt = ARGV[7]
+  backend = ARGV[6],
+  sessionId = ARGV[7],
+  lastActivityAt = ARGV[8]
 }
 local encoded = cjson.encode(next)
 redis.call('SET', KEYS[1], encoded, 'PX', ARGV[2])
@@ -143,8 +132,6 @@ type ConversationContext = Readonly<{
   defaultBackend: AgentBackendName;
   clock: () => string;
 }>;
-
-type CommitParams = Parameters<ConversationStore['commitSession']>[0];
 
 function parseLineage(raw: string, defaultBackend: AgentBackendName): ConversationLineage {
   const parsed = parseConversationLineage(raw, defaultBackend);
@@ -214,7 +201,7 @@ function parseCommitEnvelope(raw: string): CommitEnvelope {
 /** COMMIT_SCRIPT's `{ committed, lineage }` reply, parsed into the commit outcome. */
 function parseCommitReply(
   raw: string,
-  params: CommitParams,
+  params: ConversationCommit,
   defaultBackend: AgentBackendName,
 ): ConversationCommitResult {
   const envelope = parseCommitEnvelope(raw);
@@ -231,7 +218,7 @@ function parseCommitReply(
 
 async function commitSession(
   ctx: ConversationContext,
-  params: CommitParams,
+  params: ConversationCommit,
 ): Promise<ConversationCommitResult> {
   const initial = initialConversation(ctx.defaultBackend, params.lastActivityAt);
   const raw = requireRedisString(
@@ -243,6 +230,7 @@ async function commitSession(
       String(SESSION_RETENTION_MS),
       String(params.expectedGeneration),
       String(params.expectedRevision),
+      params.expectedBackend,
       params.backend,
       params.sessionId,
       params.lastActivityAt,

@@ -30,7 +30,7 @@ All records have a 30-day TTL. Legacy `{sessionId,lastActivityAt}` records migra
 2. When the serialized chat worker starts that job, it reads the current lineage again.
 3. If generation and backend still match, the job rebases onto the latest revision. This allows several rapidly queued turns to continue the session committed by the preceding turn.
 4. If `/new` or an explicit reply changed generation/backend, the job executes against its original ingress snapshot instead of being silently retargeted.
-5. The returned session commits only when current generation, revision, and backend still equal the execution target.
+5. The returned session commits only when current generation, revision, and backend still equal the execution target. The commit writes the backend that produced the session — the target's own, or its chat fallback's (below).
 
 The commit is a Redis Lua compare-and-set. Success increments revision. A stale commit is a successful no-op: the user may still receive the answer to the older request, but that request cannot resurrect or replace current conversation state.
 
@@ -68,9 +68,20 @@ A resumed invocation retries fresh exactly once only when the typed failure is `
 
 Fresh fallback uses the same captured generation/backend. Its successful session still must pass generation+revision CAS. See ADR 0010.
 
+## Chat fallback (backend cannot serve)
+
+With `RECLAW_CHAT_FALLBACK_BACKEND` set (production: `claude`), a turn whose conversation backend *cannot serve* — unreachable, rate limited, quota spent, credentials or binary broken (`backendCannotServe` in `src/core/backend-fallback.ts`) — reruns once, fresh, on the fallback. Task failures (timeouts, agent errors) never fall back. If both fail, the fallback's failure goes to BullMQ.
+
+- The answer starts with `⚠️ Fallback: ran on <backend> — <reason>`. A turn that was resuming a session adds that the earlier conversation did not carry over: a session cannot be resumed on another backend.
+- The commit is guarded by the lineage the turn executed against (generation, revision, **expected backend**) and writes the fallback's session and backend. The conversation then **stays on the fallback backend** for the rest of the generation, so the next turns resume that session instead of paying the primary's failure again. `/new` returns to `AGENT_BACKEND`.
+- Replying to a message from before the fallback still resumes its original session on its original backend, once that backend serves again.
+- A queued turn captured before the switch no longer matches the current backend, so it runs on its own snapshot (invariant 6); its commit is then stale and changes nothing.
+
+Decision: ADR 0015.
+
 ## Durable activity interaction
 
-The immutable chat `ActivityResult` includes a version-2 `chat-session` commit delivery containing expected generation, expected revision, backend, and returned session ID.
+The immutable chat `ActivityResult` includes a version-3 `chat-session` commit delivery containing expected generation, expected revision, expected backend, the session's backend, and returned session ID. Version-2 deliveries (persisted before chat fallback) commit with the expected backend equal to the session's backend (`commitParamsOf` in `src/core/activity.ts`).
 
 The source worker performs that CAS before completing so the next serialized turn can rebase. The delivery outbox repeats the same CAS as repair; after source success it is naturally stale and therefore harmless. Legacy version-1 chat-session deliveries lack CAS coordinates and execute as no-ops.
 
@@ -87,16 +98,16 @@ Telegram batches persist backend/session references for both sent and edited mes
 
 ```bash
 # Current lineage
-redis-cli -p 6380 get 'reclaw-session-<chatId>'
+redis-cli -p 6381 get 'reclaw-session-<chatId>'
 
 # Scoped reply mappings
-redis-cli -p 6380 --scan --pattern 'reclaw-msg-conversation-<chatId>-*'
+redis-cli -p 6381 --scan --pattern 'reclaw-msg-conversation-<chatId>-*'
 
 # Idempotent generation transitions
-redis-cli -p 6380 --scan --pattern 'reclaw-conversation-mutation-<chatId>-*'
+redis-cli -p 6381 --scan --pattern 'reclaw-conversation-mutation-<chatId>-*'
 
 # TTL
-redis-cli -p 6380 pttl 'reclaw-session-<chatId>'
+redis-cli -p 6381 pttl 'reclaw-session-<chatId>'
 ```
 
 Do not manually delete only the lineage key while work is active. Use `/new`, which preserves monotonic generation semantics and makes stale commits harmless.
@@ -106,7 +117,9 @@ Do not manually delete only the lineage key while work is active. Use `/new`, wh
 - `src/core/session.ts` — lineage/reference types, codecs, and Redis key identities
 - `src/infra/session-store.ts` — Lua generation transition and CAS adapter
 - `src/orchestration/message-router.ts` — ingress snapshots, `/new`, and reply selection
-- `src/orchestration/chat-handler.ts` — safe rebase and backend-specific resume
+- `src/orchestration/chat-handler.ts` — safe rebase, backend-specific resume and chat fallback
+- `src/core/backend-fallback.ts` — when a failure may fall back, and the fallback notice
 - `src/orchestration/worker.ts` — critical durable session commit
 - `src/orchestration/delivery-handler.ts` — CAS repair and message-reference repair
 - `docs/adr/0011-conversation-lineage-generation-cas.md` — decision record
+- `docs/adr/0015-chat-backend-fallback.md` — chat fallback moves the lineage backend

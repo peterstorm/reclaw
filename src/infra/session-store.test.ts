@@ -108,6 +108,7 @@ describe('createSessionStore', () => {
       chatId: CHAT_ID,
       expectedGeneration: 0 as ConversationGeneration,
       expectedRevision: 2 as ConversationRevision,
+      expectedBackend: 'pi' as const,
       backend: 'pi' as const,
       sessionId: session.value,
       lastActivityAt: NOW,
@@ -117,6 +118,20 @@ describe('createSessionStore', () => {
       kind: 'committed',
       lineage: committedLineage,
     });
+    // CAS coordinates first, then the backend and session it writes.
+    expect(redis.eval).toHaveBeenLastCalledWith(
+      expect.any(String),
+      1,
+      makeConversationKey(CHAT_ID),
+      expect.any(String),
+      String(SESSION_RETENTION_MS),
+      '0',
+      '2',
+      'pi',
+      'pi',
+      session.value,
+      NOW,
+    );
 
     const newer = lineage({ generation: 1, revision: 0 });
     redis.eval.mockResolvedValueOnce(JSON.stringify({ committed: false, lineage: newer }));
@@ -126,6 +141,31 @@ describe('createSessionStore', () => {
       expectedGeneration: 0,
       expectedRevision: 2,
     });
+  });
+
+  it('passes the expected backend as the CAS coordinate and the session backend as the write', async () => {
+    const session = makeAgentSessionId('fallback-session');
+    if (!session.ok) throw new Error(session.error);
+    const switched = lineage({ revision: 1, backend: 'claude', sessionId: session.value });
+    redis.eval.mockResolvedValueOnce(JSON.stringify({ committed: true, lineage: switched }));
+    const store = createSessionStore(redis, 'pi', () => NOW);
+
+    await expect(
+      store.commitSession({
+        chatId: CHAT_ID,
+        expectedGeneration: 0 as ConversationGeneration,
+        expectedRevision: 0 as ConversationRevision,
+        expectedBackend: 'pi',
+        backend: 'claude',
+        sessionId: session.value,
+        lastActivityAt: NOW,
+      }),
+    ).resolves.toEqual({ kind: 'committed', lineage: switched });
+
+    const [script, , , , , , , expectedBackend, writtenBackend] = redis.eval.mock.calls[0] ?? [];
+    expect(script).toContain("current['backend'] ~= ARGV[5]");
+    expect(script).toContain('backend = ARGV[6]');
+    expect([expectedBackend, writtenBackend]).toEqual(['pi', 'claude']);
   });
 
   it('rejects a malformed commit reply instead of guessing a CAS outcome', async () => {
@@ -138,6 +178,7 @@ describe('createSessionStore', () => {
         chatId: CHAT_ID,
         expectedGeneration: 0 as ConversationGeneration,
         expectedRevision: 2 as ConversationRevision,
+        expectedBackend: 'pi',
         backend: 'pi',
         sessionId: session.value,
         lastActivityAt: NOW,

@@ -1,5 +1,5 @@
 import { match } from 'ts-pattern';
-import type { DeliveryJob, TelegramMessageFormat } from '../core/activity.js';
+import { type DeliveryJob, type TelegramMessageFormat, commitParamsOf } from '../core/activity.js';
 import type { MessageConversationReference } from '../core/session.js';
 import type { SessionStore } from '../infra/session-store.js';
 import type { SendOptions, TelegramAdapter } from '../infra/telegram.js';
@@ -129,18 +129,8 @@ export async function handleDeliveryJob(
   return match(delivery)
     .with({ kind: 'telegram-batch' }, (initial) => deliverTelegramBatch(initial, checkpoint, deps))
     .with({ kind: 'chat-session' }, async (item) => {
-      if (item.schemaVersion === 2) {
-        await deps.sessionStore.commitSession({
-          chatId: item.chatId,
-          expectedGeneration: item.expectedGeneration,
-          expectedRevision: item.expectedRevision,
-          backend: item.backend,
-          sessionId: item.sessionId,
-          lastActivityAt: item.lastActivityAt,
-        });
-      }
-      // Version 1 had no generation/revision and could overwrite a newer
-      // lineage after /new. Persisted legacy jobs are deliberately no-ops.
+      const commit = commitParamsOf(item);
+      if (commit !== null) await deps.sessionStore.commitSession(commit);
       return item;
     })
     .with({ kind: 'cortex' }, async (item) => {

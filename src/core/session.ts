@@ -31,6 +31,23 @@ export type ConversationSelection =
       readonly sessionId: AgentSessionId;
     };
 
+/**
+ * One session commit: compare-and-set on the lineage the turn executed against
+ * (generation, revision, expectedBackend), then save the session it produced.
+ * `backend` is the session's backend. It differs from `expectedBackend` only when
+ * the turn was answered by its chat fallback, and then the commit moves the
+ * conversation onto that backend for the rest of the generation (ADR-0015).
+ */
+export type ConversationCommit = {
+  readonly chatId: number;
+  readonly expectedGeneration: ConversationGeneration;
+  readonly expectedRevision: ConversationTarget['revision'];
+  readonly expectedBackend: AgentBackendName;
+  readonly backend: AgentBackendName;
+  readonly sessionId: AgentSessionId;
+  readonly lastActivityAt: string;
+};
+
 export type ConversationCommitResult =
   | { readonly kind: 'committed'; readonly lineage: ConversationLineage }
   | {

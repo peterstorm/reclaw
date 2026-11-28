@@ -1,6 +1,7 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import {
+  makeAgentTarget,
   makeClaudeModel,
   resolveModelSelection,
   scheduledModelSelections,
@@ -61,6 +62,45 @@ describe('resolveModelSelection', () => {
   it('returns undefined (backend default) when nothing is configured or requested', () => {
     expect(resolveModelSelection('pi', undefined, {})).toBeUndefined();
     expect(resolveModelSelection('claude', undefined, {})).toBeUndefined();
+  });
+});
+
+describe('makeAgentTarget', () => {
+  it('takes a bare backend', () => {
+    expect(makeAgentTarget('pi', undefined)).toEqual({ ok: true, value: { backend: 'pi' } });
+    expect(makeAgentTarget('claude', undefined)).toEqual({
+      ok: true,
+      value: { backend: 'claude' },
+    });
+  });
+
+  it('pins a Claude model', () => {
+    expect(makeAgentTarget('claude', 'sonnet')).toEqual({
+      ok: true,
+      value: { backend: 'claude', model: 'sonnet' },
+    });
+  });
+
+  it('refuses a model on Pi: its model is service-wide', () => {
+    expect(makeAgentTarget('pi', 'glm')).toEqual({
+      ok: false,
+      error: { kind: 'model-needs-claude' },
+    });
+  });
+
+  it('refuses a Claude model the CLI could read as a flag', () => {
+    const target = makeAgentTarget('claude', '--dangerously-skip-permissions');
+    expect(target.ok).toBe(false);
+    if (!target.ok) expect(target.error.kind).toBe('invalid-claude-model');
+  });
+
+  it('accepts exactly the models makeClaudeModel accepts, and only on Claude', () => {
+    fc.assert(
+      fc.property(fc.constantFrom('claude' as const, 'pi' as const), fc.string(), (b, model) => {
+        const target = makeAgentTarget(b, model);
+        expect(target.ok).toBe(b === 'claude' && makeClaudeModel(model).ok);
+      }),
+    );
   });
 });
 

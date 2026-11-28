@@ -2,7 +2,7 @@ import { parseExpression } from 'cron-parser';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 import { SKILL_ENVIRONMENT_VARIABLES } from './agent-environment.js';
-import { type AgentTarget, makeClaudeModel } from './model-selection.js';
+import { type AgentTarget, makeAgentTarget } from './model-selection.js';
 import {
   type AgentBackendName,
   type Result,
@@ -82,10 +82,11 @@ function parseAgentTarget(
   backend: AgentBackendName,
   model: string | undefined,
 ): Result<AgentTarget, string> {
-  if (model === undefined) return ok({ backend });
-  if (backend !== 'claude') return err(`model: ${MODEL_NEEDS_CLAUDE}`);
-  const parsed = makeClaudeModel(model);
-  return parsed.ok ? ok({ backend, model: parsed.value }) : err(`model: ${parsed.error}`);
+  const target = makeAgentTarget(backend, model);
+  if (target.ok) return target;
+  return err(
+    `model: ${target.error.kind === 'model-needs-claude' ? MODEL_NEEDS_CLAUDE : target.error.detail}`,
+  );
 }
 
 function parseSkillAgent(

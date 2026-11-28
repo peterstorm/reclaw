@@ -6,9 +6,33 @@ import {
   agentContainmentSchema,
   rawAgentContainment,
 } from '../core/agent-containment.js';
+import { makeAgentTarget } from '../core/model-selection.js';
 import { type Result, err, ok } from '../core/types.js';
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
+
+/**
+ * RECLAW_CHAT_FALLBACK_BACKEND (+ optional RECLAW_CHAT_FALLBACK_MODEL, Claude only) →
+ * the AgentTarget a chat turn reruns on when its conversation's backend cannot serve.
+ * Unset means chat has no fallback. A target naming the primary backend is legal and
+ * inert (planFallback ignores it), so flipping AGENT_BACKEND alone never fails boot.
+ */
+const chatFallbackSchema = z
+  .object({ backend: z.enum(['claude', 'pi']), model: z.string().min(1).optional() })
+  .strict()
+  .transform((raw, ctx) => {
+    const target = makeAgentTarget(raw.backend, raw.model);
+    if (target.ok) return target.value;
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['model'],
+      message:
+        target.error.kind === 'model-needs-claude'
+          ? 'RECLAW_CHAT_FALLBACK_MODEL requires RECLAW_CHAT_FALLBACK_BACKEND=claude — Pi uses RECLAW_PI_MODEL'
+          : target.error.detail,
+    });
+    return z.NEVER;
+  });
 
 export const AppConfigSchema = z.object({
   telegramToken: z.string().min(1),
@@ -40,6 +64,7 @@ export const AppConfigSchema = z.object({
   piProvider: z.string().min(1).optional(),
   piModel: z.string().min(1).optional(),
   piScheduledModel: z.string().min(1).optional(),
+  chatFallback: chatFallbackSchema.optional(),
   // Where each agent run's process tree lives (RECLAW_AGENT_CONTAINMENT and
   // friends). `systemd-scope` in production; see core/agent-containment.ts.
   agentContainment: agentContainmentSchema.default(NO_CONTAINMENT),
@@ -114,6 +139,18 @@ function parseCommaSeparatedIds(
   return ids.length > 0 ? ids : undefined;
 }
 
+/**
+ * The unparsed chat fallback handed to the schema: absent when neither var is set, so
+ * a model without a backend still reaches the schema and is rejected by name.
+ */
+function rawChatFallback(
+  backend: string | undefined,
+  model: string | undefined,
+): Readonly<Record<string, unknown>> | undefined {
+  if (backend === undefined && model === undefined) return undefined;
+  return { backend, ...(model !== undefined ? { model } : {}) };
+}
+
 export function parseEnvToRaw(env: Record<string, string | undefined>): {
   raw: Record<string, unknown>;
   errors: string[];
@@ -148,6 +185,10 @@ export function parseEnvToRaw(env: Record<string, string | undefined>): {
     piProvider: parseOptionalString(env.RECLAW_PI_PROVIDER),
     piModel: parseOptionalString(env.RECLAW_PI_MODEL),
     piScheduledModel: parseOptionalString(env.RECLAW_PI_SCHEDULED_MODEL),
+    chatFallback: rawChatFallback(
+      parseOptionalString(env.RECLAW_CHAT_FALLBACK_BACKEND),
+      parseOptionalString(env.RECLAW_CHAT_FALLBACK_MODEL),
+    ),
     agentContainment: rawAgentContainment({
       mode: parseOptionalString(env.RECLAW_AGENT_CONTAINMENT),
       slice: parseOptionalString(env.RECLAW_AGENT_SLICE),

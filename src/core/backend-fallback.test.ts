@@ -1,7 +1,14 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import type { AgentFailure } from './agent-failure.js';
-import { backendCannotServe, fallbackNotice, planFallback } from './backend-fallback.js';
+import {
+  backendCannotServe,
+  chatFallbackNotice,
+  describeChatFallback,
+  fallbackNotice,
+  planFallback,
+  withFallbackNotice,
+} from './backend-fallback.js';
 import type { AgentTarget, ClaudeModel } from './model-selection.js';
 
 const failure = (kind: AgentFailure['kind'], backend = 'claude'): AgentFailure => {
@@ -97,5 +104,54 @@ describe('fallbackNotice', () => {
     expect(notice.length).toBeLessThan(200);
     expect(notice).not.toContain('\n');
     expect(notice.endsWith('…')).toBe(true);
+  });
+});
+
+describe('chatFallbackNotice', () => {
+  const unreachable: AgentFailure = {
+    kind: 'provider-unavailable',
+    backend: 'pi',
+    detail: 'Connection error.: connect EHOSTUNREACH 192.168.0.80:8000',
+  };
+
+  it('is the plain fallback notice for a fresh turn: nothing was left behind', () => {
+    expect(chatFallbackNotice(unreachable, { backend: 'claude' }, 'pi', false)).toBe(
+      fallbackNotice(unreachable, { backend: 'claude' }),
+    );
+  });
+
+  it('tells a resumed turn its context stayed behind, and how to get back to it', () => {
+    const notice = chatFallbackNotice(unreachable, { backend: 'claude' }, 'pi', true);
+    const [first, second] = notice.split('\n');
+    expect(first).toBe(fallbackNotice(unreachable, { backend: 'claude' }));
+    expect(second).toContain('did not carry over');
+    expect(second).toContain('continue it on pi');
+  });
+});
+
+describe('withFallbackNotice', () => {
+  it('leaves an answer without a notice untouched', () => {
+    fc.assert(fc.property(fc.string(), (output) => withFallbackNotice(null, output) === output));
+  });
+
+  it('puts the notice above the answer and keeps the answer whole', () => {
+    fc.assert(
+      fc.property(fc.string({ minLength: 1 }), fc.string(), (notice, output) => {
+        const text = withFallbackNotice(notice, output);
+        expect(text.startsWith(notice)).toBe(true);
+        expect(text.endsWith(output)).toBe(true);
+      }),
+    );
+  });
+});
+
+describe('describeChatFallback', () => {
+  it('names a missing, pinned, plain and inert fallback', () => {
+    expect(describeChatFallback('pi', undefined)).toBe('[main] Chat fallback: none');
+    expect(describeChatFallback('pi', SONNET)).toBe('[main] Chat fallback: claude (sonnet)');
+    expect(describeChatFallback('claude', PI)).toBe('[main] Chat fallback: pi');
+    expect(describeChatFallback('claude', { backend: 'claude' })).toBe(
+      '[main] Chat fallback: claude — inert, same as AGENT_BACKEND',
+    );
   });
 });
