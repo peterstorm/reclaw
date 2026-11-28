@@ -9,16 +9,25 @@ vi.mock('node:fs/promises', () => ({
 }));
 
 import fs from 'node:fs/promises';
+import { fallbackNotice } from '../core/backend-fallback.js';
+import { makeClaudeModel } from '../core/model-selection.js';
 import { getAllowedTools } from '../core/permissions.js';
 import type { ConversationLineage } from '../core/session.js';
 import type { ChatJob } from '../core/types.js';
-import type {
-  AgentSessionId,
-  ConversationGeneration,
-  ConversationRevision,
+import {
+  type AgentSessionId,
+  type ConversationGeneration,
+  type ConversationRevision,
+  makeAgentSessionId,
 } from '../core/types.js';
 import { makeAppConfig as makeConfig } from '../infra/__fixtures__/app-config.js';
-import type { AgentResult, OnStreamChunk, StreamChunk } from '../infra/agent-backends/index.js';
+import type {
+  AgentOptions,
+  AgentResult,
+  OnStreamChunk,
+  StreamChunk,
+} from '../infra/agent-backends/index.js';
+import type { AppConfig } from '../infra/config.js';
 import type { SessionStore } from '../infra/session-store.js';
 import type { TelegramAdapter } from '../infra/telegram.js';
 import { type ChatDeps, handleChatJob } from './chat-handler.js';
@@ -978,5 +987,208 @@ describe('handleChatJob', () => {
     expect(telegram.editMessage).toHaveBeenCalled();
     // drainPreviews settles the best-effort effects without throwing.
     await result.drainPreviews();
+  });
+});
+
+describe('handleChatJob chat fallback', () => {
+  const unreachable = {
+    kind: 'provider-unavailable',
+    backend: 'pi',
+    detail: 'Connection error.: connect EHOSTUNREACH 192.168.0.80:8000',
+  } as const;
+  const answered = (output: string, sessionId: string): AgentResult => ({
+    ok: true,
+    output,
+    sessionId,
+    durationMs: 100,
+  });
+
+  /** One chat turn on a pi conversation, with the agent results returned in order. */
+  const runTurn = async (params: {
+    readonly sessionId: AgentSessionId | null;
+    readonly results: readonly AgentResult[];
+    readonly chatFallback?: AppConfig['chatFallback'];
+  }) => {
+    const conversation = {
+      generation: 3 as ConversationGeneration,
+      revision: 5 as ConversationRevision,
+      backend: 'pi' as const,
+      sessionId: params.sessionId,
+    };
+    const sessionStore = makeSessionStore();
+    sessionStore.getCurrent.mockResolvedValue({
+      schemaVersion: 1,
+      lastActivityAt: '2026-11-28T12:00:00.000Z',
+      ...conversation,
+    } satisfies ConversationLineage);
+    const runAgentStreaming = vi.fn();
+    for (const result of params.results) runAgentStreaming.mockResolvedValueOnce(result);
+
+    const outcome = await handleChatJob(makeChatJob({ text: 'are you there?', conversation }), {
+      runAgentStreaming: runAgentStreaming as unknown as ChatDeps['runAgentStreaming'],
+      telegram: makeTelegram(),
+      config: makeConfig({
+        agentBackend: 'pi',
+        ...(params.chatFallback !== undefined ? { chatFallback: params.chatFallback } : {}),
+      }),
+      sessionStore,
+    });
+    const calls = runAgentStreaming.mock.calls.map(([options]) => options as AgentOptions);
+    return { outcome, calls, sessionStore };
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockReadFile.mockResolvedValue('' as unknown as ArrayBuffer);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  it('reruns a fresh turn on Claude when pi cannot be reached, and says so above the answer', async () => {
+    const { outcome, calls, sessionStore } = await runTurn({
+      sessionId: null,
+      results: [{ ok: false, failure: unreachable }, answered('Here I am.', 'claude-1')],
+      chatFallback: { backend: 'claude' },
+    });
+
+    expect(calls.map((c) => c.backend)).toEqual(['pi', 'claude']);
+    expect(calls[1]?.resumeSessionId).toBeUndefined();
+    expect(calls[1]?.modelSelection).toBeUndefined();
+    expect(calls[1]?.prompt).toBe(calls[0]?.prompt);
+    expect(outcome).toMatchObject({
+      kind: 'completed',
+      sessionId: 'claude-1',
+      conversationGeneration: 3,
+      conversationRevision: 5,
+      conversationBackend: 'pi',
+      sessionBackend: 'claude',
+    });
+    if (outcome.kind !== 'completed') throw new Error('Expected a completed outcome');
+    expect(outcome.response).toBe(
+      `${fallbackNotice(unreachable, { backend: 'claude' })}\n\nHere I am.`,
+    );
+    expect(outcome.telegramOperations[0]?.text).toContain('Fallback: ran on claude');
+    expect(outcome.response).not.toContain('did not carry over');
+    // Lineage is the worker's to commit; the handler never writes it.
+    expect(sessionStore.commitSession).not.toHaveBeenCalled();
+  });
+
+  it('runs the fallback on its pinned Claude model', async () => {
+    const sonnet = makeClaudeModel('sonnet');
+    if (!sonnet.ok) throw new Error(sonnet.error);
+    const { calls } = await runTurn({
+      sessionId: null,
+      results: [{ ok: false, failure: unreachable }, answered('ok', 'claude-1')],
+      chatFallback: { backend: 'claude', model: sonnet.value },
+    });
+
+    expect(calls[1]?.modelSelection).toEqual({ model: 'sonnet' });
+    expect(calls[0]?.modelSelection).toBeUndefined();
+  });
+
+  it('answers a resumed pi turn fresh on Claude and says the earlier context stayed behind', async () => {
+    const piSession = makeAgentSessionId('pi-session');
+    if (!piSession.ok) throw new Error(piSession.error);
+    const { outcome, calls } = await runTurn({
+      sessionId: piSession.value,
+      results: [{ ok: false, failure: unreachable }, answered('Fresh answer.', 'claude-1')],
+      chatFallback: { backend: 'claude' },
+    });
+
+    expect(calls[0]).toMatchObject({ backend: 'pi', resumeSessionId: 'pi-session' });
+    expect(calls[1]?.backend).toBe('claude');
+    expect(calls[1]?.resumeSessionId).toBeUndefined();
+    if (outcome.kind !== 'completed') throw new Error('Expected a completed outcome');
+    expect(outcome.sessionBackend).toBe('claude');
+    expect(outcome.response).toContain('did not carry over');
+    expect(outcome.response).toContain('continue it on pi');
+  });
+
+  it('retries an invalid pi session fresh on pi before falling back', async () => {
+    const piSession = makeAgentSessionId('pi-stale');
+    if (!piSession.ok) throw new Error(piSession.error);
+    const { outcome, calls } = await runTurn({
+      sessionId: piSession.value,
+      results: [
+        { ok: false, failure: { kind: 'session-invalid', backend: 'pi', detail: 'gone' } },
+        { ok: false, failure: unreachable },
+        answered('Claude here.', 'claude-1'),
+      ],
+      chatFallback: { backend: 'claude' },
+    });
+
+    expect(calls.map((c) => [c.backend, c.resumeSessionId])).toEqual([
+      ['pi', 'pi-stale'],
+      ['pi', undefined],
+      ['claude', undefined],
+    ]);
+    expect(outcome).toMatchObject({ kind: 'completed', sessionBackend: 'claude' });
+  });
+
+  it('keeps the failure when no chat fallback is configured', async () => {
+    const { outcome, calls } = await runTurn({
+      sessionId: null,
+      results: [{ ok: false, failure: unreachable }],
+    });
+
+    expect(outcome).toEqual({ kind: 'failed', failure: unreachable });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('keeps a task failure: a timeout would most likely repeat on Claude', async () => {
+    const timeout = { kind: 'timeout', backend: 'pi', timeoutMs: 3_600_000 } as const;
+    const { outcome, calls } = await runTurn({
+      sessionId: null,
+      results: [{ ok: false, failure: timeout }],
+      chatFallback: { backend: 'claude' },
+    });
+
+    expect(outcome).toEqual({ kind: 'failed', failure: timeout });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("reports the fallback's failure when both backends fail, so BullMQ retries the pair", async () => {
+    const quota = {
+      kind: 'provider-quota-exhausted',
+      backend: 'claude',
+      detail: 'session limit',
+    } as const;
+    const { outcome, calls } = await runTurn({
+      sessionId: null,
+      results: [
+        { ok: false, failure: unreachable },
+        { ok: false, failure: quota },
+      ],
+      chatFallback: { backend: 'claude' },
+    });
+
+    expect(outcome).toEqual({ kind: 'failed', failure: quota });
+    expect(calls).toHaveLength(2);
+  });
+
+  it('adds nothing when the conversation backend serves', async () => {
+    const { outcome, calls } = await runTurn({
+      sessionId: null,
+      results: [answered('pi answer', 'pi-1')],
+      chatFallback: { backend: 'claude' },
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(outcome).toMatchObject({
+      kind: 'completed',
+      response: 'pi answer',
+      conversationBackend: 'pi',
+      sessionBackend: 'pi',
+    });
+  });
+
+  it('never falls back onto the backend that just failed', async () => {
+    const { outcome, calls } = await runTurn({
+      sessionId: null,
+      results: [{ ok: false, failure: unreachable }],
+      chatFallback: { backend: 'pi' },
+    });
+
+    expect(outcome).toEqual({ kind: 'failed', failure: unreachable });
+    expect(calls).toHaveLength(1);
   });
 });

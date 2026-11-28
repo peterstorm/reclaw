@@ -174,6 +174,7 @@ describe('createWorkers', () => {
       conversationGeneration: 0 as ConversationGeneration,
       conversationRevision: 0 as ConversationRevision,
       conversationBackend: 'claude',
+      sessionBackend: 'claude',
       telegramOperations: [],
       sourcePaths: [],
       drainPreviews: vi.fn().mockResolvedValue(undefined),
@@ -486,6 +487,7 @@ describe('createWorkers', () => {
       conversationGeneration: 0 as ConversationGeneration,
       conversationRevision: 0 as ConversationRevision,
       conversationBackend: 'claude',
+      sessionBackend: 'claude',
       telegramOperations: [{ kind: 'send', text: 'stateful response', format: 'plain' }],
       sourcePaths: [],
       drainPreviews: vi.fn().mockResolvedValue(undefined),
@@ -510,13 +512,53 @@ describe('createWorkers', () => {
       expect.arrayContaining([
         expect.objectContaining({
           kind: 'chat-session',
-          schemaVersion: 2,
+          schemaVersion: 3,
+          expectedBackend: 'claude',
           expectedGeneration: 0,
           expectedRevision: 0,
         }),
         expect.objectContaining({
           kind: 'telegram-batch',
           schemaVersion: 2,
+          conversationReference: { backend: 'claude', sessionId: session.value },
+        }),
+      ]),
+    );
+  });
+
+  it('commits a chat fallback session onto its backend, guarded by the conversation backend', async () => {
+    const session = makeAgentSessionId('claude-fallback-session');
+    if (!session.ok) throw new Error(session.error);
+    chatHandler.mockResolvedValue({
+      kind: 'completed',
+      response: 'answered on the fallback',
+      sessionId: session.value,
+      conversationGeneration: 2 as ConversationGeneration,
+      conversationRevision: 7 as ConversationRevision,
+      conversationBackend: 'pi',
+      sessionBackend: 'claude',
+      telegramOperations: [{ kind: 'send', text: 'answered on the fallback', format: 'plain' }],
+      sourcePaths: [],
+      drainPreviews: vi.fn().mockResolvedValue(undefined),
+    });
+    makeWorkers();
+
+    await requireWorker('reclaw-chat').processor(bullJobFor(chatJob));
+
+    expect(mockSessionStore.commitSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedGeneration: 2,
+        expectedRevision: 7,
+        expectedBackend: 'pi',
+        backend: 'claude',
+        sessionId: session.value,
+      }),
+    );
+    // A reply to the fallback's message resumes the Claude session it produced.
+    expect(deliveryOutbox.enqueue).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'telegram-batch',
           conversationReference: { backend: 'claude', sessionId: session.value },
         }),
       ]),
@@ -533,6 +575,7 @@ describe('createWorkers', () => {
       conversationGeneration: 0 as ConversationGeneration,
       conversationRevision: 0 as ConversationRevision,
       conversationBackend: 'claude',
+      sessionBackend: 'claude',
       telegramOperations: [],
       sourcePaths: [],
       drainPreviews: vi.fn().mockResolvedValue(undefined),

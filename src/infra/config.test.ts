@@ -338,6 +338,66 @@ describe('AGENT_BACKEND config', () => {
   });
 });
 
+describe('chat fallback config', () => {
+  it('is off unless RECLAW_CHAT_FALLBACK_BACKEND names one', () => {
+    const result = loadConfig(VALID_ENV);
+    expect(result.ok && result.value.chatFallback).toBeUndefined();
+  });
+
+  it('parses a bare Claude fallback: Claude then uses its CLI default model', () => {
+    const result = loadConfig({
+      ...VALID_ENV,
+      AGENT_BACKEND: 'pi',
+      RECLAW_CHAT_FALLBACK_BACKEND: 'claude',
+    });
+    expect(result.ok && result.value.chatFallback).toEqual({ backend: 'claude' });
+  });
+
+  it('parses a Claude fallback with a pinned model', () => {
+    const result = loadConfig({
+      ...VALID_ENV,
+      RECLAW_CHAT_FALLBACK_BACKEND: 'claude',
+      RECLAW_CHAT_FALLBACK_MODEL: 'sonnet',
+    });
+    expect(result.ok && result.value.chatFallback).toEqual({ backend: 'claude', model: 'sonnet' });
+  });
+
+  it('treats blank values as unset', () => {
+    const result = loadConfig({
+      ...VALID_ENV,
+      RECLAW_CHAT_FALLBACK_BACKEND: '  ',
+      RECLAW_CHAT_FALLBACK_MODEL: '',
+    });
+    expect(result.ok && result.value.chatFallback).toBeUndefined();
+  });
+
+  it('accepts a fallback naming the primary backend: inert, so flipping AGENT_BACKEND never fails boot', () => {
+    const result = loadConfig({
+      ...VALID_ENV,
+      AGENT_BACKEND: 'claude',
+      RECLAW_CHAT_FALLBACK_BACKEND: 'claude',
+    });
+    expect(result.ok && result.value.chatFallback).toEqual({ backend: 'claude' });
+  });
+
+  it.each([
+    [{ RECLAW_CHAT_FALLBACK_BACKEND: 'openai' }, 'chatFallback.backend'],
+    [{ RECLAW_CHAT_FALLBACK_MODEL: 'sonnet' }, 'chatFallback.backend'],
+    [
+      { RECLAW_CHAT_FALLBACK_BACKEND: 'pi', RECLAW_CHAT_FALLBACK_MODEL: 'glm' },
+      'RECLAW_CHAT_FALLBACK_MODEL requires RECLAW_CHAT_FALLBACK_BACKEND=claude',
+    ],
+    [
+      { RECLAW_CHAT_FALLBACK_BACKEND: 'claude', RECLAW_CHAT_FALLBACK_MODEL: '--yolo' },
+      'invalid Claude model',
+    ],
+  ])('refuses to start on %j', (env, message) => {
+    const result = loadConfig({ ...VALID_ENV, ...env });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain(message);
+  });
+});
+
 describe('agent containment config', () => {
   it('is off unless RECLAW_AGENT_CONTAINMENT selects it', () => {
     const result = loadConfig(VALID_ENV);

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { ConversationCommit } from './session.js';
 import type {
   AgentBackendName,
   AgentSessionId,
@@ -7,7 +8,7 @@ import type {
   JobId,
   Result,
 } from './types.js';
-import { err, makeAgentSessionId, ok } from './types.js';
+import { assertNever, err, makeAgentSessionId, ok } from './types.js';
 
 /** Durable identity of one expensive source-job execution. */
 export type ActivityId = string & { readonly __brand: 'ActivityId' };
@@ -71,7 +72,11 @@ type LegacyChatSessionDelivery = {
   readonly lastActivityAt: string;
 };
 
-export type ChatSessionDelivery = {
+/**
+ * Persisted before chat fallback: the session's backend was always the backend the
+ * turn executed against, so it doubles as the expected backend.
+ */
+type ChatSessionDeliveryV2 = {
   readonly schemaVersion: 2;
   readonly kind: 'chat-session';
   readonly id: DeliveryId;
@@ -79,6 +84,25 @@ export type ChatSessionDelivery = {
   readonly chatId: number;
   readonly expectedGeneration: ConversationGeneration;
   readonly expectedRevision: ConversationRevision;
+  readonly backend: AgentBackendName;
+  readonly sessionId: AgentSessionId;
+  readonly lastActivityAt: string;
+};
+
+/**
+ * A chat turn's session commit. `expectedBackend` is the backend the turn executed
+ * against (the CAS coordinate); `backend` is the backend whose session it produced,
+ * which differs only when the chat fallback answered (ADR-0015).
+ */
+export type ChatSessionDelivery = {
+  readonly schemaVersion: 3;
+  readonly kind: 'chat-session';
+  readonly id: DeliveryId;
+  readonly activityId: ActivityId;
+  readonly chatId: number;
+  readonly expectedGeneration: ConversationGeneration;
+  readonly expectedRevision: ConversationRevision;
+  readonly expectedBackend: AgentBackendName;
   readonly backend: AgentBackendName;
   readonly sessionId: AgentSessionId;
   readonly lastActivityAt: string;
@@ -105,6 +129,7 @@ export type DeliveryJob =
   | LegacyTelegramBatchDelivery
   | TelegramBatchDelivery
   | LegacyChatSessionDelivery
+  | ChatSessionDeliveryV2
   | ChatSessionDelivery
   | CortexDelivery
   | FileCleanupDelivery;
@@ -203,22 +228,53 @@ export function makeChatSessionDelivery(params: {
   readonly chatId: number;
   readonly expectedGeneration: ConversationGeneration;
   readonly expectedRevision: ConversationRevision;
+  readonly expectedBackend: AgentBackendName;
   readonly backend: AgentBackendName;
   readonly sessionId: AgentSessionId;
   readonly lastActivityAt: string;
 }): ChatSessionDelivery {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     kind: 'chat-session',
     id: requiredDeliveryId(params.activityId, 'chat-session', String(params.chatId)),
     activityId: params.activityId,
     chatId: params.chatId,
     expectedGeneration: params.expectedGeneration,
     expectedRevision: params.expectedRevision,
+    expectedBackend: params.expectedBackend,
     backend: params.backend,
     sessionId: params.sessionId,
     lastActivityAt: params.lastActivityAt,
   };
+}
+
+type AnyChatSessionDelivery = Extract<DeliveryJob, { readonly kind: 'chat-session' }>;
+
+/**
+ * The conversation commit a chat-session delivery performs, or null for none.
+ * Version 1 had no generation/revision and could overwrite a newer lineage after
+ * /new, so persisted legacy jobs are deliberately no-ops. Version 2 predates chat
+ * fallback: its session backend is the backend it executed against.
+ */
+export function commitParamsOf(delivery: AnyChatSessionDelivery): ConversationCommit | null {
+  const common = (d: ChatSessionDeliveryV2 | ChatSessionDelivery) => ({
+    chatId: d.chatId,
+    expectedGeneration: d.expectedGeneration,
+    expectedRevision: d.expectedRevision,
+    backend: d.backend,
+    sessionId: d.sessionId,
+    lastActivityAt: d.lastActivityAt,
+  });
+  switch (delivery.schemaVersion) {
+    case 1:
+      return null;
+    case 2:
+      return { ...common(delivery), expectedBackend: delivery.backend };
+    case 3:
+      return { ...common(delivery), expectedBackend: delivery.expectedBackend };
+    default:
+      return assertNever(delivery);
+  }
 }
 
 export function makeCortexDelivery(params: {
@@ -353,6 +409,21 @@ const deliverySchema = z.union([
       chatId: z.number().int(),
       expectedGeneration: generationSchema,
       expectedRevision: revisionSchema,
+      backend: backendSchema,
+      sessionId: sessionIdSchema,
+      lastActivityAt: z.string().datetime(),
+    })
+    .strict(),
+  z
+    .object({
+      schemaVersion: z.literal(3),
+      kind: z.literal('chat-session'),
+      id: deliveryIdSchema,
+      activityId: activityIdSchema,
+      chatId: z.number().int(),
+      expectedGeneration: generationSchema,
+      expectedRevision: revisionSchema,
+      expectedBackend: backendSchema,
       backend: backendSchema,
       sessionId: sessionIdSchema,
       lastActivityAt: z.string().datetime(),

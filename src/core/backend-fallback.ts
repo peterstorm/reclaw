@@ -56,3 +56,41 @@ export function fallbackNotice(failure: AgentFailure, used: AgentTarget): string
     reason.length > NOTICE_REASON_MAX ? `${reason.slice(0, NOTICE_REASON_MAX - 1)}…` : reason;
   return `⚠️ Fallback: ran on ${used.backend} — ${short}`;
 }
+
+/**
+ * The notice for a chat turn the fallback answered. A fallback run is always fresh — a
+ * session cannot be resumed on another backend — so when the turn was continuing a
+ * conversation, the reader is told its earlier context did not come along, and how to
+ * get back to it once `primary` serves again.
+ */
+export function chatFallbackNotice(
+  failure: AgentFailure,
+  used: AgentTarget,
+  primary: AgentBackendName,
+  wasResuming: boolean,
+): string {
+  const notice = fallbackNotice(failure, used);
+  return wasResuming
+    ? `${notice}\n_The earlier conversation did not carry over. Reply to one of its messages to continue it on ${primary}._`
+    : notice;
+}
+
+/** The startup line naming the chat fallback, so an inert or missing one is visible in the log. */
+export function describeChatFallback(
+  primary: AgentBackendName,
+  fallback: AgentTarget | undefined,
+): string {
+  if (fallback === undefined) return '[main] Chat fallback: none';
+  const target =
+    fallback.backend === 'claude' && fallback.model !== undefined
+      ? `claude (${fallback.model})`
+      : fallback.backend;
+  return fallback.backend === primary
+    ? `[main] Chat fallback: ${target} — inert, same as AGENT_BACKEND`
+    : `[main] Chat fallback: ${target}`;
+}
+
+/** The delivered text: the fallback notice, if any, above the answer. */
+export function withFallbackNotice(notice: string | null, output: string): string {
+  return notice === null ? output : `${notice}\n\n${output}`;
+}

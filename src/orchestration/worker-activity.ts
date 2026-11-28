@@ -8,6 +8,7 @@ import {
   type DeliveryJob,
   type DeliveryOutbox,
   type TelegramDeliveryOperation,
+  commitParamsOf,
   makeActivityId,
   makeChatSessionDelivery,
   makeCortexDelivery,
@@ -128,10 +129,12 @@ function chatDeliveries(
   cortexCwd: string | null,
   lastActivityAt: string,
 ): readonly DeliveryJob[] {
+  // The session belongs to the backend that answered: the conversation's own, or
+  // its chat fallback. Replies to the delivered message resume that same session.
   const session =
     outcome.sessionId === null
       ? null
-      : { backend: outcome.conversationBackend, sessionId: outcome.sessionId };
+      : { backend: outcome.sessionBackend, sessionId: outcome.sessionId };
   return [
     ...(session === null
       ? []
@@ -141,6 +144,7 @@ function chatDeliveries(
             chatId,
             expectedGeneration: outcome.conversationGeneration,
             expectedRevision: outcome.conversationRevision,
+            expectedBackend: outcome.conversationBackend,
             backend: session.backend,
             sessionId: session.sessionId,
             lastActivityAt,
@@ -240,16 +244,8 @@ async function commitChatSessions(
   deliveries: readonly DeliveryJob[],
 ): Promise<void> {
   for (const delivery of deliveries) {
-    if (delivery.kind === 'chat-session' && delivery.schemaVersion === 2) {
-      await sessionStore.commitSession({
-        chatId: delivery.chatId,
-        expectedGeneration: delivery.expectedGeneration,
-        expectedRevision: delivery.expectedRevision,
-        backend: delivery.backend,
-        sessionId: delivery.sessionId,
-        lastActivityAt: delivery.lastActivityAt,
-      });
-    }
+    const commit = delivery.kind === 'chat-session' ? commitParamsOf(delivery) : null;
+    if (commit !== null) await sessionStore.commitSession(commit);
   }
 }
 

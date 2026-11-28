@@ -1,10 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   makeActivityId,
+  makeChatSessionDelivery,
   makeFileCleanupDelivery,
   makeTelegramBatchDelivery,
 } from '../core/activity.js';
-import { makeJobId } from '../core/types.js';
+import {
+  type ConversationGeneration,
+  type ConversationRevision,
+  makeAgentSessionId,
+  makeJobId,
+} from '../core/types.js';
 import type { SessionStore } from '../infra/session-store.js';
 import type { TelegramAdapter } from '../infra/telegram.js';
 import { type DeliveryDeps, handleDeliveryJob } from './delivery-handler.js';
@@ -63,6 +69,38 @@ describe('handleDeliveryJob', () => {
     expect(removeFile).toHaveBeenCalledTimes(2);
     expect(removeFile).toHaveBeenCalledWith('/spool/one.pdf.txt');
     expect(removeFile).toHaveBeenCalledWith('/spool/two.jpg');
+  });
+
+  it('commits a chat fallback session onto its own backend, guarded by the conversation backend', async () => {
+    const session = makeAgentSessionId('fallback-session');
+    if (!session.ok) throw new Error(session.error);
+    const commitSession = vi.fn().mockResolvedValue({ kind: 'committed' });
+    const delivery = makeChatSessionDelivery({
+      activityId: activityId(),
+      chatId: 42,
+      expectedGeneration: 1 as ConversationGeneration,
+      expectedRevision: 4 as ConversationRevision,
+      expectedBackend: 'pi',
+      backend: 'claude',
+      sessionId: session.value,
+      lastActivityAt: '2026-11-28T12:00:00.000Z',
+    });
+
+    await handleDeliveryJob(
+      delivery,
+      vi.fn(),
+      deps({ sessionStore: { ...unusedSessionStore(), commitSession } }),
+    );
+
+    expect(commitSession).toHaveBeenCalledWith({
+      chatId: 42,
+      expectedGeneration: 1,
+      expectedRevision: 4,
+      expectedBackend: 'pi',
+      backend: 'claude',
+      sessionId: session.value,
+      lastActivityAt: '2026-11-28T12:00:00.000Z',
+    });
   });
 
   it('does not checkpoint a Telegram edit that rejects', async () => {

@@ -71,7 +71,7 @@ BullMQ is the heart of reclaw. Every unit of work — a Telegram message, a fire
 
 ### Connection
 
-Redis runs locally on the homelab at `localhost:6380` (the non-default port keeps it away from anything else). Both BullMQ queues and the shared `ioredis` connection use this:
+Redis runs locally on the homelab at `localhost:6381` (the non-default port keeps it away from anything else, including dev Redis instances on 6380). Both BullMQ queues and the shared `ioredis` connection use this:
 
 ```ts
 const connection = { host: config.redisHost, port: config.redisPort };
@@ -413,7 +413,7 @@ Generation-changing mutations also use `reclaw-conversation-mutation-<chatId>-<e
 Daily counter of NotebookLM chat operations. `INCRBY` for atomic increments, 25-hour TTL so it auto-resets cleanly past midnight. The research handler refuses to enqueue when remaining < 5 (FR-072). Inspect with:
 
 ```bash
-redis-cli -p 6380 get "reclaw:nblm-quota:$(date -u +%Y-%m-%d)"
+redis-cli -p 6381 get "reclaw:nblm-quota:$(date -u +%Y-%m-%d)"
 ```
 
 ### Key reference (everything reclaw writes to Redis)
@@ -464,7 +464,7 @@ Key facts that bite people:
   - **If both backends fail,** the fallback's failure is reported, so BullMQ retries the pair.
 
   The decision is pure: `src/core/backend-fallback.ts`. Current wiring: every Pi-run skill falls back to `{ backend: claude, model: sonnet }`, and the learn skills fall back to `pi`.
-- **A spent usage window is not retryable** (`agentFailurePolicy`): BullMQ's minute-scale backoff can't outlast an hours-long reset. A chat reply that hits it gets "⏳ claude is out of usage (… resets 2:50pm)" instead of "Please try again". Chat replies have no automatic fallback, because a Claude session can't be resumed on Pi.
+- **A spent usage window is not retryable** (`agentFailurePolicy`): BullMQ's minute-scale backoff can't outlast an hours-long reset. A chat reply that hits it gets "⏳ claude is out of usage (… resets 2:50pm)" instead of "Please try again", unless the chat fallback (`RECLAW_CHAT_FALLBACK_BACKEND`, see [Sessions & multi-turn](#sessions--multi-turn)) answers it first.
 - **`promptTemplate` variables:** `{{date}}`, `{{dayOfWeek}}`, `{{personality}}`, `{{scheduledPreamble}}` (the canonical "automated job / ALL_CLEAR" contract — prefer it over hand-writing that boilerplate), `{{latitude}}`/`{{longitude}}`/`{{timezone}}`/`{{locationName}}`, and `{{workspacePath}}` (a.k.a. `{{cwd}}`). Unknown `{{vars}}` are left verbatim.
 - **`ALL_CLEAR` suppression is exact-match:** a scheduled run whose trimmed output is exactly `ALL_CLEAR` sends nothing. Any stray backtick or formatting defeats it and pages the user.
 
@@ -502,7 +502,8 @@ See `docs/multi-turn-sessions.md` for the full flow. Briefly:
 4. `/new` idempotently advances to a fresh generation; stale completions may still deliver their requested answer but cannot change current conversation state.
 5. Replying to a mapped message advances a new generation from that message's backend/session.
 6. Replied-to text/captions are bounded at ingress and included as delimited historical prompt context, whether or not a session mapping exists.
-7. Only a typed `session-invalid` failure permits one fresh fallback; it does not pre-emptively delete lineage.
+7. Only a typed `session-invalid` failure permits one fresh retry on the same backend; it does not pre-emptively delete lineage.
+8. **Chat fallback:** with `RECLAW_CHAT_FALLBACK_BACKEND` set, a turn whose backend cannot serve (unreachable, rate limited, quota spent, auth/billing, spawn) reruns once, fresh, on the fallback — the same trigger set as a skill's `fallback:`, and never on task failures such as timeouts. The answer starts with `⚠️ Fallback: ran on <backend> — <reason>`; a turn that was resuming a session also says its earlier context did not carry over. The commit moves the conversation onto the fallback backend for the rest of the generation, so later turns resume the fallback's session; `/new` returns to `AGENT_BACKEND`, and replying to an older message still resumes its original session. ADR 0015.
 
 ---
 
@@ -514,7 +515,7 @@ All config is env-driven (no config file). See `src/infra/config.ts` for the Zod
 |----------------------------------|------------------------|--------------------------------------------------------|
 | `TELEGRAM_TOKEN`                 | required               | grammy bot token                                       |
 | `AUTHORIZED_USER_IDS`            | required               | Comma-separated Telegram user IDs                      |
-| `REDIS_HOST` / `REDIS_PORT`      | `localhost` / `6379`   | Reclaw on homelab uses `6380`                          |
+| `REDIS_HOST` / `REDIS_PORT`      | `localhost` / `6379`   | Reclaw on homelab uses `6381`                          |
 | `WORKSPACE_PATH`                 | `/workspace`           | Where personality.md and skills/ live                  |
 | `SKILLS_DIR`                     | `/workspace/skills`    | Watched by chokidar (default does not follow `WORKSPACE_PATH`) |
 | `PERSONALITY_PATH`               | `/workspace/personality.md` | Personality prompt file                           |
@@ -529,6 +530,8 @@ All config is env-driven (no config file). See `src/infra/config.ts` for the Zod
 | `RECLAW_PI_PROVIDER`            | unset                  | Optional Pi `--provider`; unset means use Pi defaults  |
 | `RECLAW_PI_MODEL`               | unset                  | Optional Pi `--model` (Pi runs only); unset means use Pi defaults |
 | `RECLAW_PI_SCHEDULED_MODEL`     | unset                  | Optional Pi `--model` for **scheduled skills only** (chat keeps `RECLAW_PI_MODEL`); provider shared; unset means scheduled runs use `RECLAW_PI_MODEL` |
+| `RECLAW_CHAT_FALLBACK_BACKEND`  | unset                  | `claude` or `pi`: where a chat turn reruns when its conversation's backend cannot serve. Unset means no chat fallback; naming `AGENT_BACKEND` itself is accepted and inert (logged at startup) |
+| `RECLAW_CHAT_FALLBACK_MODEL`    | unset                  | Optional `claude --model` for the chat fallback (requires `RECLAW_CHAT_FALLBACK_BACKEND=claude`); unset means the Claude CLI default |
 | `LATITUDE` / `LONGITUDE` / `TZ_NAME` (else `TZ`) / `LOCATION_NAME` | Copenhagen defaults | Weather, sun-time skills |
 
 Pi model override example for trying DeepSeek v4 Flash through reclaw:
@@ -560,20 +563,20 @@ bun run format
 
 ```bash
 # All BullMQ queues
-redis-cli -p 6380 keys 'bull:reclaw-*' | sort
+redis-cli -p 6381 keys 'bull:reclaw-*' | sort
 
 # Failed jobs in a queue (sorted set — use ZCARD/ZRANGE, NOT LLEN)
-redis-cli -p 6380 ZCARD bull:reclaw-scheduled:failed
-redis-cli -p 6380 ZRANGE bull:reclaw-scheduled:failed 0 -1
+redis-cli -p 6381 ZCARD bull:reclaw-scheduled:failed
+redis-cli -p 6381 ZRANGE bull:reclaw-scheduled:failed 0 -1
 
 # Active sessions
-redis-cli -p 6380 keys 'reclaw-session-*'
+redis-cli -p 6381 keys 'reclaw-session-*'
 
 # Today's NotebookLM quota
-redis-cli -p 6380 get "reclaw:nblm-quota:$(date -u +%Y-%m-%d)"
+redis-cli -p 6381 get "reclaw:nblm-quota:$(date -u +%Y-%m-%d)"
 
 # Scheduled-job markers
-redis-cli -p 6380 keys 'reclaw:sched-*'
+redis-cli -p 6381 keys 'reclaw:sched-*'
 ```
 
 ### Queue health (one-liner)
@@ -581,9 +584,9 @@ redis-cli -p 6380 keys 'reclaw:sched-*'
 ```bash
 for q in chat scheduled reminder research podcast; do
   printf "%-10s waiting=%s active=%s failed=%s\n" "$q" \
-    "$(redis-cli -p 6380 ZCARD bull:reclaw-$q:waiting 2>/dev/null || echo -)" \
-    "$(redis-cli -p 6380 ZCARD bull:reclaw-$q:active 2>/dev/null || echo -)" \
-    "$(redis-cli -p 6380 ZCARD bull:reclaw-$q:failed 2>/dev/null || echo -)"
+    "$(redis-cli -p 6381 ZCARD bull:reclaw-$q:waiting 2>/dev/null || echo -)" \
+    "$(redis-cli -p 6381 ZCARD bull:reclaw-$q:active 2>/dev/null || echo -)" \
+    "$(redis-cli -p 6381 ZCARD bull:reclaw-$q:failed 2>/dev/null || echo -)"
 done
 ```
 

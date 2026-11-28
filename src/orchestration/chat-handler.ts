@@ -5,13 +5,16 @@ import {
   agentFailurePolicy,
   formatAgentFailure,
 } from '../core/agent-failure.js';
+import { chatFallbackNotice, planFallback, withFallbackNotice } from '../core/backend-fallback.js';
 import { selectExecutionConversation } from '../core/chat-conversation.js';
 import { markdownToTelegramHtml } from '../core/markdown-to-telegram.js';
 import { splitHtml } from '../core/message-splitter.js';
+import { type AgentTarget, requestedModel } from '../core/model-selection.js';
 import { getAllowedTools } from '../core/permissions.js';
 import { buildChatPrompt, personalityInstructions } from '../core/prompt-builder.js';
 import { type StreamState, createStreamState, processChunk } from '../core/stream-state.js';
 import {
+  type AgentBackendName,
   type AgentSessionId,
   type ChatJob,
   type ConversationTarget,
@@ -47,7 +50,10 @@ export type ChatActivityOutcome =
       readonly sessionId: AgentSessionId | null;
       readonly conversationGeneration: ChatJob['conversation']['generation'];
       readonly conversationRevision: ChatJob['conversation']['revision'];
+      /** The backend the turn executed against: the commit's CAS coordinate. */
       readonly conversationBackend: ChatJob['conversation']['backend'];
+      /** The backend whose session answered: the conversation's own, or its chat fallback. */
+      readonly sessionBackend: AgentBackendName;
       readonly telegramOperations: readonly TelegramDeliveryOperation[];
       readonly sourcePaths: readonly string[];
       /** Settles best-effort status edits after ActivityResult persistence. */
@@ -104,7 +110,13 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<ChatA
   const statusMsgId = await sendStatusMessage(job.chatId, deps.telegram);
   const status = createStatusStream(job.chatId, deps.telegram, statusMsgId);
 
-  const result = await runChatAgent(job, deps, instructions, conversation, status);
+  const { result, sessionBackend, notice } = await runChatTurn(
+    job,
+    deps,
+    instructions,
+    conversation,
+    status,
+  );
 
   // FR-012: the user-facing error is sent by the worker's dead-letter handler
   // after the final retry attempt — see formatDeadLetterMessage. Sending here
@@ -116,14 +128,16 @@ export async function handleChatJob(job: ChatJob, deps: ChatDeps): Promise<ChatA
 
   // Session commit, delivery, Cortex extraction, and source-file cleanup are
   // persisted by the worker as independently retryable delivery items (ADR-0009).
+  const response = withFallbackNotice(notice, result.output);
   return {
     kind: 'completed',
-    response: result.output,
+    response,
     sessionId: sessionLineageOf(result.sessionId, job.chatId),
     conversationGeneration: conversation.generation,
     conversationRevision: conversation.revision,
     conversationBackend: conversation.backend,
-    telegramOperations: planChatTelegramCompletion(statusMsgId, result.output),
+    sessionBackend,
+    telegramOperations: planChatTelegramCompletion(statusMsgId, response),
     sourcePaths: chatJobSourcePaths(job),
     drainPreviews: status.drain,
   };
@@ -217,33 +231,84 @@ function createStatusStream(
  */
 const chatAgentOptions = (
   config: AppConfig,
-  conversation: ConversationTarget,
+  target: AgentTarget,
   job: ChatJob,
   instructions: string | undefined,
   resumeSessionId: string | undefined,
-): AgentOptions => ({
-  prompt: buildChatPrompt(
-    job.text,
-    job.imagePaths,
-    job.documentPaths,
-    job.replyContext,
-    job.storedUploads,
-  ),
-  cwd: config.workspacePath,
-  allowedTools: getAllowedTools('chat'),
-  timeoutMs: config.chatTimeoutMs,
-  ...(resumeSessionId ? { resumeSessionId } : {}),
-  ...(instructions ? { appendSystemPrompt: instructions } : {}),
-  backend: conversation.backend,
-});
+): AgentOptions => {
+  const modelSelection = requestedModel(target);
+  return {
+    prompt: buildChatPrompt(
+      job.text,
+      job.imagePaths,
+      job.documentPaths,
+      job.replyContext,
+      job.storedUploads,
+    ),
+    cwd: config.workspacePath,
+    allowedTools: getAllowedTools('chat'),
+    timeoutMs: config.chatTimeoutMs,
+    ...(resumeSessionId ? { resumeSessionId } : {}),
+    ...(instructions ? { appendSystemPrompt: instructions } : {}),
+    backend: target.backend,
+    ...(modelSelection !== undefined ? { modelSelection } : {}),
+  };
+};
+
+/** The run that answered a chat turn, the backend whose session it is, and the fallback notice. */
+type ChatRun = {
+  readonly result: AgentResult;
+  readonly sessionBackend: AgentBackendName;
+  readonly notice: string | null;
+};
+
+/**
+ * Run the turn on its conversation; when that backend cannot serve (planFallback),
+ * rerun it once, fresh, on the configured chat fallback. Task failures (timeouts,
+ * agent errors) are kept: they would most likely repeat elsewhere.
+ */
+async function runChatTurn(
+  job: ChatJob,
+  deps: ChatDeps,
+  instructions: string | undefined,
+  conversation: ConversationTarget,
+  status: StatusStream,
+): Promise<ChatRun> {
+  const first = await runOnConversation(job, deps, instructions, conversation, status);
+  const fallback = first.ok
+    ? null
+    : planFallback(conversation.backend, deps.config.chatFallback, first.failure);
+  if (first.ok || fallback === null) {
+    return { result: first, sessionBackend: conversation.backend, notice: null };
+  }
+  console.warn(
+    `[chat] chatId=${job.chatId}: ${formatAgentFailure(first.failure)} — falling back to ${fallback.backend}`,
+  );
+  status.restart();
+  const result = await deps.runAgentStreaming(
+    chatAgentOptions(deps.config, fallback, job, instructions, undefined),
+    status.onChunk,
+  );
+  logFinished(fallback.backend, job.chatId, result);
+  return {
+    result,
+    sessionBackend: fallback.backend,
+    notice: chatFallbackNotice(
+      first.failure,
+      fallback,
+      conversation.backend,
+      conversation.sessionId !== null,
+    ),
+  };
+}
 
 /**
  * Run the agent on the selected conversation. A resumed turn is retried fresh
  * only when the typed failure proves the persisted session itself is unusable;
- * provider and transport failures retain lineage and are left to BullMQ rather
- * than causing duplicate fresh execution.
+ * provider and transport failures retain lineage and are left to the chat
+ * fallback, or to BullMQ, rather than causing duplicate fresh execution.
  */
-async function runChatAgent(
+async function runOnConversation(
   job: ChatJob,
   deps: ChatDeps,
   instructions: string | undefined,
@@ -251,22 +316,15 @@ async function runChatAgent(
   status: StatusStream,
 ): Promise<AgentResult> {
   const isResuming = conversation.sessionId !== null;
+  const target: AgentTarget = { backend: conversation.backend };
   console.info(
     `[chat] Running ${conversation.backend} for chatId=${job.chatId} resume=${isResuming}`,
   );
   const result = await deps.runAgentStreaming(
-    chatAgentOptions(
-      deps.config,
-      conversation,
-      job,
-      instructions,
-      conversation.sessionId ?? undefined,
-    ),
+    chatAgentOptions(deps.config, target, job, instructions, conversation.sessionId ?? undefined),
     status.onChunk,
   );
-  console.info(
-    `[chat] ${conversation.backend} finished for chatId=${job.chatId} ok=${result.ok}${result.ok ? ` duration=${result.durationMs}ms` : ` error=${formatAgentFailure(result.failure)}`}`,
-  );
+  logFinished(conversation.backend, job.chatId, result);
 
   if (result.ok || !isResuming || !agentFailurePolicy(result.failure).mayRetryWithoutSession) {
     return result;
@@ -274,8 +332,14 @@ async function runChatAgent(
   console.info(`[chat] Invalid session for chatId=${job.chatId}, retrying fresh`);
   status.restart();
   return deps.runAgentStreaming(
-    chatAgentOptions(deps.config, conversation, job, instructions, undefined),
+    chatAgentOptions(deps.config, target, job, instructions, undefined),
     status.onChunk,
+  );
+}
+
+function logFinished(backend: AgentBackendName, chatId: number, result: AgentResult): void {
+  console.info(
+    `[chat] ${backend} finished for chatId=${chatId} ok=${result.ok}${result.ok ? ` duration=${result.durationMs}ms` : ` error=${formatAgentFailure(result.failure)}`}`,
   );
 }
 

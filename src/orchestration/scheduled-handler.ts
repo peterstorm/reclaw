@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import { resolveSkillEnvironment } from '../core/agent-environment.js';
 import { type AgentFailure, formatAgentFailure } from '../core/agent-failure.js';
-import { fallbackNotice, planFallback } from '../core/backend-fallback.js';
+import { fallbackNotice, planFallback, withFallbackNotice } from '../core/backend-fallback.js';
 import { localDate, localDayOfWeek } from '../core/clock.js';
 import { splitMessage } from '../core/message-splitter.js';
 import { type AgentTarget, requestedModel } from '../core/model-selection.js';
@@ -374,7 +374,7 @@ function composeResponse(
 ): { readonly response: string; readonly isSuppressed: boolean } {
   const isSuppressed = output.trim() === SUPPRESS_SENTINEL;
   return {
-    response: notice === null || isSuppressed ? output : `${notice}\n\n${output}`,
+    response: withFallbackNotice(isSuppressed ? null : notice, output),
     isSuppressed,
   };
 }

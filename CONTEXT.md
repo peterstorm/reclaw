@@ -52,6 +52,22 @@ Code: `src/core/skill-config.ts` (parse), `src/core/types.ts` (SkillConfig),
 | **Script state dir** | `~/.cache/reclaw/script-skills/<skill-id>/` — the script's persistent directory; reads resolve absent files to `undefined`, writes are atomic (temp + rename). | The workspace; a Redis store |
 | **Script outcome** | `message` (delivered to every authorized user) or `silent` (nothing sent). A thrown or timed-out script fails the job and BullMQ retries it. | ALL_CLEAR (the prompt-body suppression sentinel a script never needs to emit) |
 
+## Chat conversations (lineage + fallback)
+
+Code: `src/core/session.ts`, `src/core/chat-conversation.ts`, `src/core/backend-fallback.ts`,
+`src/orchestration/chat-handler.ts`, `src/infra/session-store.ts`. Flow: `docs/multi-turn-sessions.md`.
+Decisions: `docs/adr/0011-conversation-lineage-generation-cas.md`, `docs/adr/0015-chat-backend-fallback.md`.
+
+| Term | Meaning | Not to be confused with |
+|---|---|---|
+| **Conversation lineage** | A chat's current `{generation, revision, backend, sessionId}` in Redis. Changed only by advance (`/new`, reply) and commit. | A session (the backend's own transcript) |
+| **Generation** | The explicit-selection epoch: `/new` or replying to a mapped message advances it. | Revision |
+| **Revision** | Orders successful session commits within one generation. | Generation |
+| **Execution target** | The lineage a turn actually ran against — its ingress snapshot, or the current lineage when it rebased. Its generation, revision and backend are the commit's CAS coordinates. | The current lineage at commit time |
+| **Cannot serve** | A failure that indicts the backend, not the task: unreachable, rate limited, quota spent, auth, billing, spawn (`backendCannotServe`). The only trigger for any fallback. | A task failure (timeout, agent error) |
+| **Chat fallback** | `RECLAW_CHAT_FALLBACK_BACKEND`: the backend a chat turn reruns on, fresh and once, when its conversation's backend cannot serve. Its commit moves the lineage onto that backend until `/new`. | A skill's `fallback:`; the `session-invalid` fresh retry on the same backend |
+| **Fallback notice** | The `⚠️ Fallback: ran on <backend> — <reason>` line above an answer the fallback produced. | A dead-letter message |
+
 ## Agent runs (process containment)
 
 Code: `src/core/agent-containment.ts`, `src/infra/agent-backends/runner.ts`,

@@ -47,6 +47,24 @@ const makeConversationStore = () => ({
   getMessageReference: vi.fn().mockResolvedValue(null),
 });
 
+/** A real conversation store over an ioredis client to the isolated Redis. */
+const openConversationStore = async (port: number, now: string) => {
+  const { default: Redis } = await import('ioredis');
+  const redis = new Redis({ host: '127.0.0.1', port, maxRetriesPerRequest: null });
+  const store = createSessionStore(
+    {
+      get: (key) => redis.get(key),
+      set: (key, value, options) =>
+        options?.PX === undefined ? redis.set(key, value) : redis.set(key, value, 'PX', options.PX),
+      del: (key) => redis.del(key),
+      eval: (script, numberOfKeys, ...args) => redis.eval(script, numberOfKeys, ...args),
+    },
+    'pi',
+    () => now,
+  );
+  return { redis, store };
+};
+
 const reservePort = async (): Promise<number> => {
   const server = createServer();
   await new Promise<void>((resolve, reject) => {
@@ -194,21 +212,7 @@ describe('BullMQ runtime with isolated Redis', () => {
   });
 
   it('atomically advances generations and rejects stale session commits', async () => {
-    const { default: Redis } = await import('ioredis');
-    const redis = new Redis({ host: '127.0.0.1', port, maxRetriesPerRequest: null });
-    const store = createSessionStore(
-      {
-        get: (key) => redis.get(key),
-        set: (key, value, options) =>
-          options?.PX === undefined
-            ? redis.set(key, value)
-            : redis.set(key, value, 'PX', options.PX),
-        del: (key) => redis.del(key),
-        eval: (script, numberOfKeys, ...args) => redis.eval(script, numberOfKeys, ...args),
-      },
-      'pi',
-      () => '2026-08-14T08:00:00.000Z',
-    );
+    const { redis, store } = await openConversationStore(port, '2026-08-14T08:00:00.000Z');
     const chatId = 991_339;
     const firstSession = makeAgentSessionId('session-first');
     const staleSession = makeAgentSessionId('session-stale');
@@ -237,6 +241,7 @@ describe('BullMQ runtime with isolated Redis', () => {
         chatId,
         expectedGeneration: selected.generation,
         expectedRevision: selected.revision,
+        expectedBackend: 'pi',
         backend: 'pi',
         sessionId: firstSession.value,
         lastActivityAt: '2026-08-14T08:02:00.000Z',
@@ -250,6 +255,7 @@ describe('BullMQ runtime with isolated Redis', () => {
         chatId,
         expectedGeneration: selected.generation,
         expectedRevision: selected.revision,
+        expectedBackend: 'pi',
         backend: 'pi',
         sessionId: staleSession.value,
         lastActivityAt: '2026-08-14T08:02:30.000Z',
@@ -271,6 +277,7 @@ describe('BullMQ runtime with isolated Redis', () => {
         chatId,
         expectedGeneration: 1 as ConversationGeneration,
         expectedRevision: 1 as ConversationRevision,
+        expectedBackend: 'pi',
         backend: 'pi',
         sessionId: staleSession.value,
         lastActivityAt: '2026-08-14T08:04:00.000Z',
@@ -300,6 +307,84 @@ describe('BullMQ runtime with isolated Redis', () => {
       await redis.del(
         'reclaw-session-991339',
         ...((await redis.keys('reclaw-conversation-mutation-991339-*')) as string[]),
+      );
+      await redis.quit();
+    }
+  });
+
+  it('moves a conversation onto its chat fallback backend atomically, still guarded by CAS', async () => {
+    const { redis, store } = await openConversationStore(port, '2026-11-28T12:00:00.000Z');
+    const chatId = 991_340;
+    const fallbackSession = makeAgentSessionId('claude-fallback-session');
+    const nextSession = makeAgentSessionId('claude-next-session');
+    const lostSession = makeAgentSessionId('pi-session-lost');
+    if (!fallbackSession.ok || !nextSession.ok || !lostSession.ok) {
+      throw new Error('Invalid session fixture');
+    }
+
+    try {
+      const selected = await store.advance(
+        chatId,
+        'telegram:91342:chat',
+        { kind: 'fresh', backend: 'pi' },
+        '2026-11-28T12:00:00.000Z',
+      );
+
+      // Pi could not serve; Claude answered. The commit is guarded by the pi
+      // lineage the turn ran on and writes the Claude session.
+      const switched = await store.commitSession({
+        chatId,
+        expectedGeneration: selected.generation,
+        expectedRevision: selected.revision,
+        expectedBackend: 'pi',
+        backend: 'claude',
+        sessionId: fallbackSession.value,
+        lastActivityAt: '2026-11-28T12:01:00.000Z',
+      });
+      expect(switched).toMatchObject({
+        kind: 'committed',
+        lineage: {
+          generation: 1,
+          revision: 1,
+          backend: 'claude',
+          sessionId: fallbackSession.value,
+        },
+      });
+
+      // A turn that still believes the conversation is on pi cannot overwrite it,
+      // even at the current revision.
+      const staleBackend = await store.commitSession({
+        chatId,
+        expectedGeneration: selected.generation,
+        expectedRevision: 1 as ConversationRevision,
+        expectedBackend: 'pi',
+        backend: 'pi',
+        sessionId: lostSession.value,
+        lastActivityAt: '2026-11-28T12:02:00.000Z',
+      });
+      expect(staleBackend).toMatchObject({
+        kind: 'stale',
+        current: { revision: 1, backend: 'claude', sessionId: fallbackSession.value },
+      });
+
+      // The next turn resumes on Claude and commits as an ordinary same-backend turn.
+      const next = await store.commitSession({
+        chatId,
+        expectedGeneration: selected.generation,
+        expectedRevision: 1 as ConversationRevision,
+        expectedBackend: 'claude',
+        backend: 'claude',
+        sessionId: nextSession.value,
+        lastActivityAt: '2026-11-28T12:03:00.000Z',
+      });
+      expect(next).toMatchObject({
+        kind: 'committed',
+        lineage: { generation: 1, revision: 2, backend: 'claude', sessionId: nextSession.value },
+      });
+    } finally {
+      await redis.del(
+        'reclaw-session-991340',
+        ...((await redis.keys('reclaw-conversation-mutation-991340-*')) as string[]),
       );
       await redis.quit();
     }

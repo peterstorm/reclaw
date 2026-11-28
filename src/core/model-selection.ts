@@ -31,6 +31,27 @@ export type ClaudeTarget = { readonly backend: 'claude'; readonly model?: Claude
  */
 export type AgentTarget = { readonly backend: 'pi' } | ClaudeTarget;
 
+/** Why a backend/model pair is not an AgentTarget. */
+export type AgentTargetError =
+  | { readonly kind: 'model-needs-claude' }
+  | { readonly kind: 'invalid-claude-model'; readonly detail: string };
+
+/**
+ * Parse a backend and optional model into an AgentTarget — the one parser behind a skill's
+ * `backend:`/`model:`/`fallback:` and the chat fallback env. Only Claude takes a model.
+ */
+export function makeAgentTarget(
+  backend: AgentBackendName,
+  model: string | undefined,
+): Result<AgentTarget, AgentTargetError> {
+  if (model === undefined) return ok({ backend });
+  if (backend !== 'claude') return err({ kind: 'model-needs-claude' });
+  const parsed = makeClaudeModel(model);
+  return parsed.ok
+    ? ok({ backend, model: parsed.value })
+    : err({ kind: 'invalid-claude-model', detail: parsed.error });
+}
+
 /** The per-run model request a target makes (none for Pi). */
 export function requestedModel(target: AgentTarget): AgentModelSelection | undefined {
   return target.backend === 'claude' && target.model !== undefined
